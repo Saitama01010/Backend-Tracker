@@ -1201,16 +1201,16 @@ function TeamPanel({
               )}
             </div>
 
-            <Tabs defaultValue="day" className="space-y-4">
+            <Tabs defaultValue="agent" className="space-y-4">
               <TabsList>
-                <TabsTrigger value="day" data-testid="subtab-day">By day</TabsTrigger>
                 <TabsTrigger value="agent" data-testid="subtab-agent">By agent</TabsTrigger>
+                <TabsTrigger value="day" data-testid="subtab-day">By day</TabsTrigger>
               </TabsList>
-              <TabsContent value="day">
-                <ByDayView data={aggregated} />
-              </TabsContent>
               <TabsContent value="agent">
                 <ByAgentView data={aggregated} />
+              </TabsContent>
+              <TabsContent value="day">
+                <ByDayView data={aggregated} />
               </TabsContent>
             </Tabs>
           </>
