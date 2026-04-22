@@ -267,6 +267,7 @@ type Aggregated = {
   agentColumn: string;
   dateColumn: string | null;
   statuses: string[];
+  retainedStatuses: Set<string>;
   byDay: DayBreakdown[];
   byAgent: AgentBreakdown[];
   totals: {
@@ -275,12 +276,23 @@ type Aggregated = {
     byStatus: Map<string, number>;
     grand: number;
     agents: number;
+    retained: number;
   };
   totalRowCount: number;
   filteredRowCount: number;
   minDate: Date | null;
   maxDate: Date | null;
 };
+
+function isRetainedStatus(s: string): boolean {
+  const lower = s.toLowerCase();
+  return /retain/.test(lower) || /\bidp\b/.test(lower);
+}
+
+function retentionRate(retained: number, total: number): string {
+  if (!total) return "—";
+  return `${((retained / total) * 100).toFixed(1)}%`;
+}
 
 function aggregate(
   status: SheetData,
@@ -418,6 +430,11 @@ function aggregate(
   const totalCalls = byAgent.reduce((s, a) => s + a.calls, 0);
   const totalSeconds = byAgent.reduce((s, a) => s + a.seconds, 0);
   const grand = byAgent.reduce((s, a) => s + a.total, 0);
+  const retainedStatuses = new Set(statuses.filter(isRetainedStatus));
+  const totalRetained = Array.from(retainedStatuses).reduce(
+    (s, st) => s + (totalsByStatus.get(st) ?? 0),
+    0,
+  );
 
   return {
     mode,
@@ -425,6 +442,7 @@ function aggregate(
     statusColumn,
     dateColumn,
     statuses,
+    retainedStatuses,
     byDay,
     byAgent,
     totals: {
@@ -433,6 +451,7 @@ function aggregate(
       byStatus: totalsByStatus,
       grand,
       agents: byAgent.length,
+      retained: totalRetained,
     },
     totalRowCount: status.rows.length,
     filteredRowCount: filteredStatus.length,
@@ -506,7 +525,14 @@ function startOfWeek(d: Date): Date {
   return start;
 }
 
+function sumRetained(byStatus: Map<string, number>, retained: Set<string>): number {
+  let n = 0;
+  for (const s of retained) n += byStatus.get(s) ?? 0;
+  return n;
+}
+
 function ByDayView({ data }: { data: Aggregated }) {
+  const showRate = data.mode === "retention";
   // Group days into weeks (Mon–Sun) and emit a subtotal row at the end of each week
   type WeekGroup = { weekStart: Date; days: DayBreakdown[] };
   const weeks: WeekGroup[] = [];
@@ -537,13 +563,16 @@ function ByDayView({ data }: { data: Aggregated }) {
                 </TableHead>
               ))}
               <TableHead className="text-right whitespace-nowrap bg-primary/5">Total</TableHead>
+              {showRate && (
+                <TableHead className="text-right whitespace-nowrap bg-primary/10">Retention rate</TableHead>
+              )}
             </TableRow>
           </TableHeader>
           <TableBody>
             {weeks.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={data.statuses.length + 5}
+                  colSpan={data.statuses.length + 5 + (showRate ? 1 : 0)}
                   className="text-center py-12 text-muted-foreground"
                 >
                   No data for the selected date range.
@@ -600,6 +629,11 @@ function ByDayView({ data }: { data: Aggregated }) {
                       <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5">
                         {d.total || ""}
                       </TableCell>
+                      {showRate && (
+                        <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/10">
+                          {retentionRate(sumRetained(d.byStatus, data.retainedStatuses), d.total)}
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                   <TableRow key={`week-${wi}`} className="bg-accent/40 font-semibold">
@@ -621,6 +655,11 @@ function ByDayView({ data }: { data: Aggregated }) {
                     <TableCell className="text-right tabular-nums font-mono bg-primary/10">
                       {subtotal.total}
                     </TableCell>
+                    {showRate && (
+                      <TableCell className="text-right tabular-nums font-mono bg-primary/10">
+                        {retentionRate(sumRetained(subtotal.byStatus, data.retainedStatuses), subtotal.total)}
+                      </TableCell>
+                    )}
                   </TableRow>
                 </Fragment>
               );
@@ -648,6 +687,11 @@ function ByDayView({ data }: { data: Aggregated }) {
                 <TableCell className="text-right tabular-nums font-mono font-bold bg-primary/10">
                   {data.totals.grand}
                 </TableCell>
+                {showRate && (
+                  <TableCell className="text-right tabular-nums font-mono font-bold bg-primary/10">
+                    {retentionRate(data.totals.retained, data.totals.grand)}
+                  </TableCell>
+                )}
               </TableRow>
             </TableHeader>
           )}
@@ -658,6 +702,7 @@ function ByDayView({ data }: { data: Aggregated }) {
 }
 
 function ByAgentView({ data }: { data: Aggregated }) {
+  const showRate = data.mode === "retention";
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>({ column: "__total__", dir: "desc" });
 
@@ -681,6 +726,9 @@ function ByAgentView({ data }: { data: Aggregated }) {
         } else if (sort.column === "__time__") {
           av = a.seconds;
           bv = b.seconds;
+        } else if (sort.column === "__rate__") {
+          av = a.total ? sumRetained(a.byStatus, data.retainedStatuses) / a.total : -1;
+          bv = b.total ? sumRetained(b.byStatus, data.retainedStatuses) / b.total : -1;
         } else {
           av = a.byStatus.get(sort.column) ?? 0;
           bv = b.byStatus.get(sort.column) ?? 0;
@@ -745,13 +793,18 @@ function ByAgentView({ data }: { data: Aggregated }) {
                 <TableHead className="whitespace-nowrap text-right bg-primary/5">
                   <SortHeader id="__total__" label="Total" align="right" sort={sort} onToggle={toggle} />
                 </TableHead>
+                {showRate && (
+                  <TableHead className="whitespace-nowrap text-right bg-primary/10">
+                    <SortHeader id="__rate__" label="Retention rate" align="right" sort={sort} onToggle={toggle} />
+                  </TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
               {visible.length === 0 && (
                 <TableRow>
                   <TableCell
-                    colSpan={data.statuses.length + 4}
+                    colSpan={data.statuses.length + 4 + (showRate ? 1 : 0)}
                     className="text-center py-12 text-muted-foreground"
                   >
                     No agents match the current filters.
@@ -785,6 +838,11 @@ function ByAgentView({ data }: { data: Aggregated }) {
                   <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5">
                     {a.total}
                   </TableCell>
+                  {showRate && (
+                    <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/10">
+                      {retentionRate(sumRetained(a.byStatus, data.retainedStatuses), a.total)}
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
@@ -809,6 +867,11 @@ function ByAgentView({ data }: { data: Aggregated }) {
                   <TableCell className="text-right tabular-nums font-mono font-bold bg-primary/10">
                     {data.totals.grand}
                   </TableCell>
+                  {showRate && (
+                    <TableCell className="text-right tabular-nums font-mono font-bold bg-primary/10">
+                      {retentionRate(data.totals.retained, data.totals.grand)}
+                    </TableCell>
+                  )}
                 </TableRow>
               </TableHeader>
             )}
@@ -870,7 +933,35 @@ function DateFilters({
           data-testid="input-to"
         />
       </div>
-      <div className="flex gap-2">
+      <div className="flex gap-2 flex-wrap">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            const today = toIsoDate(new Date());
+            setFrom(today);
+            setTo(today);
+          }}
+          data-testid="button-today"
+        >
+          Today
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            const now = new Date();
+            const start = new Date(now.getFullYear(), now.getMonth(), 1);
+            const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+            setFrom(toIsoDate(start));
+            setTo(toIsoDate(end));
+          }}
+          data-testid="button-this-month"
+        >
+          This month
+        </Button>
         {minDate && maxDate && (
           <Button
             type="button"
@@ -939,13 +1030,13 @@ function TeamPanel({
       {
         queryKey: ["status", sheetKey],
         queryFn: () => fetchHeaderCsv(urls.status),
-        staleTime: 1000 * 60 * 30,
+        staleTime: 1000 * 60 * 2,
         refetchOnWindowFocus: false,
       },
       {
         queryKey: ["calls", sheetKey],
         queryFn: () => fetchMatrixCsv(urls.calls),
-        staleTime: 1000 * 60 * 30,
+        staleTime: 1000 * 60 * 2,
         refetchOnWindowFocus: false,
       },
     ],
@@ -1041,8 +1132,15 @@ function TeamPanel({
               <StatTile
                 label={mode === "nsf" ? "Total fixed" : "Total outcomes"}
                 value={aggregated.totals.grand.toLocaleString()}
-                accent
+                accent={mode === "nsf"}
               />
+              {mode === "retention" && (
+                <StatTile
+                  label="Retention rate"
+                  value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)}
+                  accent
+                />
+              )}
             </div>
 
             <Tabs defaultValue="day" className="space-y-4">
