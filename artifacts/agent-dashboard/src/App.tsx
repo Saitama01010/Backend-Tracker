@@ -79,8 +79,15 @@ function findColumn(headers: string[], candidates: string[]): string | null {
   return null;
 }
 
+const NAME_ALIASES: Record<string, string> = {
+  "kaite miller": "katie miller",
+};
+const NAME_DISPLAY: Record<string, string> = {
+  "katie miller": "Katie Miller",
+};
 function normalizeAgent(s: string): string {
-  return s.replace(/\s+/g, " ").trim().toLowerCase();
+  const base = s.replace(/\s+/g, " ").trim().toLowerCase();
+  return NAME_ALIASES[base] ?? base;
 }
 
 function parseDate(s: string): Date | null {
@@ -282,6 +289,8 @@ type Aggregated = {
     agents: number;
     retained: number;
   };
+  todayRetained: number;
+  monthRetained: number;
   totalRowCount: number;
   filteredRowCount: number;
   minDate: Date | null;
@@ -375,7 +384,7 @@ function aggregate(
     if (!key) return { agent: "", calls: 0, seconds: 0, byStatus: new Map(), total: 0 };
     if (!agentMap.has(key)) {
       agentMap.set(key, {
-        agent: a.replace(/\s+/g, " ").trim(),
+        agent: NAME_DISPLAY[key] ?? a.replace(/\s+/g, " ").trim(),
         calls: 0,
         seconds: 0,
         byStatus: new Map(),
@@ -442,6 +451,23 @@ function aggregate(
     0,
   );
 
+  let todayRetained = 0;
+  let monthRetained = 0;
+  if (dateColumn) {
+    const now = new Date();
+    const todayIso = toIsoDate(now);
+    const monthYear = now.getFullYear();
+    const monthMonth = now.getMonth();
+    for (const r of status.rows) {
+      const d = parseDate(r[dateColumn] ?? "");
+      if (!d) continue;
+      const rawStatus = (r[statusColumn] ?? "").trim();
+      if (!isRetainedStatus(rawStatus)) continue;
+      if (toIsoDate(d) === todayIso) todayRetained += 1;
+      if (d.getFullYear() === monthYear && d.getMonth() === monthMonth) monthRetained += 1;
+    }
+  }
+
   return {
     mode,
     agentColumn,
@@ -459,6 +485,8 @@ function aggregate(
       agents: byAgent.length,
       retained: totalRetained,
     },
+    todayRetained,
+    monthRetained,
     totalRowCount: status.rows.length,
     filteredRowCount: filteredStatus.length,
     minDate,
@@ -1135,17 +1163,30 @@ function TeamPanel({
                 value={formatHours(aggregated.totals.seconds)}
                 icon={<Clock className="h-3.5 w-3.5" />}
               />
-              <StatTile
-                label={mode === "nsf" ? "Total fixed" : "Total outcomes"}
-                value={aggregated.totals.grand.toLocaleString()}
-                accent={mode === "nsf"}
-              />
-              {mode === "retention" && (
+              {mode === "nsf" ? (
                 <StatTile
-                  label="Retention rate"
-                  value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)}
+                  label="Total fixed"
+                  value={aggregated.totals.grand.toLocaleString()}
                   accent
                 />
+              ) : (
+                <>
+                  <StatTile
+                    label="Today's retains"
+                    value={aggregated.todayRetained.toLocaleString()}
+                    accent
+                  />
+                  <StatTile
+                    label="This month's retains"
+                    value={aggregated.monthRetained.toLocaleString()}
+                    accent
+                  />
+                  <StatTile
+                    label="Retention rate"
+                    value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)}
+                    accent
+                  />
+                </>
               )}
             </div>
 
