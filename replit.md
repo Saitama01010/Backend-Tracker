@@ -16,6 +16,10 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 - **API codegen**: Orval (from OpenAPI spec)
 - **Build**: esbuild (CJS bundle)
 
+## Artifacts
+
+- **agent-dashboard** (`/`) — Agent Performance Dashboard. React + Vite app with two tabs (Retention, NSF) loading public Google Sheets CSVs via `fetch` + PapaParse. CSV URLs are hard-coded constants in `artifacts/agent-dashboard/src/App.tsx`. Data is cached for 30 minutes via React Query.
+
 ## Key Commands
 
 - `pnpm run typecheck` — full typecheck across all packages
