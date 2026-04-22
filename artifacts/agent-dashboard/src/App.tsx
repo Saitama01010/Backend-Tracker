@@ -1307,7 +1307,7 @@ function Dashboard() {
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-violet-300 via-fuchsia-300 to-sky-300 bg-clip-text text-transparent">
-              Agent Performance Dashboard
+              Backend Tracker
             </h1>
             <p className="text-sm text-muted-foreground">Retention &amp; NSF team metrics at a glance</p>
           </div>
