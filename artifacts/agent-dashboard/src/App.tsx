@@ -291,6 +291,7 @@ type Aggregated = {
   };
   todayRetained: number;
   monthRetained: number;
+  monthCancelled: number;
   totalRowCount: number;
   filteredRowCount: number;
   minDate: Date | null;
@@ -453,6 +454,7 @@ function aggregate(
 
   let todayRetained = 0;
   let monthRetained = 0;
+  let monthCancelled = 0;
   if (dateColumn) {
     const now = new Date();
     const todayIso = toIsoDate(now);
@@ -462,9 +464,12 @@ function aggregate(
       const d = parseDate(r[dateColumn] ?? "");
       if (!d) continue;
       const rawStatus = (r[statusColumn] ?? "").trim();
-      if (!isRetainedStatus(rawStatus)) continue;
-      if (toIsoDate(d) === todayIso) todayRetained += 1;
-      if (d.getFullYear() === monthYear && d.getMonth() === monthMonth) monthRetained += 1;
+      const inThisMonth = d.getFullYear() === monthYear && d.getMonth() === monthMonth;
+      if (isRetainedStatus(rawStatus)) {
+        if (toIsoDate(d) === todayIso) todayRetained += 1;
+        if (inThisMonth) monthRetained += 1;
+      }
+      if (/cancel/i.test(rawStatus) && inThisMonth) monthCancelled += 1;
     }
   }
 
@@ -487,6 +492,7 @@ function aggregate(
     },
     todayRetained,
     monthRetained,
+    monthCancelled,
     totalRowCount: status.rows.length,
     filteredRowCount: filteredStatus.length,
     minDate,
@@ -1179,6 +1185,11 @@ function TeamPanel({
                   <StatTile
                     label="This month's retains"
                     value={aggregated.monthRetained.toLocaleString()}
+                    accent
+                  />
+                  <StatTile
+                    label="This month's cancels"
+                    value={aggregated.monthCancelled.toLocaleString()}
                     accent
                   />
                   <StatTile
