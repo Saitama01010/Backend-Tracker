@@ -292,6 +292,8 @@ type Aggregated = {
   todayRetained: number;
   monthRetained: number;
   monthCancelled: number;
+  todayCount: number;
+  monthCount: number;
   totalRowCount: number;
   filteredRowCount: number;
   minDate: Date | null;
@@ -455,6 +457,8 @@ function aggregate(
   let todayRetained = 0;
   let monthRetained = 0;
   let monthCancelled = 0;
+  let todayCount = 0;
+  let monthCount = 0;
   if (dateColumn) {
     const now = new Date();
     const todayIso = toIsoDate(now);
@@ -464,9 +468,12 @@ function aggregate(
       const d = parseDate(r[dateColumn] ?? "");
       if (!d) continue;
       const rawStatus = (r[statusColumn] ?? "").trim();
+      const isToday = toIsoDate(d) === todayIso;
       const inThisMonth = d.getFullYear() === monthYear && d.getMonth() === monthMonth;
+      if (isToday) todayCount += 1;
+      if (inThisMonth) monthCount += 1;
       if (isRetainedStatus(rawStatus)) {
-        if (toIsoDate(d) === todayIso) todayRetained += 1;
+        if (isToday) todayRetained += 1;
         if (inThisMonth) monthRetained += 1;
       }
       if (/cancel/i.test(rawStatus) && inThisMonth) monthCancelled += 1;
@@ -493,6 +500,8 @@ function aggregate(
     todayRetained,
     monthRetained,
     monthCancelled,
+    todayCount,
+    monthCount,
     totalRowCount: status.rows.length,
     filteredRowCount: filteredStatus.length,
     minDate,
@@ -502,28 +511,77 @@ function aggregate(
 
 // ---------- UI ----------
 
+type TileTone = "violet" | "emerald" | "amber" | "sky" | "rose" | "slate";
+
+const TONE_STYLES: Record<TileTone, { bg: string; ring: string; text: string; glow: string }> = {
+  violet: {
+    bg: "bg-gradient-to-br from-violet-500/15 via-fuchsia-500/10 to-transparent",
+    ring: "border-violet-500/30",
+    text: "text-violet-300",
+    glow: "shadow-[0_0_24px_-12px_rgba(168,85,247,0.6)]",
+  },
+  emerald: {
+    bg: "bg-gradient-to-br from-emerald-500/15 via-teal-500/10 to-transparent",
+    ring: "border-emerald-500/30",
+    text: "text-emerald-300",
+    glow: "shadow-[0_0_24px_-12px_rgba(16,185,129,0.6)]",
+  },
+  amber: {
+    bg: "bg-gradient-to-br from-amber-500/15 via-orange-500/10 to-transparent",
+    ring: "border-amber-500/30",
+    text: "text-amber-300",
+    glow: "shadow-[0_0_24px_-12px_rgba(245,158,11,0.6)]",
+  },
+  sky: {
+    bg: "bg-gradient-to-br from-sky-500/15 via-cyan-500/10 to-transparent",
+    ring: "border-sky-500/30",
+    text: "text-sky-300",
+    glow: "shadow-[0_0_24px_-12px_rgba(14,165,233,0.6)]",
+  },
+  rose: {
+    bg: "bg-gradient-to-br from-rose-500/15 via-pink-500/10 to-transparent",
+    ring: "border-rose-500/30",
+    text: "text-rose-300",
+    glow: "shadow-[0_0_24px_-12px_rgba(244,63,94,0.6)]",
+  },
+  slate: {
+    bg: "bg-card",
+    ring: "border-border",
+    text: "text-foreground",
+    glow: "",
+  },
+};
+
 function StatTile({
   label,
   value,
   icon,
-  accent,
+  tone = "slate",
 }: {
   label: string;
   value: number | string;
   icon?: React.ReactNode;
-  accent?: boolean;
+  tone?: TileTone;
 }) {
+  const s = TONE_STYLES[tone];
   return (
-    <div
-      className={`rounded-lg border p-4 ${accent ? "bg-primary/5 border-primary/20" : "bg-card"}`}
-    >
-      <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
+    <div className={`rounded-xl border p-4 ${s.bg} ${s.ring} ${s.glow}`}>
+      <div className={`flex items-center gap-2 text-xs uppercase tracking-wide ${tone === "slate" ? "text-muted-foreground" : s.text}`}>
         {icon}
         <span>{label}</span>
       </div>
-      <div className="mt-1 text-2xl font-bold tabular-nums font-mono">{value}</div>
+      <div className={`mt-1 text-2xl font-bold tabular-nums font-mono ${tone === "slate" ? "" : s.text}`}>{value}</div>
     </div>
   );
+}
+
+function statusTone(s: string): string {
+  const lower = s.toLowerCase();
+  if (/retain/.test(lower)) return "text-emerald-400";
+  if (/idp/.test(lower)) return "text-sky-400";
+  if (/cancel/.test(lower)) return "text-rose-400";
+  if (/fixed/.test(lower)) return "text-emerald-400";
+  return "text-foreground";
 }
 
 type SortState = { column: string; dir: "asc" | "desc" } | null;
@@ -598,13 +656,13 @@ function ByDayView({ data }: { data: Aggregated }) {
               <TableHead className="text-right whitespace-nowrap">Calls</TableHead>
               <TableHead className="text-right whitespace-nowrap">Time on calls</TableHead>
               {data.statuses.map((s) => (
-                <TableHead key={s} className="text-right whitespace-nowrap">
+                <TableHead key={s} className={`text-right whitespace-nowrap ${statusTone(s)}`}>
                   {s}
                 </TableHead>
               ))}
-              <TableHead className="text-right whitespace-nowrap bg-primary/5">Total</TableHead>
+              <TableHead className="text-right whitespace-nowrap bg-primary/10 text-violet-300">Total</TableHead>
               {showRate && (
-                <TableHead className="text-right whitespace-nowrap bg-primary/10">Retention rate</TableHead>
+                <TableHead className="text-right whitespace-nowrap bg-primary/10 text-violet-200">Retention rate</TableHead>
               )}
             </TableRow>
           </TableHeader>
@@ -660,13 +718,13 @@ function ByDayView({ data }: { data: Aggregated }) {
                         return (
                           <TableCell
                             key={s}
-                            className={`text-right tabular-nums font-mono ${v === 0 ? "text-muted-foreground/40" : ""}`}
+                            className={`text-right tabular-nums font-mono ${v === 0 ? "text-muted-foreground/40" : statusTone(s)}`}
                           >
                             {v}
                           </TableCell>
                         );
                       })}
-                      <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5">
+                      <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5 text-violet-200">
                         {d.total || ""}
                       </TableCell>
                       {showRate && (
@@ -826,7 +884,7 @@ function ByAgentView({ data }: { data: Aggregated }) {
                   <SortHeader id="__time__" label="Time on calls" align="right" sort={sort} onToggle={toggle} />
                 </TableHead>
                 {data.statuses.map((s) => (
-                  <TableHead key={s} className="whitespace-nowrap text-right">
+                  <TableHead key={s} className={`whitespace-nowrap text-right ${statusTone(s)}`}>
                     <SortHeader id={s} label={s} align="right" sort={sort} onToggle={toggle} />
                   </TableHead>
                 ))}
@@ -869,13 +927,13 @@ function ByAgentView({ data }: { data: Aggregated }) {
                     return (
                       <TableCell
                         key={s}
-                        className={`text-right tabular-nums font-mono ${v === 0 ? "text-muted-foreground/40" : ""}`}
+                        className={`text-right tabular-nums font-mono ${v === 0 ? "text-muted-foreground/40" : statusTone(s)}`}
                       >
                         {v}
                       </TableCell>
                     );
                   })}
-                  <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5">
+                  <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5 text-violet-200">
                     {a.total}
                   </TableCell>
                   {showRate && (
@@ -1158,44 +1216,58 @@ function TeamPanel({
             />
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <StatTile label="Agents" value={aggregated.totals.agents} icon={<Users className="h-3.5 w-3.5" />} />
+              <StatTile label="Agents" value={aggregated.totals.agents} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
               <StatTile
                 label="Total calls"
                 value={aggregated.totals.calls.toLocaleString()}
                 icon={<Phone className="h-3.5 w-3.5" />}
+                tone="sky"
               />
               <StatTile
                 label="Time on calls"
                 value={formatHours(aggregated.totals.seconds)}
                 icon={<Clock className="h-3.5 w-3.5" />}
+                tone="amber"
               />
               {mode === "nsf" ? (
-                <StatTile
-                  label="Total fixed"
-                  value={aggregated.totals.grand.toLocaleString()}
-                  accent
-                />
+                <>
+                  <StatTile
+                    label="Today's fixed"
+                    value={aggregated.todayCount.toLocaleString()}
+                    tone="emerald"
+                  />
+                  <StatTile
+                    label="This month's fixed"
+                    value={aggregated.monthCount.toLocaleString()}
+                    tone="emerald"
+                  />
+                  <StatTile
+                    label="Total fixed"
+                    value={aggregated.totals.grand.toLocaleString()}
+                    tone="violet"
+                  />
+                </>
               ) : (
                 <>
                   <StatTile
                     label="Today's retains"
                     value={aggregated.todayRetained.toLocaleString()}
-                    accent
+                    tone="emerald"
                   />
                   <StatTile
                     label="This month's retains"
                     value={aggregated.monthRetained.toLocaleString()}
-                    accent
+                    tone="emerald"
                   />
                   <StatTile
                     label="This month's cancels"
                     value={aggregated.monthCancelled.toLocaleString()}
-                    accent
+                    tone="rose"
                   />
                   <StatTile
                     label="Retention rate"
                     value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)}
-                    accent
+                    tone="violet"
                   />
                 </>
               )}
@@ -1222,14 +1294,21 @@ function TeamPanel({
 
 function Dashboard() {
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b bg-card">
+    <div className="min-h-screen bg-background relative overflow-hidden">
+      <div className="pointer-events-none absolute inset-0 -z-0">
+        <div className="absolute -top-32 -left-32 h-[500px] w-[500px] rounded-full bg-violet-600/20 blur-[120px]" />
+        <div className="absolute top-20 right-0 h-[400px] w-[400px] rounded-full bg-sky-500/15 blur-[120px]" />
+        <div className="absolute bottom-0 left-1/3 h-[400px] w-[400px] rounded-full bg-fuchsia-500/10 blur-[120px]" />
+      </div>
+      <header className="relative border-b border-white/5 bg-card/60 backdrop-blur-xl">
         <div className="max-w-[1400px] mx-auto px-6 py-5 flex items-center gap-3">
-          <div className="h-10 w-10 rounded-lg bg-primary text-primary-foreground flex items-center justify-center">
+          <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white flex items-center justify-center shadow-[0_0_24px_-6px_rgba(168,85,247,0.7)]">
             <Rocket className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight">Agent Performance Dashboard</h1>
+            <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-violet-300 via-fuchsia-300 to-sky-300 bg-clip-text text-transparent">
+              Agent Performance Dashboard
+            </h1>
             <p className="text-sm text-muted-foreground">Retention &amp; NSF team metrics at a glance</p>
           </div>
         </div>
