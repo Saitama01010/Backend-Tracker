@@ -79,6 +79,10 @@ function findColumn(headers: string[], candidates: string[]): string | null {
   return null;
 }
 
+function normalizeAgent(s: string): string {
+  return s.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
 function parseDate(s: string): Date | null {
   if (!s) return null;
   const trimmed = s.trim();
@@ -367,16 +371,18 @@ function aggregate(
     return dayMap.get(iso)!;
   };
   const ensureAgent = (a: string): AgentBreakdown => {
-    if (!agentMap.has(a)) {
-      agentMap.set(a, {
-        agent: a,
+    const key = normalizeAgent(a);
+    if (!key) return { agent: "", calls: 0, seconds: 0, byStatus: new Map(), total: 0 };
+    if (!agentMap.has(key)) {
+      agentMap.set(key, {
+        agent: a.replace(/\s+/g, " ").trim(),
         calls: 0,
         seconds: 0,
         byStatus: new Map(),
         total: 0,
       });
     }
-    return agentMap.get(a)!;
+    return agentMap.get(key)!;
   };
 
   for (const r of filteredStatus) {
