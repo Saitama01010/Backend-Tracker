@@ -191,13 +191,17 @@ function parseNsfCalls(rows: Matrix): CallsByAgent {
   const out: CallsByAgent = new Map();
   if (rows.length === 0) return out;
   const header = rows[0];
+  const subheader = rows[1] ?? [];
+  const nameAt = (i: number) =>
+    ((header[i] ?? "").trim() || (subheader[i] ?? "").trim());
 
   // Calls section: agent names start at col 2 until empty cell
   const callsAgentCols: { col: number; agent: string }[] = [];
-  for (let i = 2; i < header.length; i++) {
-    const v = (header[i] ?? "").trim();
+  for (let i = 2; i < Math.max(header.length, subheader.length); i++) {
+    const labelTop = (header[i] ?? "").trim();
+    if (/^time on calls/i.test(labelTop)) break;
+    const v = nameAt(i);
     if (!v) break;
-    if (/^time on calls/i.test(v)) break;
     callsAgentCols.push({ col: i, agent: v });
   }
   // Find time section start
@@ -206,8 +210,9 @@ function parseNsfCalls(rows: Matrix): CallsByAgent {
   let timeDateCol = -1;
   if (timeLabelIdx >= 0) {
     timeDateCol = timeLabelIdx + 1;
-    for (let i = timeLabelIdx + 2; i < header.length; i++) {
-      const v = (header[i] ?? "").trim();
+    const maxLen = Math.max(header.length, subheader.length);
+    for (let i = timeLabelIdx + 2; i < maxLen; i++) {
+      const v = nameAt(i);
       if (!v) continue;
       timeAgentCols.push({ col: i, agent: v });
     }
