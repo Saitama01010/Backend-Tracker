@@ -1155,9 +1155,7 @@ function TeamPanel({
   const aggregated = useMemo(() => {
     if (!statusQ.data) return null;
     const callsParsed = callsQ.data
-      ? mode === "retention"
-        ? parseRetentionCalls(callsQ.data)
-        : parseNsfCalls(callsQ.data)
+      ? parseNsfCalls(callsQ.data)
       : new Map<string, Map<string, CallEntry>>();
     return aggregate(statusQ.data, callsParsed, mode, fromDate, toDate);
   }, [statusQ.data, callsQ.data, mode, from, to]);
