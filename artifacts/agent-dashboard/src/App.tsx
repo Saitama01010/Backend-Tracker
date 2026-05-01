@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider, useQueries } from "@tanstack/react-query";
+import { PhoneTab } from "./PhoneTab";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -1319,15 +1320,19 @@ function Dashboard() {
 
       <main className="max-w-[1400px] mx-auto px-6 py-8">
         <Tabs defaultValue="retention" className="space-y-6">
-          <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsList className="grid w-full max-w-lg grid-cols-3">
             <TabsTrigger value="retention" data-testid="tab-retention">Retention Team</TabsTrigger>
             <TabsTrigger value="nsf" data-testid="tab-nsf">NSF Team</TabsTrigger>
+            <TabsTrigger value="phone" data-testid="tab-phone">📞 Phone</TabsTrigger>
           </TabsList>
           <TabsContent value="retention">
             <TeamPanel urls={RETENTION} sheetKey="retention" label="Retention Team" mode="retention" />
           </TabsContent>
           <TabsContent value="nsf">
             <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" />
+          </TabsContent>
+          <TabsContent value="phone">
+            <PhoneTab />
           </TabsContent>
         </Tabs>
       </main>
