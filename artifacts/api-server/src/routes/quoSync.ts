@@ -217,33 +217,31 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
   const lineMap = new Map(lines.map((l) => [l.id, l]));
   const knownLineIds = new Set(lines.map((l) => l.id));
 
-  // Build userMap from /users endpoint (covers all workspace users,
-  // not just those listed on classified lines)
+  // Build userMap: merge /users endpoint + line.users so no agent is missed
   const userMap = new Map<string, string>();
+
+  function addUser(u: { id: string; firstName: string; lastName: string; email?: string }) {
+    if (userMap.has(u.id)) return;
+    const emailKey = u.email?.toLowerCase().trim() ?? "";
+    const displayName =
+      (emailKey && USER_EMAIL_OVERRIDES[emailKey]) ??
+      `${u.firstName} ${u.lastName}`.trim();
+    userMap.set(u.id, displayName);
+  }
+
+  // Primary: /users endpoint
   try {
     const usersRes = await quoFetch<{
       data: { id: string; firstName: string; lastName: string; email?: string }[];
     }>("/users");
-    for (const u of usersRes.data ?? []) {
-      const emailKey = u.email?.toLowerCase().trim() ?? "";
-      const displayName =
-        (emailKey && USER_EMAIL_OVERRIDES[emailKey]) ??
-        `${u.firstName} ${u.lastName}`.trim();
-      userMap.set(u.id, displayName);
-    }
-  } catch {
-    // Fallback: build from line users if /users endpoint fails
-    for (const line of lines) {
-      for (const u of line.users ?? []) {
-        if (!userMap.has(u.id)) {
-          const emailKey = u.email?.toLowerCase().trim() ?? "";
-          const displayName =
-            (emailKey && USER_EMAIL_OVERRIDES[emailKey]) ??
-            `${u.firstName} ${u.lastName}`.trim();
-          userMap.set(u.id, displayName);
-        }
-      }
-    }
+    for (const u of usersRes.data ?? []) addUser(u);
+  } catch (err) {
+    logger.warn(err, "quoSync: /users endpoint failed, falling back to line users only");
+  }
+
+  // Always also pull from line.users to catch agents not returned by /users
+  for (const line of allLines) {
+    for (const u of line.users ?? []) addUser(u);
   }
   logger.info({ lineCount: lines.length, userCount: userMap.size }, "quoSync: got lines");
 
