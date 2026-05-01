@@ -1,5 +1,4 @@
-import { QueryClient, QueryClientProvider, useQueries } from "@tanstack/react-query";
-import { PhoneTab } from "./PhoneTab";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -36,16 +35,13 @@ const queryClient = new QueryClient();
 
 const RETENTION = {
   status: "https://docs.google.com/spreadsheets/d/1qF5Dc5quGrAywf5Rtx4q7DrX91VlNIFOfKr-REoSkII/export?format=csv&gid=0",
-  calls: "https://docs.google.com/spreadsheets/d/1qF5Dc5quGrAywf5Rtx4q7DrX91VlNIFOfKr-REoSkII/export?format=csv&gid=1502000110",
 };
 const NSF = {
   status: "https://docs.google.com/spreadsheets/d/16qoZESE0gGQPdOXQUSh2JsadWDmUE7OyCajRwBy0E38/export?format=csv&gid=0",
-  calls: "https://docs.google.com/spreadsheets/d/16qoZESE0gGQPdOXQUSh2JsadWDmUE7OyCajRwBy0E38/export?format=csv&gid=1820789434",
 };
 
 type Row = Record<string, string>;
 type SheetData = { headers: string[]; rows: Row[] };
-type Matrix = string[][];
 
 async function fetchHeaderCsv(url: string): Promise<SheetData> {
   const res = await fetch(url);
@@ -63,13 +59,6 @@ async function fetchHeaderCsv(url: string): Promise<SheetData> {
   return { headers, rows };
 }
 
-async function fetchMatrixCsv(url: string): Promise<Matrix> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to load sheet (HTTP ${res.status}).`);
-  const text = await res.text();
-  const parsed = Papa.parse<string[]>(text, { header: false });
-  return (parsed.data ?? []) as string[][];
-}
 
 function findColumn(headers: string[], candidates: string[]): string | null {
   const lower = headers.map((h) => h.toLowerCase().trim());
@@ -89,6 +78,22 @@ const NAME_DISPLAY: Record<string, string> = {
 function normalizeAgent(s: string): string {
   const base = s.replace(/\s+/g, " ").trim().toLowerCase();
   return NAME_ALIASES[base] ?? base;
+}
+
+// Maps normalized SHEET agent name → normalized PHONE (OpenPhone) agent name
+const SHEET_TO_PHONE: Record<string, string> = {
+  "abdlrhman-jacob stephenson": "abdulrhman isawi",
+  "muhamed-ryan henderson": "ryan henderson",
+  "zeiad fouad-zack ford": "rick miller",
+  "youssef nady-jacob xander": "jacob xander",
+  "ahmed ayman-levi miller": "levi miller",
+  "nour-michael belfort-2900": "michael belfort",
+  "mohammed ayman-max francis-2268": "max francis",
+};
+
+function sheetToPhoneKey(sheetAgent: string): string {
+  const norm = normalizeAgent(sheetAgent);
+  return SHEET_TO_PHONE[norm] ?? norm;
 }
 
 function parseDate(s: string): Date | null {
@@ -144,117 +149,6 @@ function formatHours(sec: number): string {
   if (!sec) return "0h";
   const h = sec / 3600;
   return h >= 10 ? `${Math.round(h)}h` : `${h.toFixed(1)}h`;
-}
-
-// ---------- Calls parsing ----------
-
-type CallEntry = { calls: number; seconds: number };
-// agent -> isoDate -> { calls, seconds }
-type CallsByAgent = Map<string, Map<string, CallEntry>>;
-
-function parseRetentionCalls(rows: Matrix): CallsByAgent {
-  const out: CallsByAgent = new Map();
-  if (rows.length === 0) return out;
-  // Find date row: first row whose cells from col 1 contain at least one parseable date
-  let dateRowIdx = -1;
-  let dateCols: { col: number; iso: string }[] = [];
-  for (let i = 0; i < Math.min(rows.length, 6); i++) {
-    const cols: { col: number; iso: string }[] = [];
-    for (let j = 1; j < rows[i].length; j++) {
-      const d = parseDate(rows[i][j] ?? "");
-      if (d) cols.push({ col: j, iso: toIsoDate(d) });
-    }
-    if (cols.length >= 1) {
-      dateRowIdx = i;
-      dateCols = cols;
-      break;
-    }
-  }
-  if (dateRowIdx < 0) return out;
-  for (let r = dateRowIdx + 1; r < rows.length; r++) {
-    const row = rows[r];
-    const agent = (row[0] ?? "").trim();
-    if (!agent) continue;
-    if (/^total$/i.test(agent) || /^grand total/i.test(agent)) continue;
-    const m = new Map<string, CallEntry>();
-    for (const { col, iso } of dateCols) {
-      const v = (row[col] ?? "").trim();
-      if (v && !isNaN(Number(v))) {
-        m.set(iso, { calls: Number(v), seconds: 0 });
-      }
-    }
-    if (m.size > 0) out.set(agent, m);
-  }
-  return out;
-}
-
-function parseNsfCalls(rows: Matrix): CallsByAgent {
-  const out: CallsByAgent = new Map();
-  if (rows.length === 0) return out;
-  const header = rows[0];
-  const subheader = rows[1] ?? [];
-  const nameAt = (i: number) =>
-    ((header[i] ?? "").trim() || (subheader[i] ?? "").trim());
-
-  // Calls section: agent names start at col 2 until empty cell
-  const callsAgentCols: { col: number; agent: string }[] = [];
-  for (let i = 2; i < Math.max(header.length, subheader.length); i++) {
-    const labelTop = (header[i] ?? "").trim();
-    if (/^time on calls/i.test(labelTop)) break;
-    const v = nameAt(i);
-    if (!v) break;
-    callsAgentCols.push({ col: i, agent: v });
-  }
-  // Find time section start
-  const timeLabelIdx = header.findIndex((h, i) => i > 0 && /^time on calls/i.test((h ?? "").trim()));
-  const timeAgentCols: { col: number; agent: string }[] = [];
-  let timeDateCol = -1;
-  if (timeLabelIdx >= 0) {
-    timeDateCol = timeLabelIdx + 1;
-    const maxLen = Math.max(header.length, subheader.length);
-    for (let i = timeLabelIdx + 2; i < maxLen; i++) {
-      const v = nameAt(i);
-      if (!v) continue;
-      timeAgentCols.push({ col: i, agent: v });
-    }
-  }
-
-  const ensure = (agent: string, iso: string) => {
-    if (!out.has(agent)) out.set(agent, new Map());
-    const m = out.get(agent)!;
-    if (!m.has(iso)) m.set(iso, { calls: 0, seconds: 0 });
-    return m.get(iso)!;
-  };
-
-  for (let r = 1; r < rows.length; r++) {
-    const row = rows[r];
-    if (!row || row.length === 0) continue;
-    // Calls dates live in col 1
-    const callsDate = parseDate(row[1] ?? "");
-    if (callsDate) {
-      const iso = toIsoDate(callsDate);
-      for (const { col, agent } of callsAgentCols) {
-        const v = (row[col] ?? "").trim();
-        if (v && !isNaN(Number(v))) {
-          ensure(agent, iso).calls += Number(v);
-        }
-      }
-    }
-    if (timeDateCol >= 0) {
-      const timeDate = parseDate(row[timeDateCol] ?? "");
-      if (timeDate) {
-        const iso = toIsoDate(timeDate);
-        for (const { col, agent } of timeAgentCols) {
-          const v = (row[col] ?? "").trim();
-          const sec = parseDuration(v);
-          if (sec > 0) {
-            ensure(agent, iso).seconds += sec;
-          }
-        }
-      }
-    }
-  }
-  return out;
 }
 
 // ---------- Aggregation ----------
@@ -318,7 +212,6 @@ function retentionRate(retained: number, total: number): string {
 
 function aggregate(
   status: SheetData,
-  calls: CallsByAgent,
   mode: TeamMode,
   fromDate: Date | null,
   toDate: Date | null,
@@ -329,7 +222,7 @@ function aggregate(
   if (!agentColumn) return { error: `Couldn't find "Agent" column.` };
   if (!statusColumn) return { error: `Couldn't find "Status" column.` };
 
-  // Determine global date range from BOTH sources for the filter UI
+  // Determine global date range from status sheet for the filter UI
   let minDate: Date | null = null;
   let maxDate: Date | null = null;
   const consider = (d: Date) => {
@@ -339,12 +232,6 @@ function aggregate(
   if (dateColumn) {
     for (const r of status.rows) {
       const d = parseDate(r[dateColumn] ?? "");
-      if (d) consider(d);
-    }
-  }
-  for (const m of calls.values()) {
-    for (const iso of m.keys()) {
-      const d = parseDate(iso);
       if (d) consider(d);
     }
   }
@@ -419,21 +306,6 @@ function aggregate(
         day.byStatus.set(status, (day.byStatus.get(status) ?? 0) + 1);
         day.total += 1;
       }
-    }
-  }
-
-  // Apply calls
-  for (const [agent, perDate] of calls.entries()) {
-    for (const [iso, entry] of perDate.entries()) {
-      const d = parseDate(iso);
-      if (!d) continue;
-      if (!inRange(d)) continue;
-      const ag = ensureAgent(agent);
-      ag.calls += entry.calls;
-      ag.seconds += entry.seconds;
-      const day = ensureDay(iso, d);
-      day.calls += entry.calls;
-      day.seconds += entry.seconds;
     }
   }
 
@@ -805,10 +677,12 @@ function ByDayView({ data }: { data: Aggregated }) {
   );
 }
 
-function ByAgentView({ data }: { data: Aggregated }) {
+function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<string, { calls: number; seconds: number }> }) {
   const showRate = data.mode === "retention";
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>({ column: "__total__", dir: "desc" });
+
+  const getPhone = (agent: string) => phoneData?.get(sheetToPhoneKey(agent));
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -825,11 +699,11 @@ function ByAgentView({ data }: { data: Aggregated }) {
           av = a.total;
           bv = b.total;
         } else if (sort.column === "__calls__") {
-          av = a.calls;
-          bv = b.calls;
+          av = phoneData?.get(sheetToPhoneKey(a.agent))?.calls ?? 0;
+          bv = phoneData?.get(sheetToPhoneKey(b.agent))?.calls ?? 0;
         } else if (sort.column === "__time__") {
-          av = a.seconds;
-          bv = b.seconds;
+          av = phoneData?.get(sheetToPhoneKey(a.agent))?.seconds ?? 0;
+          bv = phoneData?.get(sheetToPhoneKey(b.agent))?.seconds ?? 0;
         } else if (sort.column === "__rate__") {
           av = a.total ? sumRetained(a.byStatus, data.retainedStatuses) / a.total : -1;
           bv = b.total ? sumRetained(b.byStatus, data.retainedStatuses) / b.total : -1;
@@ -845,7 +719,7 @@ function ByAgentView({ data }: { data: Aggregated }) {
       });
     }
     return list;
-  }, [data, search, sort]);
+  }, [data, search, sort, phoneData]);
 
   function toggle(column: string) {
     setSort((prev) => {
@@ -915,50 +789,53 @@ function ByAgentView({ data }: { data: Aggregated }) {
                   </TableCell>
                 </TableRow>
               )}
-              {visible.map((a) => (
-                <TableRow key={a.agent} className="hover-elevate">
-                  <TableCell className="font-medium whitespace-nowrap">{a.agent}</TableCell>
-                  <TableCell
-                    className={`text-right tabular-nums font-mono ${a.calls === 0 ? "text-muted-foreground/40" : ""}`}
-                  >
-                    {a.calls}
-                  </TableCell>
-                  <TableCell
-                    className={`text-right tabular-nums font-mono ${a.seconds === 0 ? "text-muted-foreground/40" : ""}`}
-                  >
-                    {formatDuration(a.seconds)}
-                  </TableCell>
-                  {data.statuses.map((s) => {
-                    const v = a.byStatus.get(s) ?? 0;
-                    return (
-                      <TableCell
-                        key={s}
-                        className={`text-right tabular-nums font-mono ${v === 0 ? "text-muted-foreground/40" : statusTone(s)}`}
-                      >
-                        {v}
-                      </TableCell>
-                    );
-                  })}
-                  <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5 text-violet-200">
-                    {a.total}
-                  </TableCell>
-                  {showRate && (
-                    <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/10">
-                      {retentionRate(sumRetained(a.byStatus, data.retainedStatuses), a.total)}
+              {visible.map((a) => {
+                const ph = getPhone(a.agent);
+                return (
+                  <TableRow key={a.agent} className="hover-elevate">
+                    <TableCell className="font-medium whitespace-nowrap">{a.agent}</TableCell>
+                    <TableCell
+                      className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}
+                    >
+                      {ph?.calls ?? "—"}
                     </TableCell>
-                  )}
-                </TableRow>
-              ))}
+                    <TableCell
+                      className={`text-right tabular-nums font-mono ${!ph?.seconds ? "text-muted-foreground/40" : ""}`}
+                    >
+                      {ph?.seconds ? formatDuration(ph.seconds) : "—"}
+                    </TableCell>
+                    {data.statuses.map((s) => {
+                      const v = a.byStatus.get(s) ?? 0;
+                      return (
+                        <TableCell
+                          key={s}
+                          className={`text-right tabular-nums font-mono ${v === 0 ? "text-muted-foreground/40" : statusTone(s)}`}
+                        >
+                          {v}
+                        </TableCell>
+                      );
+                    })}
+                    <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5 text-violet-200">
+                      {a.total}
+                    </TableCell>
+                    {showRate && (
+                      <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/10">
+                        {retentionRate(sumRetained(a.byStatus, data.retainedStatuses), a.total)}
+                      </TableCell>
+                    )}
+                  </TableRow>
+                );
+              })}
             </TableBody>
             {visible.length > 0 && (
               <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
                 <TableRow>
                   <TableCell className="font-bold whitespace-nowrap">Whole team</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold">
-                    {data.totals.calls}
+                    {visible.reduce((s, a) => s + (getPhone(a.agent)?.calls ?? 0), 0)}
                   </TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold">
-                    {formatDuration(data.totals.seconds)}
+                    {formatDuration(visible.reduce((s, a) => s + (getPhone(a.agent)?.seconds ?? 0), 0))}
                   </TableCell>
                   {data.statuses.map((s) => (
                     <TableCell
@@ -1118,38 +995,30 @@ function ErrorState({ message, onRetry }: { message: string; onRetry: () => void
   );
 }
 
+interface PhoneStatsResponse {
+  teamStats: Record<string, Record<string, Record<string, { totalCalls: number; talkSeconds: number }>>>;
+}
+
 function TeamPanel({
   urls,
   sheetKey,
   label,
   mode,
 }: {
-  urls: { status: string; calls: string };
+  urls: { status: string };
   sheetKey: string;
   label: string;
   mode: TeamMode;
 }) {
-  const results = useQueries({
-    queries: [
-      {
-        queryKey: ["status", sheetKey],
-        queryFn: () => fetchHeaderCsv(urls.status),
-        staleTime: 1000 * 60 * 2,
-        refetchOnWindowFocus: false,
-      },
-      {
-        queryKey: ["calls", sheetKey],
-        queryFn: () => fetchMatrixCsv(urls.calls),
-        staleTime: 1000 * 60 * 2,
-        refetchOnWindowFocus: false,
-      },
-    ],
+  const statusQ = useQuery({
+    queryKey: ["status", sheetKey],
+    queryFn: () => fetchHeaderCsv(urls.status),
+    staleTime: 1000 * 60 * 2,
+    refetchOnWindowFocus: false,
   });
-  const statusQ = results[0];
-  const callsQ = results[1];
-  const isLoading = statusQ.isLoading || callsQ.isLoading;
-  const isFetching = statusQ.isFetching || callsQ.isFetching;
-  const error = statusQ.error || callsQ.error;
+  const isLoading = statusQ.isLoading;
+  const isFetching = statusQ.isFetching;
+  const error = statusQ.error;
 
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -1158,17 +1027,53 @@ function TeamPanel({
   const toDate = to ? parseDate(to) : null;
   if (toDate) toDate.setHours(23, 59, 59, 999);
 
+  const phoneQ = useQuery<PhoneStatsResponse | null>({
+    queryKey: ["phoneStats", mode, from || "last30", to || "now"],
+    queryFn: async () => {
+      const pFrom = from ? `${from}T00:00:00Z` : new Date(Date.now() - 30 * 86400000).toISOString();
+      const pTo = to ? `${to}T23:59:59Z` : new Date().toISOString();
+      const res = await fetch(`/api/quo/stats?from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`);
+      if (!res.ok) return null;
+      return res.json() as Promise<PhoneStatsResponse>;
+    },
+    staleTime: 1000 * 60 * 2,
+    refetchOnWindowFocus: false,
+  });
+
+  const phoneData = useMemo<Map<string, { calls: number; seconds: number }>>(() => {
+    const map = new Map<string, { calls: number; seconds: number }>();
+    const agentStats = phoneQ.data?.teamStats?.[mode] ?? {};
+    for (const [agentName, days] of Object.entries(agentStats)) {
+      const key = normalizeAgent(agentName);
+      let calls = 0;
+      let seconds = 0;
+      for (const day of Object.values(days)) {
+        calls += (day as { totalCalls: number; talkSeconds: number }).totalCalls ?? 0;
+        seconds += (day as { talkSeconds: number }).talkSeconds ?? 0;
+      }
+      if (calls > 0 || seconds > 0) {
+        const e = map.get(key) ?? { calls: 0, seconds: 0 };
+        map.set(key, { calls: e.calls + calls, seconds: e.seconds + seconds });
+      }
+    }
+    return map;
+  }, [phoneQ.data, mode]);
+
+  const phoneTotals = useMemo(() => {
+    let calls = 0;
+    let seconds = 0;
+    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; }
+    return { calls, seconds };
+  }, [phoneData]);
+
   const aggregated = useMemo(() => {
     if (!statusQ.data) return null;
-    const callsParsed = callsQ.data
-      ? parseNsfCalls(callsQ.data)
-      : new Map<string, Map<string, CallEntry>>();
-    return aggregate(statusQ.data, callsParsed, mode, fromDate, toDate);
-  }, [statusQ.data, callsQ.data, mode, from, to]);
+    return aggregate(statusQ.data, mode, fromDate, toDate);
+  }, [statusQ.data, mode, from, to]);
 
   function refresh() {
     statusQ.refetch();
-    callsQ.refetch();
+    phoneQ.refetch();
   }
 
   return (
@@ -1223,13 +1128,13 @@ function TeamPanel({
               <StatTile label="Agents" value={aggregated.totals.agents} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
               <StatTile
                 label="Total calls"
-                value={aggregated.totals.calls.toLocaleString()}
+                value={phoneTotals.calls.toLocaleString()}
                 icon={<Phone className="h-3.5 w-3.5" />}
                 tone="sky"
               />
               <StatTile
                 label="Time on calls"
-                value={formatHours(aggregated.totals.seconds)}
+                value={formatHours(phoneTotals.seconds)}
                 icon={<Clock className="h-3.5 w-3.5" />}
                 tone="amber"
               />
@@ -1283,7 +1188,7 @@ function TeamPanel({
                 <TabsTrigger value="day" data-testid="subtab-day">By day</TabsTrigger>
               </TabsList>
               <TabsContent value="agent">
-                <ByAgentView data={aggregated} />
+                <ByAgentView data={aggregated} phoneData={phoneData} />
               </TabsContent>
               <TabsContent value="day">
                 <ByDayView data={aggregated} />
@@ -1320,19 +1225,15 @@ function Dashboard() {
 
       <main className="max-w-[1400px] mx-auto px-6 py-8">
         <Tabs defaultValue="retention" className="space-y-6">
-          <TabsList className="grid w-full max-w-lg grid-cols-3">
+          <TabsList className="grid w-full max-w-sm grid-cols-2">
             <TabsTrigger value="retention" data-testid="tab-retention">Retention Team</TabsTrigger>
             <TabsTrigger value="nsf" data-testid="tab-nsf">NSF Team</TabsTrigger>
-            <TabsTrigger value="phone" data-testid="tab-phone">📞 Phone</TabsTrigger>
           </TabsList>
           <TabsContent value="retention">
             <TeamPanel urls={RETENTION} sheetKey="retention" label="Retention Team" mode="retention" />
           </TabsContent>
           <TabsContent value="nsf">
             <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" />
-          </TabsContent>
-          <TabsContent value="phone">
-            <PhoneTab />
           </TabsContent>
         </Tabs>
       </main>

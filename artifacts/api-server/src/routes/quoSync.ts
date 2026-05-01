@@ -23,6 +23,16 @@ function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   return null;
 }
 
+const LINE_AGENT_OVERRIDES: Record<string, string> = {
+  "abdlrhman-jacob stephenson": "Abdulrhman Isawi",
+  "muhamed-ryan henderson": "Ryan Henderson",
+  "zeiad fouad-zack ford": "Rick Miller",
+  "youssef nady-jacob xander": "Jacob Xander",
+  "ahmed ayman-levi miller": "Levi Miller",
+  "nour-michael belfort-2900": "Michael Belfort",
+  "mohammed ayman-max francis-2268": "Max Francis",
+};
+
 interface PhoneNumber {
   id: string;
   name: string;
@@ -159,13 +169,14 @@ export async function runSync(fromDate: Date, toDate: Date, maxPagesPerLine = 3)
     if (!result) continue;
     const { lineId, lineName, lineTeam, participant, calls } = result;
     for (const call of calls) {
+      const overrideName = LINE_AGENT_OVERRIDES[lineName.toLowerCase().trim()];
       rows.push({
         id: call.id,
         lineId,
         lineName,
         lineTeam,
         agentId: call.userId ?? null,
-        agentName: call.userId ? (userMap.get(call.userId) ?? call.userId) : null,
+        agentName: overrideName ?? (call.userId ? (userMap.get(call.userId) ?? call.userId) : null),
         participant,
         direction: call.direction,
         status: call.status,
