@@ -1366,6 +1366,7 @@ function TeamPanel({
 }
 
 const CS_AGENTS = ["Nora Adam", "Leo Carter", "Carla Bennet"];
+const CS_EXCLUDE = new Set(["leo maxwell"]);
 
 function CSPanel() {
   const [from, setFrom] = useState("");
@@ -1414,7 +1415,7 @@ function CSPanel() {
 
   const allAgents = useMemo(() => {
     const known = new Set(CS_AGENTS.map(normalizeAgent));
-    const extra = [...phoneData.keys()].filter((k) => !known.has(k));
+    const extra = [...phoneData.keys()].filter((k) => !known.has(k) && !CS_EXCLUDE.has(k));
     return [
       ...CS_AGENTS,
       ...extra.map((k) => k.replace(/\b\w/g, (c) => c.toUpperCase())),
@@ -1423,7 +1424,10 @@ function CSPanel() {
 
   const totals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0, missed = 0, uniqueContacts = 0;
-    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; uniqueContacts += v.uniqueContacts; }
+    for (const [k, v] of phoneData.entries()) {
+      if (CS_EXCLUDE.has(k)) continue;
+      calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; uniqueContacts += v.uniqueContacts;
+    }
     return { calls, seconds, answered, missed, uniqueContacts };
   }, [phoneData]);
 
