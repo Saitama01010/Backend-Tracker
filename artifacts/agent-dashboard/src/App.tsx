@@ -28,6 +28,7 @@ import {
   Calendar,
   Phone,
   Clock,
+  CalendarDays,
   Users,
 } from "lucide-react";
 
@@ -1201,6 +1202,147 @@ function TeamPanel({
   );
 }
 
+const CS_AGENTS = ["Nora Adam", "Leo Carter", "Basante Madeldin"];
+
+function CSPanel() {
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+
+  const phoneQ = useQuery<PhoneStatsResponse | null>({
+    queryKey: ["phoneStats", "cs", from || "last30", to || "now"],
+    queryFn: async () => {
+      const pFrom = from ? `${from}T00:00:00Z` : new Date(Date.now() - 30 * 86400000).toISOString();
+      const pTo = to ? `${to}T23:59:59Z` : new Date().toISOString();
+      const res = await fetch(`/api/quo/stats?from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`);
+      if (!res.ok) return null;
+      return res.json() as Promise<PhoneStatsResponse>;
+    },
+    staleTime: 1000 * 60 * 2,
+    refetchOnWindowFocus: false,
+  });
+
+  const phoneData = useMemo<Map<string, { calls: number; seconds: number }>>(() => {
+    const map = new Map<string, { calls: number; seconds: number }>();
+    const agentStats = phoneQ.data?.teamStats?.["cs"] ?? {};
+    for (const [agentName, days] of Object.entries(agentStats)) {
+      const key = normalizeAgent(agentName);
+      let calls = 0;
+      let seconds = 0;
+      for (const day of Object.values(days)) {
+        calls += (day as { totalCalls: number; talkSeconds: number }).totalCalls ?? 0;
+        seconds += (day as { talkSeconds: number }).talkSeconds ?? 0;
+      }
+      if (calls > 0 || seconds > 0) {
+        const e = map.get(key) ?? { calls: 0, seconds: 0 };
+        map.set(key, { calls: e.calls + calls, seconds: e.seconds + seconds });
+      }
+    }
+    return map;
+  }, [phoneQ.data]);
+
+  const allAgents = useMemo(() => {
+    const known = new Set(CS_AGENTS.map(normalizeAgent));
+    const extra = [...phoneData.keys()].filter((k) => !known.has(k));
+    return [
+      ...CS_AGENTS,
+      ...extra.map((k) => {
+        const entry = [...phoneData.entries()].find(([ek]) => ek === k);
+        return entry ? k.replace(/\b\w/g, (c) => c.toUpperCase()) : k;
+      }),
+    ];
+  }, [phoneData]);
+
+  const totals = useMemo(() => {
+    let calls = 0;
+    let seconds = 0;
+    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; }
+    return { calls, seconds };
+  }, [phoneData]);
+
+  function refresh() { phoneQ.refetch(); }
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-4">
+        <div>
+          <CardTitle className="text-xl">CS Team</CardTitle>
+          <p className="text-sm text-muted-foreground mt-1">
+            Call activity · live from OpenPhone
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={refresh} disabled={phoneQ.isFetching}>
+          <RefreshCw className={`h-4 w-4 mr-2 ${phoneQ.isFetching ? "animate-spin" : ""}`} />
+          Refresh
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {phoneQ.isLoading && <TableSkeleton />}
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <StatTile label="Agents" value={CS_AGENTS.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+          <StatTile label="Total calls" value={totals.calls.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
+          <StatTile label="Time on calls" value={formatHours(totals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
+        </div>
+
+        <div className="mb-3 flex items-center gap-3 flex-wrap">
+          <span className="text-sm text-muted-foreground flex items-center gap-1">
+            <CalendarDays className="h-3.5 w-3.5" /> Date range
+          </span>
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground"
+          />
+          <span className="text-muted-foreground text-sm">to</span>
+          <input
+            type="date"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground"
+          />
+          <Button variant="ghost" size="sm" onClick={() => { setFrom(""); setTo(""); }}>Clear</Button>
+        </div>
+
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="min-w-[200px]">Agent</TableHead>
+              <TableHead className="text-right">Calls</TableHead>
+              <TableHead className="text-right">Time on calls</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {allAgents.map((agent) => {
+              const ph = phoneData.get(normalizeAgent(agent));
+              return (
+                <TableRow key={agent} className="hover-elevate">
+                  <TableCell className="font-medium">{agent}</TableCell>
+                  <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>
+                    {ph?.calls ?? "—"}
+                  </TableCell>
+                  <TableCell className={`text-right tabular-nums font-mono ${!ph?.seconds ? "text-muted-foreground/40" : ""}`}>
+                    {ph?.seconds ? formatDuration(ph.seconds) : "—"}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+          {allAgents.length > 0 && (
+            <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
+              <TableRow>
+                <TableCell className="font-bold">Whole team</TableCell>
+                <TableCell className="text-right tabular-nums font-mono font-bold">{totals.calls || "—"}</TableCell>
+                <TableCell className="text-right tabular-nums font-mono font-bold">{formatDuration(totals.seconds)}</TableCell>
+              </TableRow>
+            </TableHeader>
+          )}
+        </Table>
+      </CardContent>
+    </Card>
+  );
+}
+
 function Dashboard() {
   return (
     <div className="min-h-screen bg-background relative overflow-hidden">
@@ -1218,22 +1360,26 @@ function Dashboard() {
             <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-violet-300 via-fuchsia-300 to-sky-300 bg-clip-text text-transparent">
               Backend Tracker
             </h1>
-            <p className="text-sm text-muted-foreground">Retention &amp; NSF team metrics at a glance</p>
+            <p className="text-sm text-muted-foreground">Retention, NSF &amp; CS team metrics at a glance</p>
           </div>
         </div>
       </header>
 
       <main className="max-w-[1400px] mx-auto px-6 py-8">
         <Tabs defaultValue="retention" className="space-y-6">
-          <TabsList className="grid w-full max-w-sm grid-cols-2">
+          <TabsList className="grid w-full max-w-md grid-cols-3">
             <TabsTrigger value="retention" data-testid="tab-retention">Retention Team</TabsTrigger>
             <TabsTrigger value="nsf" data-testid="tab-nsf">NSF Team</TabsTrigger>
+            <TabsTrigger value="cs" data-testid="tab-cs">CS Team</TabsTrigger>
           </TabsList>
           <TabsContent value="retention">
             <TeamPanel urls={RETENTION} sheetKey="retention" label="Retention Team" mode="retention" />
           </TabsContent>
           <TabsContent value="nsf">
             <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" />
+          </TabsContent>
+          <TabsContent value="cs">
+            <CSPanel />
           </TabsContent>
         </Tabs>
       </main>
