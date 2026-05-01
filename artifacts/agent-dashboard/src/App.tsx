@@ -97,6 +97,38 @@ const TEAM_PHONE_EXTRAS: Record<string, string[]> = {
   cs: [],
 };
 
+// Strict allowlist per team — normalized phone key variants for each real agent.
+// Only agents whose phoneData key appears here will be shown in any view.
+const TEAM_ALLOWLIST: Record<string, Set<string>> = {
+  retention: new Set([
+    // Jacob Stephenson (may appear as either name in OpenPhone)
+    "jacob stephenson", "abdulrhman isawi",
+    // Jacob Xander
+    "jacob xander", "youssef nady",
+    // Levi Miller
+    "levi miller", "ahmed ayman",
+    // Ryan Henderson
+    "ryan henderson",
+    // Rick Miller (may appear as zeiad fouad)
+    "rick miller", "zeiad fouad",
+    // Michael Belfort
+    "michael belfort",
+    // Max Francis
+    "max francis",
+    // Youssef Nasser (merged from mike johnson / john marcus aliases)
+    "youssef nasser",
+    // Michael Ross
+    "michael ross",
+  ]),
+  nsf: new Set([
+    "alex cruz", "austin white", "rika hart", "jenny morgan",
+    "estella cruz", "talia morgan", "katie miller", "ellie moser",
+  ]),
+  cs: new Set([
+    "nora adam", "carla bennet", "leo carter",
+  ]),
+};
+
 // Merges duplicate phone accounts that belong to the same real person
 const PHONE_ALIASES: Record<string, string> = {
   "mike johnson": "youssef nasser",
@@ -1287,13 +1319,15 @@ function TeamPanel({
   });
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
+    const allowlist = TEAM_ALLOWLIST[mode];
     const map = new Map<string, PhoneAgentMetrics>();
     const agentStats = phoneQ.data?.teamStats?.[mode] ?? {};
     const lastCallMap = phoneQ.data?.agentLastCall?.[mode] ?? {};
     for (const [agentName, days] of Object.entries(agentStats)) {
       const rawKey = normalizeAgent(agentName);
-      if (PHONE_BLOCKLIST.has(rawKey)) continue; // skip garbage accounts
+      if (PHONE_BLOCKLIST.has(rawKey)) continue;
       const key = PHONE_ALIASES[rawKey] ?? rawKey;
+      if (allowlist && !allowlist.has(key)) continue; // strict team allowlist
       const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
       for (const day of Object.values(days)) {
         acc.calls += day.totalCalls ?? 0;
@@ -1469,7 +1503,6 @@ function TeamPanel({
 }
 
 const CS_AGENTS = ["Nora Adam", "Leo Carter", "Carla Bennet"];
-const CS_EXCLUDE = new Set(["leo maxwell"]);
 
 function CSPanel() {
   const todayIso = toIsoDate(new Date());
@@ -1491,13 +1524,15 @@ function CSPanel() {
   });
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
+    const allowlist = TEAM_ALLOWLIST["cs"];
     const map = new Map<string, PhoneAgentMetrics>();
     const agentStats = phoneQ.data?.teamStats?.["cs"] ?? {};
     const lastCallMap = phoneQ.data?.agentLastCall?.["cs"] ?? {};
     for (const [agentName, days] of Object.entries(agentStats)) {
       const rawKey = normalizeAgent(agentName);
-      if (PHONE_BLOCKLIST.has(rawKey)) continue; // skip garbage accounts
+      if (PHONE_BLOCKLIST.has(rawKey)) continue;
       const key = PHONE_ALIASES[rawKey] ?? rawKey;
+      if (allowlist && !allowlist.has(key)) continue; // strict team allowlist
       const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
       for (const day of Object.values(days)) {
         acc.calls += day.totalCalls ?? 0;
@@ -1523,18 +1558,25 @@ function CSPanel() {
   }, [phoneQ.data]);
 
   const allAgents = useMemo(() => {
-    const known = new Set(CS_AGENTS.map(normalizeAgent));
-    const extra = [...phoneData.keys()].filter((k) => !known.has(k) && !CS_EXCLUDE.has(k));
-    return [
-      ...CS_AGENTS,
-      ...extra.map((k) => k.replace(/\b\w/g, (c) => c.toUpperCase())),
-    ];
+    // phoneData is already filtered by allowlist; prefer CS_AGENTS display names, fill rest from phoneData
+    const result: string[] = [];
+    const addedKeys = new Set<string>();
+    for (const a of CS_AGENTS) {
+      const k = normalizeAgent(a);
+      if (!addedKeys.has(k)) { result.push(a); addedKeys.add(k); }
+    }
+    for (const k of phoneData.keys()) {
+      if (!addedKeys.has(k)) {
+        result.push(k.replace(/\b\w/g, (c) => c.toUpperCase()));
+        addedKeys.add(k);
+      }
+    }
+    return result;
   }, [phoneData]);
 
   const totals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0, missed = 0, uniqueContacts = 0;
-    for (const [k, v] of phoneData.entries()) {
-      if (CS_EXCLUDE.has(k)) continue;
+    for (const v of phoneData.values()) {
       calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; uniqueContacts += v.uniqueContacts;
     }
     return { calls, seconds, answered, missed, uniqueContacts };
