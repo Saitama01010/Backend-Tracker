@@ -723,12 +723,10 @@ function avgDuration(seconds: number, calls: number): string {
   return formatDuration(Math.round(seconds / calls));
 }
 
-function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<string, PhoneAgentMetrics> }) {
+function ByFilesView({ data }: { data: Aggregated }) {
   const showRate = data.mode === "retention";
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>({ column: "__total__", dir: "desc" });
-
-  const getPhone = (agent: string) => phoneData?.get(sheetToPhoneKey(agent));
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -738,63 +736,23 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
       list = [...list].sort((a, b) => {
         let av: number | string;
         let bv: number | string;
-        const phA = phoneData?.get(sheetToPhoneKey(a.agent));
-        const phB = phoneData?.get(sheetToPhoneKey(b.agent));
-        if (sort.column === "__agent__") {
-          av = a.agent;
-          bv = b.agent;
-        } else if (sort.column === "__total__") {
-          av = a.total;
-          bv = b.total;
-        } else if (sort.column === "__calls__") {
-          av = phA?.calls ?? 0;
-          bv = phB?.calls ?? 0;
-        } else if (sort.column === "__time__") {
-          av = phA?.seconds ?? 0;
-          bv = phB?.seconds ?? 0;
-        } else if (sort.column === "__outbound__") {
-          av = phA?.outbound ?? 0;
-          bv = phB?.outbound ?? 0;
-        } else if (sort.column === "__inbound__") {
-          av = phA?.inbound ?? 0;
-          bv = phB?.inbound ?? 0;
-        } else if (sort.column === "__answered__") {
-          av = phA?.answered ?? 0;
-          bv = phB?.answered ?? 0;
-        } else if (sort.column === "__missed__") {
-          av = phA?.missed ?? 0;
-          bv = phB?.missed ?? 0;
-        } else if (sort.column === "__unique__") {
-          av = phA?.uniqueContacts ?? 0;
-          bv = phB?.uniqueContacts ?? 0;
-        } else if (sort.column === "__avg__") {
-          av = phA && phA.calls ? phA.seconds / phA.calls : 0;
-          bv = phB && phB.calls ? phB.seconds / phB.calls : 0;
-        } else if (sort.column === "__resp__") {
-          av = phA && phA.calls ? phA.answered / phA.calls : -1;
-          bv = phB && phB.calls ? phB.answered / phB.calls : -1;
-        } else if (sort.column === "__rate__") {
+        if (sort.column === "__agent__") { av = a.agent; bv = b.agent; }
+        else if (sort.column === "__total__") { av = a.total; bv = b.total; }
+        else if (sort.column === "__rate__") {
           av = a.total ? sumRetained(a.byStatus, data.retainedStatuses) / a.total : -1;
           bv = b.total ? sumRetained(b.byStatus, data.retainedStatuses) / b.total : -1;
-        } else {
-          av = a.byStatus.get(sort.column) ?? 0;
-          bv = b.byStatus.get(sort.column) ?? 0;
-        }
-        if (typeof av === "number" && typeof bv === "number") {
-          return sort.dir === "asc" ? av - bv : bv - av;
-        }
+        } else { av = a.byStatus.get(sort.column) ?? 0; bv = b.byStatus.get(sort.column) ?? 0; }
+        if (typeof av === "number" && typeof bv === "number") return sort.dir === "asc" ? av - bv : bv - av;
         const cmp = String(av).localeCompare(String(bv));
         return sort.dir === "asc" ? cmp : -cmp;
       });
     }
     return list;
-  }, [data, search, sort, phoneData]);
+  }, [data, search, sort]);
 
   function toggle(column: string) {
     setSort((prev) => {
-      if (!prev || prev.column !== column) {
-        return { column, dir: column === "__agent__" ? "asc" : "desc" };
-      }
+      if (!prev || prev.column !== column) return { column, dir: column === "__agent__" ? "asc" : "desc" };
       if (prev.dir === "desc") return { column, dir: "asc" };
       return null;
     });
@@ -802,17 +760,7 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
 
   function exportCsv() {
     const rows = visible.map((a) => {
-      const ph = getPhone(a.agent);
       const record: Record<string, string | number> = { Agent: a.agent };
-      record["Calls"] = ph?.calls ?? 0;
-      record["Outbound"] = ph?.outbound ?? 0;
-      record["Inbound"] = ph?.inbound ?? 0;
-      record["Answered"] = ph?.answered ?? 0;
-      record["Missed"] = ph?.missed ?? 0;
-      record["Unique #"] = ph?.uniqueContacts ?? 0;
-      record["Talk Time"] = ph?.seconds ? formatDuration(ph.seconds) : "";
-      record["Avg Duration"] = ph ? avgDuration(ph.seconds, ph.calls) : "";
-      record["Response %"] = ph ? responseRate(ph.answered, ph.calls) : "";
       for (const s of data.statuses) record[s] = a.byStatus.get(s) ?? 0;
       record["Total"] = a.total;
       if (showRate) record["Retention Rate"] = retentionRate(sumRetained(a.byStatus, data.retainedStatuses), a.total);
@@ -823,7 +771,7 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `agents_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `files_${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -860,34 +808,6 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
                 <TableHead className="whitespace-nowrap min-w-[200px]">
                   <SortHeader id="__agent__" label="Agent" sort={sort} onToggle={toggle} />
                 </TableHead>
-                <TableHead className="whitespace-nowrap text-right">
-                  <SortHeader id="__calls__" label="Calls" align="right" sort={sort} onToggle={toggle} />
-                </TableHead>
-                <TableHead className="whitespace-nowrap text-right text-fuchsia-400">
-                  <SortHeader id="__outbound__" label="Outbound" align="right" sort={sort} onToggle={toggle} />
-                </TableHead>
-                <TableHead className="whitespace-nowrap text-right text-cyan-400">
-                  <SortHeader id="__inbound__" label="Inbound" align="right" sort={sort} onToggle={toggle} />
-                </TableHead>
-                <TableHead className="whitespace-nowrap text-right text-emerald-400">
-                  <SortHeader id="__answered__" label="Answered" align="right" sort={sort} onToggle={toggle} />
-                </TableHead>
-                <TableHead className="whitespace-nowrap text-right text-rose-400">
-                  <SortHeader id="__missed__" label="Missed" align="right" sort={sort} onToggle={toggle} />
-                </TableHead>
-                <TableHead className="whitespace-nowrap text-right text-sky-400">
-                  <SortHeader id="__unique__" label="Unique #" align="right" sort={sort} onToggle={toggle} />
-                </TableHead>
-                <TableHead className="whitespace-nowrap text-right">
-                  <SortHeader id="__time__" label="Talk time" align="right" sort={sort} onToggle={toggle} />
-                </TableHead>
-                <TableHead className="whitespace-nowrap text-right">
-                  <SortHeader id="__avg__" label="Avg duration" align="right" sort={sort} onToggle={toggle} />
-                </TableHead>
-                <TableHead className="whitespace-nowrap text-right text-amber-400">
-                  <SortHeader id="__resp__" label="Response %" align="right" sort={sort} onToggle={toggle} />
-                </TableHead>
-                <TableHead className="whitespace-nowrap text-right text-violet-400">Last call</TableHead>
                 {data.statuses.map((s) => (
                   <TableHead key={s} className={`whitespace-nowrap text-right ${statusTone(s)}`}>
                     <SortHeader id={s} label={s} align="right" sort={sort} onToggle={toggle} />
@@ -906,68 +826,157 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
             <TableBody>
               {visible.length === 0 && (
                 <TableRow>
-                  <TableCell
-                    colSpan={data.statuses.length + 4 + (showRate ? 1 : 0)}
-                    className="text-center py-12 text-muted-foreground"
-                  >
+                  <TableCell colSpan={data.statuses.length + 2 + (showRate ? 1 : 0)} className="text-center py-12 text-muted-foreground">
                     No agents match the current filters.
                   </TableCell>
                 </TableRow>
               )}
-              {visible.map((a) => {
-                const ph = getPhone(a.agent);
-                return (
-                  <TableRow key={a.agent} className="hover-elevate">
-                    <TableCell className="font-medium whitespace-nowrap">{a.agent}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>
-                      {ph?.calls ?? "—"}
-                    </TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.outbound ? "text-fuchsia-400" : "text-muted-foreground/40"}`}>
-                      {ph?.outbound ?? "—"}
-                    </TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.inbound ? "text-cyan-400" : "text-muted-foreground/40"}`}>
-                      {ph?.inbound ?? "—"}
-                    </TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.answered ? "text-emerald-400" : "text-muted-foreground/40"}`}>
-                      {ph?.answered ?? "—"}
-                    </TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.missed ? "text-rose-400" : "text-muted-foreground/40"}`}>
-                      {ph?.missed ?? "—"}
-                    </TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.uniqueContacts ? "text-sky-400" : "text-muted-foreground/40"}`}>
-                      {ph?.uniqueContacts ?? "—"}
-                    </TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${!ph?.seconds ? "text-muted-foreground/40" : ""}`}>
-                      {ph?.seconds ? formatDuration(ph.seconds) : "—"}
-                    </TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>
-                      {ph ? avgDuration(ph.seconds, ph.calls) : "—"}
-                    </TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.calls ? "text-amber-400" : "text-muted-foreground/40"}`}>
-                      {ph ? responseRate(ph.answered, ph.calls) : "—"}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <TimeSince isoStr={ph?.lastCallAt} />
-                    </TableCell>
-                    {data.statuses.map((s) => {
-                      const v = a.byStatus.get(s) ?? 0;
-                      return (
-                        <TableCell
-                          key={s}
-                          className={`text-right tabular-nums font-mono ${v === 0 ? "text-muted-foreground/40" : statusTone(s)}`}
-                        >
-                          {v}
-                        </TableCell>
-                      );
-                    })}
-                    <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5 text-violet-200">
-                      {a.total}
-                    </TableCell>
-                    {showRate && (
-                      <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/10">
-                        {retentionRate(sumRetained(a.byStatus, data.retainedStatuses), a.total)}
+              {visible.map((a) => (
+                <TableRow key={a.agent} className="hover-elevate">
+                  <TableCell className="font-medium whitespace-nowrap">{a.agent}</TableCell>
+                  {data.statuses.map((s) => {
+                    const v = a.byStatus.get(s) ?? 0;
+                    return (
+                      <TableCell key={s} className={`text-right tabular-nums font-mono ${v === 0 ? "text-muted-foreground/40" : statusTone(s)}`}>
+                        {v}
                       </TableCell>
-                    )}
+                    );
+                  })}
+                  <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5 text-violet-200">{a.total}</TableCell>
+                  {showRate && (
+                    <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/10">
+                      {retentionRate(sumRetained(a.byStatus, data.retainedStatuses), a.total)}
+                    </TableCell>
+                  )}
+                </TableRow>
+              ))}
+            </TableBody>
+            {visible.length > 0 && (
+              <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
+                <TableRow>
+                  <TableCell className="font-bold whitespace-nowrap">Whole team</TableCell>
+                  {data.statuses.map((s) => (
+                    <TableCell key={s} className="text-right tabular-nums font-mono font-bold">
+                      {data.totals.byStatus.get(s) ?? 0}
+                    </TableCell>
+                  ))}
+                  <TableCell className="text-right tabular-nums font-mono font-bold bg-primary/10">{data.totals.grand}</TableCell>
+                  {showRate && (
+                    <TableCell className="text-right tabular-nums font-mono font-bold bg-primary/10">
+                      {retentionRate(data.totals.retained, data.totals.grand)}
+                    </TableCell>
+                  )}
+                </TableRow>
+              </TableHeader>
+            )}
+          </Table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ByCallStatsView({ agentList, phoneData }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics> }) {
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "__calls__", dir: "desc" });
+
+  const getPhone = (agent: string) => phoneData.get(sheetToPhoneKey(agent));
+
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const list = q ? agentList.filter((a) => a.toLowerCase().includes(q)) : agentList;
+    return [...list].sort((a, b) => {
+      const phA = getPhone(a);
+      const phB = getPhone(b);
+      let av: number = 0;
+      let bv: number = 0;
+      if (sort.col === "__calls__") { av = phA?.calls ?? 0; bv = phB?.calls ?? 0; }
+      else if (sort.col === "__outbound__") { av = phA?.outbound ?? 0; bv = phB?.outbound ?? 0; }
+      else if (sort.col === "__inbound__") { av = phA?.inbound ?? 0; bv = phB?.inbound ?? 0; }
+      else if (sort.col === "__answered__") { av = phA?.answered ?? 0; bv = phB?.answered ?? 0; }
+      else if (sort.col === "__missed__") { av = phA?.missed ?? 0; bv = phB?.missed ?? 0; }
+      else if (sort.col === "__unique__") { av = phA?.uniqueContacts ?? 0; bv = phB?.uniqueContacts ?? 0; }
+      else if (sort.col === "__time__") { av = phA?.seconds ?? 0; bv = phB?.seconds ?? 0; }
+      else if (sort.col === "__avg__") { av = phA?.calls ? (phA.seconds / phA.calls) : 0; bv = phB?.calls ? (phB.seconds / phB.calls) : 0; }
+      else if (sort.col === "__resp__") { av = phA?.calls ? (phA.answered / phA.calls) : -1; bv = phB?.calls ? (phB.answered / phB.calls) : -1; }
+      else if (sort.col === "__agent__") { return sort.dir === "asc" ? a.localeCompare(b) : b.localeCompare(a); }
+      return sort.dir === "asc" ? av - bv : bv - av;
+    });
+  }, [agentList, search, sort, phoneData]);
+
+  function toggle(col: string) {
+    setSort((s) => s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: col === "__agent__" ? "asc" : "desc" });
+  }
+
+  function Th({ id, label, tone = "", align = "right" }: { id: string; label: string; tone?: string; align?: "left" | "right" }) {
+    const active = sort.col === id;
+    return (
+      <TableHead className={`whitespace-nowrap ${align === "right" ? "text-right" : ""} ${tone}`}>
+        <button type="button" onClick={() => toggle(id)}
+          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${active ? "text-violet-300" : "text-muted-foreground"} ${align === "right" ? "flex-row-reverse" : ""}`}>
+          {label}
+          {active ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
+        </button>
+      </TableHead>
+    );
+  }
+
+  const totCalls = visible.reduce((s, a) => s + (getPhone(a)?.calls ?? 0), 0);
+  const totOut = visible.reduce((s, a) => s + (getPhone(a)?.outbound ?? 0), 0);
+  const totIn = visible.reduce((s, a) => s + (getPhone(a)?.inbound ?? 0), 0);
+  const totAns = visible.reduce((s, a) => s + (getPhone(a)?.answered ?? 0), 0);
+  const totMissed = visible.reduce((s, a) => s + (getPhone(a)?.missed ?? 0), 0);
+  const totUniq = visible.reduce((s, a) => s + (getPhone(a)?.uniqueContacts ?? 0), 0);
+  const totSecs = visible.reduce((s, a) => s + (getPhone(a)?.seconds ?? 0), 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <div className="relative w-full sm:max-w-xs">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input placeholder="Search agents…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+        </div>
+        <Badge variant="secondary" className="font-mono">{visible.length} agents</Badge>
+      </div>
+      <div className="rounded-lg border bg-card overflow-hidden">
+        <div className="overflow-x-auto max-h-[65vh]">
+          <Table>
+            <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+              <TableRow>
+                <Th id="__agent__" label="Agent" align="left" />
+                <Th id="__calls__" label="Calls" />
+                <Th id="__outbound__" label="Outbound" tone="text-fuchsia-400" />
+                <Th id="__inbound__" label="Inbound" tone="text-cyan-400" />
+                <Th id="__answered__" label="Answered" tone="text-emerald-400" />
+                <Th id="__missed__" label="Missed" tone="text-rose-400" />
+                <Th id="__unique__" label="Unique #" tone="text-sky-400" />
+                <Th id="__time__" label="Talk time" />
+                <Th id="__avg__" label="Avg duration" />
+                <Th id="__resp__" label="Response %" tone="text-amber-400" />
+                <TableHead className="whitespace-nowrap text-right text-violet-400">Last call</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {visible.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={11} className="text-center py-12 text-muted-foreground">No agents match the current filters.</TableCell>
+                </TableRow>
+              )}
+              {visible.map((agent) => {
+                const ph = getPhone(agent);
+                return (
+                  <TableRow key={agent} className="hover-elevate">
+                    <TableCell className="font-medium whitespace-nowrap">{agent}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>{ph?.calls ?? "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.outbound ? "text-fuchsia-400" : "text-muted-foreground/40"}`}>{ph?.outbound ?? "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.inbound ? "text-cyan-400" : "text-muted-foreground/40"}`}>{ph?.inbound ?? "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.answered ? "text-emerald-400" : "text-muted-foreground/40"}`}>{ph?.answered ?? "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.missed ? "text-rose-400" : "text-muted-foreground/40"}`}>{ph?.missed ?? "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.uniqueContacts ? "text-sky-400" : "text-muted-foreground/40"}`}>{ph?.uniqueContacts ?? "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${!ph?.seconds ? "text-muted-foreground/40" : ""}`}>{ph?.seconds ? formatDuration(ph.seconds) : "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>{ph ? avgDuration(ph.seconds, ph.calls) : "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.calls ? "text-amber-400" : "text-muted-foreground/40"}`}>{ph ? responseRate(ph.answered, ph.calls) : "—"}</TableCell>
+                    <TableCell className="text-right"><TimeSince isoStr={ph?.lastCallAt} /></TableCell>
                   </TableRow>
                 );
               })}
@@ -975,56 +984,17 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
             {visible.length > 0 && (
               <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
                 <TableRow>
-                  <TableCell className="font-bold whitespace-nowrap">Whole team</TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold">
-                    {visible.reduce((s, a) => s + (getPhone(a.agent)?.calls ?? 0), 0)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-fuchsia-400">
-                    {visible.reduce((s, a) => s + (getPhone(a.agent)?.outbound ?? 0), 0)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">
-                    {visible.reduce((s, a) => s + (getPhone(a.agent)?.inbound ?? 0), 0)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">
-                    {visible.reduce((s, a) => s + (getPhone(a.agent)?.answered ?? 0), 0)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-rose-400">
-                    {visible.reduce((s, a) => s + (getPhone(a.agent)?.missed ?? 0), 0)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">
-                    {visible.reduce((s, a) => s + (getPhone(a.agent)?.uniqueContacts ?? 0), 0)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold">
-                    {formatDuration(visible.reduce((s, a) => s + (getPhone(a.agent)?.seconds ?? 0), 0))}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold">
-                    {(() => {
-                      const totCalls = visible.reduce((s, a) => s + (getPhone(a.agent)?.calls ?? 0), 0);
-                      const totSecs = visible.reduce((s, a) => s + (getPhone(a.agent)?.seconds ?? 0), 0);
-                      return avgDuration(totSecs, totCalls);
-                    })()}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-amber-400">
-                    {(() => {
-                      const totAns = visible.reduce((s, a) => s + (getPhone(a.agent)?.answered ?? 0), 0);
-                      const totCalls = visible.reduce((s, a) => s + (getPhone(a.agent)?.calls ?? 0), 0);
-                      return responseRate(totAns, totCalls);
-                    })()}
-                  </TableCell>
+                  <TableCell className="font-bold">Whole team</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold">{totCalls || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-fuchsia-400">{totOut || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{totIn || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totAns || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-rose-400">{totMissed || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totUniq || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold">{totSecs ? formatDuration(totSecs) : "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold">{avgDuration(totSecs, totCalls)}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-amber-400">{responseRate(totAns, totCalls)}</TableCell>
                   <TableCell />
-                  {data.statuses.map((s) => (
-                    <TableCell key={s} className="text-right tabular-nums font-mono font-bold">
-                      {data.totals.byStatus.get(s) ?? 0}
-                    </TableCell>
-                  ))}
-                  <TableCell className="text-right tabular-nums font-mono font-bold bg-primary/10">
-                    {data.totals.grand}
-                  </TableCell>
-                  {showRate && (
-                    <TableCell className="text-right tabular-nums font-mono font-bold bg-primary/10">
-                      {retentionRate(data.totals.retained, data.totals.grand)}
-                    </TableCell>
-                  )}
                 </TableRow>
               </TableHeader>
             )}
@@ -1389,20 +1359,20 @@ function TeamPanel({
               )}
             </div>
 
-            <Tabs defaultValue="agent" className="space-y-4">
+            <Tabs defaultValue="files" className="space-y-4">
               <TabsList>
-                <TabsTrigger value="agent" data-testid="subtab-agent">By agent</TabsTrigger>
-                <TabsTrigger value="day" data-testid="subtab-day">By day</TabsTrigger>
+                <TabsTrigger value="files" data-testid="subtab-agent">By files</TabsTrigger>
                 <TabsTrigger value="call" data-testid="subtab-call">By call</TabsTrigger>
+                <TabsTrigger value="day" data-testid="subtab-day">By day</TabsTrigger>
               </TabsList>
-              <TabsContent value="agent">
-                <ByAgentView data={aggregated} phoneData={phoneData} />
+              <TabsContent value="files">
+                <ByFilesView data={aggregated} />
+              </TabsContent>
+              <TabsContent value="call">
+                <ByCallStatsView agentList={aggregated.byAgent.map((a) => a.agent)} phoneData={phoneData} />
               </TabsContent>
               <TabsContent value="day">
                 <ByDayView data={aggregated} />
-              </TabsContent>
-              <TabsContent value="call">
-                <ByCallView team={mode} from={from} to={to} />
               </TabsContent>
             </Tabs>
           </>
@@ -1528,95 +1498,7 @@ function CSPanel() {
           <Button variant="ghost" size="sm" onClick={() => { setFrom(""); setTo(""); }}>Clear</Button>
         </div>
 
-        <Tabs defaultValue="agent" className="space-y-4">
-          <TabsList>
-            <TabsTrigger value="agent">By agent</TabsTrigger>
-            <TabsTrigger value="call">By call</TabsTrigger>
-          </TabsList>
-          <TabsContent value="call">
-            <ByCallView team="cs" from={from} to={to} />
-          </TabsContent>
-          <TabsContent value="agent">
-        <div className="rounded-lg border bg-card overflow-hidden">
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
-                <TableRow>
-                  <TableHead className="min-w-[200px]">Agent</TableHead>
-                  <TableHead className="text-right">Calls</TableHead>
-                  <TableHead className="text-right text-fuchsia-400">Outbound</TableHead>
-                  <TableHead className="text-right text-cyan-400">Inbound</TableHead>
-                  <TableHead className="text-right text-emerald-400">Answered</TableHead>
-                  <TableHead className="text-right text-rose-400">Missed</TableHead>
-                  <TableHead className="text-right text-sky-400">Unique #</TableHead>
-                  <TableHead className="text-right">Talk time</TableHead>
-                  <TableHead className="text-right">Avg duration</TableHead>
-                  <TableHead className="text-right text-amber-400">Response %</TableHead>
-                  <TableHead className="text-right text-violet-400">Last call</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {allAgents.map((agent) => {
-                  const ph = phoneData.get(normalizeAgent(agent));
-                  return (
-                    <TableRow key={agent} className="hover-elevate">
-                      <TableCell className="font-medium">{agent}</TableCell>
-                      <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>
-                        {ph?.calls ?? "—"}
-                      </TableCell>
-                      <TableCell className={`text-right tabular-nums font-mono ${ph?.outbound ? "text-fuchsia-400" : "text-muted-foreground/40"}`}>
-                        {ph?.outbound ?? "—"}
-                      </TableCell>
-                      <TableCell className={`text-right tabular-nums font-mono ${ph?.inbound ? "text-cyan-400" : "text-muted-foreground/40"}`}>
-                        {ph?.inbound ?? "—"}
-                      </TableCell>
-                      <TableCell className={`text-right tabular-nums font-mono ${ph?.answered ? "text-emerald-400" : "text-muted-foreground/40"}`}>
-                        {ph?.answered ?? "—"}
-                      </TableCell>
-                      <TableCell className={`text-right tabular-nums font-mono ${ph?.missed ? "text-rose-400" : "text-muted-foreground/40"}`}>
-                        {ph?.missed ?? "—"}
-                      </TableCell>
-                      <TableCell className={`text-right tabular-nums font-mono ${ph?.uniqueContacts ? "text-sky-400" : "text-muted-foreground/40"}`}>
-                        {ph?.uniqueContacts ?? "—"}
-                      </TableCell>
-                      <TableCell className={`text-right tabular-nums font-mono ${!ph?.seconds ? "text-muted-foreground/40" : ""}`}>
-                        {ph?.seconds ? formatDuration(ph.seconds) : "—"}
-                      </TableCell>
-                      <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>
-                        {ph ? avgDuration(ph.seconds, ph.calls) : "—"}
-                      </TableCell>
-                      <TableCell className={`text-right tabular-nums font-mono ${ph?.calls ? "text-amber-400" : "text-muted-foreground/40"}`}>
-                        {ph ? responseRate(ph.answered, ph.calls) : "—"}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <TimeSince isoStr={ph?.lastCallAt} />
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-              {allAgents.length > 0 && (
-                <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
-                  <TableRow>
-                    <TableCell className="font-bold">Whole team</TableCell>
-                    <TableCell className="text-right tabular-nums font-mono font-bold">{totals.calls || "—"}</TableCell>
-                    <TableCell className="text-right tabular-nums font-mono font-bold text-fuchsia-400">{[...phoneData.values()].reduce((s, v) => s + v.outbound, 0) || "—"}</TableCell>
-                    <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{[...phoneData.values()].reduce((s, v) => s + v.inbound, 0) || "—"}</TableCell>
-                    <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totals.answered || "—"}</TableCell>
-                    <TableCell className="text-right tabular-nums font-mono font-bold text-rose-400">{totals.missed || "—"}</TableCell>
-                    <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totals.uniqueContacts || "—"}</TableCell>
-                    <TableCell className="text-right tabular-nums font-mono font-bold">{totals.seconds ? formatDuration(totals.seconds) : "—"}</TableCell>
-                    <TableCell className="text-right tabular-nums font-mono font-bold">{avgDuration(totals.seconds, totals.calls)}</TableCell>
-                    <TableCell className="text-right tabular-nums font-mono font-bold text-amber-400">{responseRate(totals.answered, totals.calls)}</TableCell>
-                    <TableCell />
-                  </TableRow>
-                </TableHeader>
-              )}
-            </Table>
-          </div>
-        </div>
-          </TabsContent>
-        </Tabs>
+        <ByCallStatsView agentList={allAgents} phoneData={phoneData} />
       </CardContent>
     </Card>
   );
