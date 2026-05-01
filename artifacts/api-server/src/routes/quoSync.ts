@@ -17,18 +17,23 @@ async function quoFetch<T>(path: string): Promise<T> {
 
 function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   const n = name.toLowerCase().trim();
-  if (/retention|ob|outbound|maison|tax|jacob|levi|ryan|mike|adam|rick|austin/.test(n)) return "retention";
-  if (/nsf|national settlement|ellie|alex|katie|jenny|estella|talia|rika/.test(n)) return "nsf";
+  if (/retention|ob|outbound|maison|tax|jacob|levi|ryan|mike|adam|rick|zeiad|zack/.test(n)) return "retention";
+  if (/nsf|national settlement|ellie|alex|katie|jenny|estella|talia|rika|austin/.test(n)) return "nsf";
   if (/\bcs\b|customer support/.test(n) || name === "SCs" || name === "CS Team") return "cs";
   return null;
 }
 
 const LINE_AGENT_OVERRIDES: Record<string, string> = {
+  // Line owner → real agent (format: "<line_name_lowercase>" → "<display name>")
+  "adam ob": "Abdulrhman Isawi",
+  "jacob ob": "Youssef Nady",
+  "levi ob": "Ahmed Ayman",
+  "rick ob": "Zeiad Fouad",
+  // Legacy keys kept in case line names change in OpenPhone
   "abdlrhman-jacob stephenson": "Abdulrhman Isawi",
-  "muhamed-ryan henderson": "Ryan Henderson",
-  "zeiad fouad-zack ford": "Rick Miller",
-  "youssef nady-jacob xander": "Jacob Xander",
-  "ahmed ayman-levi miller": "Levi Miller",
+  "youssef nady-jacob xander": "Youssef Nady",
+  "ahmed ayman-levi miller": "Ahmed Ayman",
+  "zeiad fouad-zack ford": "Zeiad Fouad",
   "nour-michael belfort-2900": "Michael Belfort",
   "mohammed ayman-max francis-2268": "Max Francis",
 };

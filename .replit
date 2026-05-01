@@ -1,4 +1,4 @@
-modules = ["nodejs-24"]
+modules = ["nodejs-24", "postgresql-16"]
 
 [deployment]
 router = "application"
@@ -39,3 +39,6 @@ externalPort = 3000
 
 [userenv.shared]
 QUO_API_KEY = "f246ba10fa0eb4eb193b58d896959e494072deed5738eed4ff8507665c08e576"
+
+[nix]
+channel = "stable-25_05"

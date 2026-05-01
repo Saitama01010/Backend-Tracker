@@ -84,9 +84,9 @@ function normalizeAgent(s: string): string {
 const SHEET_TO_PHONE: Record<string, string> = {
   "abdlrhman-jacob stephenson": "abdulrhman isawi",
   "muhamed-ryan henderson": "ryan henderson",
-  "zeiad fouad-zack ford": "rick miller",
-  "youssef nady-jacob xander": "jacob xander",
-  "ahmed ayman-levi miller": "levi miller",
+  "zeiad fouad-zack ford": "zeiad fouad",
+  "youssef nady-jacob xander": "youssef nady",
+  "ahmed ayman-levi miller": "ahmed ayman",
   "nour-michael belfort-2900": "michael belfort",
   "mohammed ayman-max francis-2268": "max francis",
 };
