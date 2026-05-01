@@ -395,7 +395,7 @@ export async function startBackgroundSync() {
     } catch (err) {
       logger.error(err, "quoSync: background sync error");
     } finally {
-      syncTimer = setTimeout(doSync, 15 * 60 * 1000);
+      syncTimer = setTimeout(doSync, 2 * 60 * 1000);
     }
   };
 

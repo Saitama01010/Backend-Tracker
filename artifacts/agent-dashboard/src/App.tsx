@@ -1236,8 +1236,9 @@ function TeamPanel({
   const statusQ = useQuery({
     queryKey: ["status", sheetKey],
     queryFn: () => fetchHeaderCsv(urls.status),
-    staleTime: 1000 * 60 * 2,
+    staleTime: 1000 * 30,
     refetchOnWindowFocus: false,
+    refetchInterval: 60 * 1000,
   });
   const isLoading = statusQ.isLoading;
   const isFetching = statusQ.isFetching;
@@ -1260,8 +1261,9 @@ function TeamPanel({
       if (!res.ok) return null;
       return res.json() as Promise<PhoneStatsResponse>;
     },
-    staleTime: 1000 * 60 * 2,
+    staleTime: 1000 * 30,
     refetchOnWindowFocus: false,
+    refetchInterval: 60 * 1000,
   });
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
@@ -1349,7 +1351,7 @@ function TeamPanel({
         <div>
           <CardTitle className="text-xl">{label}</CardTitle>
           <p className="text-sm text-muted-foreground mt-1">
-            Calls, time, and outcomes · live from Google Sheets · cached for 30 min
+            Calls, time, and outcomes · live from OpenPhone · syncs every 2 min
           </p>
         </div>
         <Button
@@ -1460,8 +1462,9 @@ function CSPanel() {
       if (!res.ok) return null;
       return res.json() as Promise<PhoneStatsResponse>;
     },
-    staleTime: 1000 * 60 * 2,
+    staleTime: 1000 * 30,
     refetchOnWindowFocus: false,
+    refetchInterval: 60 * 1000,
   });
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
@@ -1586,8 +1589,9 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
       if (!r.ok) return null;
       return r.json() as Promise<{ data: CallRecord[] }>;
     },
-    staleTime: 1000 * 60 * 2,
+    staleTime: 1000 * 30,
     refetchOnWindowFocus: false,
+    refetchInterval: 60 * 1000,
   });
 
   const [search, setSearch] = useState("");
