@@ -97,6 +97,12 @@ const TEAM_PHONE_EXTRAS: Record<string, string[]> = {
   cs: [],
 };
 
+// Merges duplicate phone accounts that belong to the same real person
+const PHONE_ALIASES: Record<string, string> = {
+  "john marcus": "mike johnson",
+  "youssef-john marcus": "mike johnson",
+};
+
 // Maps normalized SHEET agent name → normalized PHONE (OpenPhone) agent name
 const SHEET_TO_PHONE: Record<string, string> = {
   "abdlrhman-jacob stephenson": "abdulrhman isawi",
@@ -961,7 +967,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                 <Th id="__inbound__" label="Inbound" tone="text-cyan-400" />
                 <Th id="__answered__" label="Answered" tone="text-emerald-400" />
                 <Th id="__missed__" label="Missed" tone="text-rose-400" />
-                <Th id="__unique__" label="Unique #" tone="text-sky-400" />
+                <Th id="__unique__" label="Customers Reached" tone="text-sky-400" />
                 <Th id="__time__" label="Talk time" />
                 <Th id="__avg__" label="Avg duration" />
                 <Th id="__resp__" label="Response %" tone="text-amber-400" />
@@ -1124,6 +1130,45 @@ function DateFilters({
   );
 }
 
+type Preset = { label: string; from: string; to: string };
+
+function getPresets(): Preset[] {
+  const now = new Date();
+  const today = toIsoDate(now);
+  const yesterday = toIsoDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+  const firstOfMonth = toIsoDate(new Date(now.getFullYear(), now.getMonth(), 1));
+  const firstOfLastMonth = toIsoDate(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  const lastOfLastMonth = toIsoDate(new Date(now.getFullYear(), now.getMonth(), 0));
+  return [
+    { label: "Today", from: today, to: today },
+    { label: "Yesterday", from: yesterday, to: yesterday },
+    { label: "This Month", from: firstOfMonth, to: today },
+    { label: "Last Month", from: firstOfLastMonth, to: lastOfLastMonth },
+    { label: "All time", from: "2024-01-01", to: today },
+  ];
+}
+
+function PresetFilter({ from, to, setFrom, setTo }: { from: string; to: string; setFrom: (s: string) => void; setTo: (s: string) => void }) {
+  const presets = useMemo(() => getPresets(), []);
+  const active = presets.find((p) => p.from === from && p.to === to)?.label;
+  return (
+    <div className="flex gap-2 flex-wrap items-center">
+      <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
+      {presets.map((p) => (
+        <Button
+          key={p.label}
+          variant={active === p.label ? "default" : "outline"}
+          size="sm"
+          className={active === p.label ? "bg-violet-600 hover:bg-violet-700 text-white" : ""}
+          onClick={() => { setFrom(p.from); setTo(p.to); }}
+        >
+          {p.label}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
 function TableSkeleton() {
   return (
     <div className="space-y-3">
@@ -1198,15 +1243,16 @@ function TeamPanel({
   const isFetching = statusQ.isFetching;
   const error = statusQ.error;
 
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  const todayIso = toIsoDate(new Date());
+  const [from, setFrom] = useState(todayIso);
+  const [to, setTo] = useState(todayIso);
 
   const fromDate = from ? parseDate(from) : null;
   const toDate = to ? parseDate(to) : null;
   if (toDate) toDate.setHours(23, 59, 59, 999);
 
   const phoneQ = useQuery<PhoneStatsResponse | null>({
-    queryKey: ["phoneStats", mode, from || "last30", to || "now"],
+    queryKey: ["phoneStats", mode, from, to],
     queryFn: async () => {
       const pFrom = from ? `${from}T00:00:00Z` : new Date(Date.now() - 30 * 86400000).toISOString();
       const pTo = to ? `${to}T23:59:59Z` : new Date().toISOString();
@@ -1223,8 +1269,9 @@ function TeamPanel({
     const agentStats = phoneQ.data?.teamStats?.[mode] ?? {};
     const lastCallMap = phoneQ.data?.agentLastCall?.[mode] ?? {};
     for (const [agentName, days] of Object.entries(agentStats)) {
-      const key = normalizeAgent(agentName);
-      if (PHONE_BLOCKLIST.has(key)) continue; // skip garbage accounts
+      const rawKey = normalizeAgent(agentName);
+      if (PHONE_BLOCKLIST.has(rawKey)) continue; // skip garbage accounts
+      const key = PHONE_ALIASES[rawKey] ?? rawKey;
       const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
       for (const day of Object.values(days)) {
         acc.calls += day.totalCalls ?? 0;
@@ -1329,29 +1376,7 @@ function TeamPanel({
             {aggregated.error}
           </div>
         )}
-        {aggregated && !("error" in aggregated) ? (
-          <DateFilters
-            minDate={aggregated.minDate}
-            maxDate={aggregated.maxDate}
-            from={from}
-            to={to}
-            setFrom={setFrom}
-            setTo={setTo}
-            onReset={() => { setFrom(""); setTo(""); }}
-          />
-        ) : (
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-sm text-muted-foreground flex items-center gap-1">
-              <CalendarDays className="h-3.5 w-3.5" /> Date range
-            </span>
-            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground" />
-            <span className="text-muted-foreground text-sm">to</span>
-            <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground" />
-            <Button variant="ghost" size="sm" onClick={() => { setFrom(""); setTo(""); }}>Clear</Button>
-          </div>
-        )}
+        <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
 
         {(aggregated && !("error" in aggregated)) || callAgentList.length > 0 ? (
           <>
@@ -1422,11 +1447,12 @@ const CS_AGENTS = ["Nora Adam", "Leo Carter", "Carla Bennet"];
 const CS_EXCLUDE = new Set(["leo maxwell"]);
 
 function CSPanel() {
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  const todayIso = toIsoDate(new Date());
+  const [from, setFrom] = useState(todayIso);
+  const [to, setTo] = useState(todayIso);
 
   const phoneQ = useQuery<PhoneStatsResponse | null>({
-    queryKey: ["phoneStats", "cs", from || "last30", to || "now"],
+    queryKey: ["phoneStats", "cs", from, to],
     queryFn: async () => {
       const pFrom = from ? `${from}T00:00:00Z` : new Date(Date.now() - 30 * 86400000).toISOString();
       const pTo = to ? `${to}T23:59:59Z` : new Date().toISOString();
@@ -1443,8 +1469,9 @@ function CSPanel() {
     const agentStats = phoneQ.data?.teamStats?.["cs"] ?? {};
     const lastCallMap = phoneQ.data?.agentLastCall?.["cs"] ?? {};
     for (const [agentName, days] of Object.entries(agentStats)) {
-      const key = normalizeAgent(agentName);
-      if (PHONE_BLOCKLIST.has(key)) continue; // skip garbage accounts
+      const rawKey = normalizeAgent(agentName);
+      if (PHONE_BLOCKLIST.has(rawKey)) continue; // skip garbage accounts
+      const key = PHONE_ALIASES[rawKey] ?? rawKey;
       const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
       for (const day of Object.values(days)) {
         acc.calls += day.totalCalls ?? 0;
@@ -1506,6 +1533,8 @@ function CSPanel() {
       <CardContent className="space-y-6">
         {phoneQ.isLoading && <TableSkeleton />}
 
+        <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
+
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <StatTile label="Agents" value={CS_AGENTS.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
           <StatTile label="Total calls" value={totals.calls.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
@@ -1513,26 +1542,6 @@ function CSPanel() {
           <StatTile label="Missed" value={totals.missed.toLocaleString()} tone="rose" />
           <StatTile label="Time on calls" value={formatHours(totals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
           <StatTile label="Response rate" value={responseRate(totals.answered, totals.calls)} tone="amber" />
-        </div>
-
-        <div className="mb-3 flex items-center gap-3 flex-wrap">
-          <span className="text-sm text-muted-foreground flex items-center gap-1">
-            <CalendarDays className="h-3.5 w-3.5" /> Date range
-          </span>
-          <input
-            type="date"
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
-            className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground"
-          />
-          <span className="text-muted-foreground text-sm">to</span>
-          <input
-            type="date"
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-            className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground"
-          />
-          <Button variant="ghost" size="sm" onClick={() => { setFrom(""); setTo(""); }}>Clear</Button>
         </div>
 
         <ByCallStatsView agentList={allAgents} phoneData={phoneData} />
