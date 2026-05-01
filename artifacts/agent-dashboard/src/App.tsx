@@ -86,9 +86,13 @@ function normalizeAgent(s: string): string {
   return NAME_ALIASES[base] ?? base;
 }
 
+// Garbage/bot OpenPhone usernames to always exclude everywhere
+const PHONE_BLOCKLIST = new Set(["useyzjeml5", "ush0pegsjr", "shahin ."]);
+
 // Extra phone-only agents per team (not in the Google Sheet, but on the team)
+// Keys must match OpenPhone agent names (normalized lowercase)
 const TEAM_PHONE_EXTRAS: Record<string, string[]> = {
-  retention: ["Mike Johnson", "Michael Ross", "Youssef-John Marcus"],
+  retention: ["Mike Johnson", "Michael Ross", "John Marcus"],
   nsf: [],
   cs: [],
 };
@@ -1220,6 +1224,7 @@ function TeamPanel({
     const lastCallMap = phoneQ.data?.agentLastCall?.[mode] ?? {};
     for (const [agentName, days] of Object.entries(agentStats)) {
       const key = normalizeAgent(agentName);
+      if (PHONE_BLOCKLIST.has(key)) continue; // skip garbage accounts
       const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
       for (const day of Object.values(days)) {
         acc.calls += day.totalCalls ?? 0;
@@ -1252,19 +1257,9 @@ function TeamPanel({
   const phoneTotals = useMemo(() => {
     let calls = 0;
     let seconds = 0;
-    // Build allowed phone keys: sheet agents + extras
-    const allowedKeys = new Set<string>();
-    if (aggregated && !("error" in aggregated)) {
-      for (const { agent } of aggregated.byAgent) allowedKeys.add(sheetToPhoneKey(agent));
-    }
-    for (const extra of TEAM_PHONE_EXTRAS[mode] ?? []) allowedKeys.add(normalizeAgent(extra));
-    // If no allowlist built yet (sheet still loading), sum everything as a fallback
-    const useFilter = allowedKeys.size > 0;
-    for (const [key, v] of phoneData.entries()) {
-      if (!useFilter || allowedKeys.has(key)) { calls += v.calls; seconds += v.seconds; }
-    }
+    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; }
     return { calls, seconds };
-  }, [phoneData, aggregated, mode]);
+  }, [phoneData]);
 
   // Build the "By call" agent list: only sheet agents (mapped to phone names) + explicit extras.
   // This filters out random OpenPhone users that don't belong to the team.
@@ -1449,6 +1444,7 @@ function CSPanel() {
     const lastCallMap = phoneQ.data?.agentLastCall?.["cs"] ?? {};
     for (const [agentName, days] of Object.entries(agentStats)) {
       const key = normalizeAgent(agentName);
+      if (PHONE_BLOCKLIST.has(key)) continue; // skip garbage accounts
       const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
       for (const day of Object.values(days)) {
         acc.calls += day.totalCalls ?? 0;
