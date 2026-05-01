@@ -86,6 +86,13 @@ function normalizeAgent(s: string): string {
   return NAME_ALIASES[base] ?? base;
 }
 
+// Extra phone-only agents per team (not in the Google Sheet, but on the team)
+const TEAM_PHONE_EXTRAS: Record<string, string[]> = {
+  retention: ["Mike Johnson", "Michael Ross", "Youssef-John Marcus"],
+  nsf: [],
+  cs: [],
+};
+
 // Maps normalized SHEET agent name → normalized PHONE (OpenPhone) agent name
 const SHEET_TO_PHONE: Record<string, string> = {
   "abdlrhman-jacob stephenson": "abdulrhman isawi",
@@ -1237,17 +1244,57 @@ function TeamPanel({
     return map;
   }, [phoneQ.data, mode]);
 
-  const phoneTotals = useMemo(() => {
-    let calls = 0;
-    let seconds = 0;
-    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; }
-    return { calls, seconds };
-  }, [phoneData]);
-
   const aggregated = useMemo(() => {
     if (!statusQ.data) return null;
     return aggregate(statusQ.data, mode, fromDate, toDate);
   }, [statusQ.data, mode, from, to]);
+
+  const phoneTotals = useMemo(() => {
+    let calls = 0;
+    let seconds = 0;
+    // Build allowed phone keys: sheet agents + extras
+    const allowedKeys = new Set<string>();
+    if (aggregated && !("error" in aggregated)) {
+      for (const { agent } of aggregated.byAgent) allowedKeys.add(sheetToPhoneKey(agent));
+    }
+    for (const extra of TEAM_PHONE_EXTRAS[mode] ?? []) allowedKeys.add(normalizeAgent(extra));
+    // If no allowlist built yet (sheet still loading), sum everything as a fallback
+    const useFilter = allowedKeys.size > 0;
+    for (const [key, v] of phoneData.entries()) {
+      if (!useFilter || allowedKeys.has(key)) { calls += v.calls; seconds += v.seconds; }
+    }
+    return { calls, seconds };
+  }, [phoneData, aggregated, mode]);
+
+  // Build the "By call" agent list: only sheet agents (mapped to phone names) + explicit extras.
+  // This filters out random OpenPhone users that don't belong to the team.
+  const callAgentList = useMemo(() => {
+    const allowedKeys = new Set<string>();
+    if (aggregated && !("error" in aggregated)) {
+      for (const { agent } of aggregated.byAgent) {
+        allowedKeys.add(sheetToPhoneKey(agent));
+      }
+    }
+    for (const extra of TEAM_PHONE_EXTRAS[mode] ?? []) {
+      allowedKeys.add(normalizeAgent(extra));
+    }
+    // Return display names for agents that are both allowed AND have phone data
+    const result: string[] = [];
+    for (const extra of TEAM_PHONE_EXTRAS[mode] ?? []) {
+      const key = normalizeAgent(extra);
+      if (phoneData.has(key)) result.push(extra);
+      else if (allowedKeys.has(key)) result.push(extra); // show even if no data yet
+    }
+    if (aggregated && !("error" in aggregated)) {
+      for (const { agent } of aggregated.byAgent) {
+        const key = sheetToPhoneKey(agent);
+        if (!TEAM_PHONE_EXTRAS[mode]?.map(normalizeAgent).includes(key)) {
+          result.push(agent);
+        }
+      }
+    }
+    return result;
+  }, [aggregated, phoneData, mode]);
 
   function refresh() {
     statusQ.refetch();
@@ -1311,7 +1358,7 @@ function TeamPanel({
           </div>
         )}
 
-        {(aggregated && !("error" in aggregated)) || phoneData.size > 0 ? (
+        {(aggregated && !("error" in aggregated)) || callAgentList.length > 0 ? (
           <>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {aggregated && !("error" in aggregated) && (
@@ -1356,11 +1403,7 @@ function TeamPanel({
                 )}
               </TabsList>
               <TabsContent value="call">
-                <ByCallStatsView
-                  agentList={[...phoneData.keys()].map((k) => k.replace(/\b\w/g, (c) => c.toUpperCase()))}
-                  phoneData={phoneData}
-                  directKeys
-                />
+                <ByCallStatsView agentList={callAgentList} phoneData={phoneData} />
               </TabsContent>
               {aggregated && !("error" in aggregated) && (
                 <>
