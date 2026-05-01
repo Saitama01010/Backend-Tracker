@@ -44,13 +44,6 @@ interface PhoneNumber {
   users?: { id: string; firstName: string; lastName: string }[];
 }
 
-interface Conversation {
-  id: string;
-  participants: string[];
-  phoneNumberId: string;
-  lastActivityId?: string;
-}
-
 interface Call {
   id: string;
   direction: string;
@@ -58,7 +51,8 @@ interface Call {
   duration: number;
   createdAt: string;
   userId?: string;
-  participants?: string[];
+  from?: string;
+  to?: string;
 }
 
 async function withConcurrency<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
@@ -78,25 +72,9 @@ async function withConcurrency<T>(tasks: (() => Promise<T>)[], limit: number): P
   return results;
 }
 
-async function fetchConversationsPage(phoneNumberId: string, updatedAfter: string, maxPages = 3): Promise<Conversation[]> {
-  const all: Conversation[] = [];
-  let pageToken: string | null = null;
-  let page = 0;
-  do {
-    let url = `/conversations?phoneNumberId=${phoneNumberId}&maxResults=100&updatedAfter=${encodeURIComponent(updatedAfter)}`;
-    if (pageToken) url += `&pageToken=${encodeURIComponent(pageToken)}`;
-    const res = await quoFetch<{ data: Conversation[]; nextPageToken?: string | null }>(url);
-    all.push(...(res.data ?? []));
-    pageToken = res.nextPageToken ?? null;
-    page++;
-    if (page >= maxPages) break;
-  } while (pageToken);
-  return all;
-}
-
-async function fetchCallsForParticipant(
+/** Fetch every call on a phone number line in a date range — no participant filter, matching OpenPhone analytics exactly. */
+async function fetchAllCallsForLine(
   phoneNumberId: string,
-  participant: string,
   createdAfter: string,
   createdBefore: string,
 ): Promise<Call[]> {
@@ -105,22 +83,23 @@ async function fetchCallsForParticipant(
   let page = 0;
   do {
     let url =
-      `/calls?phoneNumberId=${phoneNumberId}` +
-      `&participants[]=${encodeURIComponent(participant)}` +
+      `/calls?phoneNumberId=${encodeURIComponent(phoneNumberId)}` +
       `&createdAfter=${encodeURIComponent(createdAfter)}` +
       `&createdBefore=${encodeURIComponent(createdBefore)}` +
       `&maxResults=100`;
     if (pageToken) url += `&pageToken=${encodeURIComponent(pageToken)}`;
     const res = await quoFetch<{ data: Call[]; nextPageToken?: string | null }>(url);
-    all.push(...(res.data ?? []));
+    const chunk = res.data ?? [];
+    all.push(...chunk);
     pageToken = res.nextPageToken ?? null;
     page++;
-    if (page > 20) break;
+    if (page > 50) break; // safety cap
+    if (chunk.length < 100) break; // last page
   } while (pageToken);
   return all;
 }
 
-export async function runSync(fromDate: Date, toDate: Date, maxPagesPerLine = 3): Promise<{ inserted: number; errors: number }> {
+export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted: number; errors: number }> {
   const from = fromDate.toISOString();
   const to = toDate.toISOString();
   logger.info({ from, to }, "quoSync: starting sync");
@@ -138,33 +117,15 @@ export async function runSync(fromDate: Date, toDate: Date, maxPagesPerLine = 3)
   }
   logger.info({ lineCount: lines.length, userCount: userMap.size }, "quoSync: got lines");
 
-  const allConvsByLine = await withConcurrency(
-    lines.map((line) => () => fetchConversationsPage(line.id, from, maxPagesPerLine).catch(() => [] as Conversation[])),
-    8,
+  const callResults = await withConcurrency(
+    lines.map((line) => async () => {
+      const calls = await fetchAllCallsForLine(line.id, from, to).catch(() => [] as Call[]);
+      return { line, calls };
+    }),
+    6,
   );
-  const totalConvs = allConvsByLine.reduce((s, c) => s + (c as Conversation[]).length, 0);
-  logger.info({ totalConvs }, "quoSync: fetched conversations");
 
-  const callTasks: (() => Promise<{ lineId: string; lineName: string; lineTeam: string; participant: string; calls: Call[] } | null>)[] = [];
-
-  for (let li = 0; li < lines.length; li++) {
-    const line = lines[li];
-    const team = classifyLine(line.name)!;
-    const convs = allConvsByLine[li] as Conversation[] ?? [];
-    const uniqueParticipants = [...new Set(convs.flatMap((c) => c.participants))];
-
-    for (const participant of uniqueParticipants) {
-      callTasks.push(async () => {
-        const calls = await fetchCallsForParticipant(line.id, participant, from, to).catch(() => [] as Call[]);
-        if (calls.length === 0) return null;
-        return { lineId: line.id, lineName: line.name, lineTeam: team, participant, calls };
-      });
-    }
-  }
-
-  logger.info({ callTaskCount: callTasks.length }, "quoSync: fetching calls");
-  const callResults = await withConcurrency(callTasks, 8);
-  logger.info("quoSync: calls fetched, writing to DB");
+  logger.info({ lineCount: lines.length }, "quoSync: calls fetched, writing to DB");
 
   let inserted = 0;
   let errors = 0;
@@ -172,16 +133,20 @@ export async function runSync(fromDate: Date, toDate: Date, maxPagesPerLine = 3)
 
   for (const result of callResults) {
     if (!result) continue;
-    const { lineId, lineName, lineTeam, participant, calls } = result;
+    const { line, calls } = result;
+    const team = classifyLine(line.name)!;
+    const overrideName = LINE_AGENT_OVERRIDES[line.name.toLowerCase().trim()];
+
     for (const call of calls) {
-      const overrideName = LINE_AGENT_OVERRIDES[lineName.toLowerCase().trim()];
+      const agentName = overrideName ?? (call.userId ? (userMap.get(call.userId) ?? call.userId) : null);
+      const participant = call.direction === "outgoing" ? (call.to ?? "") : (call.from ?? "");
       rows.push({
         id: call.id,
-        lineId,
-        lineName,
-        lineTeam,
+        lineId: line.id,
+        lineName: line.name,
+        lineTeam: team,
         agentId: call.userId ?? null,
-        agentName: overrideName ?? (call.userId ? (userMap.get(call.userId) ?? call.userId) : null),
+        agentName,
         participant,
         direction: call.direction,
         status: call.status,
@@ -241,11 +206,11 @@ export async function startBackgroundSync() {
         const overlapMs = Math.max(msSinceLast + 10 * 60 * 1000, 2 * 60 * 60 * 1000);
         const from = new Date(now.getTime() - overlapMs);
         logger.info({ windowHours: overlapMs / 3600000 }, "quoSync: incremental sync");
-        await runSync(from, now, 1);
+        await runSync(from, now);
       } else {
         const from = new Date(now.getTime() - 4 * 60 * 60 * 1000);
         logger.info("quoSync: initial 4h sync");
-        await runSync(from, now, 1);
+        await runSync(from, now);
       }
     } catch (err) {
       logger.error(err, "quoSync: background sync error");
