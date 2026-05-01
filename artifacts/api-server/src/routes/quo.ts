@@ -38,6 +38,46 @@ function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   return null;
 }
 
+// Agent-name → team override. Calls are bucketed by who made them, not which line
+// they used. This ensures agents who call from shared/unclassified lines still
+// appear in the correct team bucket.
+const AGENT_TEAM: Record<string, "retention" | "nsf" | "cs"> = {
+  // Retention
+  "ryan henderson": "retention",
+  "jacob stephenson": "retention",
+  "abdulrhman isawi": "retention",
+  "jacob xander": "retention",
+  "youssef nady": "retention",
+  "levi miller": "retention",
+  "ahmed ayman": "retention",
+  "rick miller": "retention",
+  "zeiad fouad": "retention",
+  "michael belfort": "retention",
+  "max francis": "retention",
+  "mike johnson": "retention",
+  "john marcus": "retention",
+  "youssef nasser": "retention",
+  "michael ross": "retention",
+  // NSF
+  "alex cruz": "nsf",
+  "austin white": "nsf",
+  "rika hart": "nsf",
+  "jenny morgan": "nsf",
+  "estella cruz": "nsf",
+  "talia morgan": "nsf",
+  "katie miller": "nsf",
+  "ellie moser": "nsf",
+  // CS
+  "nora adam": "cs",
+  "carla bennet": "cs",
+  "leo carter": "cs",
+};
+
+function agentTeam(agentName: string): "retention" | "nsf" | "cs" | null {
+  const key = agentName.toLowerCase().trim();
+  return AGENT_TEAM[key] ?? null;
+}
+
 router.get("/quo/lines", async (req, res) => {
   try {
     const result = await quoFetch<{ data: QuoPhoneNumber[] }>("/phone-numbers");
@@ -103,8 +143,10 @@ router.get("/quo/stats", async (req, res) => {
     > = {};
 
     for (const row of rows) {
-      const team = row.lineTeam;
       const agentName = row.agentName ?? "Unknown";
+      // Agent-based team takes priority over line-based; skip calls from unknown agents
+      const team = agentTeam(agentName) ?? row.lineTeam;
+      if (!team || !(team in teamStats)) continue;
       const date = row.createdAt.toISOString().slice(0, 10);
 
       if (!teamStats[team]) teamStats[team] = {};
@@ -244,7 +286,12 @@ router.get("/quo/calls", async (req, res) => {
       .limit(limitParam)
       .offset(offsetParam);
 
-    const filtered = team ? rows.filter((r) => r.lineTeam === team) : rows;
+    const filtered = team
+      ? rows.filter((r) => {
+          const effectiveTeam = (r.agentName ? agentTeam(r.agentName) : null) ?? r.lineTeam;
+          return effectiveTeam === team;
+        })
+      : rows;
 
     res.json({ data: filtered, total: filtered.length });
   } catch (err) {
