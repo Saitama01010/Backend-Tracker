@@ -363,6 +363,19 @@ export async function startBackgroundSync() {
   if (syncRunning) return;
   syncRunning = true;
 
+  // If the DB has very few calls (fresh or incomplete deployment), wipe the sync
+  // state so the full 90-day backfill runs on the next cycle.
+  try {
+    const countRow = await db.select({ count: sql<number>`count(*)::int` }).from(phoneCallsTable);
+    const totalCalls = countRow[0]?.count ?? 0;
+    if (totalCalls < 500) {
+      await db.delete(phoneSyncStateTable);
+      logger.info({ totalCalls }, "quoSync: sparse DB detected — reset sync state for full backfill");
+    }
+  } catch (err) {
+    logger.error(err, "quoSync: startup call-count check failed");
+  }
+
   const doSync = async () => {
     try {
       const now = new Date();
@@ -374,8 +387,9 @@ export async function startBackgroundSync() {
         logger.info({ windowHours: overlapMs / 3600000 }, "quoSync: incremental sync");
         await runSync(from, now);
       } else {
-        const from = new Date(now.getTime() - 4 * 60 * 60 * 1000);
-        logger.info("quoSync: initial 4h sync");
+        // First startup — backfill 90 days of history
+        const from = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+        logger.info("quoSync: initial 90-day backfill");
         await runSync(from, now);
       }
     } catch (err) {
