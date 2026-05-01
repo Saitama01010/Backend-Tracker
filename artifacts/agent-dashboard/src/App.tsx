@@ -1330,33 +1330,36 @@ function TeamPanel({
     return { calls, seconds };
   }, [phoneData]);
 
-  // Build the "By call" agent list: only sheet agents (mapped to phone names) + explicit extras.
-  // This filters out random OpenPhone users that don't belong to the team.
+  // Build the "By call" agent list:
+  // 1. Sheet agents (best display names)
+  // 2. Explicit TEAM_PHONE_EXTRAS not already covered
+  // 3. Any remaining agent in phoneData (already team-filtered by OpenPhone line)
   const callAgentList = useMemo(() => {
-    const allowedKeys = new Set<string>();
-    if (aggregated && !("error" in aggregated)) {
-      for (const { agent } of aggregated.byAgent) {
-        allowedKeys.add(sheetToPhoneKey(agent));
-      }
-    }
-    for (const extra of TEAM_PHONE_EXTRAS[mode] ?? []) {
-      allowedKeys.add(normalizeAgent(extra));
-    }
-    // Return display names for agents that are both allowed AND have phone data
     const result: string[] = [];
-    for (const extra of TEAM_PHONE_EXTRAS[mode] ?? []) {
-      const key = normalizeAgent(extra);
-      if (phoneData.has(key)) result.push(extra);
-      else if (allowedKeys.has(key)) result.push(extra); // show even if no data yet
-    }
+    const addedKeys = new Set<string>();
+
+    // Sheet agents — prefer their display names
     if (aggregated && !("error" in aggregated)) {
       for (const { agent } of aggregated.byAgent) {
         const key = sheetToPhoneKey(agent);
-        if (!TEAM_PHONE_EXTRAS[mode]?.map(normalizeAgent).includes(key)) {
-          result.push(agent);
-        }
+        if (!addedKeys.has(key)) { result.push(agent); addedKeys.add(key); }
       }
     }
+
+    // Explicit extras (e.g. Youssef Nasser, Michael Ross)
+    for (const extra of TEAM_PHONE_EXTRAS[mode] ?? []) {
+      const key = normalizeAgent(extra);
+      if (!addedKeys.has(key)) { result.push(extra); addedKeys.add(key); }
+    }
+
+    // Everyone else who made calls on this team's OpenPhone lines
+    for (const key of phoneData.keys()) {
+      if (!addedKeys.has(key)) {
+        result.push(key.replace(/\b\w/g, (c) => c.toUpperCase()));
+        addedKeys.add(key);
+      }
+    }
+
     return result;
   }, [aggregated, phoneData, mode]);
 
