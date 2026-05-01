@@ -30,6 +30,7 @@ import {
   Clock,
   CalendarDays,
   Users,
+  Download,
 } from "lucide-react";
 
 const queryClient = new QueryClient();
@@ -678,7 +679,17 @@ function ByDayView({ data }: { data: Aggregated }) {
   );
 }
 
-function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<string, { calls: number; seconds: number }> }) {
+function responseRate(answered: number, total: number): string {
+  if (!total) return "—";
+  return `${Math.round((answered / total) * 100)}%`;
+}
+
+function avgDuration(seconds: number, calls: number): string {
+  if (!calls) return "—";
+  return formatDuration(Math.round(seconds / calls));
+}
+
+function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<string, PhoneAgentMetrics> }) {
   const showRate = data.mode === "retention";
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>({ column: "__total__", dir: "desc" });
@@ -693,6 +704,8 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
       list = [...list].sort((a, b) => {
         let av: number | string;
         let bv: number | string;
+        const phA = phoneData?.get(sheetToPhoneKey(a.agent));
+        const phB = phoneData?.get(sheetToPhoneKey(b.agent));
         if (sort.column === "__agent__") {
           av = a.agent;
           bv = b.agent;
@@ -700,11 +713,26 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
           av = a.total;
           bv = b.total;
         } else if (sort.column === "__calls__") {
-          av = phoneData?.get(sheetToPhoneKey(a.agent))?.calls ?? 0;
-          bv = phoneData?.get(sheetToPhoneKey(b.agent))?.calls ?? 0;
+          av = phA?.calls ?? 0;
+          bv = phB?.calls ?? 0;
         } else if (sort.column === "__time__") {
-          av = phoneData?.get(sheetToPhoneKey(a.agent))?.seconds ?? 0;
-          bv = phoneData?.get(sheetToPhoneKey(b.agent))?.seconds ?? 0;
+          av = phA?.seconds ?? 0;
+          bv = phB?.seconds ?? 0;
+        } else if (sort.column === "__answered__") {
+          av = phA?.answered ?? 0;
+          bv = phB?.answered ?? 0;
+        } else if (sort.column === "__missed__") {
+          av = phA?.missed ?? 0;
+          bv = phB?.missed ?? 0;
+        } else if (sort.column === "__unique__") {
+          av = phA?.uniqueContacts ?? 0;
+          bv = phB?.uniqueContacts ?? 0;
+        } else if (sort.column === "__avg__") {
+          av = phA && phA.calls ? phA.seconds / phA.calls : 0;
+          bv = phB && phB.calls ? phB.seconds / phB.calls : 0;
+        } else if (sort.column === "__resp__") {
+          av = phA && phA.calls ? phA.answered / phA.calls : -1;
+          bv = phB && phB.calls ? phB.answered / phB.calls : -1;
         } else if (sort.column === "__rate__") {
           av = a.total ? sumRetained(a.byStatus, data.retainedStatuses) / a.total : -1;
           bv = b.total ? sumRetained(b.byStatus, data.retainedStatuses) / b.total : -1;
@@ -732,6 +760,32 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
     });
   }
 
+  function exportCsv() {
+    const rows = visible.map((a) => {
+      const ph = getPhone(a.agent);
+      const record: Record<string, string | number> = { Agent: a.agent };
+      record["Calls"] = ph?.calls ?? 0;
+      record["Answered"] = ph?.answered ?? 0;
+      record["Missed"] = ph?.missed ?? 0;
+      record["Unique #"] = ph?.uniqueContacts ?? 0;
+      record["Talk Time"] = ph?.seconds ? formatDuration(ph.seconds) : "";
+      record["Avg Duration"] = ph ? avgDuration(ph.seconds, ph.calls) : "";
+      record["Response %"] = ph ? responseRate(ph.answered, ph.calls) : "";
+      for (const s of data.statuses) record[s] = a.byStatus.get(s) ?? 0;
+      record["Total"] = a.total;
+      if (showRate) record["Retention Rate"] = retentionRate(sumRetained(a.byStatus, data.retainedStatuses), a.total);
+      return record;
+    });
+    const csv = Papa.unparse(rows);
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `agents_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -745,9 +799,15 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
             data-testid="input-search-agent"
           />
         </div>
-        <Badge variant="secondary" className="font-mono w-fit">
-          {visible.length} of {data.byAgent.length} agents
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant="secondary" className="font-mono">
+            {visible.length} of {data.byAgent.length} agents
+          </Badge>
+          <Button variant="outline" size="sm" onClick={exportCsv} data-testid="button-export-csv">
+            <Download className="h-3.5 w-3.5 mr-1.5" />
+            Export CSV
+          </Button>
+        </div>
       </div>
 
       <div className="rounded-lg border bg-card overflow-hidden">
@@ -761,8 +821,23 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
                 <TableHead className="whitespace-nowrap text-right">
                   <SortHeader id="__calls__" label="Calls" align="right" sort={sort} onToggle={toggle} />
                 </TableHead>
+                <TableHead className="whitespace-nowrap text-right text-emerald-400">
+                  <SortHeader id="__answered__" label="Answered" align="right" sort={sort} onToggle={toggle} />
+                </TableHead>
+                <TableHead className="whitespace-nowrap text-right text-rose-400">
+                  <SortHeader id="__missed__" label="Missed" align="right" sort={sort} onToggle={toggle} />
+                </TableHead>
+                <TableHead className="whitespace-nowrap text-right text-sky-400">
+                  <SortHeader id="__unique__" label="Unique #" align="right" sort={sort} onToggle={toggle} />
+                </TableHead>
                 <TableHead className="whitespace-nowrap text-right">
-                  <SortHeader id="__time__" label="Time on calls" align="right" sort={sort} onToggle={toggle} />
+                  <SortHeader id="__time__" label="Talk time" align="right" sort={sort} onToggle={toggle} />
+                </TableHead>
+                <TableHead className="whitespace-nowrap text-right">
+                  <SortHeader id="__avg__" label="Avg duration" align="right" sort={sort} onToggle={toggle} />
+                </TableHead>
+                <TableHead className="whitespace-nowrap text-right text-amber-400">
+                  <SortHeader id="__resp__" label="Response %" align="right" sort={sort} onToggle={toggle} />
                 </TableHead>
                 {data.statuses.map((s) => (
                   <TableHead key={s} className={`whitespace-nowrap text-right ${statusTone(s)}`}>
@@ -795,15 +870,26 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
                 return (
                   <TableRow key={a.agent} className="hover-elevate">
                     <TableCell className="font-medium whitespace-nowrap">{a.agent}</TableCell>
-                    <TableCell
-                      className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}
-                    >
+                    <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>
                       {ph?.calls ?? "—"}
                     </TableCell>
-                    <TableCell
-                      className={`text-right tabular-nums font-mono ${!ph?.seconds ? "text-muted-foreground/40" : ""}`}
-                    >
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.answered ? "text-emerald-400" : "text-muted-foreground/40"}`}>
+                      {ph?.answered ?? "—"}
+                    </TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.missed ? "text-rose-400" : "text-muted-foreground/40"}`}>
+                      {ph?.missed ?? "—"}
+                    </TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.uniqueContacts ? "text-sky-400" : "text-muted-foreground/40"}`}>
+                      {ph?.uniqueContacts ?? "—"}
+                    </TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${!ph?.seconds ? "text-muted-foreground/40" : ""}`}>
                       {ph?.seconds ? formatDuration(ph.seconds) : "—"}
+                    </TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>
+                      {ph ? avgDuration(ph.seconds, ph.calls) : "—"}
+                    </TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.calls ? "text-amber-400" : "text-muted-foreground/40"}`}>
+                      {ph ? responseRate(ph.answered, ph.calls) : "—"}
                     </TableCell>
                     {data.statuses.map((s) => {
                       const v = a.byStatus.get(s) ?? 0;
@@ -835,14 +921,34 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
                   <TableCell className="text-right tabular-nums font-mono font-bold">
                     {visible.reduce((s, a) => s + (getPhone(a.agent)?.calls ?? 0), 0)}
                   </TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">
+                    {visible.reduce((s, a) => s + (getPhone(a.agent)?.answered ?? 0), 0)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-rose-400">
+                    {visible.reduce((s, a) => s + (getPhone(a.agent)?.missed ?? 0), 0)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">
+                    {visible.reduce((s, a) => s + (getPhone(a.agent)?.uniqueContacts ?? 0), 0)}
+                  </TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold">
                     {formatDuration(visible.reduce((s, a) => s + (getPhone(a.agent)?.seconds ?? 0), 0))}
                   </TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold">
+                    {(() => {
+                      const totCalls = visible.reduce((s, a) => s + (getPhone(a.agent)?.calls ?? 0), 0);
+                      const totSecs = visible.reduce((s, a) => s + (getPhone(a.agent)?.seconds ?? 0), 0);
+                      return avgDuration(totSecs, totCalls);
+                    })()}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-amber-400">
+                    {(() => {
+                      const totAns = visible.reduce((s, a) => s + (getPhone(a.agent)?.answered ?? 0), 0);
+                      const totCalls = visible.reduce((s, a) => s + (getPhone(a.agent)?.calls ?? 0), 0);
+                      return responseRate(totAns, totCalls);
+                    })()}
+                  </TableCell>
                   {data.statuses.map((s) => (
-                    <TableCell
-                      key={s}
-                      className="text-right tabular-nums font-mono font-bold"
-                    >
+                    <TableCell key={s} className="text-right tabular-nums font-mono font-bold">
                       {data.totals.byStatus.get(s) ?? 0}
                     </TableCell>
                   ))}
@@ -996,8 +1102,30 @@ function ErrorState({ message, onRetry }: { message: string; onRetry: () => void
   );
 }
 
+interface PhoneAgentMetrics {
+  calls: number;
+  seconds: number;
+  answered: number;
+  missed: number;
+  voicemail: number;
+  inbound: number;
+  outbound: number;
+  uniqueContacts: number;
+}
+
+interface PhoneAgentDay {
+  totalCalls: number;
+  talkSeconds: number;
+  inbound: number;
+  outbound: number;
+  answered: number;
+  missed: number;
+  voicemail: number;
+  uniqueContacts: number;
+}
+
 interface PhoneStatsResponse {
-  teamStats: Record<string, Record<string, Record<string, { totalCalls: number; talkSeconds: number }>>>;
+  teamStats: Record<string, Record<string, Record<string, PhoneAgentDay>>>;
 }
 
 function TeamPanel({
@@ -1041,20 +1169,29 @@ function TeamPanel({
     refetchOnWindowFocus: false,
   });
 
-  const phoneData = useMemo<Map<string, { calls: number; seconds: number }>>(() => {
-    const map = new Map<string, { calls: number; seconds: number }>();
+  const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
+    const map = new Map<string, PhoneAgentMetrics>();
     const agentStats = phoneQ.data?.teamStats?.[mode] ?? {};
     for (const [agentName, days] of Object.entries(agentStats)) {
       const key = normalizeAgent(agentName);
-      let calls = 0;
-      let seconds = 0;
+      const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, inbound: 0, outbound: 0, uniqueContacts: 0 };
       for (const day of Object.values(days)) {
-        calls += (day as { totalCalls: number; talkSeconds: number }).totalCalls ?? 0;
-        seconds += (day as { talkSeconds: number }).talkSeconds ?? 0;
+        acc.calls += day.totalCalls ?? 0;
+        acc.seconds += day.talkSeconds ?? 0;
+        acc.answered += day.answered ?? 0;
+        acc.missed += day.missed ?? 0;
+        acc.voicemail += day.voicemail ?? 0;
+        acc.inbound += day.inbound ?? 0;
+        acc.outbound += day.outbound ?? 0;
+        acc.uniqueContacts += day.uniqueContacts ?? 0;
       }
-      if (calls > 0 || seconds > 0) {
-        const e = map.get(key) ?? { calls: 0, seconds: 0 };
-        map.set(key, { calls: e.calls + calls, seconds: e.seconds + seconds });
+      if (acc.calls > 0 || acc.seconds > 0) {
+        const e = map.get(key);
+        if (e) {
+          map.set(key, { calls: e.calls + acc.calls, seconds: e.seconds + acc.seconds, answered: e.answered + acc.answered, missed: e.missed + acc.missed, voicemail: e.voicemail + acc.voicemail, inbound: e.inbound + acc.inbound, outbound: e.outbound + acc.outbound, uniqueContacts: e.uniqueContacts + acc.uniqueContacts });
+        } else {
+          map.set(key, acc);
+        }
       }
     }
     return map;
@@ -1202,7 +1339,7 @@ function TeamPanel({
   );
 }
 
-const CS_AGENTS = ["Nora Adam", "Leo Carter", "Basante Madeldin"];
+const CS_AGENTS = ["Nora Adam", "Leo Carter", "Carla Bennet"];
 
 function CSPanel() {
   const [from, setFrom] = useState("");
@@ -1221,20 +1358,29 @@ function CSPanel() {
     refetchOnWindowFocus: false,
   });
 
-  const phoneData = useMemo<Map<string, { calls: number; seconds: number }>>(() => {
-    const map = new Map<string, { calls: number; seconds: number }>();
+  const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
+    const map = new Map<string, PhoneAgentMetrics>();
     const agentStats = phoneQ.data?.teamStats?.["cs"] ?? {};
     for (const [agentName, days] of Object.entries(agentStats)) {
       const key = normalizeAgent(agentName);
-      let calls = 0;
-      let seconds = 0;
+      const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, inbound: 0, outbound: 0, uniqueContacts: 0 };
       for (const day of Object.values(days)) {
-        calls += (day as { totalCalls: number; talkSeconds: number }).totalCalls ?? 0;
-        seconds += (day as { talkSeconds: number }).talkSeconds ?? 0;
+        acc.calls += day.totalCalls ?? 0;
+        acc.seconds += day.talkSeconds ?? 0;
+        acc.answered += day.answered ?? 0;
+        acc.missed += day.missed ?? 0;
+        acc.voicemail += day.voicemail ?? 0;
+        acc.inbound += day.inbound ?? 0;
+        acc.outbound += day.outbound ?? 0;
+        acc.uniqueContacts += day.uniqueContacts ?? 0;
       }
-      if (calls > 0 || seconds > 0) {
-        const e = map.get(key) ?? { calls: 0, seconds: 0 };
-        map.set(key, { calls: e.calls + calls, seconds: e.seconds + seconds });
+      if (acc.calls > 0 || acc.seconds > 0) {
+        const e = map.get(key);
+        if (e) {
+          map.set(key, { calls: e.calls + acc.calls, seconds: e.seconds + acc.seconds, answered: e.answered + acc.answered, missed: e.missed + acc.missed, voicemail: e.voicemail + acc.voicemail, inbound: e.inbound + acc.inbound, outbound: e.outbound + acc.outbound, uniqueContacts: e.uniqueContacts + acc.uniqueContacts });
+        } else {
+          map.set(key, acc);
+        }
       }
     }
     return map;
@@ -1245,18 +1391,14 @@ function CSPanel() {
     const extra = [...phoneData.keys()].filter((k) => !known.has(k));
     return [
       ...CS_AGENTS,
-      ...extra.map((k) => {
-        const entry = [...phoneData.entries()].find(([ek]) => ek === k);
-        return entry ? k.replace(/\b\w/g, (c) => c.toUpperCase()) : k;
-      }),
+      ...extra.map((k) => k.replace(/\b\w/g, (c) => c.toUpperCase())),
     ];
   }, [phoneData]);
 
   const totals = useMemo(() => {
-    let calls = 0;
-    let seconds = 0;
-    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; }
-    return { calls, seconds };
+    let calls = 0, seconds = 0, answered = 0, missed = 0, uniqueContacts = 0;
+    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; uniqueContacts += v.uniqueContacts; }
+    return { calls, seconds, answered, missed, uniqueContacts };
   }, [phoneData]);
 
   function refresh() { phoneQ.refetch(); }
@@ -1281,7 +1423,10 @@ function CSPanel() {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <StatTile label="Agents" value={CS_AGENTS.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
           <StatTile label="Total calls" value={totals.calls.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
+          <StatTile label="Answered" value={totals.answered.toLocaleString()} tone="emerald" />
+          <StatTile label="Missed" value={totals.missed.toLocaleString()} tone="rose" />
           <StatTile label="Time on calls" value={formatHours(totals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
+          <StatTile label="Response rate" value={responseRate(totals.answered, totals.calls)} tone="amber" />
         </div>
 
         <div className="mb-3 flex items-center gap-3 flex-wrap">
@@ -1304,40 +1449,69 @@ function CSPanel() {
           <Button variant="ghost" size="sm" onClick={() => { setFrom(""); setTo(""); }}>Clear</Button>
         </div>
 
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="min-w-[200px]">Agent</TableHead>
-              <TableHead className="text-right">Calls</TableHead>
-              <TableHead className="text-right">Time on calls</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {allAgents.map((agent) => {
-              const ph = phoneData.get(normalizeAgent(agent));
-              return (
-                <TableRow key={agent} className="hover-elevate">
-                  <TableCell className="font-medium">{agent}</TableCell>
-                  <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>
-                    {ph?.calls ?? "—"}
-                  </TableCell>
-                  <TableCell className={`text-right tabular-nums font-mono ${!ph?.seconds ? "text-muted-foreground/40" : ""}`}>
-                    {ph?.seconds ? formatDuration(ph.seconds) : "—"}
-                  </TableCell>
+        <div className="rounded-lg border bg-card overflow-hidden">
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+                <TableRow>
+                  <TableHead className="min-w-[200px]">Agent</TableHead>
+                  <TableHead className="text-right">Calls</TableHead>
+                  <TableHead className="text-right text-emerald-400">Answered</TableHead>
+                  <TableHead className="text-right text-rose-400">Missed</TableHead>
+                  <TableHead className="text-right text-sky-400">Unique #</TableHead>
+                  <TableHead className="text-right">Talk time</TableHead>
+                  <TableHead className="text-right">Avg duration</TableHead>
+                  <TableHead className="text-right text-amber-400">Response %</TableHead>
                 </TableRow>
-              );
-            })}
-          </TableBody>
-          {allAgents.length > 0 && (
-            <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
-              <TableRow>
-                <TableCell className="font-bold">Whole team</TableCell>
-                <TableCell className="text-right tabular-nums font-mono font-bold">{totals.calls || "—"}</TableCell>
-                <TableCell className="text-right tabular-nums font-mono font-bold">{formatDuration(totals.seconds)}</TableCell>
-              </TableRow>
-            </TableHeader>
-          )}
-        </Table>
+              </TableHeader>
+              <TableBody>
+                {allAgents.map((agent) => {
+                  const ph = phoneData.get(normalizeAgent(agent));
+                  return (
+                    <TableRow key={agent} className="hover-elevate">
+                      <TableCell className="font-medium">{agent}</TableCell>
+                      <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>
+                        {ph?.calls ?? "—"}
+                      </TableCell>
+                      <TableCell className={`text-right tabular-nums font-mono ${ph?.answered ? "text-emerald-400" : "text-muted-foreground/40"}`}>
+                        {ph?.answered ?? "—"}
+                      </TableCell>
+                      <TableCell className={`text-right tabular-nums font-mono ${ph?.missed ? "text-rose-400" : "text-muted-foreground/40"}`}>
+                        {ph?.missed ?? "—"}
+                      </TableCell>
+                      <TableCell className={`text-right tabular-nums font-mono ${ph?.uniqueContacts ? "text-sky-400" : "text-muted-foreground/40"}`}>
+                        {ph?.uniqueContacts ?? "—"}
+                      </TableCell>
+                      <TableCell className={`text-right tabular-nums font-mono ${!ph?.seconds ? "text-muted-foreground/40" : ""}`}>
+                        {ph?.seconds ? formatDuration(ph.seconds) : "—"}
+                      </TableCell>
+                      <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>
+                        {ph ? avgDuration(ph.seconds, ph.calls) : "—"}
+                      </TableCell>
+                      <TableCell className={`text-right tabular-nums font-mono ${ph?.calls ? "text-amber-400" : "text-muted-foreground/40"}`}>
+                        {ph ? responseRate(ph.answered, ph.calls) : "—"}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+              {allAgents.length > 0 && (
+                <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
+                  <TableRow>
+                    <TableCell className="font-bold">Whole team</TableCell>
+                    <TableCell className="text-right tabular-nums font-mono font-bold">{totals.calls || "—"}</TableCell>
+                    <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totals.answered || "—"}</TableCell>
+                    <TableCell className="text-right tabular-nums font-mono font-bold text-rose-400">{totals.missed || "—"}</TableCell>
+                    <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totals.uniqueContacts || "—"}</TableCell>
+                    <TableCell className="text-right tabular-nums font-mono font-bold">{totals.seconds ? formatDuration(totals.seconds) : "—"}</TableCell>
+                    <TableCell className="text-right tabular-nums font-mono font-bold">{avgDuration(totals.seconds, totals.calls)}</TableCell>
+                    <TableCell className="text-right tabular-nums font-mono font-bold text-amber-400">{responseRate(totals.answered, totals.calls)}</TableCell>
+                  </TableRow>
+                </TableHeader>
+              )}
+            </Table>
+          </div>
+        </div>
       </CardContent>
     </Card>
   );

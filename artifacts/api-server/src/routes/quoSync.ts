@@ -19,17 +19,18 @@ function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   const n = name.toLowerCase().trim();
   if (/retention|ob|outbound|maison|tax|jacob|levi|ryan|mike|adam|rick|zeiad|zack/.test(n)) return "retention";
   if (/nsf|national settlement|ellie|alex|katie|jenny|estella|talia|rika|austin/.test(n)) return "nsf";
-  if (/\bcs\b|customer support/.test(n) || name === "SCs" || name === "CS Team") return "cs";
+  if (/\bcs\b|customer support/.test(n) || name === "CS Team") return "cs";
   return null;
 }
 
 const LINE_AGENT_OVERRIDES: Record<string, string> = {
-  // Line owner → real agent (format: "<line_name_lowercase>" → "<display name>")
+  // Line name (lowercase) → display name for every call on that line
   "adam ob": "Abdulrhman Isawi",
   "jacob ob": "Youssef Nady",
   "levi ob": "Ahmed Ayman",
   "rick ob": "Zeiad Fouad",
-  // Legacy keys kept in case line names change in OpenPhone
+  "ryan ob": "Ryan Henderson",
+  // Legacy / alternate line name formats
   "abdlrhman-jacob stephenson": "Abdulrhman Isawi",
   "youssef nady-jacob xander": "Youssef Nady",
   "ahmed ayman-levi miller": "Ahmed Ayman",
@@ -38,10 +39,38 @@ const LINE_AGENT_OVERRIDES: Record<string, string> = {
   "mohammed ayman-max francis-2268": "Max Francis",
 };
 
+// Email → canonical display name (used for shared lines like CS Team where
+// each agent uses their own OpenPhone user account)
+const USER_EMAIL_OVERRIDES: Record<string, string> = {
+  // CS Team
+  "noura.asahab@gmail.com": "Nora Adam",
+  "basantemadeldin@yahoo.com": "Carla Bennet",
+  "carla.bennet212@gmail.com": "Carla Bennet",
+  "basantemadeldin@gmail.com": "Carla Bennet",
+  "leocarter032@gmail.com": "Leo Carter",
+  // Retention (covers shared/multi-assigned lines)
+  "abdulrhmanisawi61@gmail.com": "Abdulrhman Isawi",
+  "usave1792001@gmail.com": "Youssef Nady",
+  "leviimiller178@gmail.com": "Ahmed Ayman",
+  "muhamedwalid053@gmail.com": "Ryan Henderson",
+  "zeiad.shebo@yahoo.com": "Zeiad Fouad",
+  "nouralden.abdel0@gmail.com": "Michael Belfort",
+  "mohammed.mdidnd2001@gmail.com": "Max Francis",
+  // NSF
+  "alii.kamal.othman@gmail.com": "Alex Cruz",
+  "lucaash220@gmail.com": "Austin White",
+  "riham.samir.web@gmail.com": "Rika Hart",
+  "hiitisahd@gmail.com": "Jenny Morgan",
+  "emankhamisz58@gmail.com": "Estella Cruz",
+  "toqahossam548@gmail.com": "Talia Morgan",
+  "samafarouk90@gmail.com": "Katie Miller",
+  "ingimahmoud01@gmail.com": "Ellie Moser",
+};
+
 interface PhoneNumber {
   id: string;
   name: string;
-  users?: { id: string; firstName: string; lastName: string }[];
+  users?: { id: string; firstName: string; lastName: string; email?: string }[];
 }
 
 interface Call {
@@ -111,7 +140,11 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
   for (const line of lines) {
     for (const u of line.users ?? []) {
       if (!userMap.has(u.id)) {
-        userMap.set(u.id, `${u.firstName} ${u.lastName}`.trim());
+        const emailKey = u.email?.toLowerCase().trim() ?? "";
+        const displayName =
+          (emailKey && USER_EMAIL_OVERRIDES[emailKey]) ??
+          `${u.firstName} ${u.lastName}`.trim();
+        userMap.set(u.id, displayName);
       }
     }
   }
@@ -164,6 +197,7 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
         .onConflictDoUpdate({
           target: phoneCallsTable.id,
           set: {
+            lineTeam: sql`excluded.line_team`,
             agentId: sql`excluded.agent_id`,
             agentName: sql`excluded.agent_name`,
             status: sql`excluded.status`,
