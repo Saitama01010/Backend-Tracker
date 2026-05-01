@@ -31,6 +31,10 @@ import {
   CalendarDays,
   Users,
   Download,
+  Lock,
+  PhoneIncoming,
+  PhoneOutgoing,
+  PhoneMissed,
 } from "lucide-react";
 
 const queryClient = new QueryClient();
@@ -1389,12 +1393,16 @@ function TeamPanel({
               <TabsList>
                 <TabsTrigger value="agent" data-testid="subtab-agent">By agent</TabsTrigger>
                 <TabsTrigger value="day" data-testid="subtab-day">By day</TabsTrigger>
+                <TabsTrigger value="call" data-testid="subtab-call">By call</TabsTrigger>
               </TabsList>
               <TabsContent value="agent">
                 <ByAgentView data={aggregated} phoneData={phoneData} />
               </TabsContent>
               <TabsContent value="day">
                 <ByDayView data={aggregated} />
+              </TabsContent>
+              <TabsContent value="call">
+                <ByCallView team={mode} from={from} to={to} />
               </TabsContent>
             </Tabs>
           </>
@@ -1520,6 +1528,15 @@ function CSPanel() {
           <Button variant="ghost" size="sm" onClick={() => { setFrom(""); setTo(""); }}>Clear</Button>
         </div>
 
+        <Tabs defaultValue="agent" className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="agent">By agent</TabsTrigger>
+            <TabsTrigger value="call">By call</TabsTrigger>
+          </TabsList>
+          <TabsContent value="call">
+            <ByCallView team="cs" from={from} to={to} />
+          </TabsContent>
+          <TabsContent value="agent">
         <div className="rounded-lg border bg-card overflow-hidden">
           <div className="overflow-x-auto">
             <Table>
@@ -1598,8 +1615,224 @@ function CSPanel() {
             </Table>
           </div>
         </div>
+          </TabsContent>
+        </Tabs>
       </CardContent>
     </Card>
+  );
+}
+
+interface CallRecord {
+  id: string;
+  lineTeam: string;
+  lineName: string;
+  agentName: string | null;
+  participant: string;
+  direction: string;
+  status: string;
+  durationSeconds: number;
+  createdAt: string;
+}
+
+function directionIcon(dir: string) {
+  if (dir === "outgoing") return <PhoneOutgoing className="h-3.5 w-3.5 text-fuchsia-400" />;
+  return <PhoneIncoming className="h-3.5 w-3.5 text-cyan-400" />;
+}
+
+function statusIcon(status: string) {
+  if (status === "completed") return <span className="text-emerald-400 text-xs font-semibold">Answered</span>;
+  if (status === "voicemail") return <span className="text-amber-400 text-xs font-semibold">Voicemail</span>;
+  if (status === "missed") return <span className="text-rose-400 text-xs font-semibold">Missed</span>;
+  return <span className="text-muted-foreground text-xs">{status}</span>;
+}
+
+function ByCallView({ team, from, to }: { team: string; from: string; to: string }) {
+  const pFrom = from ? `${from}T00:00:00Z` : new Date(Date.now() - 30 * 86400000).toISOString();
+  const pTo = to ? `${to}T23:59:59Z` : new Date().toISOString();
+
+  const q = useQuery<{ data: CallRecord[] } | null>({
+    queryKey: ["calls", team, pFrom, pTo],
+    queryFn: async () => {
+      const url = `/api/quo/calls?team=${team}&from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}&limit=500`;
+      const r = await fetch(url);
+      if (!r.ok) return null;
+      return r.json() as Promise<{ data: CallRecord[] }>;
+    },
+    staleTime: 1000 * 60 * 2,
+    refetchOnWindowFocus: false,
+  });
+
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "createdAt", dir: "desc" });
+
+  const calls = useMemo(() => {
+    const raw = q.data?.data ?? [];
+    const filtered = search
+      ? raw.filter(
+          (c) =>
+            (c.agentName ?? "").toLowerCase().includes(search.toLowerCase()) ||
+            c.participant.includes(search) ||
+            c.lineName.toLowerCase().includes(search.toLowerCase()),
+        )
+      : raw;
+    return [...filtered].sort((a, b) => {
+      let av: string | number = a[sort.col as keyof CallRecord] as string | number ?? "";
+      let bv: string | number = b[sort.col as keyof CallRecord] as string | number ?? "";
+      if (sort.col === "durationSeconds") { av = Number(av); bv = Number(bv); }
+      const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      return sort.dir === "asc" ? cmp : -cmp;
+    });
+  }, [q.data, search, sort]);
+
+  function toggleSort(col: string) {
+    setSort((s) => s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: "desc" });
+  }
+
+  function SortTh({ col, label, align = "left" }: { col: string; label: string; align?: "left" | "right" }) {
+    const active = sort.col === col;
+    return (
+      <TableHead className={align === "right" ? "text-right" : ""}>
+        <button type="button" onClick={() => toggleSort(col)}
+          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${active ? "text-violet-300" : "text-muted-foreground"} ${align === "right" ? "flex-row-reverse" : ""}`}>
+          {label}
+          {active ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
+        </button>
+      </TableHead>
+    );
+  }
+
+  if (q.isLoading) return <TableSkeleton />;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative flex-1 min-w-[200px] max-w-xs">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input placeholder="Search agent, number..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+        </div>
+        <span className="text-sm text-muted-foreground">{calls.length.toLocaleString()} calls</span>
+        <Button variant="ghost" size="sm" onClick={() => q.refetch()} disabled={q.isFetching}>
+          <RefreshCw className={`h-4 w-4 mr-1 ${q.isFetching ? "animate-spin" : ""}`} /> Refresh
+        </Button>
+      </div>
+      <div className="rounded-lg border bg-card overflow-hidden">
+        <div className="overflow-x-auto max-h-[65vh]">
+          <Table>
+            <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+              <TableRow>
+                <SortTh col="createdAt" label="Date / Time" />
+                <SortTh col="agentName" label="Agent" />
+                <SortTh col="lineName" label="Line" />
+                <TableHead>Dir</TableHead>
+                <TableHead>Status</TableHead>
+                <SortTh col="durationSeconds" label="Duration" align="right" />
+                <TableHead>External #</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {calls.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
+                    No calls found for the selected range.
+                  </TableCell>
+                </TableRow>
+              )}
+              {calls.map((c) => (
+                <TableRow key={c.id} className="hover-elevate text-sm">
+                  <TableCell className="tabular-nums font-mono text-xs text-muted-foreground whitespace-nowrap">
+                    {new Date(c.createdAt).toLocaleString()}
+                  </TableCell>
+                  <TableCell className="font-medium whitespace-nowrap">{c.agentName ?? "—"}</TableCell>
+                  <TableCell className="text-muted-foreground text-xs whitespace-nowrap">{c.lineName}</TableCell>
+                  <TableCell>{directionIcon(c.direction)}</TableCell>
+                  <TableCell>{statusIcon(c.status)}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono">
+                    {c.durationSeconds > 0 ? formatDuration(c.durationSeconds) : <span className="text-muted-foreground/40">—</span>}
+                  </TableCell>
+                  <TableCell className="tabular-nums font-mono text-muted-foreground text-xs">{c.participant || "—"}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PasswordGate({ children }: { children: React.ReactNode }) {
+  const [authed, setAuthed] = useState(() => sessionStorage.getItem("tracker_authed") === "1");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const r = await fetch("/api/auth/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      if (r.ok) {
+        sessionStorage.setItem("tracker_authed", "1");
+        setAuthed(true);
+      } else {
+        setError("Incorrect password. Try again.");
+        setPassword("");
+      }
+    } catch {
+      setError("Connection error. Try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (authed) return <>{children}</>;
+
+  return (
+    <div className="min-h-screen bg-background flex items-center justify-center relative overflow-hidden">
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute -top-32 -left-32 h-[500px] w-[500px] rounded-full bg-violet-600/20 blur-[120px]" />
+        <div className="absolute bottom-0 right-0 h-[400px] w-[400px] rounded-full bg-fuchsia-500/15 blur-[120px]" />
+      </div>
+      <div className="relative w-full max-w-sm mx-4">
+        <div className="rounded-2xl border border-white/10 bg-card/80 backdrop-blur-xl p-8 space-y-6 shadow-2xl">
+          <div className="flex flex-col items-center gap-3">
+            <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center shadow-[0_0_24px_-6px_rgba(168,85,247,0.7)]">
+              <Rocket className="h-6 w-6 text-white" />
+            </div>
+            <div className="text-center">
+              <h1 className="text-xl font-bold bg-gradient-to-r from-violet-300 via-fuchsia-300 to-sky-300 bg-clip-text text-transparent">
+                Backend Tracker
+              </h1>
+              <p className="text-sm text-muted-foreground mt-1">Enter your password to continue</p>
+            </div>
+          </div>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="relative">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                type="password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="pl-10"
+                autoFocus
+              />
+            </div>
+            {error && (
+              <p className="text-sm text-rose-400 text-center">{error}</p>
+            )}
+            <Button type="submit" className="w-full bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white" disabled={loading || !password}>
+              {loading ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Sign in"}
+            </Button>
+          </form>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1651,7 +1884,9 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <Dashboard />
+        <PasswordGate>
+          <Dashboard />
+        </PasswordGate>
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>

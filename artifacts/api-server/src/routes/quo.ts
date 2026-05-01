@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db, phoneCallsTable } from "@workspace/db";
-import { and, gte, lte } from "drizzle-orm";
+import { and, gte, lte, desc } from "drizzle-orm";
 import { runSync, startBackgroundSync, getSyncState } from "./quoSync.js";
 
 const router: IRouter = Router();
@@ -201,6 +201,54 @@ router.get("/quo/sync-state", async (req, res) => {
     res.json(state ?? { id: "singleton", lastSyncedAt: null, isSyncing: false });
   } catch (err) {
     req.log.error(err, "quo sync state error");
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.post("/auth/verify", (req, res) => {
+  const expected = process.env["DASHBOARD_PASSWORD"] ?? "tracker2026";
+  const { password } = req.body ?? {};
+  if (typeof password === "string" && password === expected) {
+    res.json({ ok: true });
+  } else {
+    res.status(401).json({ ok: false, error: "Invalid password" });
+  }
+});
+
+router.get("/quo/calls", async (req, res) => {
+  try {
+    const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString();
+    const to = (req.query["to"] as string) || new Date().toISOString();
+    const team = (req.query["team"] as string) || undefined;
+    const limitParam = Math.min(Number(req.query["limit"] ?? 500), 1000);
+    const offsetParam = Number(req.query["offset"] ?? 0);
+
+    const fromDate = new Date(from);
+    const toDate = new Date(to);
+
+    const rows = await db
+      .select({
+        id: phoneCallsTable.id,
+        lineTeam: phoneCallsTable.lineTeam,
+        lineName: phoneCallsTable.lineName,
+        agentName: phoneCallsTable.agentName,
+        participant: phoneCallsTable.participant,
+        direction: phoneCallsTable.direction,
+        status: phoneCallsTable.status,
+        durationSeconds: phoneCallsTable.durationSeconds,
+        createdAt: phoneCallsTable.createdAt,
+      })
+      .from(phoneCallsTable)
+      .where(and(gte(phoneCallsTable.createdAt, fromDate), lte(phoneCallsTable.createdAt, toDate)))
+      .orderBy(desc(phoneCallsTable.createdAt))
+      .limit(limitParam)
+      .offset(offsetParam);
+
+    const filtered = team ? rows.filter((r) => r.lineTeam === team) : rows;
+
+    res.json({ data: filtered, total: filtered.length });
+  } catch (err) {
+    req.log.error(err, "quo calls error");
     res.status(500).json({ error: String(err) });
   }
 });
