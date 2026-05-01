@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import Papa from "papaparse";
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -151,6 +151,36 @@ function formatHours(sec: number): string {
   if (!sec) return "0h";
   const h = sec / 3600;
   return h >= 10 ? `${Math.round(h)}h` : `${h.toFixed(1)}h`;
+}
+
+function formatTimeSince(isoStr: string, now: number): string {
+  const diff = Math.max(0, now - new Date(isoStr).getTime());
+  const totalSecs = Math.floor(diff / 1000);
+  const d = Math.floor(totalSecs / 86400);
+  const h = Math.floor((totalSecs % 86400) / 3600);
+  const m = Math.floor((totalSecs % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h ago`;
+  if (h > 0) return `${h}h ${m}m ago`;
+  if (m > 0) return `${m}m ago`;
+  return "just now";
+}
+
+function useNow(intervalMs = 30000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
+
+function TimeSince({ isoStr }: { isoStr?: string }) {
+  const now = useNow(30000);
+  if (!isoStr) return <span className="text-muted-foreground/40">—</span>;
+  const diff = Date.now() - new Date(isoStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  const color = mins < 30 ? "text-emerald-400" : mins < 120 ? "text-amber-400" : "text-rose-400";
+  return <span className={`tabular-nums font-mono ${color}`}>{formatTimeSince(isoStr, now)}</span>;
 }
 
 // ---------- Aggregation ----------
@@ -853,6 +883,7 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
                 <TableHead className="whitespace-nowrap text-right text-amber-400">
                   <SortHeader id="__resp__" label="Response %" align="right" sort={sort} onToggle={toggle} />
                 </TableHead>
+                <TableHead className="whitespace-nowrap text-right text-violet-400">Last call</TableHead>
                 {data.statuses.map((s) => (
                   <TableHead key={s} className={`whitespace-nowrap text-right ${statusTone(s)}`}>
                     <SortHeader id={s} label={s} align="right" sort={sort} onToggle={toggle} />
@@ -910,6 +941,9 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
                     </TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.calls ? "text-amber-400" : "text-muted-foreground/40"}`}>
                       {ph ? responseRate(ph.answered, ph.calls) : "—"}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <TimeSince isoStr={ph?.lastCallAt} />
                     </TableCell>
                     {data.statuses.map((s) => {
                       const v = a.byStatus.get(s) ?? 0;
@@ -973,6 +1007,7 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
                       return responseRate(totAns, totCalls);
                     })()}
                   </TableCell>
+                  <TableCell />
                   {data.statuses.map((s) => (
                     <TableCell key={s} className="text-right tabular-nums font-mono font-bold">
                       {data.totals.byStatus.get(s) ?? 0}
@@ -1137,6 +1172,7 @@ interface PhoneAgentMetrics {
   inbound: number;
   outbound: number;
   uniqueContacts: number;
+  lastCallAt?: string;
 }
 
 interface PhoneAgentDay {
@@ -1152,6 +1188,7 @@ interface PhoneAgentDay {
 
 interface PhoneStatsResponse {
   teamStats: Record<string, Record<string, Record<string, PhoneAgentDay>>>;
+  agentLastCall?: Record<string, Record<string, string>>;
 }
 
 function TeamPanel({
@@ -1198,9 +1235,10 @@ function TeamPanel({
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
     const map = new Map<string, PhoneAgentMetrics>();
     const agentStats = phoneQ.data?.teamStats?.[mode] ?? {};
+    const lastCallMap = phoneQ.data?.agentLastCall?.[mode] ?? {};
     for (const [agentName, days] of Object.entries(agentStats)) {
       const key = normalizeAgent(agentName);
-      const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, inbound: 0, outbound: 0, uniqueContacts: 0 };
+      const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
       for (const day of Object.values(days)) {
         acc.calls += day.totalCalls ?? 0;
         acc.seconds += day.talkSeconds ?? 0;
@@ -1214,7 +1252,8 @@ function TeamPanel({
       if (acc.calls > 0 || acc.seconds > 0) {
         const e = map.get(key);
         if (e) {
-          map.set(key, { calls: e.calls + acc.calls, seconds: e.seconds + acc.seconds, answered: e.answered + acc.answered, missed: e.missed + acc.missed, voicemail: e.voicemail + acc.voicemail, inbound: e.inbound + acc.inbound, outbound: e.outbound + acc.outbound, uniqueContacts: e.uniqueContacts + acc.uniqueContacts });
+          const mergedLast = e.lastCallAt && acc.lastCallAt ? (e.lastCallAt > acc.lastCallAt ? e.lastCallAt : acc.lastCallAt) : (e.lastCallAt ?? acc.lastCallAt);
+          map.set(key, { calls: e.calls + acc.calls, seconds: e.seconds + acc.seconds, answered: e.answered + acc.answered, missed: e.missed + acc.missed, voicemail: e.voicemail + acc.voicemail, inbound: e.inbound + acc.inbound, outbound: e.outbound + acc.outbound, uniqueContacts: e.uniqueContacts + acc.uniqueContacts, lastCallAt: mergedLast });
         } else {
           map.set(key, acc);
         }
@@ -1388,9 +1427,10 @@ function CSPanel() {
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
     const map = new Map<string, PhoneAgentMetrics>();
     const agentStats = phoneQ.data?.teamStats?.["cs"] ?? {};
+    const lastCallMap = phoneQ.data?.agentLastCall?.["cs"] ?? {};
     for (const [agentName, days] of Object.entries(agentStats)) {
       const key = normalizeAgent(agentName);
-      const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, inbound: 0, outbound: 0, uniqueContacts: 0 };
+      const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
       for (const day of Object.values(days)) {
         acc.calls += day.totalCalls ?? 0;
         acc.seconds += day.talkSeconds ?? 0;
@@ -1404,7 +1444,8 @@ function CSPanel() {
       if (acc.calls > 0 || acc.seconds > 0) {
         const e = map.get(key);
         if (e) {
-          map.set(key, { calls: e.calls + acc.calls, seconds: e.seconds + acc.seconds, answered: e.answered + acc.answered, missed: e.missed + acc.missed, voicemail: e.voicemail + acc.voicemail, inbound: e.inbound + acc.inbound, outbound: e.outbound + acc.outbound, uniqueContacts: e.uniqueContacts + acc.uniqueContacts });
+          const mergedLast = e.lastCallAt && acc.lastCallAt ? (e.lastCallAt > acc.lastCallAt ? e.lastCallAt : acc.lastCallAt) : (e.lastCallAt ?? acc.lastCallAt);
+          map.set(key, { calls: e.calls + acc.calls, seconds: e.seconds + acc.seconds, answered: e.answered + acc.answered, missed: e.missed + acc.missed, voicemail: e.voicemail + acc.voicemail, inbound: e.inbound + acc.inbound, outbound: e.outbound + acc.outbound, uniqueContacts: e.uniqueContacts + acc.uniqueContacts, lastCallAt: mergedLast });
         } else {
           map.set(key, acc);
         }
@@ -1494,6 +1535,7 @@ function CSPanel() {
                   <TableHead className="text-right">Talk time</TableHead>
                   <TableHead className="text-right">Avg duration</TableHead>
                   <TableHead className="text-right text-amber-400">Response %</TableHead>
+                  <TableHead className="text-right text-violet-400">Last call</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1529,6 +1571,9 @@ function CSPanel() {
                       <TableCell className={`text-right tabular-nums font-mono ${ph?.calls ? "text-amber-400" : "text-muted-foreground/40"}`}>
                         {ph ? responseRate(ph.answered, ph.calls) : "—"}
                       </TableCell>
+                      <TableCell className="text-right">
+                        <TimeSince isoStr={ph?.lastCallAt} />
+                      </TableCell>
                     </TableRow>
                   );
                 })}
@@ -1546,6 +1591,7 @@ function CSPanel() {
                     <TableCell className="text-right tabular-nums font-mono font-bold">{totals.seconds ? formatDuration(totals.seconds) : "—"}</TableCell>
                     <TableCell className="text-right tabular-nums font-mono font-bold">{avgDuration(totals.seconds, totals.calls)}</TableCell>
                     <TableCell className="text-right tabular-nums font-mono font-bold text-amber-400">{responseRate(totals.answered, totals.calls)}</TableCell>
+                    <TableCell />
                   </TableRow>
                 </TableHeader>
               )}

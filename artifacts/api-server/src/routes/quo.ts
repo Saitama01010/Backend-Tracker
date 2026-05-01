@@ -95,6 +95,8 @@ router.get("/quo/stats", async (req, res) => {
       >
     > = { retention: {}, nsf: {}, cs: {} };
 
+    const agentLastCall: Record<string, Record<string, Date>> = {};
+
     const lineInbound: Record<
       string,
       Record<string, { lineId: string; lineName: string; received: number; answered: number; missed: number; voicemail: number }>
@@ -117,6 +119,10 @@ router.get("/quo/stats", async (req, res) => {
       slot.totalCalls++;
       slot.talkSeconds += row.durationSeconds;
       slot.uniqueContacts.add(row.participant);
+      if (!agentLastCall[team]) agentLastCall[team] = {};
+      if (!agentLastCall[team][agentName] || row.createdAt > agentLastCall[team][agentName]) {
+        agentLastCall[team][agentName] = row.createdAt;
+      }
       if (row.direction === "outgoing") slot.outbound++;
       else slot.inbound++;
       if (row.status === "completed") slot.answered++;
@@ -152,9 +158,18 @@ router.get("/quo/stats", async (req, res) => {
 
     const syncState = await getSyncState();
 
+    const agentLastCallSerialized: Record<string, Record<string, string>> = {};
+    for (const [team, agents] of Object.entries(agentLastCall)) {
+      agentLastCallSerialized[team] = {};
+      for (const [agent, ts] of Object.entries(agents)) {
+        agentLastCallSerialized[team][agent] = ts.toISOString();
+      }
+    }
+
     res.json({
       teamStats: serializeStats(),
       lineInbound,
+      agentLastCall: agentLastCallSerialized,
       totalRows: rows.length,
       lastSyncedAt: syncState?.lastSyncedAt ?? null,
       isSyncing: syncState?.isSyncing ?? false,
