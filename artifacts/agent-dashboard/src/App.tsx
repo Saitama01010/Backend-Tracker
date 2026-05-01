@@ -876,11 +876,12 @@ function ByFilesView({ data }: { data: Aggregated }) {
   );
 }
 
-function ByCallStatsView({ agentList, phoneData }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics> }) {
+function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics>; directKeys?: boolean }) {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "__calls__", dir: "desc" });
 
-  const getPhone = (agent: string) => phoneData.get(sheetToPhoneKey(agent));
+  const getPhone = (agent: string) =>
+    directKeys ? phoneData.get(normalizeAgent(agent)) : phoneData.get(sheetToPhoneKey(agent));
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1286,23 +1287,36 @@ function TeamPanel({
             {aggregated.error}
           </div>
         )}
-        {aggregated && !("error" in aggregated) && (
-          <>
-            <DateFilters
-              minDate={aggregated.minDate}
-              maxDate={aggregated.maxDate}
-              from={from}
-              to={to}
-              setFrom={setFrom}
-              setTo={setTo}
-              onReset={() => {
-                setFrom("");
-                setTo("");
-              }}
-            />
+        {aggregated && !("error" in aggregated) ? (
+          <DateFilters
+            minDate={aggregated.minDate}
+            maxDate={aggregated.maxDate}
+            from={from}
+            to={to}
+            setFrom={setFrom}
+            setTo={setTo}
+            onReset={() => { setFrom(""); setTo(""); }}
+          />
+        ) : (
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-sm text-muted-foreground flex items-center gap-1">
+              <CalendarDays className="h-3.5 w-3.5" /> Date range
+            </span>
+            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
+              className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground" />
+            <span className="text-muted-foreground text-sm">to</span>
+            <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
+              className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground" />
+            <Button variant="ghost" size="sm" onClick={() => { setFrom(""); setTo(""); }}>Clear</Button>
+          </div>
+        )}
 
+        {(aggregated && !("error" in aggregated)) || phoneData.size > 0 ? (
+          <>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <StatTile label="Agents" value={aggregated.totals.agents} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+              {aggregated && !("error" in aggregated) && (
+                <StatTile label="Agents" value={aggregated.totals.agents} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+              )}
               <StatTile
                 label="Total calls"
                 value={phoneTotals.calls.toLocaleString()}
@@ -1315,68 +1329,52 @@ function TeamPanel({
                 icon={<Clock className="h-3.5 w-3.5" />}
                 tone="amber"
               />
-              {mode === "nsf" ? (
+              {aggregated && !("error" in aggregated) && (mode === "nsf" ? (
                 <>
-                  <StatTile
-                    label="Today's fixed"
-                    value={aggregated.todayCount.toLocaleString()}
-                    tone="emerald"
-                  />
-                  <StatTile
-                    label="This month's fixed"
-                    value={aggregated.monthCount.toLocaleString()}
-                    tone="emerald"
-                  />
-                  <StatTile
-                    label="Total fixed"
-                    value={aggregated.totals.grand.toLocaleString()}
-                    tone="violet"
-                  />
+                  <StatTile label="Today's fixed" value={aggregated.todayCount.toLocaleString()} tone="emerald" />
+                  <StatTile label="This month's fixed" value={aggregated.monthCount.toLocaleString()} tone="emerald" />
+                  <StatTile label="Total fixed" value={aggregated.totals.grand.toLocaleString()} tone="violet" />
                 </>
               ) : (
                 <>
-                  <StatTile
-                    label="Today's retains"
-                    value={aggregated.todayRetained.toLocaleString()}
-                    tone="emerald"
-                  />
-                  <StatTile
-                    label="This month's retains"
-                    value={aggregated.monthRetained.toLocaleString()}
-                    tone="emerald"
-                  />
-                  <StatTile
-                    label="This month's cancels"
-                    value={aggregated.monthCancelled.toLocaleString()}
-                    tone="rose"
-                  />
-                  <StatTile
-                    label="Retention rate"
-                    value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)}
-                    tone="violet"
-                  />
+                  <StatTile label="Today's retains" value={aggregated.todayRetained.toLocaleString()} tone="emerald" />
+                  <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />
+                  <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />
+                  <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />
                 </>
-              )}
+              ))}
             </div>
 
-            <Tabs defaultValue="files" className="space-y-4">
+            <Tabs defaultValue="call" className="space-y-4">
               <TabsList>
-                <TabsTrigger value="files" data-testid="subtab-agent">By files</TabsTrigger>
                 <TabsTrigger value="call" data-testid="subtab-call">By call</TabsTrigger>
-                <TabsTrigger value="day" data-testid="subtab-day">By day</TabsTrigger>
+                {aggregated && !("error" in aggregated) && (
+                  <>
+                    <TabsTrigger value="files" data-testid="subtab-agent">By files</TabsTrigger>
+                    <TabsTrigger value="day" data-testid="subtab-day">By day</TabsTrigger>
+                  </>
+                )}
               </TabsList>
-              <TabsContent value="files">
-                <ByFilesView data={aggregated} />
-              </TabsContent>
               <TabsContent value="call">
-                <ByCallStatsView agentList={aggregated.byAgent.map((a) => a.agent)} phoneData={phoneData} />
+                <ByCallStatsView
+                  agentList={[...phoneData.keys()].map((k) => k.replace(/\b\w/g, (c) => c.toUpperCase()))}
+                  phoneData={phoneData}
+                  directKeys
+                />
               </TabsContent>
-              <TabsContent value="day">
-                <ByDayView data={aggregated} />
-              </TabsContent>
+              {aggregated && !("error" in aggregated) && (
+                <>
+                  <TabsContent value="files">
+                    <ByFilesView data={aggregated} />
+                  </TabsContent>
+                  <TabsContent value="day">
+                    <ByDayView data={aggregated} />
+                  </TabsContent>
+                </>
+              )}
             </Tabs>
           </>
-        )}
+        ) : null}
       </CardContent>
     </Card>
   );
