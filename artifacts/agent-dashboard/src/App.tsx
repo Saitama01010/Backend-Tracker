@@ -718,6 +718,12 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
         } else if (sort.column === "__time__") {
           av = phA?.seconds ?? 0;
           bv = phB?.seconds ?? 0;
+        } else if (sort.column === "__outbound__") {
+          av = phA?.outbound ?? 0;
+          bv = phB?.outbound ?? 0;
+        } else if (sort.column === "__inbound__") {
+          av = phA?.inbound ?? 0;
+          bv = phB?.inbound ?? 0;
         } else if (sort.column === "__answered__") {
           av = phA?.answered ?? 0;
           bv = phB?.answered ?? 0;
@@ -765,6 +771,8 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
       const ph = getPhone(a.agent);
       const record: Record<string, string | number> = { Agent: a.agent };
       record["Calls"] = ph?.calls ?? 0;
+      record["Outbound"] = ph?.outbound ?? 0;
+      record["Inbound"] = ph?.inbound ?? 0;
       record["Answered"] = ph?.answered ?? 0;
       record["Missed"] = ph?.missed ?? 0;
       record["Unique #"] = ph?.uniqueContacts ?? 0;
@@ -821,6 +829,12 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
                 <TableHead className="whitespace-nowrap text-right">
                   <SortHeader id="__calls__" label="Calls" align="right" sort={sort} onToggle={toggle} />
                 </TableHead>
+                <TableHead className="whitespace-nowrap text-right text-fuchsia-400">
+                  <SortHeader id="__outbound__" label="Outbound" align="right" sort={sort} onToggle={toggle} />
+                </TableHead>
+                <TableHead className="whitespace-nowrap text-right text-cyan-400">
+                  <SortHeader id="__inbound__" label="Inbound" align="right" sort={sort} onToggle={toggle} />
+                </TableHead>
                 <TableHead className="whitespace-nowrap text-right text-emerald-400">
                   <SortHeader id="__answered__" label="Answered" align="right" sort={sort} onToggle={toggle} />
                 </TableHead>
@@ -873,6 +887,12 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
                     <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>
                       {ph?.calls ?? "—"}
                     </TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.outbound ? "text-fuchsia-400" : "text-muted-foreground/40"}`}>
+                      {ph?.outbound ?? "—"}
+                    </TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.inbound ? "text-cyan-400" : "text-muted-foreground/40"}`}>
+                      {ph?.inbound ?? "—"}
+                    </TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.answered ? "text-emerald-400" : "text-muted-foreground/40"}`}>
                       {ph?.answered ?? "—"}
                     </TableCell>
@@ -920,6 +940,12 @@ function ByAgentView({ data, phoneData }: { data: Aggregated; phoneData?: Map<st
                   <TableCell className="font-bold whitespace-nowrap">Whole team</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold">
                     {visible.reduce((s, a) => s + (getPhone(a.agent)?.calls ?? 0), 0)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-fuchsia-400">
+                    {visible.reduce((s, a) => s + (getPhone(a.agent)?.outbound ?? 0), 0)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">
+                    {visible.reduce((s, a) => s + (getPhone(a.agent)?.inbound ?? 0), 0)}
                   </TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">
                     {visible.reduce((s, a) => s + (getPhone(a.agent)?.answered ?? 0), 0)}
@@ -1456,6 +1482,8 @@ function CSPanel() {
                 <TableRow>
                   <TableHead className="min-w-[200px]">Agent</TableHead>
                   <TableHead className="text-right">Calls</TableHead>
+                  <TableHead className="text-right text-fuchsia-400">Outbound</TableHead>
+                  <TableHead className="text-right text-cyan-400">Inbound</TableHead>
                   <TableHead className="text-right text-emerald-400">Answered</TableHead>
                   <TableHead className="text-right text-rose-400">Missed</TableHead>
                   <TableHead className="text-right text-sky-400">Unique #</TableHead>
@@ -1472,6 +1500,12 @@ function CSPanel() {
                       <TableCell className="font-medium">{agent}</TableCell>
                       <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>
                         {ph?.calls ?? "—"}
+                      </TableCell>
+                      <TableCell className={`text-right tabular-nums font-mono ${ph?.outbound ? "text-fuchsia-400" : "text-muted-foreground/40"}`}>
+                        {ph?.outbound ?? "—"}
+                      </TableCell>
+                      <TableCell className={`text-right tabular-nums font-mono ${ph?.inbound ? "text-cyan-400" : "text-muted-foreground/40"}`}>
+                        {ph?.inbound ?? "—"}
                       </TableCell>
                       <TableCell className={`text-right tabular-nums font-mono ${ph?.answered ? "text-emerald-400" : "text-muted-foreground/40"}`}>
                         {ph?.answered ?? "—"}
@@ -1500,6 +1534,8 @@ function CSPanel() {
                   <TableRow>
                     <TableCell className="font-bold">Whole team</TableCell>
                     <TableCell className="text-right tabular-nums font-mono font-bold">{totals.calls || "—"}</TableCell>
+                    <TableCell className="text-right tabular-nums font-mono font-bold text-fuchsia-400">{[...phoneData.values()].reduce((s, v) => s + v.outbound, 0) || "—"}</TableCell>
+                    <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{[...phoneData.values()].reduce((s, v) => s + v.inbound, 0) || "—"}</TableCell>
                     <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totals.answered || "—"}</TableCell>
                     <TableCell className="text-right tabular-nums font-mono font-bold text-rose-400">{totals.missed || "—"}</TableCell>
                     <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totals.uniqueContacts || "—"}</TableCell>
