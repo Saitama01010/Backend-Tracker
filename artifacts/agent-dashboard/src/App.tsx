@@ -92,15 +92,16 @@ const PHONE_BLOCKLIST = new Set(["useyzjeml5", "ush0pegsjr", "shahin ."]);
 // Extra phone-only agents per team (not in the Google Sheet, but on the team)
 // Keys must match OpenPhone agent names (normalized lowercase)
 const TEAM_PHONE_EXTRAS: Record<string, string[]> = {
-  retention: ["Mike Johnson", "Michael Ross", "John Marcus"],
+  retention: ["Youssef Nasser", "Michael Ross"],
   nsf: [],
   cs: [],
 };
 
 // Merges duplicate phone accounts that belong to the same real person
 const PHONE_ALIASES: Record<string, string> = {
-  "john marcus": "mike johnson",
-  "youssef-john marcus": "mike johnson",
+  "mike johnson": "youssef nasser",
+  "john marcus": "youssef nasser",
+  "youssef-john marcus": "youssef nasser",
 };
 
 // Maps normalized SHEET agent name → normalized PHONE (OpenPhone) agent name
@@ -1151,6 +1152,7 @@ function getPresets(): Preset[] {
 function PresetFilter({ from, to, setFrom, setTo }: { from: string; to: string; setFrom: (s: string) => void; setTo: (s: string) => void }) {
   const presets = useMemo(() => getPresets(), []);
   const active = presets.find((p) => p.from === from && p.to === to)?.label;
+  const todayIso = toIsoDate(new Date());
   return (
     <div className="flex gap-2 flex-wrap items-center">
       <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
@@ -1165,6 +1167,24 @@ function PresetFilter({ from, to, setFrom, setTo }: { from: string; to: string; 
           {p.label}
         </Button>
       ))}
+      <span className="text-muted-foreground text-xs mx-1">|</span>
+      <input
+        type="date"
+        value={from}
+        max={todayIso}
+        onChange={(e) => { if (e.target.value) setFrom(e.target.value); }}
+        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500 w-[130px]"
+        title="From date"
+      />
+      <span className="text-muted-foreground text-xs">–</span>
+      <input
+        type="date"
+        value={to}
+        max={todayIso}
+        onChange={(e) => { if (e.target.value) setTo(e.target.value); }}
+        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500 w-[130px]"
+        title="To date"
+      />
     </div>
   );
 }
@@ -1255,8 +1275,8 @@ function TeamPanel({
   const phoneQ = useQuery<PhoneStatsResponse | null>({
     queryKey: ["phoneStats", mode, from, to],
     queryFn: async () => {
-      const pFrom = from ? `${from}T00:00:00Z` : new Date(Date.now() - 30 * 86400000).toISOString();
-      const pTo = to ? `${to}T23:59:59Z` : new Date().toISOString();
+      const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
+      const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
       const res = await fetch(`/api/quo/stats?from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`);
       if (!res.ok) return null;
       return res.json() as Promise<PhoneStatsResponse>;
@@ -1456,8 +1476,8 @@ function CSPanel() {
   const phoneQ = useQuery<PhoneStatsResponse | null>({
     queryKey: ["phoneStats", "cs", from, to],
     queryFn: async () => {
-      const pFrom = from ? `${from}T00:00:00Z` : new Date(Date.now() - 30 * 86400000).toISOString();
-      const pTo = to ? `${to}T23:59:59Z` : new Date().toISOString();
+      const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
+      const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
       const res = await fetch(`/api/quo/stats?from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`);
       if (!res.ok) return null;
       return res.json() as Promise<PhoneStatsResponse>;
@@ -1578,8 +1598,8 @@ function statusIcon(status: string) {
 }
 
 function ByCallView({ team, from, to }: { team: string; from: string; to: string }) {
-  const pFrom = from ? `${from}T00:00:00Z` : new Date(Date.now() - 30 * 86400000).toISOString();
-  const pTo = to ? `${to}T23:59:59Z` : new Date().toISOString();
+  const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
+  const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
 
   const q = useQuery<{ data: CallRecord[] } | null>({
     queryKey: ["calls", team, pFrom, pTo],
