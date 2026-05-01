@@ -18,9 +18,10 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 
 ## Artifacts
 
-- **agent-dashboard** (`/`) — Agent Performance Dashboard. React + Vite app with three tabs:
-  - **Retention Team** & **NSF Team** — load Google Sheets CSVs via fetch + PapaParse (CSV URLs in `App.tsx`)
-  - **Phone** — shows per-agent call stats from OpenPhone/Quo API via the API server + PostgreSQL
+- **agent-dashboard** (`/`) — Agent Performance Dashboard ("Backend Tracker"). React + Vite, dark theme with violet/fuchsia accents. Three tabs:
+  - **Retention Team** — call stats from OpenPhone API (DB-backed); also shows retains/cancels from Google Sheets CSV
+  - **NSF Team** — per-agent call stats from OpenPhone API (DB-backed)
+  - **CS Team** — per-agent call stats from OpenPhone API (DB-backed); excludes "Leo Maxwell" admin
 - **api-server** (`/api`) — Express 5 API server. Routes:
   - `GET /api/quo/stats?from=&to=` — returns call stats from PostgreSQL DB (instant)
   - `GET /api/quo/lines` — returns classified phone lines from OpenPhone API

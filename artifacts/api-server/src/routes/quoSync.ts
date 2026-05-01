@@ -5,9 +5,20 @@ import { logger } from "../lib/logger.js";
 const QUO_KEY = process.env.QUO_API_KEY ?? "";
 const BASE = "https://api.openphone.com/v1";
 
-async function quoFetch<T>(path: string): Promise<T> {
+async function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function quoFetch<T>(path: string, attempt = 0): Promise<T> {
   const url = path.startsWith("http") ? path : `${BASE}${path}`;
   const res = await fetch(url, { headers: { Authorization: QUO_KEY } });
+  if (res.status === 429) {
+    const retryAfter = Number(res.headers.get("retry-after") ?? 5);
+    const wait = Math.max(retryAfter * 1000, 5000) * (attempt + 1);
+    logger.warn({ attempt, wait }, "quoFetch: rate limited, retrying");
+    await sleep(wait);
+    return quoFetch<T>(path, attempt + 1);
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`OpenPhone ${path} → HTTP ${res.status}: ${body.slice(0, 200)}`);
@@ -24,13 +35,11 @@ function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
 }
 
 const LINE_AGENT_OVERRIDES: Record<string, string> = {
-  // Line name (lowercase) → display name for every call on that line
   "adam ob": "Abdulrhman Isawi",
   "jacob ob": "Youssef Nady",
   "levi ob": "Ahmed Ayman",
   "rick ob": "Zeiad Fouad",
   "ryan ob": "Ryan Henderson",
-  // Legacy / alternate line name formats
   "abdlrhman-jacob stephenson": "Abdulrhman Isawi",
   "youssef nady-jacob xander": "Youssef Nady",
   "ahmed ayman-levi miller": "Ahmed Ayman",
@@ -39,16 +48,12 @@ const LINE_AGENT_OVERRIDES: Record<string, string> = {
   "mohammed ayman-max francis-2268": "Max Francis",
 };
 
-// Email → canonical display name (used for shared lines like CS Team where
-// each agent uses their own OpenPhone user account)
 const USER_EMAIL_OVERRIDES: Record<string, string> = {
-  // CS Team
   "noura.asahab@gmail.com": "Nora Adam",
   "basantemadeldin@yahoo.com": "Carla Bennet",
   "carla.bennet212@gmail.com": "Carla Bennet",
   "basantemadeldin@gmail.com": "Carla Bennet",
   "leocarter032@gmail.com": "Leo Carter",
-  // Retention (covers shared/multi-assigned lines)
   "abdulrhmanisawi61@gmail.com": "Abdulrhman Isawi",
   "usave1792001@gmail.com": "Youssef Nady",
   "leviimiller178@gmail.com": "Ahmed Ayman",
@@ -56,7 +61,6 @@ const USER_EMAIL_OVERRIDES: Record<string, string> = {
   "zeiad.shebo@yahoo.com": "Zeiad Fouad",
   "nouralden.abdel0@gmail.com": "Michael Belfort",
   "mohammed.mdidnd2001@gmail.com": "Max Francis",
-  // NSF
   "alii.kamal.othman@gmail.com": "Alex Cruz",
   "lucaash220@gmail.com": "Austin White",
   "riham.samir.web@gmail.com": "Rika Hart",
@@ -65,12 +69,26 @@ const USER_EMAIL_OVERRIDES: Record<string, string> = {
   "toqahossam548@gmail.com": "Talia Morgan",
   "samafarouk90@gmail.com": "Katie Miller",
   "ingimahmoud01@gmail.com": "Ellie Moser",
+  // Resolved via /users endpoint
+  "ahmedatta9696@gmail.com": "Elias Boone",
+  "crazyanas36@gmail.com": "Kyle Scott",
+  "mohamedgh773@gmail.com": "Leo Maxwell",
+  "mike_j27@aol.com": "Mike Johnson",
+  "baseersalaheldin1001@gmail.com": "Baser Salah",
+  "anasmohamedaly2006@gmail.com": "Anas Mohamed",
 };
 
 interface PhoneNumber {
   id: string;
   name: string;
+  number?: string;
   users?: { id: string; firstName: string; lastName: string; email?: string }[];
+}
+
+interface Conversation {
+  id: string;
+  phoneNumberId: string;
+  participants: string[];
 }
 
 interface Call {
@@ -80,8 +98,7 @@ interface Call {
   duration: number;
   createdAt: string;
   userId?: string;
-  from?: string;
-  to?: string;
+  participants?: string[];
 }
 
 async function withConcurrency<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
@@ -101,30 +118,91 @@ async function withConcurrency<T>(tasks: (() => Promise<T>)[], limit: number): P
   return results;
 }
 
-/** Fetch every call on a phone number line in a date range — no participant filter, matching OpenPhone analytics exactly. */
-async function fetchAllCallsForLine(
-  phoneNumberId: string,
-  createdAfter: string,
-  createdBefore: string,
+/**
+ * Step 1: Page through ALL workspace conversations for the date range.
+ * Group by phoneNumberId to get each line's unique external participants.
+ * NOTE: The API ignores phoneNumberId filter on conversations, so we must
+ * fetch everything and group by the conversation's own phoneNumberId.
+ */
+async function fetchConversationsByLine(
+  from: string,
+  to: string,
+  knownLineIds: Set<string>,
+): Promise<Map<string, Set<string>>> {
+  const byLine = new Map<string, Set<string>>();
+  let pageToken: string | null = null;
+  let page = 0;
+
+  do {
+    // Use updatedAfter/updatedBefore so conversations with recent activity
+    // (even if created before the window) are included.
+    let url =
+      `/conversations?updatedAfter=${encodeURIComponent(from)}` +
+      `&updatedBefore=${encodeURIComponent(to)}` +
+      `&maxResults=100`;
+    if (pageToken) url += `&pageToken=${encodeURIComponent(pageToken)}`;
+
+    const res = await quoFetch<{ data: Conversation[]; nextPageToken?: string | null }>(url);
+    const chunk = res.data ?? [];
+
+    for (const conv of chunk) {
+      const lineId = conv.phoneNumberId;
+      if (!lineId || !knownLineIds.has(lineId)) continue;
+      if (!byLine.has(lineId)) byLine.set(lineId, new Set());
+      for (const p of conv.participants ?? []) {
+        if (p) byLine.get(lineId)!.add(p);
+      }
+    }
+
+    pageToken = res.nextPageToken ?? null;
+    page++;
+
+    if (page % 10 === 0) {
+      const totalParticipants = [...byLine.values()].reduce((s, v) => s + v.size, 0);
+      logger.info({ page, totalParticipants }, "quoSync: paging conversations");
+    }
+    if (page > 1000) {
+      logger.warn({ page }, "quoSync: hit conversation page cap");
+      break;
+    }
+    if (page % 5 === 0) await sleep(200);
+  } while (pageToken);
+
+  return byLine;
+}
+
+/**
+ * Step 2: Fetch all calls for a specific (lineId, participant) pair in the date range.
+ * The API requires exactly one participant[] value per request.
+ */
+async function fetchCallsForParticipant(
+  lineId: string,
+  participant: string,
+  from: string,
+  to: string,
 ): Promise<Call[]> {
   const all: Call[] = [];
   let pageToken: string | null = null;
   let page = 0;
+
   do {
     let url =
-      `/calls?phoneNumberId=${encodeURIComponent(phoneNumberId)}` +
-      `&createdAfter=${encodeURIComponent(createdAfter)}` +
-      `&createdBefore=${encodeURIComponent(createdBefore)}` +
+      `/calls?phoneNumberId=${encodeURIComponent(lineId)}` +
+      `&participants[]=${encodeURIComponent(participant)}` +
+      `&createdAfter=${encodeURIComponent(from)}` +
+      `&createdBefore=${encodeURIComponent(to)}` +
       `&maxResults=100`;
     if (pageToken) url += `&pageToken=${encodeURIComponent(pageToken)}`;
+
     const res = await quoFetch<{ data: Call[]; nextPageToken?: string | null }>(url);
     const chunk = res.data ?? [];
     all.push(...chunk);
     pageToken = res.nextPageToken ?? null;
     page++;
-    if (page > 50) break; // safety cap
-    if (chunk.length < 100) break; // last page
+    if (page > 50) break;
+    if (page % 5 === 0) await sleep(100);
   } while (pageToken);
+
   return all;
 }
 
@@ -134,45 +212,93 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
   logger.info({ from, to }, "quoSync: starting sync");
 
   const linesRes = await quoFetch<{ data: PhoneNumber[] }>("/phone-numbers");
-  const lines = (linesRes.data ?? []).filter((p) => classifyLine(p.name) !== null);
+  const allLines = linesRes.data ?? [];
+  const lines = allLines.filter((p) => classifyLine(p.name) !== null);
+  const lineMap = new Map(lines.map((l) => [l.id, l]));
+  const knownLineIds = new Set(lines.map((l) => l.id));
 
+  // Build userMap from /users endpoint (covers all workspace users,
+  // not just those listed on classified lines)
   const userMap = new Map<string, string>();
-  for (const line of lines) {
-    for (const u of line.users ?? []) {
-      if (!userMap.has(u.id)) {
-        const emailKey = u.email?.toLowerCase().trim() ?? "";
-        const displayName =
-          (emailKey && USER_EMAIL_OVERRIDES[emailKey]) ??
-          `${u.firstName} ${u.lastName}`.trim();
-        userMap.set(u.id, displayName);
+  try {
+    const usersRes = await quoFetch<{
+      data: { id: string; firstName: string; lastName: string; email?: string }[];
+    }>("/users");
+    for (const u of usersRes.data ?? []) {
+      const emailKey = u.email?.toLowerCase().trim() ?? "";
+      const displayName =
+        (emailKey && USER_EMAIL_OVERRIDES[emailKey]) ??
+        `${u.firstName} ${u.lastName}`.trim();
+      userMap.set(u.id, displayName);
+    }
+  } catch {
+    // Fallback: build from line users if /users endpoint fails
+    for (const line of lines) {
+      for (const u of line.users ?? []) {
+        if (!userMap.has(u.id)) {
+          const emailKey = u.email?.toLowerCase().trim() ?? "";
+          const displayName =
+            (emailKey && USER_EMAIL_OVERRIDES[emailKey]) ??
+            `${u.firstName} ${u.lastName}`.trim();
+          userMap.set(u.id, displayName);
+        }
       }
     }
   }
   logger.info({ lineCount: lines.length, userCount: userMap.size }, "quoSync: got lines");
 
-  const callResults = await withConcurrency(
-    lines.map((line) => async () => {
-      const calls = await fetchAllCallsForLine(line.id, from, to).catch(() => [] as Call[]);
-      return { line, calls };
+  // Step 1: collect all (lineId → participants) from conversations
+  const byLine = await fetchConversationsByLine(from, to, knownLineIds);
+  const totalParticipants = [...byLine.values()].reduce((s, v) => s + v.size, 0);
+  logger.info(
+    { linesWithConversations: byLine.size, totalParticipants },
+    "quoSync: conversations fetched, fetching calls",
+  );
+
+  // Step 2: build flat task list of (lineId, participant) pairs
+  const tasks: { lineId: string; participant: string }[] = [];
+  for (const [lineId, participants] of byLine) {
+    for (const participant of participants) {
+      tasks.push({ lineId, participant });
+    }
+  }
+
+  // Step 3: fetch calls concurrently (limit=5 to avoid rate limits)
+  let tasksDone = 0;
+  const callsByTask = await withConcurrency(
+    tasks.map(({ lineId, participant }) => async () => {
+      const calls = await fetchCallsForParticipant(lineId, participant, from, to).catch((err) => {
+        logger.error({ lineId, participant, err: String(err) }, "quoSync: call fetch error");
+        return [] as Call[];
+      });
+      tasksDone++;
+      if (tasksDone % 100 === 0) {
+        logger.info({ tasksDone, total: tasks.length }, "quoSync: call fetch progress");
+      }
+      return { lineId, calls };
     }),
-    6,
+    5,
   );
 
   logger.info({ lineCount: lines.length }, "quoSync: calls fetched, writing to DB");
 
-  let inserted = 0;
-  let errors = 0;
   const rows: (typeof phoneCallsTable.$inferInsert)[] = [];
+  const seenCallIds = new Set<string>();
 
-  for (const result of callResults) {
+  for (const result of callsByTask) {
     if (!result) continue;
-    const { line, calls } = result;
+    const { lineId, calls } = result;
+    const line = lineMap.get(lineId);
+    if (!line) continue;
     const team = classifyLine(line.name)!;
     const overrideName = LINE_AGENT_OVERRIDES[line.name.toLowerCase().trim()];
 
     for (const call of calls) {
+      if (seenCallIds.has(call.id)) continue;
+      seenCallIds.add(call.id);
+
       const agentName = overrideName ?? (call.userId ? (userMap.get(call.userId) ?? call.userId) : null);
-      const participant = call.direction === "outgoing" ? (call.to ?? "") : (call.from ?? "");
+      const participant = call.participants?.[0] ?? "";
       rows.push({
         id: call.id,
         lineId: line.id,
@@ -189,26 +315,32 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
     }
   }
 
+  let inserted = 0;
+  let errors = 0;
+
   if (rows.length > 0) {
-    try {
-      await db
-        .insert(phoneCallsTable)
-        .values(rows)
-        .onConflictDoUpdate({
-          target: phoneCallsTable.id,
-          set: {
-            lineTeam: sql`excluded.line_team`,
-            agentId: sql`excluded.agent_id`,
-            agentName: sql`excluded.agent_name`,
-            status: sql`excluded.status`,
-            durationSeconds: sql`excluded.duration_seconds`,
-            syncedAt: sql`now()`,
-          },
-        });
-      inserted = rows.length;
-    } catch (err) {
-      logger.error(err, "quoSync: DB write error");
-      errors++;
+    const CHUNK = 500;
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      try {
+        await db
+          .insert(phoneCallsTable)
+          .values(rows.slice(i, i + CHUNK))
+          .onConflictDoUpdate({
+            target: phoneCallsTable.id,
+            set: {
+              lineTeam: sql`excluded.line_team`,
+              agentId: sql`excluded.agent_id`,
+              agentName: sql`excluded.agent_name`,
+              status: sql`excluded.status`,
+              durationSeconds: sql`excluded.duration_seconds`,
+              syncedAt: sql`now()`,
+            },
+          });
+        inserted += Math.min(CHUNK, rows.length - i);
+      } catch (err) {
+        logger.error(err, "quoSync: DB write error");
+        errors++;
+      }
     }
   }
 
