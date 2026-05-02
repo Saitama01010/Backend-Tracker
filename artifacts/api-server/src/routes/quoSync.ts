@@ -276,7 +276,8 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
       if (tasksDone % 100 === 0) {
         logger.info({ tasksDone, total: tasks.length }, "quoSync: call fetch progress");
       }
-      return { lineId, calls };
+      // Carry the customer number through — call.participants[0] is the LINE's own number, not the customer's
+      return { lineId, participant, calls };
     }),
     5,
   );
@@ -288,7 +289,7 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
 
   for (const result of callsByTask) {
     if (!result) continue;
-    const { lineId, calls } = result;
+    const { lineId, participant: taskParticipant, calls } = result;
     const line = lineMap.get(lineId);
     if (!line) continue;
     const team = classifyLine(line.name)!;
@@ -299,7 +300,9 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
       seenCallIds.add(call.id);
 
       const agentName = overrideName ?? (call.userId ? (userMap.get(call.userId) ?? call.userId) : null);
-      const participant = call.participants?.[0] || null;
+      // Use the participant from the conversation query (the customer's number).
+      // call.participants[0] is the line's own number, NOT the customer.
+      const participant = taskParticipant || null;
 
       // Compute post-answer seconds: time spent in the VM system after it picks up.
       // Used to distinguish "left a voicemail message" vs "hung up on voicemail greeting".
@@ -370,6 +373,7 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
               lineTeam: sql`excluded.line_team`,
               agentId: sql`excluded.agent_id`,
               agentName: sql`excluded.agent_name`,
+              participant: sql`excluded.participant`,
               status: sql`excluded.status`,
               durationSeconds: sql`excluded.duration_seconds`,
               postAnswerSeconds: sql`excluded.post_answer_seconds`,
