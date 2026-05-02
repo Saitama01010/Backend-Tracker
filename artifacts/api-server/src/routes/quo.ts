@@ -169,9 +169,31 @@ router.get("/quo/stats", async (req, res) => {
       }
       if (row.direction === "outgoing") slot.outbound++;
       else slot.inbound++;
-      if (row.status === "completed") slot.answered++;
-      else if (row.status === "voicemail") slot.voicemail++;
-      else if (row.status === "voicemail-brief") slot.vmBrief++;
+
+      // For outbound "completed" calls, re-apply effectiveStatus logic at query time.
+      // Old records (synced before the fix) have post_answer_seconds=null and status="completed"
+      // even when the call only hit voicemail. Fall back to duration_seconds with adjusted
+      // thresholds (+15s to account for typical ring time) when post_answer_seconds is missing.
+      let effectiveStatus = row.status;
+      if (row.status === "completed" && row.direction === "outgoing") {
+        const pas = row.postAnswerSeconds;
+        if (pas !== null && pas !== undefined) {
+          // Precise: use actual post-answer seconds
+          if (pas >= 60) effectiveStatus = "completed";
+          else if (pas >= 20) effectiveStatus = "voicemail";
+          else effectiveStatus = "voicemail-brief";
+        } else {
+          // Approximate: duration includes ~15s ring time, so adjust thresholds up by 15s
+          const dur = row.durationSeconds;
+          if (dur >= 75) effectiveStatus = "completed";
+          else if (dur >= 35) effectiveStatus = "voicemail";
+          else effectiveStatus = "voicemail-brief";
+        }
+      }
+
+      if (effectiveStatus === "completed") slot.answered++;
+      else if (effectiveStatus === "voicemail") slot.voicemail++;
+      else if (effectiveStatus === "voicemail-brief") slot.vmBrief++;
       else slot.missed++;
 
       if (row.direction === "incoming") {
