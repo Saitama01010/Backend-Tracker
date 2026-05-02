@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db, phoneCallsTable } from "@workspace/db";
-import { and, gte, lte, desc } from "drizzle-orm";
+import { and, eq, gte, lte, desc } from "drizzle-orm";
 import { runSync, startBackgroundSync, getSyncState } from "./quoSync.js";
 
 const router: IRouter = Router();
@@ -243,6 +243,21 @@ router.get("/quo/sync-state", async (req, res) => {
     res.json(state ?? { id: "singleton", lastSyncedAt: null, isSyncing: false });
   } catch (err) {
     req.log.error(err, "quo sync state error");
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/quo/live", async (req, res) => {
+  try {
+    const since = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const rows = await db
+      .select({ agentName: phoneCallsTable.agentName })
+      .from(phoneCallsTable)
+      .where(and(gte(phoneCallsTable.createdAt, since), eq(phoneCallsTable.status, "in-progress")));
+    const active = [...new Set(rows.map((r) => r.agentName).filter(Boolean))];
+    res.json({ active });
+  } catch (err) {
+    req.log.error(err, "quo live error");
     res.status(500).json({ error: String(err) });
   }
 });

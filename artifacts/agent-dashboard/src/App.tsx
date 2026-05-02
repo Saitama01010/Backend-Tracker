@@ -926,7 +926,23 @@ function ByFilesView({ data }: { data: Aggregated }) {
   );
 }
 
+function useLiveCalls(): Set<string> {
+  const q = useQuery<{ active: string[] }>({
+    queryKey: ["liveCalls"],
+    queryFn: async () => {
+      const r = await fetch("/api/quo/live");
+      if (!r.ok) return { active: [] };
+      return r.json() as Promise<{ active: string[] }>;
+    },
+    refetchInterval: 15 * 1000,
+    staleTime: 10 * 1000,
+    refetchOnWindowFocus: true,
+  });
+  return useMemo(() => new Set((q.data?.active ?? []).map(normalizeAgent)), [q.data]);
+}
+
 function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics>; directKeys?: boolean }) {
+  const liveAgents = useLiveCalls();
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "__calls__", dir: "desc" });
 
@@ -1015,9 +1031,21 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
               )}
               {visible.map((agent) => {
                 const ph = getPhone(agent);
+                const phoneKey = directKeys ? normalizeAgent(agent) : sheetToPhoneKey(agent);
+                const isLive = liveAgents.has(phoneKey);
                 return (
                   <TableRow key={agent} className="hover-elevate">
-                    <TableCell className="font-medium whitespace-nowrap">{agent}</TableCell>
+                    <TableCell className="font-medium whitespace-nowrap">
+                      <div className="flex items-center gap-2">
+                        {isLive && (
+                          <span className="relative flex h-2.5 w-2.5 shrink-0" title="On a live call now">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+                          </span>
+                        )}
+                        {agent}
+                      </div>
+                    </TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>{ph?.calls ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.outbound ? "text-fuchsia-400" : "text-muted-foreground/40"}`}>{ph?.outbound ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.inbound ? "text-cyan-400" : "text-muted-foreground/40"}`}>{ph?.inbound ?? "—"}</TableCell>
