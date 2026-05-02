@@ -1666,7 +1666,8 @@ function directionIcon(dir: string) {
 function statusIcon(status: string) {
   if (status === "completed") return <span className="text-emerald-400 text-xs font-semibold">Answered</span>;
   if (status === "voicemail") return <span className="text-amber-400 text-xs font-semibold">Voicemail</span>;
-  if (status === "missed") return <span className="text-rose-400 text-xs font-semibold">Missed</span>;
+  if (status === "missed" || status === "no-answer") return <span className="text-rose-400 text-xs font-semibold">Missed</span>;
+  if (status === "in-progress") return <span className="text-sky-400 text-xs font-semibold">Live</span>;
   return <span className="text-muted-foreground text-xs">{status}</span>;
 }
 

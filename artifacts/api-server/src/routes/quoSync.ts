@@ -99,6 +99,7 @@ interface Call {
   createdAt: string;
   userId?: string;
   participants?: string[];
+  answeredBy?: string | null;
 }
 
 async function withConcurrency<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
@@ -297,6 +298,10 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
 
       const agentName = overrideName ?? (call.userId ? (userMap.get(call.userId) ?? call.userId) : null);
       const participant = call.participants?.[0] ?? "";
+      // OpenPhone marks voicemail as "completed" with answeredBy=null.
+      // Reclassify those as "voicemail" so answered counts stay accurate.
+      const effectiveStatus =
+        call.status === "completed" && call.answeredBy == null ? "voicemail" : call.status;
       rows.push({
         id: call.id,
         lineId: line.id,
@@ -306,7 +311,7 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
         agentName,
         participant,
         direction: call.direction,
-        status: call.status,
+        status: effectiveStatus,
         durationSeconds: call.duration ?? 0,
         createdAt: new Date(call.createdAt),
       });
