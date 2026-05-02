@@ -952,7 +952,8 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const list = q ? agentList.filter((a) => a.toLowerCase().includes(q)) : agentList;
+    const withCalls = agentList.filter((a) => (getPhone(a)?.calls ?? 0) > 0);
+    const list = q ? withCalls.filter((a) => a.toLowerCase().includes(q)) : withCalls;
     return [...list].sort((a, b) => {
       const phA = getPhone(a);
       const phB = getPhone(b);
