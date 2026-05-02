@@ -299,7 +299,7 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
       seenCallIds.add(call.id);
 
       const agentName = overrideName ?? (call.userId ? (userMap.get(call.userId) ?? call.userId) : null);
-      const participant = call.participants?.[0] ?? "";
+      const participant = call.participants?.[0] || null;
 
       // Compute post-answer seconds: time spent in the VM system after it picks up.
       // Used to distinguish "left a voicemail message" vs "hung up on voicemail greeting".
