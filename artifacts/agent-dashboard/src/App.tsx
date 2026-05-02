@@ -968,7 +968,6 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
       else if (sort.col === "__vmbrief__") { av = phA?.vmBrief ?? 0; bv = phB?.vmBrief ?? 0; }
       else if (sort.col === "__unique__") { av = phA?.uniqueContacts ?? 0; bv = phB?.uniqueContacts ?? 0; }
       else if (sort.col === "__time__") { av = phA?.seconds ?? 0; bv = phB?.seconds ?? 0; }
-      else if (sort.col === "__avg__") { av = phA?.calls ? (phA.seconds / phA.calls) : 0; bv = phB?.calls ? (phB.seconds / phB.calls) : 0; }
       else if (sort.col === "__resp__") { av = phA?.calls ? (phA.answered / phA.calls) : -1; bv = phB?.calls ? (phB.answered / phB.calls) : -1; }
       else if (sort.col === "__agent__") { return sort.dir === "asc" ? a.localeCompare(b) : b.localeCompare(a); }
       return sort.dir === "asc" ? av - bv : bv - av;
@@ -1040,7 +1039,6 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                 <Th id="__vmbrief__" label="No VM" tone="text-orange-400" tip="Outbound calls that reached voicemail but the agent hung up without leaving a message." />
                 <Th id="__unique__" label="Customers Reached" tone="text-sky-400" tip="Unique phone numbers the agent dialed outbound. Each number counted once no matter how many times they called it." />
                 <Th id="__time__" label="Talk time" tip="Total duration of all calls combined." />
-                <Th id="__avg__" label="Avg duration" tip="Average call length across all calls." />
                 <Th id="__resp__" label="Response %" tone="text-amber-400" tip="Percentage of total calls that resulted in a real conversation (Answered ÷ Total Calls)." />
                 <TableHead className="whitespace-nowrap text-right text-violet-400">Last call</TableHead>
               </TableRow>
@@ -1048,7 +1046,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
             <TableBody>
               {visible.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={13} className="text-center py-12 text-muted-foreground">No agents match the current filters.</TableCell>
+                  <TableCell colSpan={12} className="text-center py-12 text-muted-foreground">No agents match the current filters.</TableCell>
                 </TableRow>
               )}
               {visible.map((agent) => {
@@ -1077,7 +1075,6 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.vmBrief ? "text-orange-400" : "text-muted-foreground/40"}`}>{ph?.vmBrief ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.uniqueContacts ? "text-sky-400" : "text-muted-foreground/40"}`}>{ph?.uniqueContacts ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!ph?.seconds ? "text-muted-foreground/40" : ""}`}>{ph?.seconds ? formatDuration(ph.seconds) : "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>{ph ? avgDuration(ph.seconds, ph.calls) : "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.calls ? "text-amber-400" : "text-muted-foreground/40"}`}>{ph ? responseRate(ph.answered, ph.calls) : "—"}</TableCell>
                     <TableCell className="text-right"><TimeSince isoStr={ph?.lastCallAt} /></TableCell>
                   </TableRow>
@@ -1097,7 +1094,6 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                   <TableCell className="text-right tabular-nums font-mono font-bold text-orange-400">{totVmBrief || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totUniq || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold">{totSecs ? formatDuration(totSecs) : "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold">{avgDuration(totSecs, totCalls)}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-amber-400">{responseRate(totAns, totCalls)}</TableCell>
                   <TableCell />
                 </TableRow>
