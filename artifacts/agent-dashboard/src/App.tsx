@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -35,6 +35,7 @@ import {
   PhoneIncoming,
   PhoneOutgoing,
   PhoneMissed,
+  Info,
 } from "lucide-react";
 
 const queryClient = new QueryClient();
@@ -977,15 +978,29 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
     setSort((s) => s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: col === "__agent__" ? "asc" : "desc" });
   }
 
-  function Th({ id, label, tone = "", align = "right" }: { id: string; label: string; tone?: string; align?: "left" | "right" }) {
+  function Th({ id, label, tone = "", align = "right", tip }: { id: string; label: string; tone?: string; align?: "left" | "right"; tip?: string }) {
     const active = sort.col === id;
     return (
       <TableHead className={`whitespace-nowrap ${align === "right" ? "text-right" : ""} ${tone}`}>
-        <button type="button" onClick={() => toggle(id)}
-          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${active ? "text-violet-300" : "text-muted-foreground"} ${align === "right" ? "flex-row-reverse" : ""}`}>
-          {label}
-          {active ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
-        </button>
+        <div className={`inline-flex items-center gap-1 ${align === "right" ? "flex-row-reverse" : ""}`}>
+          <button type="button" onClick={() => toggle(id)}
+            className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${active ? "text-violet-300" : "text-muted-foreground"} ${align === "right" ? "flex-row-reverse" : ""}`}>
+            {label}
+            {active ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
+          </button>
+          {tip && (
+            <Tooltip delayDuration={100}>
+              <TooltipTrigger asChild>
+                <span className="cursor-help shrink-0">
+                  <Info className="h-3 w-3 text-muted-foreground/50 hover:text-muted-foreground transition-colors" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[220px] text-center leading-snug">
+                {tip}
+              </TooltipContent>
+            </Tooltip>
+          )}
+        </div>
       </TableHead>
     );
   }
@@ -1015,17 +1030,17 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
             <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
               <TableRow>
                 <Th id="__agent__" label="Agent" align="left" />
-                <Th id="__calls__" label="Calls" />
-                <Th id="__outbound__" label="Outbound" tone="text-fuchsia-400" />
-                <Th id="__inbound__" label="Inbound" tone="text-cyan-400" />
-                <Th id="__answered__" label="Answered" tone="text-emerald-400" />
-                <Th id="__missed__" label="Missed" tone="text-rose-400" />
-                <Th id="__vm__" label="VM Left" tone="text-amber-400" />
-                <Th id="__vmbrief__" label="No VM" tone="text-orange-400" />
-                <Th id="__unique__" label="Customers Reached" tone="text-sky-400" />
-                <Th id="__time__" label="Talk time" />
-                <Th id="__avg__" label="Avg duration" />
-                <Th id="__resp__" label="Response %" tone="text-amber-400" />
+                <Th id="__calls__" label="Calls" tip="Total number of calls (inbound + outbound) in the selected period." />
+                <Th id="__outbound__" label="Outbound" tone="text-fuchsia-400" tip="Calls the agent placed to customers." />
+                <Th id="__inbound__" label="Inbound" tone="text-cyan-400" tip="Calls received from customers." />
+                <Th id="__answered__" label="Answered" tone="text-emerald-400" tip="Calls where a real conversation happened. Inbound: agent picked up. Outbound: customer stayed on for 60+ seconds." />
+                <Th id="__missed__" label="Missed" tone="text-rose-400" tip="Calls where no one answered at all — phone rang but nothing picked up." />
+                <Th id="__vm__" label="VM Left" tone="text-amber-400" tip="Outbound calls where the agent left a voicemail message (20–59s after VM answered)." />
+                <Th id="__vmbrief__" label="No VM" tone="text-orange-400" tip="Outbound calls that reached voicemail but the agent hung up without leaving a message." />
+                <Th id="__unique__" label="Customers Reached" tone="text-sky-400" tip="Unique phone numbers the agent dialed outbound. Each number counted once no matter how many times they called it." />
+                <Th id="__time__" label="Talk time" tip="Total duration of all calls combined." />
+                <Th id="__avg__" label="Avg duration" tip="Average call length across all calls." />
+                <Th id="__resp__" label="Response %" tone="text-amber-400" tip="Percentage of total calls that resulted in a real conversation (Answered ÷ Total Calls)." />
                 <TableHead className="whitespace-nowrap text-right text-violet-400">Last call</TableHead>
               </TableRow>
             </TableHeader>

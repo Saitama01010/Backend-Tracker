@@ -161,7 +161,8 @@ router.get("/quo/stats", async (req, res) => {
       const slot = teamStats[team][agentName][date];
       slot.totalCalls++;
       slot.talkSeconds += row.durationSeconds;
-      slot.uniqueContacts.add(row.participant);
+      // "Customers Reached" = unique phone numbers dialed outbound only
+      if (row.direction === "outgoing") slot.uniqueContacts.add(row.participant);
       if (!agentLastCall[team]) agentLastCall[team] = {};
       if (!agentLastCall[team][agentName] || row.createdAt > agentLastCall[team][agentName]) {
         agentLastCall[team][agentName] = row.createdAt;
