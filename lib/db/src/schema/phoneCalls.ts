@@ -13,6 +13,7 @@ export const phoneCallsTable = pgTable(
     direction: text("direction").notNull(),
     status: text("status").notNull(),
     durationSeconds: integer("duration_seconds").notNull().default(0),
+    postAnswerSeconds: integer("post_answer_seconds"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     syncedAt: timestamp("synced_at", { withTimezone: true }).defaultNow().notNull(),
   },

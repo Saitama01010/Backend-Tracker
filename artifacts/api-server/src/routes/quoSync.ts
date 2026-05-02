@@ -97,6 +97,8 @@ interface Call {
   status: string;
   duration: number;
   createdAt: string;
+  completedAt?: string | null;
+  answeredAt?: string | null;
   userId?: string;
   participants?: string[];
   answeredBy?: string | null;
@@ -298,10 +300,28 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
 
       const agentName = overrideName ?? (call.userId ? (userMap.get(call.userId) ?? call.userId) : null);
       const participant = call.participants?.[0] ?? "";
+
+      // Compute post-answer seconds: time spent in the VM system after it picks up.
+      // Used to distinguish "left a voicemail message" vs "hung up on voicemail greeting".
+      let postAnswerSeconds: number | null = null;
+      if (call.answeredAt && call.completedAt) {
+        postAnswerSeconds = Math.round(
+          (new Date(call.completedAt).getTime() - new Date(call.answeredAt).getTime()) / 1000,
+        );
+      }
+
       // OpenPhone marks voicemail as "completed" with answeredBy=null.
-      // Reclassify those as "voicemail" so answered counts stay accurate.
-      const effectiveStatus =
-        call.status === "completed" && call.answeredBy == null ? "voicemail" : call.status;
+      // Reclassify those as "voicemail" (left a message, ≥20s post-answer)
+      // or "voicemail-brief" (hung up on VM without leaving message, <20s post-answer).
+      let effectiveStatus = call.status;
+      if (call.status === "completed" && call.answeredBy == null) {
+        if (postAnswerSeconds !== null && postAnswerSeconds >= 20) {
+          effectiveStatus = "voicemail";
+        } else {
+          effectiveStatus = "voicemail-brief";
+        }
+      }
+
       rows.push({
         id: call.id,
         lineId: line.id,
@@ -313,6 +333,7 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
         direction: call.direction,
         status: effectiveStatus,
         durationSeconds: call.duration ?? 0,
+        postAnswerSeconds,
         createdAt: new Date(call.createdAt),
       });
     }
@@ -336,6 +357,7 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
               agentName: sql`excluded.agent_name`,
               status: sql`excluded.status`,
               durationSeconds: sql`excluded.duration_seconds`,
+              postAnswerSeconds: sql`excluded.post_answer_seconds`,
               syncedAt: sql`now()`,
             },
           });

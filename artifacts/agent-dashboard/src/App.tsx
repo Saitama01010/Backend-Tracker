@@ -962,6 +962,8 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
       else if (sort.col === "__inbound__") { av = phA?.inbound ?? 0; bv = phB?.inbound ?? 0; }
       else if (sort.col === "__answered__") { av = phA?.answered ?? 0; bv = phB?.answered ?? 0; }
       else if (sort.col === "__missed__") { av = phA?.missed ?? 0; bv = phB?.missed ?? 0; }
+      else if (sort.col === "__vm__") { av = phA?.voicemail ?? 0; bv = phB?.voicemail ?? 0; }
+      else if (sort.col === "__vmbrief__") { av = phA?.vmBrief ?? 0; bv = phB?.vmBrief ?? 0; }
       else if (sort.col === "__unique__") { av = phA?.uniqueContacts ?? 0; bv = phB?.uniqueContacts ?? 0; }
       else if (sort.col === "__time__") { av = phA?.seconds ?? 0; bv = phB?.seconds ?? 0; }
       else if (sort.col === "__avg__") { av = phA?.calls ? (phA.seconds / phA.calls) : 0; bv = phB?.calls ? (phB.seconds / phB.calls) : 0; }
@@ -993,6 +995,8 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
   const totIn = visible.reduce((s, a) => s + (getPhone(a)?.inbound ?? 0), 0);
   const totAns = visible.reduce((s, a) => s + (getPhone(a)?.answered ?? 0), 0);
   const totMissed = visible.reduce((s, a) => s + (getPhone(a)?.missed ?? 0), 0);
+  const totVm = visible.reduce((s, a) => s + (getPhone(a)?.voicemail ?? 0), 0);
+  const totVmBrief = visible.reduce((s, a) => s + (getPhone(a)?.vmBrief ?? 0), 0);
   const totUniq = visible.reduce((s, a) => s + (getPhone(a)?.uniqueContacts ?? 0), 0);
   const totSecs = visible.reduce((s, a) => s + (getPhone(a)?.seconds ?? 0), 0);
 
@@ -1016,6 +1020,8 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                 <Th id="__inbound__" label="Inbound" tone="text-cyan-400" />
                 <Th id="__answered__" label="Answered" tone="text-emerald-400" />
                 <Th id="__missed__" label="Missed" tone="text-rose-400" />
+                <Th id="__vm__" label="VM Left" tone="text-amber-400" />
+                <Th id="__vmbrief__" label="No VM" tone="text-orange-400" />
                 <Th id="__unique__" label="Customers Reached" tone="text-sky-400" />
                 <Th id="__time__" label="Talk time" />
                 <Th id="__avg__" label="Avg duration" />
@@ -1026,7 +1032,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
             <TableBody>
               {visible.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={11} className="text-center py-12 text-muted-foreground">No agents match the current filters.</TableCell>
+                  <TableCell colSpan={13} className="text-center py-12 text-muted-foreground">No agents match the current filters.</TableCell>
                 </TableRow>
               )}
               {visible.map((agent) => {
@@ -1051,6 +1057,8 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.inbound ? "text-cyan-400" : "text-muted-foreground/40"}`}>{ph?.inbound ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.answered ? "text-emerald-400" : "text-muted-foreground/40"}`}>{ph?.answered ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.missed ? "text-rose-400" : "text-muted-foreground/40"}`}>{ph?.missed ?? "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.voicemail ? "text-amber-400" : "text-muted-foreground/40"}`}>{ph?.voicemail ?? "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.vmBrief ? "text-orange-400" : "text-muted-foreground/40"}`}>{ph?.vmBrief ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.uniqueContacts ? "text-sky-400" : "text-muted-foreground/40"}`}>{ph?.uniqueContacts ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!ph?.seconds ? "text-muted-foreground/40" : ""}`}>{ph?.seconds ? formatDuration(ph.seconds) : "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>{ph ? avgDuration(ph.seconds, ph.calls) : "—"}</TableCell>
@@ -1069,6 +1077,8 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                   <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{totIn || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totAns || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-rose-400">{totMissed || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-amber-400">{totVm || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-orange-400">{totVmBrief || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totUniq || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold">{totSecs ? formatDuration(totSecs) : "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold">{avgDuration(totSecs, totCalls)}</TableCell>
@@ -1280,6 +1290,7 @@ interface PhoneAgentMetrics {
   answered: number;
   missed: number;
   voicemail: number;
+  vmBrief: number;
   inbound: number;
   outbound: number;
   uniqueContacts: number;
@@ -1294,6 +1305,7 @@ interface PhoneAgentDay {
   answered: number;
   missed: number;
   voicemail: number;
+  vmBrief: number;
   uniqueContacts: number;
 }
 
@@ -1356,13 +1368,14 @@ function TeamPanel({
       if (PHONE_BLOCKLIST.has(rawKey)) continue;
       const key = PHONE_ALIASES[rawKey] ?? rawKey;
       if (allowlist && !allowlist.has(key)) continue; // strict team allowlist
-      const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
+      const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
       for (const day of Object.values(days)) {
         acc.calls += day.totalCalls ?? 0;
         acc.seconds += day.talkSeconds ?? 0;
         acc.answered += day.answered ?? 0;
         acc.missed += day.missed ?? 0;
         acc.voicemail += day.voicemail ?? 0;
+        acc.vmBrief += day.vmBrief ?? 0;
         acc.inbound += day.inbound ?? 0;
         acc.outbound += day.outbound ?? 0;
         acc.uniqueContacts += day.uniqueContacts ?? 0;
@@ -1371,7 +1384,7 @@ function TeamPanel({
         const e = map.get(key);
         if (e) {
           const mergedLast = e.lastCallAt && acc.lastCallAt ? (e.lastCallAt > acc.lastCallAt ? e.lastCallAt : acc.lastCallAt) : (e.lastCallAt ?? acc.lastCallAt);
-          map.set(key, { calls: e.calls + acc.calls, seconds: e.seconds + acc.seconds, answered: e.answered + acc.answered, missed: e.missed + acc.missed, voicemail: e.voicemail + acc.voicemail, inbound: e.inbound + acc.inbound, outbound: e.outbound + acc.outbound, uniqueContacts: e.uniqueContacts + acc.uniqueContacts, lastCallAt: mergedLast });
+          map.set(key, { calls: e.calls + acc.calls, seconds: e.seconds + acc.seconds, answered: e.answered + acc.answered, missed: e.missed + acc.missed, voicemail: e.voicemail + acc.voicemail, vmBrief: e.vmBrief + acc.vmBrief, inbound: e.inbound + acc.inbound, outbound: e.outbound + acc.outbound, uniqueContacts: e.uniqueContacts + acc.uniqueContacts, lastCallAt: mergedLast });
         } else {
           map.set(key, acc);
         }
@@ -1561,13 +1574,14 @@ function CSPanel() {
       if (PHONE_BLOCKLIST.has(rawKey)) continue;
       const key = PHONE_ALIASES[rawKey] ?? rawKey;
       if (allowlist && !allowlist.has(key)) continue; // strict team allowlist
-      const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
+      const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
       for (const day of Object.values(days)) {
         acc.calls += day.totalCalls ?? 0;
         acc.seconds += day.talkSeconds ?? 0;
         acc.answered += day.answered ?? 0;
         acc.missed += day.missed ?? 0;
         acc.voicemail += day.voicemail ?? 0;
+        acc.vmBrief += day.vmBrief ?? 0;
         acc.inbound += day.inbound ?? 0;
         acc.outbound += day.outbound ?? 0;
         acc.uniqueContacts += day.uniqueContacts ?? 0;
@@ -1576,7 +1590,7 @@ function CSPanel() {
         const e = map.get(key);
         if (e) {
           const mergedLast = e.lastCallAt && acc.lastCallAt ? (e.lastCallAt > acc.lastCallAt ? e.lastCallAt : acc.lastCallAt) : (e.lastCallAt ?? acc.lastCallAt);
-          map.set(key, { calls: e.calls + acc.calls, seconds: e.seconds + acc.seconds, answered: e.answered + acc.answered, missed: e.missed + acc.missed, voicemail: e.voicemail + acc.voicemail, inbound: e.inbound + acc.inbound, outbound: e.outbound + acc.outbound, uniqueContacts: e.uniqueContacts + acc.uniqueContacts, lastCallAt: mergedLast });
+          map.set(key, { calls: e.calls + acc.calls, seconds: e.seconds + acc.seconds, answered: e.answered + acc.answered, missed: e.missed + acc.missed, voicemail: e.voicemail + acc.voicemail, vmBrief: e.vmBrief + acc.vmBrief, inbound: e.inbound + acc.inbound, outbound: e.outbound + acc.outbound, uniqueContacts: e.uniqueContacts + acc.uniqueContacts, lastCallAt: mergedLast });
         } else {
           map.set(key, acc);
         }
@@ -1665,7 +1679,8 @@ function directionIcon(dir: string) {
 
 function statusIcon(status: string) {
   if (status === "completed") return <span className="text-emerald-400 text-xs font-semibold">Answered</span>;
-  if (status === "voicemail") return <span className="text-amber-400 text-xs font-semibold">Voicemail</span>;
+  if (status === "voicemail") return <span className="text-amber-400 text-xs font-semibold">VM Left</span>;
+  if (status === "voicemail-brief") return <span className="text-orange-400 text-xs font-semibold">No VM</span>;
   if (status === "missed" || status === "no-answer") return <span className="text-rose-400 text-xs font-semibold">Missed</span>;
   if (status === "in-progress") return <span className="text-sky-400 text-xs font-semibold">Live</span>;
   return <span className="text-muted-foreground text-xs">{status}</span>;

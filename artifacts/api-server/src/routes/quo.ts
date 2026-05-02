@@ -127,6 +127,7 @@ router.get("/quo/stats", async (req, res) => {
             answered: number;
             missed: number;
             voicemail: number;
+            vmBrief: number;
             totalCalls: number;
             talkSeconds: number;
             uniqueContacts: Set<string>;
@@ -154,7 +155,7 @@ router.get("/quo/stats", async (req, res) => {
       if (!teamStats[team][agentName][date]) {
         teamStats[team][agentName][date] = {
           outbound: 0, inbound: 0, answered: 0, missed: 0,
-          voicemail: 0, totalCalls: 0, talkSeconds: 0, uniqueContacts: new Set(),
+          voicemail: 0, vmBrief: 0, totalCalls: 0, talkSeconds: 0, uniqueContacts: new Set(),
         };
       }
       const slot = teamStats[team][agentName][date];
@@ -169,6 +170,7 @@ router.get("/quo/stats", async (req, res) => {
       else slot.inbound++;
       if (row.status === "completed") slot.answered++;
       else if (row.status === "voicemail") slot.voicemail++;
+      else if (row.status === "voicemail-brief") slot.vmBrief++;
       else slot.missed++;
 
       if (row.direction === "incoming") {
