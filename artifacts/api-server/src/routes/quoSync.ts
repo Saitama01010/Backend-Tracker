@@ -310,15 +310,30 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
         );
       }
 
-      // OpenPhone marks voicemail as "completed" with answeredBy=null.
-      // Reclassify those as "voicemail" (left a message, ≥20s post-answer)
-      // or "voicemail-brief" (hung up on VM without leaving message, <20s post-answer).
+      // OpenPhone's answeredBy is ONLY set for inbound calls (which agent picked up).
+      // For outbound calls answeredBy is always null even when the customer answers.
+      // Strategy:
+      //   INBOUND: answeredBy != null → "completed"; answeredBy==null → voicemail/brief
+      //   OUTBOUND: postAnswerSeconds >= 60 → real conversation ("completed");
+      //             20–59s → likely left a voicemail message ("voicemail");
+      //             <20s   → hung up on VM without leaving a message ("voicemail-brief")
       let effectiveStatus = call.status;
       if (call.status === "completed" && call.answeredBy == null) {
-        if (postAnswerSeconds !== null && postAnswerSeconds >= 20) {
-          effectiveStatus = "voicemail";
+        if (call.direction === "outgoing") {
+          if (postAnswerSeconds !== null && postAnswerSeconds >= 60) {
+            effectiveStatus = "completed"; // customer answered, real conversation
+          } else if (postAnswerSeconds !== null && postAnswerSeconds >= 20) {
+            effectiveStatus = "voicemail"; // left a voicemail message
+          } else {
+            effectiveStatus = "voicemail-brief"; // hung up on VM
+          }
         } else {
-          effectiveStatus = "voicemail-brief";
+          // Inbound: answeredBy==null means agent's voicemail picked up
+          if (postAnswerSeconds !== null && postAnswerSeconds >= 20) {
+            effectiveStatus = "voicemail";
+          } else {
+            effectiveStatus = "voicemail-brief";
+          }
         }
       }
 
