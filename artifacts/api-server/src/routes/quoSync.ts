@@ -248,6 +248,19 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
   }
   logger.info({ lineCount: lines.length, userCount: userMap.size }, "quoSync: got lines");
 
+  // Build lineAgents: lineId → [{agentId, agentName}] for distributing missed inbound calls.
+  // When a shared line rings for all members and no one answers, OpenPhone only records
+  // one userId. We use line.users to attribute the missed call to every member instead.
+  const lineAgents = new Map<string, { agentId: string; agentName: string }[]>();
+  for (const line of lines) {
+    const members: { agentId: string; agentName: string }[] = [];
+    for (const u of line.users ?? []) {
+      const agentName = userMap.get(u.id) ?? `${u.firstName} ${u.lastName}`.trim();
+      members.push({ agentId: u.id, agentName });
+    }
+    lineAgents.set(line.id, members);
+  }
+
   // Step 1: collect all (lineId → participants) from conversations
   const byLine = await fetchConversationsByLine(from, to, knownLineIds);
   const totalParticipants = [...byLine.values()].reduce((s, v) => s + v.size, 0);
@@ -340,25 +353,74 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
         }
       }
 
-      rows.push({
-        id: call.id,
-        lineId: line.id,
-        lineName: line.name,
-        lineTeam: team,
-        agentId: call.userId ?? null,
-        agentName,
-        participant,
-        direction: call.direction,
-        status: effectiveStatus,
-        durationSeconds: call.duration ?? 0,
-        postAnswerSeconds,
-        createdAt: new Date(call.createdAt),
-      });
+      // For inbound missed calls (no-answer/voicemail on a shared line), distribute to
+      // ALL members of that line — because the phone rang for everyone, not just the
+      // agent OpenPhone happens to assign as userId. Use id `{callId}__{agentId}` per member.
+      const isMissedInbound =
+        call.direction === "incoming" &&
+        (effectiveStatus === "no-answer" ||
+          effectiveStatus === "voicemail" ||
+          effectiveStatus === "voicemail-brief");
+
+      const members = isMissedInbound ? (lineAgents.get(line.id) ?? []) : [];
+
+      if (isMissedInbound && members.length > 0) {
+        for (const member of members) {
+          const perAgentId = `${call.id}__${member.agentId}`;
+          if (seenCallIds.has(perAgentId)) continue;
+          seenCallIds.add(perAgentId);
+          rows.push({
+            id: perAgentId,
+            lineId: line.id,
+            lineName: line.name,
+            lineTeam: team,
+            agentId: member.agentId,
+            agentName: member.agentName,
+            participant,
+            direction: call.direction,
+            status: effectiveStatus,
+            durationSeconds: call.duration ?? 0,
+            postAnswerSeconds,
+            createdAt: new Date(call.createdAt),
+          });
+        }
+      } else {
+        rows.push({
+          id: call.id,
+          lineId: line.id,
+          lineName: line.name,
+          lineTeam: team,
+          agentId: call.userId ?? null,
+          agentName,
+          participant,
+          direction: call.direction,
+          status: effectiveStatus,
+          durationSeconds: call.duration ?? 0,
+          postAnswerSeconds,
+          createdAt: new Date(call.createdAt),
+        });
+      }
     }
   }
 
   let inserted = 0;
   let errors = 0;
+
+  // Clean up old single-agent missed inbound records (IDs without "__") that were stored
+  // before per-member fan-out was introduced. Without this, re-syncing would double-count
+  // the call for the primary agent (once from the old record, once from the new per-member one).
+  try {
+    await db.execute(sql`
+      DELETE FROM phone_calls
+      WHERE created_at >= ${from}
+        AND created_at <= ${to}
+        AND direction = 'incoming'
+        AND status IN ('no-answer', 'voicemail', 'voicemail-brief')
+        AND id NOT LIKE '%__%'
+    `);
+  } catch (err) {
+    logger.warn(err, "quoSync: cleanup of old missed inbound records failed (non-fatal)");
+  }
 
   if (rows.length > 0) {
     const CHUNK = 500;
