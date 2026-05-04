@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db, phoneCallsTable } from "@workspace/db";
-import { and, eq, gte, lte, desc } from "drizzle-orm";
+import { and, eq, gte, lte, desc, ne } from "drizzle-orm";
 import { runSync, startBackgroundSync, getSyncState } from "./quoSync.js";
 
 const router: IRouter = Router();
@@ -129,7 +129,7 @@ router.get("/quo/line-stats", async (req, res) => {
         createdAt: phoneCallsTable.createdAt,
       })
       .from(phoneCallsTable)
-      .where(and(eq(phoneCallsTable.lineId, lineId), gte(phoneCallsTable.createdAt, fromDate), lte(phoneCallsTable.createdAt, toDate)));
+      .where(and(eq(phoneCallsTable.lineId, lineId), gte(phoneCallsTable.createdAt, fromDate), lte(phoneCallsTable.createdAt, toDate), ne(phoneCallsTable.status, "in-progress")));
 
     type Slot = {
       outbound: number; inbound: number; answered: number; missed: number;
@@ -234,7 +234,7 @@ router.get("/quo/stats", async (req, res) => {
         createdAt: phoneCallsTable.createdAt,
       })
       .from(phoneCallsTable)
-      .where(and(gte(phoneCallsTable.createdAt, fromDate), lte(phoneCallsTable.createdAt, toDate)));
+      .where(and(gte(phoneCallsTable.createdAt, fromDate), lte(phoneCallsTable.createdAt, toDate), ne(phoneCallsTable.status, "in-progress")));
 
     const teamStats: Record<
       string,
