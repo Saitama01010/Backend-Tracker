@@ -28,7 +28,7 @@ async function quoFetch<T>(path: string, attempt = 0): Promise<T> {
 
 function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   const n = name.toLowerCase().trim();
-  if (/retention|ob|outbound|maison|tax|jacob|levi|ryan|mike|adam|rick|zeiad|zack/.test(n)) return "retention";
+  if (/retention|ob|outbound|jacob|levi|ryan|mike|adam|rick|zeiad|zack/.test(n)) return "retention";
   if (/nsf|national settlement|ellie|alex|katie|jenny|estella|talia|rika|austin/.test(n)) return "nsf";
   if (/\bcs\b|customer support/.test(n) || name === "CS Team") return "cs";
   return null;
@@ -76,6 +76,9 @@ const USER_EMAIL_OVERRIDES: Record<string, string> = {
   "mike_j27@aol.com": "Mike Johnson",
   "baseersalaheldin1001@gmail.com": "Baser Salah",
   "anasmohamedaly2006@gmail.com": "Anas Mohamed",
+  "faridasalah808@gmail.com": "Freya Kallias",
+  "ghadavxz@gmail.com": "Jade Atwood",
+  "zwingherr2506@gmail.com": "Andrew Gomez",
 };
 
 interface PhoneNumber {
