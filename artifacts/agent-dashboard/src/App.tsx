@@ -45,6 +45,10 @@ const queryClient = new QueryClient();
 const RETENTION = {
   status: "https://docs.google.com/spreadsheets/d/1qF5Dc5quGrAywf5Rtx4q7DrX91VlNIFOfKr-REoSkII/export?format=csv&gid=0",
 };
+const NEW_RETENTION_URL =
+  "https://docs.google.com/spreadsheets/d/1Eje6BABFbmRGHa6D1ET2sMvlE8o61iJ71yOvydD-R3o/export?format=csv&gid=837339339";
+// Records on/after this date come from the new Discord-bot sheet; older records from the old sheet.
+const RETENTION_CUTOVER = new Date("2026-05-04T00:00:00");
 const NSF = {
   status: "https://docs.google.com/spreadsheets/d/16qoZESE0gGQPdOXQUSh2JsadWDmUE7OyCajRwBy0E38/export?format=csv&gid=0",
 };
@@ -68,6 +72,57 @@ async function fetchHeaderCsv(url: string): Promise<SheetData> {
   return { headers, rows };
 }
 
+
+// Derives a normalised status label from the new sheet's "Cancel request update" column.
+function deriveNewRetentionStatus(val: string): string {
+  const lower = val.toLowerCase();
+  if (/retain/.test(lower)) return "Retained";
+  if (/\bidp\b/.test(lower)) return "IDP-Handled";
+  return "Cancelled";
+}
+
+// Fetches both the old and new retention sheets and merges them:
+//   – Old sheet  → all rows (historical records, unchanged)
+//   – New sheet  → only rows on/after RETENTION_CUTOVER (Discord-bot submissions)
+async function fetchRetentionCombinedSheet(): Promise<SheetData> {
+  const [oldSheet, newSheet] = await Promise.all([
+    fetchHeaderCsv(RETENTION.status),
+    fetchHeaderCsv(NEW_RETENTION_URL),
+  ]);
+
+  const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
+  const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
+  const oldDateCol = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
+
+  const rows: Row[] = [];
+
+  // Keep every row from the old sheet exactly as it was
+  if (oldAgentCol && oldStatusCol) {
+    for (const r of oldSheet.rows) {
+      const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
+      const d = oldDateCol ? parseDate(dateStr) : null;
+      rows.push({
+        Agent: (r[oldAgentCol] ?? "").trim(),
+        Status: (r[oldStatusCol] ?? "").trim(),
+        Date: d ? toIsoDate(d) : dateStr,
+      });
+    }
+  }
+
+  // Add new-sheet rows that are on/after the cutover date
+  for (const r of newSheet.rows) {
+    const tsRaw = (r["Timestamp"] ?? "").trim();
+    const d = parseDate(tsRaw);
+    if (!d || d < RETENTION_CUTOVER) continue;
+    rows.push({
+      Agent: (r["Agent Name"] ?? "").trim(),
+      Status: deriveNewRetentionStatus(r["Cancel request update"] ?? ""),
+      Date: toIsoDate(d),
+    });
+  }
+
+  return { headers: ["Agent", "Status", "Date"], rows };
+}
 
 function findColumn(headers: string[], candidates: string[]): string | null {
   const lower = headers.map((h) => h.toLowerCase().trim());
@@ -1333,15 +1388,17 @@ function TeamPanel({
   sheetKey,
   label,
   mode,
+  statusQueryFn,
 }: {
   urls: { status: string };
   sheetKey: string;
   label: string;
   mode: TeamMode;
+  statusQueryFn?: () => Promise<SheetData>;
 }) {
   const statusQ = useQuery({
     queryKey: ["status", sheetKey],
-    queryFn: () => fetchHeaderCsv(urls.status),
+    queryFn: statusQueryFn ?? (() => fetchHeaderCsv(urls.status)),
     staleTime: 1000 * 30,
     refetchOnWindowFocus: false,
     refetchInterval: 60 * 1000,
@@ -2143,7 +2200,7 @@ function Dashboard() {
             <TabsTrigger value="quo-lines" data-testid="tab-quo-lines">Quo Lines</TabsTrigger>
           </TabsList>
           <TabsContent value="retention">
-            <TeamPanel urls={RETENTION} sheetKey="retention" label="Retention Team" mode="retention" />
+            <TeamPanel urls={RETENTION} sheetKey="retention" label="Retention Team" mode="retention" statusQueryFn={fetchRetentionCombinedSheet} />
           </TabsContent>
           <TabsContent value="nsf">
             <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" />
