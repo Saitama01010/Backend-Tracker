@@ -1567,7 +1567,7 @@ function TeamPanel({
         <div>
           <CardTitle className="text-xl">{label}</CardTitle>
           <p className="text-sm text-muted-foreground mt-1">
-            Calls, time, and outcomes · live from OpenPhone · syncs every 2 min
+            Calls, time, and outcomes · live from OpenPhone · syncs every 30 sec
           </p>
         </div>
         <Button
