@@ -91,6 +91,117 @@ router.get("/quo/lines", async (req, res) => {
   }
 });
 
+router.get("/quo/all-lines", async (req, res) => {
+  try {
+    const result = await quoFetch<{ data: QuoPhoneNumber[] }>("/phone-numbers");
+    const lines = (result.data ?? []).map((p) => ({ ...p, team: classifyLine(p.name) }));
+    res.json({ data: lines });
+  } catch (err) {
+    req.log.error(err, "quo all-lines error");
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/quo/line-stats", async (req, res) => {
+  try {
+    const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString();
+    const to = (req.query["to"] as string) || new Date().toISOString();
+    const lineId = req.query["lineId"] as string | undefined;
+
+    if (!lineId) {
+      res.status(400).json({ error: "lineId is required" });
+      return;
+    }
+
+    const fromDate = new Date(from);
+    const toDate = new Date(to);
+
+    const rows = await db
+      .select({
+        agentName: phoneCallsTable.agentName,
+        participant: phoneCallsTable.participant,
+        direction: phoneCallsTable.direction,
+        status: phoneCallsTable.status,
+        durationSeconds: phoneCallsTable.durationSeconds,
+        postAnswerSeconds: phoneCallsTable.postAnswerSeconds,
+        createdAt: phoneCallsTable.createdAt,
+      })
+      .from(phoneCallsTable)
+      .where(and(eq(phoneCallsTable.lineId, lineId), gte(phoneCallsTable.createdAt, fromDate), lte(phoneCallsTable.createdAt, toDate)));
+
+    type Slot = {
+      outbound: number; inbound: number; answered: number; missed: number;
+      voicemail: number; vmBrief: number; totalCalls: number; talkSeconds: number;
+      uniqueContacts: Set<string>;
+    };
+
+    const agentStats: Record<string, Record<string, Slot>> = {};
+    const agentLastCall: Record<string, Date> = {};
+
+    for (const row of rows) {
+      const agentName = row.agentName ?? "Unknown";
+      const date = row.createdAt.toISOString().slice(0, 10);
+
+      if (!agentStats[agentName]) agentStats[agentName] = {};
+      if (!agentStats[agentName][date]) {
+        agentStats[agentName][date] = {
+          outbound: 0, inbound: 0, answered: 0, missed: 0,
+          voicemail: 0, vmBrief: 0, totalCalls: 0, talkSeconds: 0, uniqueContacts: new Set(),
+        };
+      }
+      const slot = agentStats[agentName][date];
+      slot.totalCalls++;
+      slot.talkSeconds += row.durationSeconds;
+
+      if (row.direction === "outgoing" && row.participant) slot.uniqueContacts.add(row.participant);
+      if (!agentLastCall[agentName] || row.createdAt > agentLastCall[agentName]) {
+        agentLastCall[agentName] = row.createdAt;
+      }
+
+      if (row.direction === "outgoing") slot.outbound++;
+      else slot.inbound++;
+
+      let effectiveStatus = row.status;
+      if (row.status === "completed" && row.direction === "outgoing") {
+        const pas = row.postAnswerSeconds;
+        if (pas !== null && pas !== undefined) {
+          if (pas >= 60) effectiveStatus = "completed";
+          else if (pas >= 20) effectiveStatus = "voicemail";
+          else effectiveStatus = "voicemail-brief";
+        } else {
+          const dur = row.durationSeconds;
+          if (dur >= 75) effectiveStatus = "completed";
+          else if (dur >= 35) effectiveStatus = "voicemail";
+          else effectiveStatus = "voicemail-brief";
+        }
+      }
+
+      if (effectiveStatus === "completed") slot.answered++;
+      else if (effectiveStatus === "voicemail") slot.voicemail++;
+      else if (effectiveStatus === "voicemail-brief") slot.vmBrief++;
+      else slot.missed++;
+    }
+
+    const serializedStats: Record<string, Record<string, unknown>> = {};
+    for (const [agent, days] of Object.entries(agentStats)) {
+      serializedStats[agent] = {};
+      for (const [date, slot] of Object.entries(days)) {
+        serializedStats[agent][date] = { ...slot, uniqueContacts: slot.uniqueContacts.size };
+      }
+    }
+
+    const serializedLastCall: Record<string, string> = {};
+    for (const [agent, ts] of Object.entries(agentLastCall)) {
+      serializedLastCall[agent] = ts.toISOString();
+    }
+
+    res.json({ agentStats: serializedStats, agentLastCall: serializedLastCall });
+  } catch (err) {
+    req.log.error(err, "quo line-stats error");
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 router.get("/quo/stats", async (req, res) => {
   try {
     const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString();

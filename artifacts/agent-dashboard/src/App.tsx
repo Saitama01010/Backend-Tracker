@@ -36,6 +36,8 @@ import {
   PhoneOutgoing,
   PhoneMissed,
   Info,
+  ChevronLeft,
+  PhoneCall,
 } from "lucide-react";
 
 const queryClient = new QueryClient();
@@ -1889,6 +1891,227 @@ function PasswordGate({ children }: { children: React.ReactNode }) {
   );
 }
 
+interface QuoLine {
+  id: string;
+  name: string;
+  formattedNumber: string;
+  number: string;
+  team: "retention" | "nsf" | "cs" | null;
+  users: { id: string; firstName: string; lastName: string; email: string }[];
+}
+
+interface LineStatsResponse {
+  agentStats: Record<string, Record<string, PhoneAgentDay>>;
+  agentLastCall: Record<string, string>;
+}
+
+const LINE_TEAM_COLORS: Record<string, string> = {
+  retention: "bg-violet-500/20 text-violet-300 border border-violet-500/30",
+  nsf: "bg-amber-500/20 text-amber-300 border border-amber-500/30",
+  cs: "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30",
+};
+const LINE_TEAM_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "CS" };
+
+function QuoLinesPanel() {
+  const todayIso = toIsoDate(new Date());
+  const [from, setFrom] = useState(todayIso);
+  const [to, setTo] = useState(todayIso);
+  const [selectedLine, setSelectedLine] = useState<QuoLine | null>(null);
+
+  const linesQ = useQuery<{ data: QuoLine[] }>({
+    queryKey: ["allLines"],
+    queryFn: async () => {
+      const r = await fetch("/api/quo/all-lines");
+      if (!r.ok) throw new Error("Failed to load lines");
+      return r.json() as Promise<{ data: QuoLine[] }>;
+    },
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  const statsQ = useQuery<LineStatsResponse | null>({
+    queryKey: ["lineStats", selectedLine?.id, from, to],
+    queryFn: async () => {
+      if (!selectedLine) return null;
+      const pFrom = new Date(`${from}T00:00:00`).toISOString();
+      const pTo = new Date(`${to}T23:59:59`).toISOString();
+      const r = await fetch(
+        `/api/quo/line-stats?lineId=${encodeURIComponent(selectedLine.id)}&from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`
+      );
+      if (!r.ok) return null;
+      return r.json() as Promise<LineStatsResponse>;
+    },
+    enabled: !!selectedLine,
+    staleTime: 30 * 1000,
+    refetchInterval: 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
+    const map = new Map<string, PhoneAgentMetrics>();
+    if (!statsQ.data) return map;
+    const { agentStats, agentLastCall } = statsQ.data;
+    for (const [agentName, days] of Object.entries(agentStats)) {
+      const key = normalizeAgent(agentName);
+      if (PHONE_BLOCKLIST.has(key)) continue;
+      const acc: PhoneAgentMetrics = {
+        calls: 0, seconds: 0, answered: 0, missed: 0,
+        voicemail: 0, vmBrief: 0, inbound: 0, outbound: 0,
+        uniqueContacts: 0, lastCallAt: agentLastCall?.[agentName],
+      };
+      for (const day of Object.values(days)) {
+        acc.calls += day.totalCalls ?? 0;
+        acc.seconds += day.talkSeconds ?? 0;
+        acc.answered += day.answered ?? 0;
+        acc.missed += day.missed ?? 0;
+        acc.voicemail += day.voicemail ?? 0;
+        acc.vmBrief += day.vmBrief ?? 0;
+        acc.inbound += day.inbound ?? 0;
+        acc.outbound += day.outbound ?? 0;
+        acc.uniqueContacts += day.uniqueContacts ?? 0;
+      }
+      if (acc.calls > 0 || acc.seconds > 0) {
+        const existing = map.get(key);
+        if (existing) {
+          const mergedLast = existing.lastCallAt && acc.lastCallAt
+            ? (existing.lastCallAt > acc.lastCallAt ? existing.lastCallAt : acc.lastCallAt)
+            : (existing.lastCallAt ?? acc.lastCallAt);
+          map.set(key, {
+            calls: existing.calls + acc.calls, seconds: existing.seconds + acc.seconds,
+            answered: existing.answered + acc.answered, missed: existing.missed + acc.missed,
+            voicemail: existing.voicemail + acc.voicemail, vmBrief: existing.vmBrief + acc.vmBrief,
+            inbound: existing.inbound + acc.inbound, outbound: existing.outbound + acc.outbound,
+            uniqueContacts: existing.uniqueContacts + acc.uniqueContacts, lastCallAt: mergedLast,
+          });
+        } else {
+          map.set(key, acc);
+        }
+      }
+    }
+    return map;
+  }, [statsQ.data]);
+
+  const agentList = useMemo(
+    () => Array.from(phoneData.keys()).map((k) => k.replace(/\b\w/g, (c) => c.toUpperCase())),
+    [phoneData]
+  );
+
+  const lineTotals = useMemo(() => {
+    let calls = 0, seconds = 0;
+    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; }
+    return { calls, seconds };
+  }, [phoneData]);
+
+  if (selectedLine) {
+    return (
+      <Card>
+        <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-4">
+          <div>
+            <button
+              type="button"
+              onClick={() => setSelectedLine(null)}
+              className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors mb-2"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Back to all lines
+            </button>
+            <CardTitle className="text-xl flex items-center gap-2">
+              <PhoneCall className="h-5 w-5 text-violet-400" />
+              {selectedLine.name}
+              {selectedLine.team && (
+                <span className={`text-xs px-1.5 py-0.5 rounded ${LINE_TEAM_COLORS[selectedLine.team]}`}>
+                  {LINE_TEAM_LABELS[selectedLine.team]}
+                </span>
+              )}
+            </CardTitle>
+            <p className="text-sm text-muted-foreground mt-1">{selectedLine.formattedNumber} · Agent analytics</p>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => statsQ.refetch()} disabled={statsQ.isFetching}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${statsQ.isFetching ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
+          {lineTotals.calls > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <StatTile label="Total calls" value={lineTotals.calls.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
+              <StatTile label="Time on calls" value={formatHours(lineTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
+              <StatTile label="Agents active" value={agentList.length.toLocaleString()} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+            </div>
+          )}
+          {statsQ.isLoading && <TableSkeleton />}
+          {!statsQ.isLoading && agentList.length > 0 && (
+            <ByCallStatsView agentList={agentList} phoneData={phoneData} directKeys={true} />
+          )}
+          {!statsQ.isLoading && agentList.length === 0 && (
+            <div className="text-center py-12 text-muted-foreground">
+              No calls on this line in the selected period.
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const lines = linesQ.data?.data ?? [];
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-4">
+        <div>
+          <CardTitle className="text-xl">Quo Lines</CardTitle>
+          <p className="text-sm text-muted-foreground mt-1">
+            All OpenPhone lines · click any line to view per-agent analytics
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => linesQ.refetch()} disabled={linesQ.isFetching}>
+          <RefreshCw className={`h-4 w-4 mr-2 ${linesQ.isFetching ? "animate-spin" : ""}`} />
+          Refresh
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
+        {linesQ.isLoading && <TableSkeleton />}
+        {linesQ.error && (
+          <ErrorState message="Failed to load lines." onRetry={() => linesQ.refetch()} />
+        )}
+        {lines.length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+            {lines.map((line) => (
+              <button
+                key={line.id}
+                type="button"
+                onClick={() => setSelectedLine(line)}
+                className="text-left p-4 rounded-lg border bg-card hover:bg-accent/40 hover:border-violet-500/50 transition-all group"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium text-sm truncate group-hover:text-violet-300 transition-colors">
+                      {line.name}
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-0.5 font-mono">{line.formattedNumber}</div>
+                  </div>
+                  {line.team && (
+                    <span className={`text-xs px-1.5 py-0.5 rounded shrink-0 ${LINE_TEAM_COLORS[line.team]}`}>
+                      {LINE_TEAM_LABELS[line.team]}
+                    </span>
+                  )}
+                </div>
+                {line.users && line.users.length > 0 && (
+                  <div className="mt-2 text-xs text-muted-foreground/70 truncate">
+                    {line.users.map((u) => `${u.firstName} ${u.lastName}`).join(", ")}
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function Dashboard() {
   return (
     <div className="min-h-screen bg-background relative overflow-hidden">
@@ -1913,10 +2136,11 @@ function Dashboard() {
 
       <main className="max-w-[1400px] mx-auto px-6 py-8">
         <Tabs defaultValue="retention" className="space-y-6">
-          <TabsList className="grid w-full max-w-md grid-cols-3">
+          <TabsList className="grid w-full max-w-xl grid-cols-4">
             <TabsTrigger value="retention" data-testid="tab-retention">Retention Team</TabsTrigger>
             <TabsTrigger value="nsf" data-testid="tab-nsf">NSF Team</TabsTrigger>
             <TabsTrigger value="cs" data-testid="tab-cs">CS Team</TabsTrigger>
+            <TabsTrigger value="quo-lines" data-testid="tab-quo-lines">Quo Lines</TabsTrigger>
           </TabsList>
           <TabsContent value="retention">
             <TeamPanel urls={RETENTION} sheetKey="retention" label="Retention Team" mode="retention" />
@@ -1926,6 +2150,9 @@ function Dashboard() {
           </TabsContent>
           <TabsContent value="cs">
             <CSPanel />
+          </TabsContent>
+          <TabsContent value="quo-lines">
+            <QuoLinesPanel />
           </TabsContent>
         </Tabs>
       </main>
