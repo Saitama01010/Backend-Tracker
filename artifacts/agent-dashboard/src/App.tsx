@@ -396,6 +396,13 @@ function isRetainedStatus(s: string): boolean {
   return /retain/.test(lower) || /\bidp\b/.test(lower);
 }
 
+// For counts (daily / monthly / all-time tiles): IDP is excluded.
+// IDP still counts toward retention RATE via isRetainedStatus above.
+function isPureRetainedStatus(s: string): boolean {
+  const lower = s.toLowerCase();
+  return /retain/.test(lower) && !/\bidp\b/.test(lower);
+}
+
 function retentionRate(retained: number, total: number): string {
   if (!total) return "—";
   return `${((retained / total) * 100).toFixed(1)}%`;
@@ -541,7 +548,7 @@ function aggregate(
       const inThisMonth = d.getFullYear() === monthYear && d.getMonth() === monthMonth;
       if (isToday) todayCount += 1;
       if (inThisMonth) monthCount += 1;
-      if (isRetainedStatus(rawStatus)) {
+      if (isPureRetainedStatus(rawStatus)) {
         if (isToday) todayRetained += 1;
         if (inThisMonth) monthRetained += 1;
       }
