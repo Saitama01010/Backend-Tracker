@@ -219,7 +219,7 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
 
   const linesRes = await quoFetch<{ data: PhoneNumber[] }>("/phone-numbers");
   const allLines = linesRes.data ?? [];
-  const lines = allLines.filter((p) => classifyLine(p.name) !== null);
+  const lines = allLines; // sync ALL lines, not just classified ones
   const lineMap = new Map(lines.map((l) => [l.id, l]));
   const knownLineIds = new Set(lines.map((l) => l.id));
 
@@ -295,7 +295,7 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
     const { lineId, participant: taskParticipant, calls } = result;
     const line = lineMap.get(lineId);
     if (!line) continue;
-    const team = classifyLine(line.name)!;
+    const team = classifyLine(line.name) ?? "other";
     const overrideName = LINE_AGENT_OVERRIDES[line.name.toLowerCase().trim()];
 
     for (const call of calls) {
