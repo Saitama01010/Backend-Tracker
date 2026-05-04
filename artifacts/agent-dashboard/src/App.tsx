@@ -1446,9 +1446,9 @@ function TeamPanel({
   const statusQ = useQuery({
     queryKey: ["status", sheetKey],
     queryFn: statusQueryFn ?? (() => fetchHeaderCsv(urls.status)),
-    staleTime: 1000 * 30,
-    refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    staleTime: 1000 * 10,
+    refetchOnWindowFocus: true,
+    refetchInterval: 15 * 1000,
   });
   const isLoading = statusQ.isLoading;
   const isFetching = statusQ.isFetching;
@@ -1471,9 +1471,9 @@ function TeamPanel({
       if (!res.ok) return null;
       return res.json() as Promise<PhoneStatsResponse>;
     },
-    staleTime: 1000 * 30,
-    refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    staleTime: 1000 * 10,
+    refetchOnWindowFocus: true,
+    refetchInterval: 15 * 1000,
   });
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
@@ -1677,9 +1677,9 @@ function CSPanel() {
       if (!res.ok) return null;
       return res.json() as Promise<PhoneStatsResponse>;
     },
-    staleTime: 1000 * 30,
-    refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    staleTime: 1000 * 10,
+    refetchOnWindowFocus: true,
+    refetchInterval: 15 * 1000,
   });
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
@@ -1816,9 +1816,9 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
       if (!r.ok) return null;
       return r.json() as Promise<{ data: CallRecord[] }>;
     },
-    staleTime: 1000 * 30,
-    refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    staleTime: 1000 * 10,
+    refetchOnWindowFocus: true,
+    refetchInterval: 15 * 1000,
   });
 
   const [search, setSearch] = useState("");
@@ -2030,7 +2030,7 @@ function QuoLinesPanel() {
       return r.json() as Promise<{ data: QuoLine[] }>;
     },
     staleTime: 5 * 60 * 1000,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true,
   });
 
   const statsQ = useQuery<LineStatsResponse | null>({
@@ -2046,9 +2046,9 @@ function QuoLinesPanel() {
       return r.json() as Promise<LineStatsResponse>;
     },
     enabled: !!selectedLine,
-    staleTime: 30 * 1000,
-    refetchInterval: 60 * 1000,
-    refetchOnWindowFocus: false,
+    staleTime: 1000 * 10,
+    refetchInterval: 15 * 1000,
+    refetchOnWindowFocus: true,
   });
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
