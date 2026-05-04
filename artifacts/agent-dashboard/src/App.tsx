@@ -111,15 +111,18 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     }
   }
 
-  // Add new-sheet rows that are on/after the cutover date
+  // Add new-sheet rows that are on/after the cutover date.
+  // Timestamps are in Egypt time (UTC+2) — convert to California date.
   for (const r of newSheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
-    const d = parseDate(tsRaw);
-    if (!d || d < RETENTION_CUTOVER) continue;
+    const d = parseEgyptTimestamp(tsRaw);
+    if (!d) continue;
+    const caDate = toCaliforniaDateStr(d);
+    if (caDate < "2026-05-04") continue;
     rows.push({
       Agent: (r["Agent Name"] ?? "").trim(),
       Status: deriveNewRetentionStatus(r["Cancel request update"] ?? ""),
-      Date: toIsoDate(d),
+      Date: caDate,
     });
   }
 
@@ -154,15 +157,18 @@ async function fetchNSFCombinedSheet(): Promise<SheetData> {
     }
   }
 
-  // Add new-sheet rows that are on/after the cutover date
+  // Add new-sheet rows that are on/after the cutover date.
+  // Timestamps are in Egypt time (UTC+2) — convert to California date.
   for (const r of newSheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
-    const d = parseDate(tsRaw);
-    if (!d || d < RETENTION_CUTOVER) continue;
+    const d = parseEgyptTimestamp(tsRaw);
+    if (!d) continue;
+    const caDate = toCaliforniaDateStr(d);
+    if (caDate < "2026-05-04") continue;
     rows.push({
       Agent: (r["Agent Name"] ?? "").trim(),
       Status: (r["File Status"] ?? "").trim(),
-      Date: toIsoDate(d),
+      Date: caDate,
     });
   }
 
@@ -288,6 +294,47 @@ function toIsoDate(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+// Discord-bot sheets record timestamps in Egypt local time (EET = UTC+2, no DST since 2011).
+// This parses those timestamps and returns a proper UTC Date so the California date can be derived.
+// Google Forms timestamp format is typically "M/D/YYYY HH:MM:SS".
+function parseEgyptTimestamp(s: string): Date | null {
+  if (!s) return null;
+  const trimmed = s.trim();
+
+  let year: number, month: number, day: number, hour = 0, minute = 0, second = 0;
+
+  // "M/D/YYYY HH:MM:SS" (Google Forms default)
+  const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(trimmed);
+  // "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS"
+  const iso = /^(\d{4})-(\d{2})-(\d{2})[T\s](\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(trimmed);
+
+  if (us) {
+    month  = Number(us[1]); day    = Number(us[2]); year   = Number(us[3]);
+    hour   = Number(us[4]); minute = Number(us[5]); second = Number(us[6] ?? 0);
+  } else if (iso) {
+    year   = Number(iso[1]); month  = Number(iso[2]); day    = Number(iso[3]);
+    hour   = Number(iso[4]); minute = Number(iso[5]); second = Number(iso[6] ?? 0);
+  } else {
+    // Date-only string — no time means no timezone conversion needed
+    return parseDate(trimmed);
+  }
+
+  // Egypt is permanently UTC+2 → subtract 2 h to get UTC
+  const utcMs = Date.UTC(year, month - 1, day, hour - 2, minute, second);
+  const d = new Date(utcMs);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// Given a UTC Date, return the YYYY-MM-DD date string in California time (America/Los_Angeles).
+// This correctly handles Pacific Standard Time (UTC-8) and Pacific Daylight Time (UTC-7).
+const _caFmt = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Los_Angeles",
+  year: "numeric", month: "2-digit", day: "2-digit",
+});
+function toCaliforniaDateStr(d: Date): string {
+  return _caFmt.format(d); // returns "YYYY-MM-DD"
 }
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
