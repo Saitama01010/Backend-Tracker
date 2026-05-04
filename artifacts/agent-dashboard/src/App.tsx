@@ -189,8 +189,14 @@ function normalizeAgent(s: string): string {
   return NAME_ALIASES[base] ?? base;
 }
 
-// Garbage/bot OpenPhone usernames to always exclude everywhere
-const PHONE_BLOCKLIST = new Set(["useyzjeml5", "ush0pegsjr", "shahin ."]);
+// Display names to always exclude everywhere across all panels.
+// Use normalized lowercase display names — these are matched against normalizeAgent(agentName).
+// NOTE: "Leo Maxwell" is intentionally NOT here. He is an admin who covers calls on
+// multiple lines. The Quo Lines tab uses a behavioral filter (outbound===0 && answered===0)
+// to hide him when he's inactive. When he IS making calls, he should show.
+// NOTE: Do NOT put OpenPhone user IDs here — they are never matched (the check
+// compares against display names, not IDs).
+const PHONE_BLOCKLIST = new Set(["shahin ."]);
 
 // Extra phone-only agents per team (not in the Google Sheet, but on the team)
 // Keys must match OpenPhone agent names (normalized lowercase)
