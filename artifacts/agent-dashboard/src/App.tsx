@@ -1168,7 +1168,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                 <Th id="__missed__" label="Missed" tone="text-rose-400" tip="Calls where no one answered at all — phone rang but nothing picked up." />
                 <Th id="__vm__" label="VM Left" tone="text-amber-400" tip="Outbound calls where the agent left a voicemail message (20–59s after VM answered)." />
                 <Th id="__vmbrief__" label="No VM" tone="text-orange-400" tip="Outbound calls that reached voicemail but the agent hung up without leaving a message." />
-                <Th id="__unique__" label="Customers Reached" tone="text-sky-400" tip="Unique phone numbers the agent dialed outbound. Each number counted once no matter how many times they called it." />
+                <Th id="__unique__" label="CX Reached" tone="text-sky-400" tip="Unique phone numbers the agent dialed outbound. Each number counted once no matter how many times they called it." />
                 <Th id="__time__" label="Talk time" tip="Total duration of all calls combined." />
                 <Th id="__resp__" label="Response %" tone="text-amber-400" tip="Percentage of total calls that resulted in a real conversation (Answered ÷ Total Calls)." />
                 <TableHead className="whitespace-nowrap text-right text-violet-400">Last call</TableHead>
