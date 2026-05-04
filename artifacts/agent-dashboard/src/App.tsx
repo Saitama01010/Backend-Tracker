@@ -464,6 +464,7 @@ function normalizeStatus(s: string): string {
   if (/^retain(ed)?$/.test(l)) return "Retained";
   if (/^cancel(led)?$/.test(l)) return "Cancelled";
   if (/^idp/.test(l)) return "IDP-Handled";
+  if (/^activehandled$/.test(l)) return "IDP-Handled";
   return t;
 }
 
