@@ -94,7 +94,9 @@ router.get("/quo/lines", async (req, res) => {
 router.get("/quo/all-lines", async (req, res) => {
   try {
     const result = await quoFetch<{ data: QuoPhoneNumber[] }>("/phone-numbers");
-    const lines = (result.data ?? []).map((p) => ({ ...p, team: classifyLine(p.name) }));
+    const lines = (result.data ?? [])
+      .filter((p) => !p.name.toLowerCase().includes("tax"))
+      .map((p) => ({ ...p, team: classifyLine(p.name) }));
     res.json({ data: lines });
   } catch (err) {
     req.log.error(err, "quo all-lines error");
