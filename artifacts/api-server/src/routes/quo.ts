@@ -395,13 +395,64 @@ router.get("/quo/sync-state", async (req, res) => {
 
 router.get("/quo/live", async (req, res) => {
   try {
-    const since = new Date(Date.now() - 2 * 60 * 60 * 1000);
-    const rows = await db
+    // DB check: only trust in-progress records from the last 15 minutes.
+    // Calls older than that which are still "in-progress" in the DB are stale
+    // (they completed but the sync window moved past them before they could be updated).
+    const since15 = new Date(Date.now() - 15 * 60 * 1000);
+    const dbRows = await db
       .select({ agentName: phoneCallsTable.agentName })
       .from(phoneCallsTable)
-      .where(and(gte(phoneCallsTable.createdAt, since), eq(phoneCallsTable.status, "in-progress")));
-    const active = [...new Set(rows.map((r) => r.agentName).filter(Boolean))];
-    res.json({ active });
+      .where(and(gte(phoneCallsTable.createdAt, since15), eq(phoneCallsTable.status, "in-progress")));
+    const active = new Set(dbRows.map((r) => r.agentName).filter(Boolean) as string[]);
+
+    // Real-time supplement: hit the OpenPhone conversations API for the last
+    // 2 minutes to catch brand-new calls that haven't been synced into the DB yet.
+    try {
+      const since2 = new Date(Date.now() - 2 * 60 * 1000);
+      const [convRes, linesRes] = await Promise.all([
+        quoFetch<{ data: { id: string; phoneNumberId: string; participants: string[] }[] }>(
+          `/conversations?updatedAfter=${encodeURIComponent(since2.toISOString())}&maxResults=50`
+        ),
+        quoFetch<{ data: { id: string; users: { id: string; firstName: string; lastName: string; email?: string }[] }[] }>(
+          "/phone-numbers"
+        ),
+      ]);
+
+      // Build a user ID → display name map from line membership
+      const userMap = new Map<string, string>();
+      for (const line of linesRes.data ?? []) {
+        for (const u of line.users ?? []) {
+          if (!userMap.has(u.id)) userMap.set(u.id, `${u.firstName} ${u.lastName}`.trim());
+        }
+      }
+
+      // For each recent conversation fetch its recent calls (concurrency-limited)
+      const convs = convRes.data ?? [];
+      await Promise.all(
+        convs.slice(0, 30).map(async (conv) => {
+          if (!conv.phoneNumberId) return;
+          const participant = conv.participants?.[0];
+          if (!participant) return;
+          try {
+            const callsRes = await quoFetch<{ data: { status: string; userId?: string | null }[] }>(
+              `/calls?phoneNumberId=${encodeURIComponent(conv.phoneNumberId)}` +
+              `&participants[]=${encodeURIComponent(participant)}` +
+              `&createdAfter=${encodeURIComponent(since2.toISOString())}&maxResults=10`
+            );
+            for (const call of callsRes.data ?? []) {
+              if (call.status === "in-progress" && call.userId) {
+                const name = userMap.get(call.userId);
+                if (name) active.add(name);
+              }
+            }
+          } catch { /* best-effort per conversation */ }
+        })
+      );
+    } catch (apiErr) {
+      req.log.warn({ err: String(apiErr) }, "quo live: real-time API supplement failed");
+    }
+
+    res.json({ active: [...active] });
   } catch (err) {
     req.log.error(err, "quo live error");
     res.status(500).json({ error: String(err) });
