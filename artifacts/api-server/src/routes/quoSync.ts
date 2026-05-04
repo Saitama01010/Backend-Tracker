@@ -309,7 +309,22 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
       if (seenCallIds.has(call.id)) continue;
       seenCallIds.add(call.id);
 
-      const agentName = overrideName ?? (call.userId ? (userMap.get(call.userId) ?? USER_ID_OVERRIDES[call.userId] ?? call.userId) : null);
+      // For INBOUND calls, answeredBy is the agent who actually picked up the phone.
+      // userId on an inbound call is the line owner/primary number holder — NOT the answerer.
+      // For OUTBOUND calls, userId is the agent who dialled; answeredBy is always null.
+      const effectiveUserId =
+        call.direction === "incoming" && call.answeredBy
+          ? call.answeredBy
+          : call.userId;
+
+      const agentName =
+        overrideName ??
+        (effectiveUserId
+          ? (userMap.get(effectiveUserId) ??
+             USER_ID_OVERRIDES[effectiveUserId] ??
+             effectiveUserId)
+          : null);
+
       // Use the participant from the conversation query (the customer's number).
       // call.participants[0] is the line's own number, NOT the customer.
       const participant = taskParticipant || null;
@@ -355,7 +370,7 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
         lineId: line.id,
         lineName: line.name,
         lineTeam: team,
-        agentId: call.userId ?? null,
+        agentId: effectiveUserId ?? null,
         agentName,
         participant,
         direction: call.direction,
