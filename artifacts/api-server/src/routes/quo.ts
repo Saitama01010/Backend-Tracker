@@ -137,8 +137,16 @@ router.get("/quo/line-stats", async (req, res) => {
 
     const agentStats: Record<string, Record<string, Slot>> = {};
     const agentLastCall: Record<string, Date> = {};
+    const lineInbounds = { total: 0, answered: 0, missed: 0 };
 
     for (const row of rows) {
+      // Track ALL inbound calls at the line level regardless of attribution
+      if (row.direction === "incoming") {
+        lineInbounds.total++;
+        if (row.status === "completed") lineInbounds.answered++;
+        else lineInbounds.missed++;
+      }
+
       const agentName = row.agentName ?? "Unknown";
       const date = row.createdAt.toISOString().slice(0, 10);
 
@@ -195,7 +203,7 @@ router.get("/quo/line-stats", async (req, res) => {
       serializedLastCall[agent] = ts.toISOString();
     }
 
-    res.json({ agentStats: serializedStats, agentLastCall: serializedLastCall });
+    res.json({ agentStats: serializedStats, agentLastCall: serializedLastCall, lineInbounds });
   } catch (err) {
     req.log.error(err, "quo line-stats error");
     res.status(500).json({ error: String(err) });

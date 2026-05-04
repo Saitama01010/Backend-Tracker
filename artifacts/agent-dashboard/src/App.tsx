@@ -626,11 +626,13 @@ function StatTile({
   value,
   icon,
   tone = "slate",
+  sub,
 }: {
   label: string;
   value: number | string;
   icon?: React.ReactNode;
   tone?: TileTone;
+  sub?: string;
 }) {
   const s = TONE_STYLES[tone];
   return (
@@ -640,6 +642,7 @@ function StatTile({
         <span>{label}</span>
       </div>
       <div className={`mt-1 text-2xl font-bold tabular-nums font-mono ${tone === "slate" ? "" : s.text}`}>{value}</div>
+      {sub && <div className="mt-0.5 text-xs text-muted-foreground">{sub}</div>}
     </div>
   );
 }
@@ -2007,6 +2010,7 @@ interface QuoLine {
 interface LineStatsResponse {
   agentStats: Record<string, Record<string, PhoneAgentDay>>;
   agentLastCall: Record<string, string>;
+  lineInbounds?: { total: number; answered: number; missed: number };
 }
 
 const LINE_TEAM_COLORS: Record<string, string> = {
@@ -2074,6 +2078,10 @@ function QuoLinesPanel() {
         acc.outbound += day.outbound ?? 0;
         acc.uniqueContacts += day.uniqueContacts ?? 0;
       }
+      // Skip agents who have ONLY missed inbound calls — these are unanswered
+      // line-level inbounds, not real agent activity. They are shown in the
+      // "Line Inbounds" stat tile instead.
+      if (acc.outbound === 0 && acc.answered === 0) continue;
       if (acc.calls > 0 || acc.seconds > 0) {
         const existing = map.get(key);
         if (existing) {
@@ -2106,6 +2114,8 @@ function QuoLinesPanel() {
     return { calls, seconds };
   }, [phoneData]);
 
+  const lineInbounds = statsQ.data?.lineInbounds;
+
   if (selectedLine) {
     return (
       <Card>
@@ -2137,11 +2147,20 @@ function QuoLinesPanel() {
         </CardHeader>
         <CardContent className="space-y-6">
           <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
-          {lineTotals.calls > 0 && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {(lineTotals.calls > 0 || (lineInbounds?.total ?? 0) > 0) && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <StatTile label="Total calls" value={lineTotals.calls.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
               <StatTile label="Time on calls" value={formatHours(lineTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
               <StatTile label="Agents active" value={agentList.length.toLocaleString()} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+              {(lineInbounds?.total ?? 0) > 0 && (
+                <StatTile
+                  label="Missed inbounds"
+                  value={lineInbounds!.missed.toLocaleString()}
+                  icon={<PhoneIncoming className="h-3.5 w-3.5" />}
+                  tone="rose"
+                  sub={lineInbounds!.answered > 0 ? `${lineInbounds!.answered} answered` : undefined}
+                />
+              )}
             </div>
           )}
           {statsQ.isLoading && <TableSkeleton />}
