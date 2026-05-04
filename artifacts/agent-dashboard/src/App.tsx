@@ -47,7 +47,9 @@ const RETENTION = {
 };
 const NEW_RETENTION_URL =
   "https://docs.google.com/spreadsheets/d/1Eje6BABFbmRGHa6D1ET2sMvlE8o61iJ71yOvydD-R3o/export?format=csv&gid=837339339";
-// Records on/after this date come from the new Discord-bot sheet; older records from the old sheet.
+const NEW_NSF_URL =
+  "https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=0";
+// Records on/after this date come from the new Discord-bot sheets; older records from the old sheets.
 const RETENTION_CUTOVER = new Date("2026-05-04T00:00:00");
 const NSF = {
   status: "https://docs.google.com/spreadsheets/d/16qoZESE0gGQPdOXQUSh2JsadWDmUE7OyCajRwBy0E38/export?format=csv&gid=0",
@@ -117,6 +119,49 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     rows.push({
       Agent: (r["Agent Name"] ?? "").trim(),
       Status: deriveNewRetentionStatus(r["Cancel request update"] ?? ""),
+      Date: toIsoDate(d),
+    });
+  }
+
+  return { headers: ["Agent", "Status", "Date"], rows };
+}
+
+// Fetches both the old and new NSF sheets and merges them:
+//   – Old sheet  → all rows (historical records, unchanged)
+//   – New sheet  → only rows on/after RETENTION_CUTOVER (Discord-bot submissions)
+async function fetchNSFCombinedSheet(): Promise<SheetData> {
+  const [oldSheet, newSheet] = await Promise.all([
+    fetchHeaderCsv(NSF.status),
+    fetchHeaderCsv(NEW_NSF_URL),
+  ]);
+
+  const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
+  const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
+  const oldDateCol = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
+
+  const rows: Row[] = [];
+
+  // Keep every row from the old sheet exactly as it was
+  if (oldAgentCol && oldStatusCol) {
+    for (const r of oldSheet.rows) {
+      const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
+      const d = oldDateCol ? parseDate(dateStr) : null;
+      rows.push({
+        Agent: (r[oldAgentCol] ?? "").trim(),
+        Status: (r[oldStatusCol] ?? "").trim(),
+        Date: d ? toIsoDate(d) : dateStr,
+      });
+    }
+  }
+
+  // Add new-sheet rows that are on/after the cutover date
+  for (const r of newSheet.rows) {
+    const tsRaw = (r["Timestamp"] ?? "").trim();
+    const d = parseDate(tsRaw);
+    if (!d || d < RETENTION_CUTOVER) continue;
+    rows.push({
+      Agent: (r["Agent Name"] ?? "").trim(),
+      Status: (r["File Status"] ?? "").trim(),
       Date: toIsoDate(d),
     });
   }
@@ -203,6 +248,8 @@ const SHEET_TO_PHONE: Record<string, string> = {
   "ahmed ayman-levi miller": "ahmed ayman",
   "nour-michael belfort-2900": "michael belfort",
   "mohammed ayman-max francis-2268": "max francis",
+  // NSF combined OpenPhone display names
+  "engy-ellie moser-2046": "ellie moser",
 };
 
 function sheetToPhoneKey(sheetAgent: string): string {
@@ -2203,7 +2250,7 @@ function Dashboard() {
             <TeamPanel urls={RETENTION} sheetKey="retention" label="Retention Team" mode="retention" statusQueryFn={fetchRetentionCombinedSheet} />
           </TabsContent>
           <TabsContent value="nsf">
-            <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" />
+            <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" statusQueryFn={fetchNSFCombinedSheet} />
           </TabsContent>
           <TabsContent value="cs">
             <CSPanel />
