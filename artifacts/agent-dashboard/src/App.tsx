@@ -408,9 +408,9 @@ function isPureRetainedStatus(s: string): boolean {
 function normalizeStatus(s: string): string {
   const t = s.trim();
   const l = t.toLowerCase().replace(/[\s\-_]+/g, "");
-  if (/^retained?$/.test(l)) return "Retained";
-  if (/^cancelled?$/.test(l)) return "Cancelled";
-  if (/^idphandled?$/.test(l) || /^idp/.test(l)) return "IDP-Handled";
+  if (/^retain(ed)?$/.test(l)) return "Retained";
+  if (/^cancel(led)?$/.test(l)) return "Cancelled";
+  if (/^idp/.test(l)) return "IDP-Handled";
   return t;
 }
 
