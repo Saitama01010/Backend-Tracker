@@ -48,6 +48,13 @@ const LINE_AGENT_OVERRIDES: Record<string, string> = {
   "mohammed ayman-max francis-2268": "Max Francis",
 };
 
+// Former employees no longer in the workspace — map by user ID directly
+const USER_ID_OVERRIDES: Record<string, string> = {
+  USahWqOQpm: "Unknown Agent",
+  US3fJL9dBL: "Unknown Agent",
+  USRAl7CoAq: "Unknown Agent",
+};
+
 const USER_EMAIL_OVERRIDES: Record<string, string> = {
   "noura.asahab@gmail.com": "Nora Adam",
   "basantemadeldin@yahoo.com": "Carla Bennet",
@@ -302,7 +309,7 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
       if (seenCallIds.has(call.id)) continue;
       seenCallIds.add(call.id);
 
-      const agentName = overrideName ?? (call.userId ? (userMap.get(call.userId) ?? call.userId) : null);
+      const agentName = overrideName ?? (call.userId ? (userMap.get(call.userId) ?? USER_ID_OVERRIDES[call.userId] ?? call.userId) : null);
       // Use the participant from the conversation query (the customer's number).
       // call.participants[0] is the line's own number, NOT the customer.
       const participant = taskParticipant || null;
