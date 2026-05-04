@@ -32,7 +32,7 @@ interface QuoPhoneNumber {
 
 function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   const n = name.toLowerCase().trim();
-  if (/retention|ob|outbound|maison|jacob|levi|ryan|mike|adam|rick|zeiad|zack/.test(n)) return "retention";
+  if (/retention|ob|outbound|jacob|levi|ryan|mike|adam|rick|zeiad|zack/.test(n)) return "retention";
   if (/nsf|national settlement|ellie|alex|katie|jenny|estella|talia|rika|austin/.test(n)) return "nsf";
   if (/\bcs\b|customer support/.test(n) || name === "CS Team") return "cs";
   return null;
