@@ -190,7 +190,7 @@ function normalizeAgent(s: string): string {
 }
 
 // Garbage/bot OpenPhone usernames to always exclude everywhere
-const PHONE_BLOCKLIST = new Set(["useyzjeml5", "ush0pegsjr", "shahin .", "leo maxwell"]);
+const PHONE_BLOCKLIST = new Set(["useyzjeml5", "ush0pegsjr", "shahin ."]);
 
 // Extra phone-only agents per team (not in the Google Sheet, but on the team)
 // Keys must match OpenPhone agent names (normalized lowercase)
