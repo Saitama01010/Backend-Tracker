@@ -403,6 +403,17 @@ function isPureRetainedStatus(s: string): boolean {
   return /retain/.test(lower) && !/\bidp\b/.test(lower);
 }
 
+// Collapse legacy/inconsistent status spellings from old sheets into
+// canonical values so they don't appear as duplicate columns.
+function normalizeStatus(s: string): string {
+  const t = s.trim();
+  const l = t.toLowerCase().replace(/[\s\-_]+/g, "");
+  if (/^retained?$/.test(l)) return "Retained";
+  if (/^cancelled?$/.test(l)) return "Cancelled";
+  if (/^idphandled?$/.test(l) || /^idp/.test(l)) return "IDP-Handled";
+  return t;
+}
+
 function retentionRate(retained: number, total: number): string {
   if (!total) return "—";
   return `${((retained / total) * 100).toFixed(1)}%`;
@@ -490,7 +501,7 @@ function aggregate(
 
   for (const r of filteredStatus) {
     const agent = (r[agentColumn] ?? "").trim();
-    const rawStatus = (r[statusColumn] ?? "").trim() || "(blank)";
+    const rawStatus = normalizeStatus((r[statusColumn] ?? "").trim() || "(blank)");
     const status = mode === "nsf" ? "Fixed" : rawStatus;
     allStatuses.add(status);
     const ag = ensureAgent(agent);
@@ -543,7 +554,7 @@ function aggregate(
     for (const r of status.rows) {
       const d = parseDate(r[dateColumn] ?? "");
       if (!d) continue;
-      const rawStatus = (r[statusColumn] ?? "").trim();
+      const rawStatus = normalizeStatus((r[statusColumn] ?? "").trim());
       const isToday = toIsoDate(d) === todayIso;
       const inThisMonth = d.getFullYear() === monthYear && d.getMonth() === monthMonth;
       if (isToday) todayCount += 1;
