@@ -436,7 +436,7 @@ export async function startBackgroundSync() {
       const state = await getSyncState();
       if (state?.lastSyncedAt) {
         const msSinceLast = now.getTime() - state.lastSyncedAt.getTime();
-        const overlapMs = Math.max(msSinceLast + 10 * 60 * 1000, 2 * 60 * 60 * 1000);
+        const overlapMs = Math.max(msSinceLast + 2 * 60 * 1000, 30 * 60 * 1000);
         const from = new Date(now.getTime() - overlapMs);
         logger.info({ windowHours: overlapMs / 3600000 }, "quoSync: incremental sync");
         await runSync(from, now);
@@ -449,7 +449,7 @@ export async function startBackgroundSync() {
     } catch (err) {
       logger.error(err, "quoSync: background sync error");
     } finally {
-      syncTimer = setTimeout(doSync, 2 * 60 * 1000);
+      syncTimer = setTimeout(doSync, 30 * 1000);
     }
   };
 
