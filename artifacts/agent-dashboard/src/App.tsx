@@ -2217,12 +2217,13 @@ function QuoLinesPanel() {
         acc.vmBrief += day.vmBrief ?? 0;
         acc.inbound += day.inbound ?? 0;
         acc.outbound += day.outbound ?? 0;
-        // Per-day unique used only when a day filter is active;
-        // otherwise use the cross-range deduplicated count from the server.
-        if (dayFilter) acc.uniqueContacts += day.uniqueContacts ?? 0;
+        acc.uniqueContacts += day.uniqueContacts ?? 0;
       }
-      // When no day filter, use the server's truly unique count (no double-counting across days)
-      if (!dayFilter) acc.uniqueContacts = agentUniqueContactsAll?.[agentName] ?? acc.uniqueContacts;
+      // When no day filter and the server provides the cross-range deduplicated count, use it.
+      // This prevents double-counting numbers called on multiple days.
+      if (!dayFilter && agentUniqueContactsAll?.[agentName] != null) {
+        acc.uniqueContacts = agentUniqueContactsAll[agentName];
+      }
       if (acc.outbound === 0 && acc.answered === 0) continue;
       if (acc.calls > 0 || acc.seconds > 0) {
         const existing = map.get(key);
