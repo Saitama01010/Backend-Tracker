@@ -478,6 +478,7 @@ function aggregate(
   mode: TeamMode,
   fromDate: Date | null,
   toDate: Date | null,
+  agentFilter?: string,
 ): Aggregated | { error: string } {
   const agentColumn = findColumn(status.headers, ["Agent", "Agent Name", "Rep"]);
   const statusColumn = findColumn(status.headers, ["Status", "Result", "Outcome", "Disposition"]);
@@ -506,10 +507,12 @@ function aggregate(
   };
 
   // Filter status rows
+  const agentFilterKey = agentFilter ? normalizeAgent(agentFilter) : "";
   const filteredStatus = status.rows.filter((r) => {
     const agent = (r[agentColumn] ?? "").trim();
     if (!agent) return false;
     if (/total$/i.test(agent)) return false;
+    if (agentFilterKey && normalizeAgent(agent) !== agentFilterKey) return false;
     if (dateColumn && (fromDate || toDate)) {
       const d = parseDate(r[dateColumn] ?? "");
       if (!d) return false;
@@ -1532,6 +1535,7 @@ function TeamPanel({
   const todayIso = toIsoDate(new Date());
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
+  const [dayAgentFilter, setDayAgentFilter] = useState("");
 
   const fromDate = from ? parseDate(from) : null;
   const toDate = to ? parseDate(to) : null;
@@ -1590,6 +1594,16 @@ function TeamPanel({
     if (!statusQ.data) return null;
     return aggregate(statusQ.data, mode, fromDate, toDate);
   }, [statusQ.data, mode, from, to]);
+
+  const aggregatedForDay = useMemo(() => {
+    if (!statusQ.data) return null;
+    return aggregate(statusQ.data, mode, fromDate, toDate, dayAgentFilter || undefined);
+  }, [statusQ.data, mode, from, to, dayAgentFilter]);
+
+  const dayAgentOptions = useMemo(() => {
+    if (!aggregated || "error" in aggregated) return [];
+    return aggregated.byAgent.map((a) => a.agent).sort((a, b) => a.localeCompare(b));
+  }, [aggregated]);
 
   const phoneTotals = useMemo(() => {
     let calls = 0;
@@ -1724,7 +1738,34 @@ function TeamPanel({
                     <ByFilesView data={aggregated} />
                   </TabsContent>
                   <TabsContent value="day">
-                    <ByDayView data={aggregated} />
+                    <div className="space-y-3">
+                      {dayAgentOptions.length > 0 && (
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={dayAgentFilter}
+                            onChange={(e) => setDayAgentFilter(e.target.value)}
+                            className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
+                          >
+                            <option value="">All agents</option>
+                            {dayAgentOptions.map((n) => (
+                              <option key={n} value={n}>{n}</option>
+                            ))}
+                          </select>
+                          {dayAgentFilter && (
+                            <button
+                              type="button"
+                              onClick={() => setDayAgentFilter("")}
+                              className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      {aggregatedForDay && !("error" in aggregatedForDay) && (
+                        <ByDayView data={aggregatedForDay} />
+                      )}
+                    </div>
                   </TabsContent>
                 </>
               )}
