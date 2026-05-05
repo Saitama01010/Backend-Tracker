@@ -2481,10 +2481,11 @@ const ATT_STATUS = [
 function AttCell({ status, note }: { status: string; note?: string | null }) {
   const cfg = ATT_STATUS.find((x) => x.s === status);
   if (!status) return <span className="text-zinc-700 text-base leading-none">·</span>;
+  const label = status === "in" ? "In" : status === "off" ? "Off" : status === "late" ? "Late" : "PTO";
   return (
-    <span className={`relative inline-flex items-center justify-center w-6 h-5 rounded text-[10px] font-bold ${cfg?.cell ?? ""}`}>
-      {status === "in" ? "I" : status === "off" ? "O" : status === "late" ? "L" : "P"}
-      {note && <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-violet-400 ring-1 ring-zinc-900" />}
+    <span className={`relative inline-flex items-center justify-center px-1.5 h-5 rounded text-[10px] font-bold whitespace-nowrap ${cfg?.cell ?? ""}`}>
+      {label}
+      {note && <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-red-500 ring-1 ring-zinc-900" />}
     </span>
   );
 }
@@ -2704,7 +2705,7 @@ function AttendancePanel() {
         <Skeleton className="h-56 w-full" />
       ) : (
         <div className="overflow-x-auto rounded-lg border border-white/10">
-          <table className="border-collapse text-sm" style={{ minWidth: `${260 + dateCols.length * 34}px` }}>
+          <table className="border-collapse text-sm" style={{ minWidth: `${260 + dateCols.length * 50}px` }}>
             <thead>
               <tr className="bg-zinc-950">
                 <th className="sticky left-0 z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-3 py-2 border-b border-white/10 min-w-[160px]">Member</th>
@@ -2715,7 +2716,7 @@ function AttendancePanel() {
                   const isToday = d === todayStr;
                   const isWknd = dt.getDay() === 0 || dt.getDay() === 6;
                   return (
-                    <th key={d} className={`text-center px-0 py-1 border-b border-white/10 w-8 ${isToday ? "bg-violet-900/40" : ""}`}>
+                    <th key={d} className={`text-center px-0 py-1 border-b border-white/10 w-12 ${isToday ? "bg-violet-900/40" : ""}`}>
                       <div className={`text-[11px] font-semibold ${isToday ? "text-violet-300" : isWknd ? "text-zinc-600" : "text-muted-foreground"}`}>{dt.getDate()}</div>
                       <div className={`text-[9px] ${isToday ? "text-violet-400" : isWknd ? "text-zinc-700" : "text-zinc-600"}`}>{WDAYS[dt.getDay()]}</div>
                     </th>
@@ -2759,7 +2760,7 @@ function AttendancePanel() {
                           key={d}
                           onClick={() => !isFuture && openCell(member, d)}
                           title={rec?.note ? `📝 ${rec.note}` : undefined}
-                          className={`text-center border-b border-white/5 w-8 h-8 transition-colors
+                          className={`text-center border-b border-white/5 w-12 h-8 transition-colors
                             ${isToday ? "bg-violet-950/40" : isWknd ? "bg-zinc-900/40" : ""}
                             ${isFuture ? "opacity-25 cursor-default" : "cursor-pointer hover:bg-white/5"}`}
                         >
@@ -2801,7 +2802,7 @@ function AttendancePanel() {
             <AttCell status={s} /> {label}
           </span>
         ))}
-        <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-violet-400 inline-block" /> Has note</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> Has note</span>
         <span className="ml-auto italic">Click any past cell to mark attendance or add a note</span>
       </div>
 
