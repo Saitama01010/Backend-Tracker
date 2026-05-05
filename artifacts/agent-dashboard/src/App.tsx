@@ -2097,6 +2097,8 @@ function QuoLinesPanel() {
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
   const [selectedLine, setSelectedLine] = useState<QuoLine | null>(null);
+  const [agentFilter, setAgentFilter] = useState("");
+  const [dayFilter, setDayFilter] = useState("");
 
   const linesQ = useQuery<{ data: QuoLine[] }>({
     queryKey: ["allLines"],
@@ -2127,6 +2129,27 @@ function QuoLinesPanel() {
     refetchOnWindowFocus: true,
   });
 
+  useEffect(() => {
+    setAgentFilter("");
+    setDayFilter("");
+  }, [selectedLine]);
+
+  const availableDays = useMemo(() => {
+    if (!statsQ.data) return [];
+    const days = new Set<string>();
+    for (const agentDays of Object.values(statsQ.data.agentStats)) {
+      for (const d of Object.keys(agentDays)) days.add(d);
+    }
+    return Array.from(days).sort();
+  }, [statsQ.data]);
+
+  const allAgentNames = useMemo(() => {
+    if (!statsQ.data) return [];
+    return Object.keys(statsQ.data.agentStats)
+      .filter((n) => !PHONE_BLOCKLIST.has(normalizeAgent(n)))
+      .sort((a, b) => a.localeCompare(b));
+  }, [statsQ.data]);
+
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
     const map = new Map<string, PhoneAgentMetrics>();
     if (!statsQ.data) return map;
@@ -2134,12 +2157,16 @@ function QuoLinesPanel() {
     for (const [agentName, days] of Object.entries(agentStats)) {
       const key = normalizeAgent(agentName);
       if (PHONE_BLOCKLIST.has(key)) continue;
+      if (agentFilter && normalizeAgent(agentFilter) !== key) continue;
       const acc: PhoneAgentMetrics = {
         calls: 0, seconds: 0, answered: 0, missed: 0,
         voicemail: 0, vmBrief: 0, inbound: 0, outbound: 0,
         uniqueContacts: 0, lastCallAt: agentLastCall?.[agentName],
       };
-      for (const day of Object.values(days)) {
+      const dayEntries = dayFilter
+        ? Object.entries(days).filter(([d]) => d === dayFilter)
+        : Object.entries(days);
+      for (const [, day] of dayEntries) {
         acc.calls += day.totalCalls ?? 0;
         acc.seconds += day.talkSeconds ?? 0;
         acc.answered += day.answered ?? 0;
@@ -2150,9 +2177,6 @@ function QuoLinesPanel() {
         acc.outbound += day.outbound ?? 0;
         acc.uniqueContacts += day.uniqueContacts ?? 0;
       }
-      // Skip agents who have ONLY missed inbound calls — these are unanswered
-      // line-level inbounds, not real agent activity. They are shown in the
-      // "Line Inbounds" stat tile instead.
       if (acc.outbound === 0 && acc.answered === 0) continue;
       if (acc.calls > 0 || acc.seconds > 0) {
         const existing = map.get(key);
@@ -2173,7 +2197,7 @@ function QuoLinesPanel() {
       }
     }
     return map;
-  }, [statsQ.data]);
+  }, [statsQ.data, agentFilter, dayFilter]);
 
   const agentList = useMemo(
     () => Array.from(phoneData.keys()).map((k) => k.replace(/\b\w/g, (c) => c.toUpperCase())),
@@ -2187,6 +2211,7 @@ function QuoLinesPanel() {
   }, [phoneData]);
 
   const lineInbounds = statsQ.data?.lineInbounds;
+  const isFiltered = agentFilter !== "" || dayFilter !== "";
 
   if (selectedLine) {
     return (
@@ -2219,12 +2244,45 @@ function QuoLinesPanel() {
         </CardHeader>
         <CardContent className="space-y-6">
           <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
+          {!statsQ.isLoading && allAgentNames.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={agentFilter}
+                onChange={(e) => setAgentFilter(e.target.value)}
+                className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
+              >
+                <option value="">All agents</option>
+                {allAgentNames.map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+              <select
+                value={dayFilter}
+                onChange={(e) => setDayFilter(e.target.value)}
+                className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
+              >
+                <option value="">All days</option>
+                {availableDays.map((d) => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+              {isFiltered && (
+                <button
+                  type="button"
+                  onClick={() => { setAgentFilter(""); setDayFilter(""); }}
+                  className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
+                >
+                  Clear filters
+                </button>
+              )}
+            </div>
+          )}
           {(lineTotals.calls > 0 || (lineInbounds?.total ?? 0) > 0) && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <StatTile label="Total calls" value={lineTotals.calls.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
               <StatTile label="Time on calls" value={formatHours(lineTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
               <StatTile label="Agents active" value={agentList.length.toLocaleString()} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
-              {(lineInbounds?.total ?? 0) > 0 && (
+              {(lineInbounds?.total ?? 0) > 0 && !isFiltered && (
                 <StatTile
                   label="Missed inbounds"
                   value={lineInbounds!.missed.toLocaleString()}
@@ -2241,7 +2299,7 @@ function QuoLinesPanel() {
           )}
           {!statsQ.isLoading && agentList.length === 0 && (
             <div className="text-center py-12 text-muted-foreground">
-              No calls on this line in the selected period.
+              {isFiltered ? "No calls match the selected filters." : "No calls on this line in the selected period."}
             </div>
           )}
         </CardContent>
