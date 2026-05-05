@@ -2475,6 +2475,7 @@ const ATT_STATUS = [
   { s: "off",  label: "Off",   cell: "bg-amber-500/25 text-amber-300",     badge: "text-amber-400" },
   { s: "late", label: "Late",  cell: "bg-yellow-400/25 text-yellow-300",   badge: "text-yellow-400" },
   { s: "pto",  label: "PTO",   cell: "bg-blue-500/25 text-blue-300",       badge: "text-blue-400" },
+  { s: "nsnc", label: "NSNC",  cell: "bg-red-700/30 text-red-400",         badge: "text-red-400" },
   { s: "",     label: "Clear", cell: "",                                    badge: "text-zinc-500" },
 ] as const;
 
@@ -2483,7 +2484,7 @@ function AttCell({ status, note, weekend }: { status: string; note?: string | nu
   if (!status) return weekend
     ? <span className="text-zinc-800 text-xs font-medium select-none">—</span>
     : <span className="text-zinc-700 text-base leading-none">·</span>;
-  const label = status === "in" ? "In" : status === "off" ? "Off" : status === "late" ? "Late" : "PTO";
+  const label = status === "in" ? "In" : status === "off" ? "Off" : status === "late" ? "Late" : status === "pto" ? "PTO" : "NSNC";
   return (
     <span className={`relative inline-flex items-center justify-center px-1.5 h-5 rounded text-[10px] font-bold whitespace-nowrap ${cfg?.cell ?? ""}`}>
       {label}
@@ -2554,12 +2555,12 @@ function AttendancePanel() {
   );
 
   const todaySummary = useMemo(() => {
-    const c = { in: 0, off: 0, late: 0, pto: 0, absent: 0 };
+    const c = { in: 0, off: 0, late: 0, pto: 0, nsnc: 0, absent: 0 };
     for (const m of data?.members ?? []) {
       const s = recordMap.get(`${m.id}_${todayStr}`)?.status ?? "";
       if (s === "in") c.in++; else if (s === "off") c.off++;
       else if (s === "late") c.late++; else if (s === "pto") c.pto++;
-      else c.absent++;
+      else if (s === "nsnc") c.nsnc++; else c.absent++;
     }
     return c;
   }, [data, recordMap, todayStr]);
@@ -2666,12 +2667,13 @@ function AttendancePanel() {
 
       {/* Today summary tiles */}
       {showTodaySummary && (
-        <div className="grid grid-cols-5 gap-3">
+        <div className="grid grid-cols-6 gap-3">
           {[
             { label: "Present", value: todaySummary.in,     color: "text-emerald-400" },
             { label: "Off",     value: todaySummary.off,    color: "text-amber-400" },
             { label: "Late",    value: todaySummary.late,   color: "text-yellow-400" },
             { label: "PTO",     value: todaySummary.pto,    color: "text-blue-400" },
+            { label: "NSNC",    value: todaySummary.nsnc,   color: "text-red-400" },
             { label: "No Data", value: todaySummary.absent, color: "text-zinc-500" },
           ].map(({ label, value, color }) => (
             <Card key={label} className="bg-zinc-900/60 border-white/10 p-3">
@@ -2732,16 +2734,18 @@ function AttendancePanel() {
                 <th className="text-center text-xs text-amber-500/70 font-medium px-2 py-2 border-b border-white/10 w-8">Off</th>
                 <th className="text-center text-xs text-yellow-400/70 font-medium px-2 py-2 border-b border-white/10 w-8">Late</th>
                 <th className="text-center text-xs text-blue-400/70 font-medium px-2 py-2 border-b border-white/10 w-8">PTO</th>
+                <th className="text-center text-xs text-red-400/70 font-medium px-2 py-2 border-b border-white/10 w-10">NSNC</th>
                 <th className="text-center text-xs text-muted-foreground/50 font-medium px-1 py-2 border-b border-white/10 w-6" title="Edit member">⋯</th>
               </tr>
             </thead>
             <tbody>
               {visible.map((member, mi) => {
-                let cIn = 0, cOff = 0, cLate = 0, cPto = 0;
+                let cIn = 0, cOff = 0, cLate = 0, cPto = 0, cNsnc = 0;
                 for (const d of dateCols) {
                   const s = recordMap.get(`${member.id}_${d}`)?.status ?? "";
                   if (s === "in") cIn++; else if (s === "off") cOff++;
                   else if (s === "late") cLate++; else if (s === "pto") cPto++;
+                  else if (s === "nsnc") cNsnc++;
                 }
                 const rowBg = mi % 2 === 0 ? "bg-zinc-900/20" : "bg-zinc-900/50";
                 return (
@@ -2779,6 +2783,7 @@ function AttendancePanel() {
                     <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-amber-400">{cOff || "—"}</td>
                     <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-yellow-400">{cLate || "—"}</td>
                     <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-blue-400">{cPto || "—"}</td>
+                    <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-red-400">{cNsnc || "—"}</td>
                     <td className="text-center border-b border-white/5">
                       <button onClick={() => setEditingMember(member)} className="text-zinc-600 hover:text-zinc-300 transition-colors px-1 text-base leading-none">⋯</button>
                     </td>
