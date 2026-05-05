@@ -2478,13 +2478,13 @@ const ATT_STATUS = [
   { s: "",     label: "Clear", cell: "",                                    badge: "text-zinc-500" },
 ] as const;
 
-function AttCell({ status, hasNote }: { status: string; hasNote: boolean }) {
+function AttCell({ status, note }: { status: string; note?: string | null }) {
   const cfg = ATT_STATUS.find((x) => x.s === status);
   if (!status) return <span className="text-zinc-700 text-base leading-none">·</span>;
   return (
     <span className={`relative inline-flex items-center justify-center w-6 h-5 rounded text-[10px] font-bold ${cfg?.cell ?? ""}`}>
       {status === "in" ? "I" : status === "off" ? "O" : status === "late" ? "L" : "P"}
-      {hasNote && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-violet-400" />}
+      {note && <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-violet-400 ring-1 ring-zinc-900" />}
     </span>
   );
 }
@@ -2756,11 +2756,12 @@ function AttendancePanel() {
                         <td
                           key={d}
                           onClick={() => !isFuture && openCell(member, d)}
+                          title={rec?.note ? `📝 ${rec.note}` : undefined}
                           className={`text-center border-b border-white/5 w-8 h-8 transition-colors
                             ${isToday ? "bg-violet-950/40" : isWknd ? "bg-zinc-900/40" : ""}
                             ${isFuture ? "opacity-25 cursor-default" : "cursor-pointer hover:bg-white/5"}`}
                         >
-                          <AttCell status={rec?.status ?? ""} hasNote={!!rec?.note} />
+                          <AttCell status={rec?.status ?? ""} note={rec?.note} />
                         </td>
                       );
                     })}
@@ -2795,7 +2796,7 @@ function AttendancePanel() {
         <span className="font-medium">Legend:</span>
         {ATT_STATUS.filter((x) => x.s).map(({ s, label, badge }) => (
           <span key={s} className={`flex items-center gap-1 ${badge}`}>
-            <AttCell status={s} hasNote={false} /> {label}
+            <AttCell status={s} /> {label}
           </span>
         ))}
         <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-violet-400 inline-block" /> Has note</span>
