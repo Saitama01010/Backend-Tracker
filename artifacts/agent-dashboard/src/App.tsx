@@ -2478,9 +2478,11 @@ const ATT_STATUS = [
   { s: "",     label: "Clear", cell: "",                                    badge: "text-zinc-500" },
 ] as const;
 
-function AttCell({ status, note }: { status: string; note?: string | null }) {
+function AttCell({ status, note, weekend }: { status: string; note?: string | null; weekend?: boolean }) {
   const cfg = ATT_STATUS.find((x) => x.s === status);
-  if (!status) return <span className="text-zinc-700 text-base leading-none">·</span>;
+  if (!status) return weekend
+    ? <span className="text-zinc-800 text-xs font-medium select-none">—</span>
+    : <span className="text-zinc-700 text-base leading-none">·</span>;
   const label = status === "in" ? "In" : status === "off" ? "Off" : status === "late" ? "Late" : "PTO";
   return (
     <span className={`relative inline-flex items-center justify-center px-1.5 h-5 rounded text-[10px] font-bold whitespace-nowrap ${cfg?.cell ?? ""}`}>
@@ -2716,9 +2718,9 @@ function AttendancePanel() {
                   const isToday = d === todayStr;
                   const isWknd = dt.getDay() === 0 || dt.getDay() === 6;
                   return (
-                    <th key={d} className={`text-center px-0 py-1 border-b border-white/10 w-12 ${isToday ? "bg-violet-900/40" : ""}`}>
-                      <div className={`text-[11px] font-semibold ${isToday ? "text-violet-300" : isWknd ? "text-zinc-600" : "text-muted-foreground"}`}>{dt.getDate()}</div>
-                      <div className={`text-[9px] ${isToday ? "text-violet-400" : isWknd ? "text-zinc-700" : "text-zinc-600"}`}>{WDAYS[dt.getDay()]}</div>
+                    <th key={d} className={`text-center px-0 py-1 border-b border-white/10 w-12 ${isToday ? "bg-violet-900/40" : isWknd ? "bg-zinc-950" : ""}`}>
+                      <div className={`text-[11px] font-semibold ${isToday ? "text-violet-300" : isWknd ? "text-zinc-700" : "text-muted-foreground"}`}>{dt.getDate()}</div>
+                      <div className={`text-[9px] ${isToday ? "text-violet-400" : isWknd ? "text-zinc-800" : "text-zinc-600"}`}>{WDAYS[dt.getDay()]}</div>
                     </th>
                   );
                 })}
@@ -2761,10 +2763,10 @@ function AttendancePanel() {
                           onClick={() => !isFuture && openCell(member, d)}
                           title={rec?.note ? `📝 ${rec.note}` : undefined}
                           className={`text-center border-b border-white/5 w-12 h-8 transition-colors
-                            ${isToday ? "bg-violet-950/40" : isWknd ? "bg-zinc-900/40" : ""}
+                            ${isToday ? "bg-violet-950/40" : isWknd ? "bg-zinc-950" : ""}
                             ${isFuture ? "opacity-25 cursor-default" : "cursor-pointer hover:bg-white/5"}`}
                         >
-                          <AttCell status={rec?.status ?? ""} note={rec?.note} />
+                          <AttCell status={rec?.status ?? ""} note={rec?.note} weekend={isWknd} />
                         </td>
                       );
                     })}
