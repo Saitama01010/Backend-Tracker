@@ -139,6 +139,9 @@ router.get("/quo/line-stats", async (req, res) => {
 
     const agentStats: Record<string, Record<string, Slot>> = {};
     const agentLastCall: Record<string, Date> = {};
+    // Track unique contacts across the FULL date range per agent (not per day)
+    // so the total "CX Reached" is truly deduplicated.
+    const agentUniqueContactsAll: Record<string, Set<string>> = {};
     const lineInbounds = { total: 0, answered: 0, missed: 0 };
 
     for (const row of rows) {
@@ -163,7 +166,13 @@ router.get("/quo/line-stats", async (req, res) => {
       slot.totalCalls++;
       slot.talkSeconds += row.durationSeconds;
 
-      if (row.direction === "outgoing" && row.participant) slot.uniqueContacts.add(row.participant);
+      if (row.direction === "outgoing" && row.participant) {
+        // Per-day unique (for "by day" sub-tab)
+        slot.uniqueContacts.add(row.participant);
+        // Cross-range unique (for totals column)
+        if (!agentUniqueContactsAll[agentName]) agentUniqueContactsAll[agentName] = new Set();
+        agentUniqueContactsAll[agentName].add(row.participant);
+      }
       if (!agentLastCall[agentName] || row.createdAt > agentLastCall[agentName]) {
         agentLastCall[agentName] = row.createdAt;
       }
@@ -205,7 +214,13 @@ router.get("/quo/line-stats", async (req, res) => {
       serializedLastCall[agent] = ts.toISOString();
     }
 
-    res.json({ agentStats: serializedStats, agentLastCall: serializedLastCall, lineInbounds });
+    // True unique contacts across the full date range per agent
+    const serializedUniqueAll: Record<string, number> = {};
+    for (const [agent, set] of Object.entries(agentUniqueContactsAll)) {
+      serializedUniqueAll[agent] = set.size;
+    }
+
+    res.json({ agentStats: serializedStats, agentLastCall: serializedLastCall, lineInbounds, agentUniqueContactsAll: serializedUniqueAll });
   } catch (err) {
     req.log.error(err, "quo line-stats error");
     res.status(500).json({ error: String(err) });

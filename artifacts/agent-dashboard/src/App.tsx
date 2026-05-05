@@ -2124,6 +2124,7 @@ interface LineStatsResponse {
   agentStats: Record<string, Record<string, PhoneAgentDay>>;
   agentLastCall: Record<string, string>;
   lineInbounds?: { total: number; answered: number; missed: number };
+  agentUniqueContactsAll?: Record<string, number>;
 }
 
 const LINE_TEAM_COLORS: Record<string, string> = {
@@ -2194,7 +2195,7 @@ function QuoLinesPanel() {
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
     const map = new Map<string, PhoneAgentMetrics>();
     if (!statsQ.data) return map;
-    const { agentStats, agentLastCall } = statsQ.data;
+    const { agentStats, agentLastCall, agentUniqueContactsAll } = statsQ.data;
     for (const [agentName, days] of Object.entries(agentStats)) {
       const key = normalizeAgent(agentName);
       if (PHONE_BLOCKLIST.has(key)) continue;
@@ -2216,8 +2217,12 @@ function QuoLinesPanel() {
         acc.vmBrief += day.vmBrief ?? 0;
         acc.inbound += day.inbound ?? 0;
         acc.outbound += day.outbound ?? 0;
-        acc.uniqueContacts += day.uniqueContacts ?? 0;
+        // Per-day unique used only when a day filter is active;
+        // otherwise use the cross-range deduplicated count from the server.
+        if (dayFilter) acc.uniqueContacts += day.uniqueContacts ?? 0;
       }
+      // When no day filter, use the server's truly unique count (no double-counting across days)
+      if (!dayFilter) acc.uniqueContacts = agentUniqueContactsAll?.[agentName] ?? acc.uniqueContacts;
       if (acc.outbound === 0 && acc.answered === 0) continue;
       if (acc.calls > 0 || acc.seconds > 0) {
         const existing = map.get(key);
