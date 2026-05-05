@@ -1,7 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { db } from "@workspace/db";
-import { portalUsersTable } from "@workspace/db/schema";
+import { portalUsersTable, ALL_PERMISSIONS } from "@workspace/db/schema";
 import { count } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 
@@ -28,6 +28,7 @@ async function seedAdminUser() {
       username: "admin",
       passwordHash: hash,
       role: "admin",
+      permissions: JSON.stringify([...ALL_PERMISSIONS]),
       active: true,
     });
     logger.info("Seeded default admin user (username: admin)");

@@ -55,8 +55,16 @@ const queryClient = new QueryClient();
 
 // ─── Auth Context ────────────────────────────────────────────────────────────
 
-interface AuthUser { id: number; username: string; role: "admin" | "edit" | "view"; }
-interface AuthCtx { user: AuthUser; token: string; logout: () => void; }
+type Permission = "view_metrics" | "view_attendance" | "edit_attendance" | "manage_members";
+const ALL_PERMISSIONS: { key: Permission; label: string; desc: string }[] = [
+  { key: "view_metrics",     label: "View Metrics",       desc: "See Retention, NSF, CS & Quo Lines tabs" },
+  { key: "view_attendance",  label: "View Attendance",    desc: "See the Attendance grid" },
+  { key: "edit_attendance",  label: "Edit Attendance",    desc: "Click cells to mark status & add notes" },
+  { key: "manage_members",   label: "Manage Members",     desc: "Add, edit, or remove attendance members" },
+];
+
+interface AuthUser { id: number; username: string; role: "admin" | "edit" | "view"; permissions: Permission[]; }
+interface AuthCtx { user: AuthUser; token: string; logout: () => void; can: (p: Permission) => boolean; }
 const UserContext = createContext<AuthCtx | null>(null);
 function useUser() {
   const ctx = useContext(UserContext);
@@ -2107,8 +2115,9 @@ function LoginGate({ children }: { children: React.ReactNode }) {
   }
 
   if (auth) {
+    const can = (p: Permission) => auth.user.role === "admin" || auth.user.permissions.includes(p);
     return (
-      <UserContext.Provider value={{ user: auth.user, token: auth.token, logout }}>
+      <UserContext.Provider value={{ user: auth.user, token: auth.token, logout, can }}>
         {children}
       </UserContext.Provider>
     );
@@ -2169,7 +2178,35 @@ function LoginGate({ children }: { children: React.ReactNode }) {
 
 // ─── User Management Panel (Admin only) ──────────────────────────────────────
 
-interface PortalUser { id: number; username: string; role: string; active: boolean; }
+interface PortalUser { id: number; username: string; role: string; permissions: Permission[]; active: boolean; }
+
+const DEFAULT_PERMS: Record<string, Permission[]> = {
+  admin: ["view_metrics", "view_attendance", "edit_attendance", "manage_members"],
+  edit:  ["view_metrics", "view_attendance", "edit_attendance", "manage_members"],
+  view:  ["view_metrics", "view_attendance"],
+};
+
+function PermCheckboxes({ perms, onChange, disabled }: { perms: Permission[]; onChange: (p: Permission[]) => void; disabled?: boolean }) {
+  return (
+    <div className="grid grid-cols-1 gap-1.5 mt-1">
+      {ALL_PERMISSIONS.map(({ key, label, desc }) => {
+        const checked = perms.includes(key);
+        return (
+          <label key={key} className={`flex items-start gap-2.5 rounded-md px-3 py-2 cursor-pointer transition-colors ${checked ? "bg-violet-500/10 border border-violet-500/20" : "bg-zinc-900/60 border border-white/5 hover:border-white/10"} ${disabled ? "opacity-40 pointer-events-none" : ""}`}>
+            <div className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${checked ? "bg-violet-500 border-violet-500" : "border-zinc-600"}`}
+              onClick={() => !disabled && onChange(checked ? perms.filter((p) => p !== key) : [...perms, key])}>
+              {checked && <span className="text-white text-[10px] font-bold leading-none">✓</span>}
+            </div>
+            <div className="min-w-0">
+              <div className={`text-xs font-medium leading-tight ${checked ? "text-violet-200" : "text-zinc-300"}`}>{label}</div>
+              <div className="text-[11px] text-zinc-500 leading-tight mt-0.5">{desc}</div>
+            </div>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
 
 function UserManagementPanel({ onClose }: { onClose: () => void }) {
   const { token } = useUser();
@@ -2178,10 +2215,12 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState<"admin" | "edit" | "view">("view");
+  const [newPerms, setNewPerms] = useState<Permission[]>(DEFAULT_PERMS["view"]);
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editPw, setEditPw] = useState("");
   const [editRole, setEditRole] = useState<"admin" | "edit" | "view">("view");
+  const [editPerms, setEditPerms] = useState<Permission[]>([]);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -2197,8 +2236,9 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   async function addUser() {
     if (!newUsername.trim() || !newPassword.trim()) return;
     setSaving(true); setError("");
-    const r = await fetch("/api/users", { method: "POST", headers: authHeaders(token), body: JSON.stringify({ username: newUsername.trim(), password: newPassword.trim(), role: newRole }) });
-    if (r.ok) { setNewUsername(""); setNewPassword(""); setNewRole("view"); await load(); }
+    const perms = newRole === "admin" ? DEFAULT_PERMS["admin"] : newPerms;
+    const r = await fetch("/api/users", { method: "POST", headers: authHeaders(token), body: JSON.stringify({ username: newUsername.trim(), password: newPassword.trim(), role: newRole, permissions: perms }) });
+    if (r.ok) { setNewUsername(""); setNewPassword(""); setNewRole("view"); setNewPerms(DEFAULT_PERMS["view"]); await load(); }
     else { const d = await r.json() as { error?: string }; setError(d.error ?? "Failed to add user"); }
     setSaving(false);
   }
@@ -2206,6 +2246,14 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   async function patchUser(id: number, updates: Record<string, unknown>) {
     await fetch(`/api/users/${id}`, { method: "PATCH", headers: authHeaders(token), body: JSON.stringify(updates) });
     setEditingId(null); await load();
+  }
+
+  function startEdit(u: PortalUser) {
+    if (editingId === u.id) { setEditingId(null); return; }
+    setEditingId(u.id);
+    setEditPw("");
+    setEditRole(u.role as "admin" | "edit" | "view");
+    setEditPerms(u.permissions);
   }
 
   const roleBadge = (role: string) =>
@@ -2229,22 +2277,31 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
           <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors"><X className="h-5 w-5" /></button>
         </div>
 
-        <div className="p-6 space-y-5 max-h-[70vh] overflow-y-auto">
+        <div className="p-6 space-y-6 max-h-[80vh] overflow-y-auto">
           {/* Add user */}
           <div className="space-y-3">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Add New User</p>
             <div className="flex gap-2 flex-wrap">
-              <Input placeholder="Username" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} className="h-8 text-sm flex-1 min-w-[120px]" />
-              <Input placeholder="Password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="h-8 text-sm flex-1 min-w-[120px]" />
-              <select value={newRole} onChange={(e) => setNewRole(e.target.value as "admin" | "edit" | "view")} className="h-8 rounded-md bg-zinc-800 border border-white/10 text-sm text-white px-2 focus:outline-none focus:ring-2 focus:ring-violet-500/50">
+              <Input placeholder="Username" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} className="h-8 text-sm flex-1 min-w-[130px]" />
+              <Input placeholder="Password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="h-8 text-sm flex-1 min-w-[130px]" />
+              <select value={newRole} onChange={(e) => { const r = e.target.value as "admin"|"edit"|"view"; setNewRole(r); setNewPerms(DEFAULT_PERMS[r]); }} className="h-8 rounded-md bg-zinc-800 border border-white/10 text-sm text-white px-2 focus:outline-none focus:ring-2 focus:ring-violet-500/50">
                 <option value="view">View</option>
                 <option value="edit">Edit</option>
                 <option value="admin">Admin</option>
               </select>
-              <Button size="sm" className="h-8 bg-violet-600 hover:bg-violet-700 text-white" onClick={addUser} disabled={saving || !newUsername.trim() || !newPassword.trim()}>
-                <Plus className="h-3.5 w-3.5 mr-1" />Add
-              </Button>
             </div>
+            {newRole !== "admin" && (
+              <div>
+                <p className="text-[11px] font-medium text-zinc-400 mb-1.5">What this user can access:</p>
+                <PermCheckboxes perms={newPerms} onChange={setNewPerms} />
+              </div>
+            )}
+            {newRole === "admin" && (
+              <p className="text-[11px] text-zinc-500 px-1">Admins always have full access to everything.</p>
+            )}
+            <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white w-full" onClick={addUser} disabled={saving || !newUsername.trim() || !newPassword.trim()}>
+              <Plus className="h-3.5 w-3.5 mr-1" />Add User
+            </Button>
             {error && <p className="text-xs text-rose-400">{error}</p>}
           </div>
 
@@ -2252,17 +2309,27 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
           <div className="space-y-2">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Users ({users.length})</p>
             {loading ? <Skeleton className="h-24 w-full" /> : users.map((u) => (
-              <div key={u.id} className={`rounded-lg border p-3 space-y-2 ${u.active ? "border-white/10 bg-zinc-900/60" : "border-white/5 bg-zinc-900/30 opacity-60"}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
+              <div key={u.id} className={`rounded-lg border space-y-2 ${u.active ? "border-white/10 bg-zinc-900/60" : "border-white/5 bg-zinc-900/30 opacity-60"}`}>
+                {/* Header row */}
+                <div className="flex items-center justify-between gap-2 px-3 pt-3 pb-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-medium text-white">{u.username}</span>
                     <Badge className={`text-[10px] px-1.5 py-0 flex items-center gap-1 border ${roleBadge(u.role)}`}>
                       {roleIcon(u.role)}{u.role}
                     </Badge>
                     {!u.active && <Badge className="text-[10px] px-1.5 py-0 bg-red-500/20 text-red-400 border-red-500/30">Disabled</Badge>}
+                    {/* Permission pills */}
+                    {u.role !== "admin" && u.permissions.map((p) => {
+                      const info = ALL_PERMISSIONS.find((x) => x.key === p);
+                      return info ? (
+                        <span key={p} className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20">
+                          {info.label}
+                        </span>
+                      ) : null;
+                    })}
                   </div>
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => { setEditingId(editingId === u.id ? null : u.id); setEditPw(""); setEditRole(u.role as "admin" | "edit" | "view"); }} className="p-1 rounded text-zinc-500 hover:text-white transition-colors" title="Edit">
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <button onClick={() => startEdit(u)} className={`p-1 rounded transition-colors ${editingId === u.id ? "text-violet-400 bg-violet-500/10" : "text-zinc-500 hover:text-white"}`} title="Edit">
                       <Pencil className="h-3.5 w-3.5" />
                     </button>
                     {u.active
@@ -2271,17 +2338,31 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                     }
                   </div>
                 </div>
+
+                {/* Edit panel */}
                 {editingId === u.id && (
-                  <div className="flex gap-2 items-center flex-wrap pt-1 border-t border-white/5">
-                    <Input placeholder="New password (optional)" type="password" value={editPw} onChange={(e) => setEditPw(e.target.value)} className="h-7 text-xs flex-1 min-w-[160px]" />
-                    <select value={editRole} onChange={(e) => setEditRole(e.target.value as "admin" | "edit" | "view")} className="h-7 rounded-md bg-zinc-800 border border-white/10 text-xs text-white px-2 focus:outline-none focus:ring-2 focus:ring-violet-500/50">
-                      <option value="view">View</option>
-                      <option value="edit">Edit</option>
-                      <option value="admin">Admin</option>
-                    </select>
-                    <Button size="sm" className="h-7 text-xs bg-violet-600 hover:bg-violet-700 text-white px-2" onClick={() => patchUser(u.id, { role: editRole, ...(editPw ? { password: editPw } : {}) })}>
-                      <KeyRound className="h-3 w-3 mr-1" />Save
-                    </Button>
+                  <div className="px-3 pb-3 pt-0 space-y-3 border-t border-white/5">
+                    <div className="flex gap-2 items-center flex-wrap pt-2">
+                      <Input placeholder="New password (optional)" type="password" value={editPw} onChange={(e) => setEditPw(e.target.value)} className="h-7 text-xs flex-1 min-w-[140px]" />
+                      <select value={editRole} onChange={(e) => { const r = e.target.value as "admin"|"edit"|"view"; setEditRole(r); if (r === "admin") setEditPerms(DEFAULT_PERMS["admin"]); }} className="h-7 rounded-md bg-zinc-800 border border-white/10 text-xs text-white px-2 focus:outline-none focus:ring-2 focus:ring-violet-500/50">
+                        <option value="view">View</option>
+                        <option value="edit">Edit</option>
+                        <option value="admin">Admin</option>
+                      </select>
+                    </div>
+                    {editRole !== "admin" && (
+                      <div>
+                        <p className="text-[11px] font-medium text-zinc-400 mb-1">Permissions:</p>
+                        <PermCheckboxes perms={editPerms} onChange={setEditPerms} />
+                      </div>
+                    )}
+                    {editRole === "admin" && <p className="text-[11px] text-zinc-500">Admins always have full access.</p>}
+                    <div className="flex gap-2 justify-end">
+                      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditingId(null)}>Cancel</Button>
+                      <Button size="sm" className="h-7 text-xs bg-violet-600 hover:bg-violet-700 text-white px-3" onClick={() => patchUser(u.id, { role: editRole, permissions: editRole === "admin" ? DEFAULT_PERMS["admin"] : editPerms, ...(editPw ? { password: editPw } : {}) })}>
+                        <KeyRound className="h-3 w-3 mr-1" />Save
+                      </Button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -2597,9 +2678,10 @@ function QuoLinesPanel() {
 type DashView = "metrics" | "attendance";
 
 function Dashboard() {
-  const [view, setView] = useState<DashView>("metrics");
+  const { user, logout, can } = useUser();
   const [showUsers, setShowUsers] = useState(false);
-  const { user, logout } = useUser();
+  const defaultView: DashView = can("view_metrics") ? "metrics" : "attendance";
+  const [view, setView] = useState<DashView>(defaultView);
 
   const roleBadgeCls =
     user.role === "admin" ? "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30" :
@@ -2629,18 +2711,20 @@ function Dashboard() {
             <p className="text-sm text-muted-foreground">Retention, NSF &amp; CS team metrics at a glance</p>
           </div>
 
-          {/* View switcher */}
-          <div className="relative">
-            <select
-              value={view}
-              onChange={(e) => setView(e.target.value as DashView)}
-              className="appearance-none pl-4 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500/50"
-            >
-              <option value="metrics">📊 Metrics</option>
-              <option value="attendance">🗓 Attendance</option>
-            </select>
-            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs">▾</span>
-          </div>
+          {/* View switcher — only show tabs user has access to */}
+          {(can("view_metrics") || can("view_attendance")) && (
+            <div className="relative">
+              <select
+                value={view}
+                onChange={(e) => setView(e.target.value as DashView)}
+                className="appearance-none pl-4 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+              >
+                {can("view_metrics") && <option value="metrics">📊 Metrics</option>}
+                {can("view_attendance") && <option value="attendance">🗓 Attendance</option>}
+              </select>
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs">▾</span>
+            </div>
+          )}
 
           {/* User info */}
           <div className="flex items-center gap-2 pl-2 border-l border-white/10">
@@ -2673,7 +2757,7 @@ function Dashboard() {
       </header>
 
       <main className="max-w-[1400px] mx-auto px-6 py-8">
-        {view === "metrics" ? (
+        {view === "metrics" && can("view_metrics") ? (
           <Tabs defaultValue="retention" className="space-y-6">
             <TabsList className="grid w-full max-w-xl grid-cols-4">
               <TabsTrigger value="retention" data-testid="tab-retention">Retention Team</TabsTrigger>
@@ -2694,8 +2778,13 @@ function Dashboard() {
               <QuoLinesPanel />
             </TabsContent>
           </Tabs>
-        ) : (
+        ) : view === "attendance" && can("view_attendance") ? (
           <AttendancePanel />
+        ) : (
+          <div className="flex flex-col items-center justify-center py-32 gap-3 text-zinc-500">
+            <ShieldCheck className="h-10 w-10 opacity-30" />
+            <p className="text-sm">You don't have permission to view this section.</p>
+          </div>
         )}
       </main>
     </div>
@@ -2735,8 +2824,9 @@ function AttCell({ status, note, weekend }: { status: string; note?: string | nu
 const WDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
 function AttendancePanel() {
-  const { token, user } = useUser();
-  const canEdit = user.role === "admin" || user.role === "edit";
+  const { token, can } = useUser();
+  const canEdit = can("edit_attendance");
+  const canManage = can("manage_members");
   const today = new Date();
   const todayStr = today.toISOString().slice(0, 10);
   const tomorrowStr = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).toISOString().slice(0, 10);
@@ -2889,17 +2979,17 @@ function AttendancePanel() {
           <p className="text-sm text-muted-foreground">Track daily presence, mark status, and add notes per member</p>
         </div>
         <div className="flex items-center gap-2">
-          {canEdit && (data?.members.length ?? 0) === 0 && (
+          {canManage && (data?.members.length ?? 0) === 0 && (
             <Button size="sm" variant="outline" onClick={doImport} disabled={importing}>
               {importing ? "Importing…" : "Import from Sheets"}
             </Button>
           )}
-          {canEdit && (
+          {canManage && (
             <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white" onClick={() => setShowAdd((v) => !v)}>
               + Add Member
             </Button>
           )}
-          {!canEdit && (
+          {!canEdit && !canManage && (
             <Badge className="text-[10px] px-2 py-1 bg-zinc-500/20 text-zinc-400 border-zinc-500/30 border flex items-center gap-1">
               <Eye className="h-3 w-3" />View only
             </Badge>
@@ -3019,7 +3109,7 @@ function AttendancePanel() {
                 <th className="text-center text-xs text-yellow-400/70 font-medium px-2 py-2 border-b border-white/10 w-8">Late</th>
                 <th className="text-center text-xs text-blue-400/70 font-medium px-2 py-2 border-b border-white/10 w-8">PTO</th>
                 <th className="text-center text-xs text-red-400/70 font-medium px-2 py-2 border-b border-white/10 w-10">NSNC</th>
-                {canEdit && <th className="text-center text-xs text-muted-foreground/50 font-medium px-1 py-2 border-b border-white/10 w-6" title="Edit member">⋯</th>}
+                {canManage && <th className="text-center text-xs text-muted-foreground/50 font-medium px-1 py-2 border-b border-white/10 w-6" title="Edit member">⋯</th>}
               </tr>
             </thead>
             <tbody>
@@ -3057,7 +3147,8 @@ function AttendancePanel() {
                           title={rec?.note ? `📝 ${rec.note}` : (canEdit && isTomorrow) ? "Click to pre-confirm tomorrow's attendance" : undefined}
                           className={`text-center border-b border-white/5 w-12 h-8 transition-colors
                             ${isToday ? "bg-violet-950/40" : isTomorrow ? "bg-teal-950/30" : ""}
-                            ${isFuture || !canEdit ? "opacity-20 cursor-default" : "cursor-pointer hover:bg-white/5"}`}
+                            ${isFuture || !canEdit ? "cursor-default" : "cursor-pointer hover:bg-white/5"}
+                            ${!canEdit ? "opacity-20" : ""}`}
                           style={isWknd && !isToday && !isTomorrow ? { background: "repeating-linear-gradient(135deg, #0f0f12 0px, #0f0f12 4px, #16141a 4px, #16141a 8px)" } : undefined}
                         >
                           <AttCell status={rec?.status ?? ""} note={rec?.note} weekend={isWknd && !isTomorrow} />
@@ -3070,7 +3161,7 @@ function AttendancePanel() {
                     <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-blue-400">{cPto || "—"}</td>
                     <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-red-400">{cNsnc || "—"}</td>
                     <td className="text-center border-b border-white/5">
-                      {canEdit && <button onClick={() => setEditingMember(member)} className="text-zinc-600 hover:text-zinc-300 transition-colors px-1 text-base leading-none">⋯</button>}
+                      {canManage && <button onClick={() => setEditingMember(member)} className="text-zinc-600 hover:text-zinc-300 transition-colors px-1 text-base leading-none">⋯</button>}
                     </td>
                   </tr>
                 );

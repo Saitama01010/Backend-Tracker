@@ -1,10 +1,12 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import type { Permission } from "@workspace/db/schema";
 
 export interface AuthPayload {
   userId: number;
   username: string;
   role: "admin" | "edit" | "view";
+  permissions: Permission[];
 }
 
 declare global {
