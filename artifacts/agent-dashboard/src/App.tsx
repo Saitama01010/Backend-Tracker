@@ -2718,9 +2718,13 @@ function AttendancePanel() {
                   const isToday = d === todayStr;
                   const isWknd = dt.getDay() === 0 || dt.getDay() === 6;
                   return (
-                    <th key={d} className={`text-center px-0 py-1 border-b border-white/10 w-12 ${isToday ? "bg-violet-900/40" : isWknd ? "bg-zinc-950" : ""}`}>
-                      <div className={`text-[11px] font-semibold ${isToday ? "text-violet-300" : isWknd ? "text-zinc-700" : "text-muted-foreground"}`}>{dt.getDate()}</div>
-                      <div className={`text-[9px] ${isToday ? "text-violet-400" : isWknd ? "text-zinc-800" : "text-zinc-600"}`}>{WDAYS[dt.getDay()]}</div>
+                    <th
+                      key={d}
+                      className={`text-center px-0 py-1 border-b border-white/10 w-12 ${isToday ? "bg-violet-900/40" : ""}`}
+                      style={isWknd && !isToday ? { background: "repeating-linear-gradient(135deg, #0f0f12 0px, #0f0f12 4px, #16141a 4px, #16141a 8px)" } : undefined}
+                    >
+                      <div className={`text-[11px] font-semibold ${isToday ? "text-violet-300" : isWknd ? "text-amber-700/80" : "text-muted-foreground"}`}>{dt.getDate()}</div>
+                      <div className={`text-[9px] ${isToday ? "text-violet-400" : isWknd ? "text-amber-800/70" : "text-zinc-600"}`}>{WDAYS[dt.getDay()]}</div>
                     </th>
                   );
                 })}
@@ -2763,8 +2767,9 @@ function AttendancePanel() {
                           onClick={() => !isFuture && openCell(member, d)}
                           title={rec?.note ? `📝 ${rec.note}` : undefined}
                           className={`text-center border-b border-white/5 w-12 h-8 transition-colors
-                            ${isToday ? "bg-violet-950/40" : isWknd ? "bg-zinc-950" : ""}
+                            ${isToday ? "bg-violet-950/40" : ""}
                             ${isFuture ? "opacity-25 cursor-default" : "cursor-pointer hover:bg-white/5"}`}
+                          style={isWknd && !isToday ? { background: "repeating-linear-gradient(135deg, #0f0f12 0px, #0f0f12 4px, #16141a 4px, #16141a 8px)" } : undefined}
                         >
                           <AttCell status={rec?.status ?? ""} note={rec?.note} weekend={isWknd} />
                         </td>
