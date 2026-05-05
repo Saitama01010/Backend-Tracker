@@ -2565,6 +2565,21 @@ function AttendancePanel() {
     return c;
   }, [data, recordMap, todayStr]);
 
+  const teamSummary = useMemo(() => {
+    const map = new Map<string, { present: number; total: number }>();
+    for (const m of data?.members ?? []) {
+      const dept = m.department || "Other";
+      if (!map.has(dept)) map.set(dept, { present: 0, total: 0 });
+      const entry = map.get(dept)!;
+      entry.total++;
+      const s = recordMap.get(`${m.id}_${todayStr}`)?.status ?? "";
+      if (s === "in" || s === "late") entry.present++;
+    }
+    return [...map.entries()]
+      .map(([dept, { present, total }]) => ({ dept, present, total }))
+      .sort((a, b) => a.dept.localeCompare(b.dept));
+  }, [data, recordMap, todayStr]);
+
   async function upsert(memberId: number, date: string, status: string, note: string) {
     await fetch("/api/attendance/record", {
       method: "PUT", headers: { "Content-Type": "application/json" },
@@ -2667,20 +2682,39 @@ function AttendancePanel() {
 
       {/* Today summary tiles */}
       {showTodaySummary && (
-        <div className="grid grid-cols-6 gap-3">
-          {[
-            { label: "Present", value: todaySummary.in,     color: "text-emerald-400" },
-            { label: "Off",     value: todaySummary.off,    color: "text-amber-400" },
-            { label: "Late",    value: todaySummary.late,   color: "text-yellow-400" },
-            { label: "PTO",     value: todaySummary.pto,    color: "text-blue-400" },
-            { label: "NSNC",    value: todaySummary.nsnc,   color: "text-red-400" },
-            { label: "No Data", value: todaySummary.absent, color: "text-zinc-500" },
-          ].map(({ label, value, color }) => (
-            <Card key={label} className="bg-zinc-900/60 border-white/10 p-3">
-              <div className="text-xs text-muted-foreground mb-1">Today — {label}</div>
-              <div className={`text-2xl font-bold tabular-nums ${color}`}>{value}</div>
-            </Card>
-          ))}
+        <div className="space-y-3">
+          {/* Overall breakdown */}
+          <div className="grid grid-cols-6 gap-3">
+            {[
+              { label: "Present", value: todaySummary.in,     color: "text-emerald-400" },
+              { label: "Off",     value: todaySummary.off,    color: "text-amber-400" },
+              { label: "Late",    value: todaySummary.late,   color: "text-yellow-400" },
+              { label: "PTO",     value: todaySummary.pto,    color: "text-blue-400" },
+              { label: "NSNC",    value: todaySummary.nsnc,   color: "text-red-400" },
+              { label: "No Data", value: todaySummary.absent, color: "text-zinc-500" },
+            ].map(({ label, value, color }) => (
+              <Card key={label} className="bg-zinc-900/60 border-white/10 p-3">
+                <div className="text-xs text-muted-foreground mb-1">Today — {label}</div>
+                <div className={`text-2xl font-bold tabular-nums ${color}`}>{value}</div>
+              </Card>
+            ))}
+          </div>
+
+          {/* Per-team present breakdown */}
+          <div className="flex gap-3 flex-wrap">
+            {teamSummary.map(({ dept, present, total }) => {
+              const pct = total > 0 ? Math.round((present / total) * 100) : 0;
+              const barColor = pct >= 80 ? "bg-emerald-500" : pct >= 50 ? "bg-yellow-500" : "bg-red-500";
+              return (
+                <Card key={dept} className="bg-zinc-900/60 border-white/10 p-3 flex-1 min-w-[120px]">
+                  <div className="text-xs text-muted-foreground mb-1">{dept} — Present</div>
+                  <div className={`text-2xl font-bold tabular-nums ${pct >= 80 ? "text-emerald-400" : pct >= 50 ? "text-yellow-400" : "text-red-400"}`}>
+                    {present}<span className="text-sm font-normal text-muted-foreground">/{total}</span>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -2713,8 +2747,8 @@ function AttendancePanel() {
             <thead>
               <tr className="bg-zinc-950">
                 <th className="sticky left-0 z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-3 py-2 border-b border-white/10 min-w-[160px]">Member</th>
-                <th className="text-center text-xs text-muted-foreground font-medium px-1 py-2 border-b border-white/10 w-10">Shift</th>
-                <th className="text-left text-xs text-muted-foreground font-medium px-2 py-2 border-b border-white/10 w-24">Dept</th>
+                <th className="sticky left-[160px] z-20 bg-zinc-950 text-center text-xs text-muted-foreground font-medium px-1 py-2 border-b border-white/10 w-10">Shift</th>
+                <th className="sticky left-[200px] z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-2 py-2 border-b border-white/10 w-24">Dept</th>
                 {dateCols.map((d) => {
                   const dt = new Date(d + "T12:00:00");
                   const isToday = d === todayStr;
@@ -2753,8 +2787,8 @@ function AttendancePanel() {
                     <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-3 py-1.5 text-sm text-white font-medium border-b border-white/5 whitespace-nowrap`}>
                       {member.name}
                     </td>
-                    <td className="text-center text-xs text-zinc-500 px-1 border-b border-white/5">{member.shift}</td>
-                    <td className="px-2 border-b border-white/5">
+                    <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`}>{member.shift}</td>
+                    <td className={`sticky left-[200px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-2 border-b border-white/5`}>
                       {member.department && (
                         <Badge className="text-[10px] px-1.5 py-0 bg-violet-500/20 text-violet-300 border-violet-500/30">{member.department}</Badge>
                       )}
