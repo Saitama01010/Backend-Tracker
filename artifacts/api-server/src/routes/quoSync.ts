@@ -445,6 +445,15 @@ export async function startBackgroundSync() {
     logger.error(err, "quoSync: startup call-count check failed");
   }
 
+  // On every deploy/restart, run a 2-day backfill in the background so that
+  // today's and yesterday's calls are always correctly attributed — regardless
+  // of what the incremental window covered before the deploy.
+  const startupBackfillFrom = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+  logger.info({ from: startupBackfillFrom }, "quoSync: startup 2-day backfill");
+  runSync(startupBackfillFrom, new Date()).catch((err) => {
+    logger.error(err, "quoSync: startup backfill error");
+  });
+
   const doSync = async () => {
     try {
       const now = new Date();
