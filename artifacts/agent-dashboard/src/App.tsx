@@ -2319,7 +2319,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                     </Badge>
                     {!u.active && <Badge className="text-[10px] px-1.5 py-0 bg-red-500/20 text-red-400 border-red-500/30">Disabled</Badge>}
                     {/* Permission pills */}
-                    {u.role !== "admin" && u.permissions.map((p) => {
+                    {u.role !== "admin" && (u.permissions ?? []).map((p) => {
                       const info = ALL_PERMISSIONS.find((x) => x.key === p);
                       return info ? (
                         <span key={p} className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20">

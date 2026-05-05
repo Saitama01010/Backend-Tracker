@@ -8,9 +8,13 @@ import { signToken, requireAuth } from "../middleware/auth.js";
 
 const router = Router();
 
-function parsePermissions(raw: string, role: string): Permission[] {
+function parsePermissions(raw: string | null | undefined, role: string): Permission[] {
   if (role === "admin") return [...ALL_PERMISSIONS];
-  try { return JSON.parse(raw) as Permission[]; } catch { return []; }
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed as Permission[] : [];
+  } catch { return []; }
 }
 
 router.post("/auth/login", async (req, res) => {
