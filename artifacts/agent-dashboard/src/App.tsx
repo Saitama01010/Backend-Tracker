@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -2436,11 +2436,12 @@ function Dashboard() {
 
       <main className="max-w-[1400px] mx-auto px-6 py-8">
         <Tabs defaultValue="retention" className="space-y-6">
-          <TabsList className="grid w-full max-w-xl grid-cols-4">
+          <TabsList className="grid w-full max-w-2xl grid-cols-5">
             <TabsTrigger value="retention" data-testid="tab-retention">Retention Team</TabsTrigger>
             <TabsTrigger value="nsf" data-testid="tab-nsf">NSF Team</TabsTrigger>
             <TabsTrigger value="cs" data-testid="tab-cs">CS Team</TabsTrigger>
             <TabsTrigger value="quo-lines" data-testid="tab-quo-lines">Quo Lines</TabsTrigger>
+            <TabsTrigger value="attendance" data-testid="tab-attendance">Attendance</TabsTrigger>
           </TabsList>
           <TabsContent value="retention">
             <TeamPanel urls={RETENTION} sheetKey="retention" label="Retention Team" mode="retention" statusQueryFn={fetchRetentionCombinedSheet} />
@@ -2454,8 +2455,423 @@ function Dashboard() {
           <TabsContent value="quo-lines">
             <QuoLinesPanel />
           </TabsContent>
+          <TabsContent value="attendance">
+            <AttendancePanel />
+          </TabsContent>
         </Tabs>
       </main>
+    </div>
+  );
+}
+
+// ─── Attendance ────────────────────────────────────────────────────────────────
+
+interface AttMember { id: number; name: string; shift: string; department: string; active: boolean; }
+interface AttRecord { id: number; memberId: number; date: string; status: string; note: string | null; }
+interface AttData { members: AttMember[]; records: AttRecord[]; }
+
+const ATT_STATUS = [
+  { s: "in",   label: "In",    cell: "bg-emerald-500/25 text-emerald-300", badge: "text-emerald-400" },
+  { s: "off",  label: "Off",   cell: "bg-amber-500/25 text-amber-300",     badge: "text-amber-400" },
+  { s: "late", label: "Late",  cell: "bg-yellow-400/25 text-yellow-300",   badge: "text-yellow-400" },
+  { s: "pto",  label: "PTO",   cell: "bg-blue-500/25 text-blue-300",       badge: "text-blue-400" },
+  { s: "",     label: "Clear", cell: "",                                    badge: "text-zinc-500" },
+] as const;
+
+function AttCell({ status, hasNote }: { status: string; hasNote: boolean }) {
+  const cfg = ATT_STATUS.find((x) => x.s === status);
+  if (!status) return <span className="text-zinc-700 text-base leading-none">·</span>;
+  return (
+    <span className={`relative inline-flex items-center justify-center w-6 h-5 rounded text-[10px] font-bold ${cfg?.cell ?? ""}`}>
+      {status === "in" ? "I" : status === "off" ? "O" : status === "late" ? "L" : "P"}
+      {hasNote && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-violet-400" />}
+    </span>
+  );
+}
+
+const WDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+
+function AttendancePanel() {
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+  const [monthOff, setMonthOff] = useState(0);
+  const [deptFilter, setDeptFilter] = useState("All");
+  const [editCell, setEditCell] = useState<{ memberId: number; date: string; name: string } | null>(null);
+  const [editStatus, setEditStatus] = useState("");
+  const [editNote, setEditNote] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newShift, setNewShift] = useState("");
+  const [newDept, setNewDept] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [editingMember, setEditingMember] = useState<AttMember | null>(null);
+
+  const monthStart = new Date(today.getFullYear(), today.getMonth() + monthOff, 1);
+  const monthEnd = new Date(today.getFullYear(), today.getMonth() + monthOff + 1, 0);
+  const fromStr = monthStart.toISOString().slice(0, 10);
+  const toStr = monthEnd.toISOString().slice(0, 10);
+  const monthLabel = monthStart.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  const dateCols = useMemo(() => {
+    const cols: string[] = [];
+    const d = new Date(monthStart);
+    while (d <= monthEnd) { cols.push(d.toISOString().slice(0, 10)); d.setDate(d.getDate() + 1); }
+    return cols;
+  }, [monthOff]);
+
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery<AttData>({
+    queryKey: ["attendance", fromStr, toStr],
+    queryFn: async () => {
+      const r = await fetch(`/api/attendance?from=${fromStr}&to=${toStr}`);
+      if (!r.ok) throw new Error("fetch failed");
+      return r.json();
+    },
+    staleTime: 15_000,
+    refetchInterval: 60_000,
+  });
+
+  const recordMap = useMemo(() => {
+    const m = new Map<string, AttRecord>();
+    for (const rec of data?.records ?? []) m.set(`${rec.memberId}_${rec.date}`, rec);
+    return m;
+  }, [data]);
+
+  const departments = useMemo(() => {
+    const s = new Set<string>(["All"]);
+    for (const m of data?.members ?? []) if (m.department) s.add(m.department);
+    return [...s];
+  }, [data]);
+
+  const visible = useMemo(
+    () => (data?.members ?? []).filter((m) => deptFilter === "All" || m.department === deptFilter),
+    [data, deptFilter],
+  );
+
+  const todaySummary = useMemo(() => {
+    const c = { in: 0, off: 0, late: 0, pto: 0, absent: 0 };
+    for (const m of data?.members ?? []) {
+      const s = recordMap.get(`${m.id}_${todayStr}`)?.status ?? "";
+      if (s === "in") c.in++; else if (s === "off") c.off++;
+      else if (s === "late") c.late++; else if (s === "pto") c.pto++;
+      else c.absent++;
+    }
+    return c;
+  }, [data, recordMap, todayStr]);
+
+  async function upsert(memberId: number, date: string, status: string, note: string) {
+    await fetch("/api/attendance/record", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memberId, date, status, note: note || null }),
+    });
+    qc.invalidateQueries({ queryKey: ["attendance"] });
+  }
+
+  function openCell(m: AttMember, date: string) {
+    const rec = recordMap.get(`${m.id}_${date}`);
+    setEditCell({ memberId: m.id, date, name: m.name });
+    setEditStatus(rec?.status ?? "");
+    setEditNote(rec?.note ?? "");
+  }
+
+  async function saveCell() {
+    if (!editCell) return;
+    await upsert(editCell.memberId, editCell.date, editStatus, editNote);
+    setEditCell(null);
+  }
+
+  async function addMember() {
+    if (!newName.trim()) return;
+    await fetch("/api/attendance/members", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newName.trim(), shift: newShift.trim(), department: newDept.trim() }),
+    });
+    setNewName(""); setNewShift(""); setNewDept(""); setShowAdd(false);
+    qc.invalidateQueries({ queryKey: ["attendance"] });
+  }
+
+  async function saveMember() {
+    if (!editingMember) return;
+    await fetch(`/api/attendance/members/${editingMember.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: editingMember.name, shift: editingMember.shift, department: editingMember.department }),
+    });
+    setEditingMember(null);
+    qc.invalidateQueries({ queryKey: ["attendance"] });
+  }
+
+  async function deactivateMember(id: number) {
+    await fetch(`/api/attendance/members/${id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active: false }),
+    });
+    qc.invalidateQueries({ queryKey: ["attendance"] });
+  }
+
+  async function doImport() {
+    setImporting(true);
+    await fetch("/api/attendance/import", { method: "POST" });
+    qc.invalidateQueries({ queryKey: ["attendance"] });
+    setImporting(false);
+  }
+
+  const showTodaySummary = dateCols.includes(todayStr) && (data?.members?.length ?? 0) > 0;
+
+  return (
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-xl font-semibold text-white">Attendance</h2>
+          <p className="text-sm text-muted-foreground">Track daily presence, mark status, and add notes per member</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {(data?.members.length ?? 0) === 0 && (
+            <Button size="sm" variant="outline" onClick={doImport} disabled={importing}>
+              {importing ? "Importing…" : "Import from Sheets"}
+            </Button>
+          )}
+          <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white" onClick={() => setShowAdd((v) => !v)}>
+            + Add Member
+          </Button>
+        </div>
+      </div>
+
+      {/* Add Member form */}
+      {showAdd && (
+        <Card className="border-violet-500/30 bg-zinc-900/70 p-4">
+          <div className="flex gap-3 items-end flex-wrap">
+            <div className="flex-1 min-w-[160px]">
+              <Label className="text-xs text-muted-foreground mb-1 block">Name *</Label>
+              <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Full name" className="h-8" onKeyDown={(e) => e.key === "Enter" && addMember()} />
+            </div>
+            <div className="w-24">
+              <Label className="text-xs text-muted-foreground mb-1 block">Shift</Label>
+              <Input value={newShift} onChange={(e) => setNewShift(e.target.value)} placeholder="e.g. 8" className="h-8" />
+            </div>
+            <div className="w-44">
+              <Label className="text-xs text-muted-foreground mb-1 block">Department</Label>
+              <Input value={newDept} onChange={(e) => setNewDept(e.target.value)} placeholder="e.g. Backend" className="h-8" />
+            </div>
+            <Button size="sm" onClick={addMember} disabled={!newName.trim()}>Add</Button>
+            <Button size="sm" variant="ghost" onClick={() => setShowAdd(false)}>Cancel</Button>
+          </div>
+        </Card>
+      )}
+
+      {/* Today summary tiles */}
+      {showTodaySummary && (
+        <div className="grid grid-cols-5 gap-3">
+          {[
+            { label: "Present", value: todaySummary.in,     color: "text-emerald-400" },
+            { label: "Off",     value: todaySummary.off,    color: "text-amber-400" },
+            { label: "Late",    value: todaySummary.late,   color: "text-yellow-400" },
+            { label: "PTO",     value: todaySummary.pto,    color: "text-blue-400" },
+            { label: "No Data", value: todaySummary.absent, color: "text-zinc-500" },
+          ].map(({ label, value, color }) => (
+            <Card key={label} className="bg-zinc-900/60 border-white/10 p-3">
+              <div className="text-xs text-muted-foreground mb-1">Today — {label}</div>
+              <div className={`text-2xl font-bold tabular-nums ${color}`}>{value}</div>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* Dept filter + month navigation */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex gap-1.5">
+          {departments.map((d) => (
+            <button
+              key={d}
+              onClick={() => setDeptFilter(d)}
+              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${deptFilter === d ? "bg-violet-600 text-white" : "text-muted-foreground hover:text-white hover:bg-white/5"}`}
+            >
+              {d}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setMonthOff((v) => v - 1)} className="px-2 py-1 rounded text-muted-foreground hover:text-white hover:bg-white/5 transition-colors">←</button>
+          <span className="text-sm font-medium text-white w-32 text-center">{monthLabel}</span>
+          <button onClick={() => setMonthOff((v) => v + 1)} className="px-2 py-1 rounded text-muted-foreground hover:text-white hover:bg-white/5 transition-colors">→</button>
+        </div>
+      </div>
+
+      {/* Grid */}
+      {isLoading ? (
+        <Skeleton className="h-56 w-full" />
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-white/10">
+          <table className="border-collapse text-sm" style={{ minWidth: `${260 + dateCols.length * 34}px` }}>
+            <thead>
+              <tr className="bg-zinc-950">
+                <th className="sticky left-0 z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-3 py-2 border-b border-white/10 min-w-[160px]">Member</th>
+                <th className="text-center text-xs text-muted-foreground font-medium px-1 py-2 border-b border-white/10 w-10">Shift</th>
+                <th className="text-left text-xs text-muted-foreground font-medium px-2 py-2 border-b border-white/10 w-24">Dept</th>
+                {dateCols.map((d) => {
+                  const dt = new Date(d + "T12:00:00");
+                  const isToday = d === todayStr;
+                  const isWknd = dt.getDay() === 0 || dt.getDay() === 6;
+                  return (
+                    <th key={d} className={`text-center px-0 py-1 border-b border-white/10 w-8 ${isToday ? "bg-violet-900/40" : ""}`}>
+                      <div className={`text-[11px] font-semibold ${isToday ? "text-violet-300" : isWknd ? "text-zinc-600" : "text-muted-foreground"}`}>{dt.getDate()}</div>
+                      <div className={`text-[9px] ${isToday ? "text-violet-400" : isWknd ? "text-zinc-700" : "text-zinc-600"}`}>{WDAYS[dt.getDay()]}</div>
+                    </th>
+                  );
+                })}
+                <th className="text-center text-xs text-emerald-500/70 font-medium px-2 py-2 border-b border-white/10 border-l border-white/10 w-8">In</th>
+                <th className="text-center text-xs text-amber-500/70 font-medium px-2 py-2 border-b border-white/10 w-8">Off</th>
+                <th className="text-center text-xs text-yellow-400/70 font-medium px-2 py-2 border-b border-white/10 w-8">Late</th>
+                <th className="text-center text-xs text-blue-400/70 font-medium px-2 py-2 border-b border-white/10 w-8">PTO</th>
+                <th className="text-center text-xs text-muted-foreground/50 font-medium px-1 py-2 border-b border-white/10 w-6" title="Edit member">⋯</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((member, mi) => {
+                let cIn = 0, cOff = 0, cLate = 0, cPto = 0;
+                for (const d of dateCols) {
+                  const s = recordMap.get(`${member.id}_${d}`)?.status ?? "";
+                  if (s === "in") cIn++; else if (s === "off") cOff++;
+                  else if (s === "late") cLate++; else if (s === "pto") cPto++;
+                }
+                const rowBg = mi % 2 === 0 ? "bg-zinc-900/20" : "bg-zinc-900/50";
+                return (
+                  <tr key={member.id} className={`${rowBg} hover:bg-white/[0.03] transition-colors`}>
+                    <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-3 py-1.5 text-sm text-white font-medium border-b border-white/5 whitespace-nowrap`}>
+                      {member.name}
+                    </td>
+                    <td className="text-center text-xs text-zinc-500 px-1 border-b border-white/5">{member.shift}</td>
+                    <td className="px-2 border-b border-white/5">
+                      {member.department && (
+                        <Badge className="text-[10px] px-1.5 py-0 bg-violet-500/20 text-violet-300 border-violet-500/30">{member.department}</Badge>
+                      )}
+                    </td>
+                    {dateCols.map((d) => {
+                      const rec = recordMap.get(`${member.id}_${d}`);
+                      const isFuture = d > todayStr;
+                      const isToday = d === todayStr;
+                      const dt = new Date(d + "T12:00:00");
+                      const isWknd = dt.getDay() === 0 || dt.getDay() === 6;
+                      return (
+                        <td
+                          key={d}
+                          onClick={() => !isFuture && openCell(member, d)}
+                          className={`text-center border-b border-white/5 w-8 h-8 transition-colors
+                            ${isToday ? "bg-violet-950/40" : isWknd ? "bg-zinc-900/40" : ""}
+                            ${isFuture ? "opacity-25 cursor-default" : "cursor-pointer hover:bg-white/5"}`}
+                        >
+                          <AttCell status={rec?.status ?? ""} hasNote={!!rec?.note} />
+                        </td>
+                      );
+                    })}
+                    <td className="text-center text-xs font-mono border-b border-white/5 border-l border-white/10 tabular-nums text-emerald-400">{cIn || "—"}</td>
+                    <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-amber-400">{cOff || "—"}</td>
+                    <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-yellow-400">{cLate || "—"}</td>
+                    <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-blue-400">{cPto || "—"}</td>
+                    <td className="text-center border-b border-white/5">
+                      <button onClick={() => setEditingMember(member)} className="text-zinc-600 hover:text-zinc-300 transition-colors px-1 text-base leading-none">⋯</button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {visible.length === 0 && !isLoading && (
+                <tr>
+                  <td colSpan={dateCols.length + 9} className="text-center py-16 text-muted-foreground text-sm">
+                    {(data?.members.length ?? 0) === 0 ? (
+                      <>No members yet — <button onClick={doImport} disabled={importing} className="text-violet-400 hover:text-violet-300 underline">{importing ? "Importing…" : "import from Google Sheets"}</button> or add one above.</>
+                    ) : (
+                      <>No members in this department.</>
+                    )}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Legend */}
+      <div className="flex items-center gap-4 text-xs text-muted-foreground pt-1">
+        <span className="font-medium">Legend:</span>
+        {ATT_STATUS.filter((x) => x.s).map(({ s, label, badge }) => (
+          <span key={s} className={`flex items-center gap-1 ${badge}`}>
+            <AttCell status={s} hasNote={false} /> {label}
+          </span>
+        ))}
+        <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-violet-400 inline-block" /> Has note</span>
+        <span className="ml-auto italic">Click any past cell to mark attendance or add a note</span>
+      </div>
+
+      {/* Cell editor overlay */}
+      {editCell && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={(e) => { if (e.target === e.currentTarget) setEditCell(null); }}>
+          <Card className="w-80 bg-zinc-900 border-violet-500/40 p-5 space-y-4 shadow-2xl">
+            <div>
+              <div className="font-semibold text-white">{editCell.name}</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                {new Date(editCell.date + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
+              </div>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              {ATT_STATUS.map(({ s, label, cell }) => (
+                <button
+                  key={s}
+                  onClick={() => setEditStatus(s)}
+                  className={`px-3 py-1.5 rounded border text-xs font-medium transition-all
+                    ${s ? cell : "bg-zinc-800/60 text-zinc-400 border-zinc-700/50"}
+                    ${editStatus === s ? "ring-2 ring-white/40 opacity-100" : "opacity-60 hover:opacity-90"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1.5 block">Note (optional)</Label>
+              <Input
+                value={editNote}
+                onChange={(e) => setEditNote(e.target.value)}
+                placeholder="e.g. working from home, sick leave…"
+                className="h-8 text-sm"
+                onKeyDown={(e) => e.key === "Enter" && saveCell()}
+              />
+            </div>
+            <div className="flex gap-2 justify-end pt-1">
+              <Button size="sm" variant="ghost" onClick={() => setEditCell(null)}>Cancel</Button>
+              <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white" onClick={saveCell}>Save</Button>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* Edit member overlay */}
+      {editingMember && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={(e) => { if (e.target === e.currentTarget) setEditingMember(null); }}>
+          <Card className="w-80 bg-zinc-900 border-white/20 p-5 space-y-4 shadow-2xl">
+            <div className="font-semibold text-white">Edit Member</div>
+            <div className="space-y-3">
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1 block">Name</Label>
+                <Input value={editingMember.name} onChange={(e) => setEditingMember({ ...editingMember, name: e.target.value })} className="h-8" />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1 block">Shift</Label>
+                <Input value={editingMember.shift} onChange={(e) => setEditingMember({ ...editingMember, shift: e.target.value })} className="h-8" placeholder="e.g. 8" />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1 block">Department</Label>
+                <Input value={editingMember.department} onChange={(e) => setEditingMember({ ...editingMember, department: e.target.value })} className="h-8" placeholder="e.g. Backend" />
+              </div>
+            </div>
+            <div className="flex gap-2 justify-between pt-1">
+              <Button size="sm" variant="destructive" onClick={() => { deactivateMember(editingMember.id); setEditingMember(null); }}>Remove</Button>
+              <div className="flex gap-2">
+                <Button size="sm" variant="ghost" onClick={() => setEditingMember(null)}>Cancel</Button>
+                <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white" onClick={saveMember}>Save</Button>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }
