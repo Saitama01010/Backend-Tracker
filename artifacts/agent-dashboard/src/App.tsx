@@ -2412,7 +2412,11 @@ function QuoLinesPanel() {
   );
 }
 
+type DashView = "metrics" | "attendance";
+
 function Dashboard() {
+  const [view, setView] = useState<DashView>("metrics");
+
   return (
     <div className="min-h-screen bg-background relative overflow-hidden">
       <div className="pointer-events-none absolute inset-0 -z-0">
@@ -2420,45 +2424,58 @@ function Dashboard() {
         <div className="absolute top-20 right-0 h-[400px] w-[400px] rounded-full bg-sky-500/15 blur-[120px]" />
         <div className="absolute bottom-0 left-1/3 h-[400px] w-[400px] rounded-full bg-fuchsia-500/10 blur-[120px]" />
       </div>
+
       <header className="relative border-b border-white/5 bg-card/60 backdrop-blur-xl">
-        <div className="max-w-[1400px] mx-auto px-6 py-5 flex items-center gap-3">
+        <div className="max-w-[1400px] mx-auto px-6 py-5 flex items-center gap-4">
           <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white flex items-center justify-center shadow-[0_0_24px_-6px_rgba(168,85,247,0.7)]">
             <Rocket className="h-5 w-5" />
           </div>
-          <div>
+          <div className="flex-1">
             <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-violet-300 via-fuchsia-300 to-sky-300 bg-clip-text text-transparent">
               Backend Tracker
             </h1>
             <p className="text-sm text-muted-foreground">Retention, NSF &amp; CS team metrics at a glance</p>
           </div>
+          {/* View switcher dropdown */}
+          <div className="relative">
+            <select
+              value={view}
+              onChange={(e) => setView(e.target.value as DashView)}
+              className="appearance-none pl-4 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+            >
+              <option value="metrics">📊 Metrics</option>
+              <option value="attendance">🗓 Attendance</option>
+            </select>
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs">▾</span>
+          </div>
         </div>
       </header>
 
       <main className="max-w-[1400px] mx-auto px-6 py-8">
-        <Tabs defaultValue="retention" className="space-y-6">
-          <TabsList className="grid w-full max-w-2xl grid-cols-5">
-            <TabsTrigger value="retention" data-testid="tab-retention">Retention Team</TabsTrigger>
-            <TabsTrigger value="nsf" data-testid="tab-nsf">NSF Team</TabsTrigger>
-            <TabsTrigger value="cs" data-testid="tab-cs">CS Team</TabsTrigger>
-            <TabsTrigger value="quo-lines" data-testid="tab-quo-lines">Quo Lines</TabsTrigger>
-            <TabsTrigger value="attendance" data-testid="tab-attendance">Attendance</TabsTrigger>
-          </TabsList>
-          <TabsContent value="retention">
-            <TeamPanel urls={RETENTION} sheetKey="retention" label="Retention Team" mode="retention" statusQueryFn={fetchRetentionCombinedSheet} />
-          </TabsContent>
-          <TabsContent value="nsf">
-            <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" statusQueryFn={fetchNSFCombinedSheet} />
-          </TabsContent>
-          <TabsContent value="cs">
-            <CSPanel />
-          </TabsContent>
-          <TabsContent value="quo-lines">
-            <QuoLinesPanel />
-          </TabsContent>
-          <TabsContent value="attendance">
-            <AttendancePanel />
-          </TabsContent>
-        </Tabs>
+        {view === "metrics" ? (
+          <Tabs defaultValue="retention" className="space-y-6">
+            <TabsList className="grid w-full max-w-xl grid-cols-4">
+              <TabsTrigger value="retention" data-testid="tab-retention">Retention Team</TabsTrigger>
+              <TabsTrigger value="nsf" data-testid="tab-nsf">NSF Team</TabsTrigger>
+              <TabsTrigger value="cs" data-testid="tab-cs">CS Team</TabsTrigger>
+              <TabsTrigger value="quo-lines" data-testid="tab-quo-lines">Quo Lines</TabsTrigger>
+            </TabsList>
+            <TabsContent value="retention">
+              <TeamPanel urls={RETENTION} sheetKey="retention" label="Retention Team" mode="retention" statusQueryFn={fetchRetentionCombinedSheet} />
+            </TabsContent>
+            <TabsContent value="nsf">
+              <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" statusQueryFn={fetchNSFCombinedSheet} />
+            </TabsContent>
+            <TabsContent value="cs">
+              <CSPanel />
+            </TabsContent>
+            <TabsContent value="quo-lines">
+              <QuoLinesPanel />
+            </TabsContent>
+          </Tabs>
+        ) : (
+          <AttendancePanel />
+        )}
       </main>
     </div>
   );
