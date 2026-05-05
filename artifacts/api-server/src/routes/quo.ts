@@ -474,15 +474,6 @@ router.get("/quo/live", async (req, res) => {
   }
 });
 
-router.post("/auth/verify", (req, res) => {
-  const expected = process.env["DASHBOARD_PASSWORD"] ?? "tracker2026";
-  const { password } = req.body ?? {};
-  if (typeof password === "string" && password === expected) {
-    res.json({ ok: true });
-  } else {
-    res.status(401).json({ ok: false, error: "Invalid password" });
-  }
-});
 
 router.get("/quo/calls", async (req, res) => {
   try {

@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import Papa from "papaparse";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { createContext, useContext, Fragment, useEffect, useMemo, useState, useCallback } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -38,9 +38,34 @@ import {
   Info,
   ChevronLeft,
   PhoneCall,
+  LogOut,
+  ShieldCheck,
+  UserCog,
+  Eye,
+  Pencil,
+  ShieldAlert,
+  X,
+  Plus,
+  KeyRound,
+  UserCheck,
+  UserX,
 } from "lucide-react";
 
 const queryClient = new QueryClient();
+
+// ─── Auth Context ────────────────────────────────────────────────────────────
+
+interface AuthUser { id: number; username: string; role: "admin" | "edit" | "view"; }
+interface AuthCtx { user: AuthUser; token: string; logout: () => void; }
+const UserContext = createContext<AuthCtx | null>(null);
+function useUser() {
+  const ctx = useContext(UserContext);
+  if (!ctx) throw new Error("useUser must be used inside LoginGate");
+  return ctx;
+}
+function authHeaders(token: string) {
+  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+}
 
 const RETENTION = {
   status: "https://docs.google.com/spreadsheets/d/1qF5Dc5quGrAywf5Rtx4q7DrX91VlNIFOfKr-REoSkII/export?format=csv&gid=0",
@@ -2035,27 +2060,43 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
   );
 }
 
-function PasswordGate({ children }: { children: React.ReactNode }) {
-  const [authed, setAuthed] = useState(() => sessionStorage.getItem("tracker_authed") === "1");
+function LoginGate({ children }: { children: React.ReactNode }) {
+  const stored = localStorage.getItem("tracker_token");
+  const storedUser = localStorage.getItem("tracker_user");
+  const [auth, setAuth] = useState<{ token: string; user: AuthUser } | null>(() => {
+    if (stored && storedUser) {
+      try { return { token: stored, user: JSON.parse(storedUser) as AuthUser }; } catch { return null; }
+    }
+    return null;
+  });
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  const logout = useCallback(() => {
+    localStorage.removeItem("tracker_token");
+    localStorage.removeItem("tracker_user");
+    setAuth(null);
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError("");
     try {
-      const r = await fetch("/api/auth/verify", {
+      const r = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ username: username.trim(), password }),
       });
       if (r.ok) {
-        sessionStorage.setItem("tracker_authed", "1");
-        setAuthed(true);
+        const data = await r.json() as { token: string; user: AuthUser };
+        localStorage.setItem("tracker_token", data.token);
+        localStorage.setItem("tracker_user", JSON.stringify(data.user));
+        setAuth(data);
       } else {
-        setError("Incorrect password. Try again.");
+        setError("Invalid username or password.");
         setPassword("");
       }
     } catch {
@@ -2065,7 +2106,13 @@ function PasswordGate({ children }: { children: React.ReactNode }) {
     }
   }
 
-  if (authed) return <>{children}</>;
+  if (auth) {
+    return (
+      <UserContext.Provider value={{ user: auth.user, token: auth.token, logout }}>
+        {children}
+      </UserContext.Provider>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center relative overflow-hidden">
@@ -2083,10 +2130,21 @@ function PasswordGate({ children }: { children: React.ReactNode }) {
               <h1 className="text-xl font-bold bg-gradient-to-r from-violet-300 via-fuchsia-300 to-sky-300 bg-clip-text text-transparent">
                 Backend Tracker
               </h1>
-              <p className="text-sm text-muted-foreground mt-1">Enter your password to continue</p>
+              <p className="text-sm text-muted-foreground mt-1">Sign in to continue</p>
             </div>
           </div>
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-3">
+            <div className="relative">
+              <Users className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="pl-10"
+                autoFocus
+                autoComplete="username"
+              />
+            </div>
             <div className="relative">
               <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
@@ -2095,16 +2153,140 @@ function PasswordGate({ children }: { children: React.ReactNode }) {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="pl-10"
-                autoFocus
+                autoComplete="current-password"
               />
             </div>
-            {error && (
-              <p className="text-sm text-rose-400 text-center">{error}</p>
-            )}
-            <Button type="submit" className="w-full bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white" disabled={loading || !password}>
+            {error && <p className="text-sm text-rose-400 text-center">{error}</p>}
+            <Button type="submit" className="w-full bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white" disabled={loading || !username || !password}>
               {loading ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Sign in"}
             </Button>
           </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── User Management Panel (Admin only) ──────────────────────────────────────
+
+interface PortalUser { id: number; username: string; role: string; active: boolean; }
+
+function UserManagementPanel({ onClose }: { onClose: () => void }) {
+  const { token } = useUser();
+  const [users, setUsers] = useState<PortalUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [newUsername, setNewUsername] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newRole, setNewRole] = useState<"admin" | "edit" | "view">("view");
+  const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editPw, setEditPw] = useState("");
+  const [editRole, setEditRole] = useState<"admin" | "edit" | "view">("view");
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await fetch("/api/users", { headers: { Authorization: `Bearer ${token}` } });
+      if (r.ok) setUsers(await r.json() as PortalUser[]);
+    } finally { setLoading(false); }
+  }, [token]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function addUser() {
+    if (!newUsername.trim() || !newPassword.trim()) return;
+    setSaving(true); setError("");
+    const r = await fetch("/api/users", { method: "POST", headers: authHeaders(token), body: JSON.stringify({ username: newUsername.trim(), password: newPassword.trim(), role: newRole }) });
+    if (r.ok) { setNewUsername(""); setNewPassword(""); setNewRole("view"); await load(); }
+    else { const d = await r.json() as { error?: string }; setError(d.error ?? "Failed to add user"); }
+    setSaving(false);
+  }
+
+  async function patchUser(id: number, updates: Record<string, unknown>) {
+    await fetch(`/api/users/${id}`, { method: "PATCH", headers: authHeaders(token), body: JSON.stringify(updates) });
+    setEditingId(null); await load();
+  }
+
+  const roleBadge = (role: string) =>
+    role === "admin" ? "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30" :
+    role === "edit"  ? "bg-amber-500/20 text-amber-300 border-amber-500/30" :
+                       "bg-zinc-500/20 text-zinc-300 border-zinc-500/30";
+
+  const roleIcon = (role: string) =>
+    role === "admin" ? <ShieldCheck className="h-3 w-3" /> :
+    role === "edit"  ? <Pencil className="h-3 w-3" /> :
+                       <Eye className="h-3 w-3" />;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="relative w-full max-w-lg mx-4 rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-white/10">
+          <div className="flex items-center gap-2">
+            <UserCog className="h-5 w-5 text-fuchsia-400" />
+            <h2 className="text-lg font-semibold text-white">User Management</h2>
+          </div>
+          <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors"><X className="h-5 w-5" /></button>
+        </div>
+
+        <div className="p-6 space-y-5 max-h-[70vh] overflow-y-auto">
+          {/* Add user */}
+          <div className="space-y-3">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Add New User</p>
+            <div className="flex gap-2 flex-wrap">
+              <Input placeholder="Username" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} className="h-8 text-sm flex-1 min-w-[120px]" />
+              <Input placeholder="Password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="h-8 text-sm flex-1 min-w-[120px]" />
+              <select value={newRole} onChange={(e) => setNewRole(e.target.value as "admin" | "edit" | "view")} className="h-8 rounded-md bg-zinc-800 border border-white/10 text-sm text-white px-2 focus:outline-none focus:ring-2 focus:ring-violet-500/50">
+                <option value="view">View</option>
+                <option value="edit">Edit</option>
+                <option value="admin">Admin</option>
+              </select>
+              <Button size="sm" className="h-8 bg-violet-600 hover:bg-violet-700 text-white" onClick={addUser} disabled={saving || !newUsername.trim() || !newPassword.trim()}>
+                <Plus className="h-3.5 w-3.5 mr-1" />Add
+              </Button>
+            </div>
+            {error && <p className="text-xs text-rose-400">{error}</p>}
+          </div>
+
+          {/* User list */}
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Users ({users.length})</p>
+            {loading ? <Skeleton className="h-24 w-full" /> : users.map((u) => (
+              <div key={u.id} className={`rounded-lg border p-3 space-y-2 ${u.active ? "border-white/10 bg-zinc-900/60" : "border-white/5 bg-zinc-900/30 opacity-60"}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-white">{u.username}</span>
+                    <Badge className={`text-[10px] px-1.5 py-0 flex items-center gap-1 border ${roleBadge(u.role)}`}>
+                      {roleIcon(u.role)}{u.role}
+                    </Badge>
+                    {!u.active && <Badge className="text-[10px] px-1.5 py-0 bg-red-500/20 text-red-400 border-red-500/30">Disabled</Badge>}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => { setEditingId(editingId === u.id ? null : u.id); setEditPw(""); setEditRole(u.role as "admin" | "edit" | "view"); }} className="p-1 rounded text-zinc-500 hover:text-white transition-colors" title="Edit">
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                    {u.active
+                      ? <button onClick={() => patchUser(u.id, { active: false })} className="p-1 rounded text-zinc-500 hover:text-red-400 transition-colors" title="Disable"><UserX className="h-3.5 w-3.5" /></button>
+                      : <button onClick={() => patchUser(u.id, { active: true })} className="p-1 rounded text-zinc-500 hover:text-emerald-400 transition-colors" title="Enable"><UserCheck className="h-3.5 w-3.5" /></button>
+                    }
+                  </div>
+                </div>
+                {editingId === u.id && (
+                  <div className="flex gap-2 items-center flex-wrap pt-1 border-t border-white/5">
+                    <Input placeholder="New password (optional)" type="password" value={editPw} onChange={(e) => setEditPw(e.target.value)} className="h-7 text-xs flex-1 min-w-[160px]" />
+                    <select value={editRole} onChange={(e) => setEditRole(e.target.value as "admin" | "edit" | "view")} className="h-7 rounded-md bg-zinc-800 border border-white/10 text-xs text-white px-2 focus:outline-none focus:ring-2 focus:ring-violet-500/50">
+                      <option value="view">View</option>
+                      <option value="edit">Edit</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                    <Button size="sm" className="h-7 text-xs bg-violet-600 hover:bg-violet-700 text-white px-2" onClick={() => patchUser(u.id, { role: editRole, ...(editPw ? { password: editPw } : {}) })}>
+                      <KeyRound className="h-3 w-3 mr-1" />Save
+                    </Button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -2416,9 +2598,19 @@ type DashView = "metrics" | "attendance";
 
 function Dashboard() {
   const [view, setView] = useState<DashView>("metrics");
+  const [showUsers, setShowUsers] = useState(false);
+  const { user, logout } = useUser();
+
+  const roleBadgeCls =
+    user.role === "admin" ? "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30" :
+    user.role === "edit"  ? "bg-amber-500/20 text-amber-300 border-amber-500/30" :
+                            "bg-zinc-500/20 text-zinc-300 border-zinc-500/30";
+  const RoleIcon = user.role === "admin" ? ShieldCheck : user.role === "edit" ? Pencil : Eye;
 
   return (
     <div className="min-h-screen bg-background relative overflow-hidden">
+      {showUsers && <UserManagementPanel onClose={() => setShowUsers(false)} />}
+
       <div className="pointer-events-none absolute inset-0 -z-0">
         <div className="absolute -top-32 -left-32 h-[500px] w-[500px] rounded-full bg-violet-600/20 blur-[120px]" />
         <div className="absolute top-20 right-0 h-[400px] w-[400px] rounded-full bg-sky-500/15 blur-[120px]" />
@@ -2426,7 +2618,7 @@ function Dashboard() {
       </div>
 
       <header className="relative border-b border-white/5 bg-card/60 backdrop-blur-xl">
-        <div className="max-w-[1400px] mx-auto px-6 py-5 flex items-center gap-4">
+        <div className="max-w-[1400px] mx-auto px-6 py-4 flex items-center gap-4">
           <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white flex items-center justify-center shadow-[0_0_24px_-6px_rgba(168,85,247,0.7)]">
             <Rocket className="h-5 w-5" />
           </div>
@@ -2436,7 +2628,8 @@ function Dashboard() {
             </h1>
             <p className="text-sm text-muted-foreground">Retention, NSF &amp; CS team metrics at a glance</p>
           </div>
-          {/* View switcher dropdown */}
+
+          {/* View switcher */}
           <div className="relative">
             <select
               value={view}
@@ -2447,6 +2640,34 @@ function Dashboard() {
               <option value="attendance">🗓 Attendance</option>
             </select>
             <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs">▾</span>
+          </div>
+
+          {/* User info */}
+          <div className="flex items-center gap-2 pl-2 border-l border-white/10">
+            <div className="text-right hidden sm:block">
+              <p className="text-xs font-medium text-white leading-tight">{user.username}</p>
+              <Badge className={`text-[10px] px-1.5 py-0 flex items-center gap-1 border w-fit ml-auto mt-0.5 ${roleBadgeCls}`}>
+                <RoleIcon className="h-2.5 w-2.5" />{user.role}
+              </Badge>
+            </div>
+            {user.role === "admin" && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button onClick={() => setShowUsers(true)} className="p-2 rounded-lg text-zinc-400 hover:text-fuchsia-300 hover:bg-fuchsia-500/10 transition-colors">
+                    <UserCog className="h-4 w-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>Manage users</TooltipContent>
+              </Tooltip>
+            )}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button onClick={logout} className="p-2 rounded-lg text-zinc-400 hover:text-rose-300 hover:bg-rose-500/10 transition-colors">
+                  <LogOut className="h-4 w-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Sign out</TooltipContent>
+            </Tooltip>
           </div>
         </div>
       </header>
@@ -2488,12 +2709,13 @@ interface AttRecord { id: number; memberId: number; date: string; status: string
 interface AttData { members: AttMember[]; records: AttRecord[]; }
 
 const ATT_STATUS = [
-  { s: "in",   label: "In",    cell: "bg-emerald-500/25 text-emerald-300", badge: "text-emerald-400" },
-  { s: "off",  label: "Off",   cell: "bg-amber-500/25 text-amber-300",     badge: "text-amber-400" },
-  { s: "late", label: "Late",  cell: "bg-yellow-400/25 text-yellow-300",   badge: "text-yellow-400" },
-  { s: "pto",  label: "PTO",   cell: "bg-blue-500/25 text-blue-300",       badge: "text-blue-400" },
-  { s: "nsnc", label: "NSNC",  cell: "bg-red-700/30 text-red-400",         badge: "text-red-400" },
-  { s: "",     label: "Clear", cell: "",                                    badge: "text-zinc-500" },
+  { s: "in",   label: "In",        cell: "bg-emerald-500/25 text-emerald-300", badge: "text-emerald-400" },
+  { s: "off",  label: "Off",       cell: "bg-amber-500/25 text-amber-300",     badge: "text-amber-400" },
+  { s: "late", label: "Late",      cell: "bg-yellow-400/25 text-yellow-300",   badge: "text-yellow-400" },
+  { s: "pto",  label: "PTO",       cell: "bg-blue-500/25 text-blue-300",       badge: "text-blue-400" },
+  { s: "nsnc", label: "NSNC",      cell: "bg-red-700/30 text-red-400",         badge: "text-red-400" },
+  { s: "conf", label: "Confirmed", cell: "bg-teal-500/25 text-teal-300",       badge: "text-teal-400" },
+  { s: "",     label: "Clear",     cell: "",                                    badge: "text-zinc-500" },
 ] as const;
 
 function AttCell({ status, note, weekend }: { status: string; note?: string | null; weekend?: boolean }) {
@@ -2501,7 +2723,7 @@ function AttCell({ status, note, weekend }: { status: string; note?: string | nu
   if (!status) return weekend
     ? <span className="text-zinc-800 text-xs font-medium select-none">—</span>
     : <span className="text-zinc-700 text-base leading-none">·</span>;
-  const label = status === "in" ? "In" : status === "off" ? "Off" : status === "late" ? "Late" : status === "pto" ? "PTO" : "NSNC";
+  const label = status === "in" ? "In" : status === "off" ? "Off" : status === "late" ? "Late" : status === "pto" ? "PTO" : status === "nsnc" ? "NSNC" : "Conf";
   return (
     <span className={`relative inline-flex items-center justify-center px-1.5 h-5 rounded text-[10px] font-bold whitespace-nowrap ${cfg?.cell ?? ""}`}>
       {label}
@@ -2513,8 +2735,11 @@ function AttCell({ status, note, weekend }: { status: string; note?: string | nu
 const WDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
 function AttendancePanel() {
+  const { token, user } = useUser();
+  const canEdit = user.role === "admin" || user.role === "edit";
   const today = new Date();
   const todayStr = today.toISOString().slice(0, 10);
+  const tomorrowStr = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).toISOString().slice(0, 10);
   const [monthOff, setMonthOff] = useState(0);
   const [deptFilter, setDeptFilter] = useState("All");
   const [editCell, setEditCell] = useState<{ memberId: number; date: string; name: string } | null>(null);
@@ -2599,7 +2824,7 @@ function AttendancePanel() {
 
   async function upsert(memberId: number, date: string, status: string, note: string) {
     await fetch("/api/attendance/record", {
-      method: "PUT", headers: { "Content-Type": "application/json" },
+      method: "PUT", headers: authHeaders(token),
       body: JSON.stringify({ memberId, date, status, note: note || null }),
     });
     qc.invalidateQueries({ queryKey: ["attendance"] });
@@ -2621,7 +2846,7 @@ function AttendancePanel() {
   async function addMember() {
     if (!newName.trim()) return;
     await fetch("/api/attendance/members", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: authHeaders(token),
       body: JSON.stringify({ name: newName.trim(), shift: newShift.trim(), department: newDept.trim() }),
     });
     setNewName(""); setNewShift(""); setNewDept(""); setShowAdd(false);
@@ -2631,7 +2856,7 @@ function AttendancePanel() {
   async function saveMember() {
     if (!editingMember) return;
     await fetch(`/api/attendance/members/${editingMember.id}`, {
-      method: "PATCH", headers: { "Content-Type": "application/json" },
+      method: "PATCH", headers: authHeaders(token),
       body: JSON.stringify({ name: editingMember.name, shift: editingMember.shift, department: editingMember.department }),
     });
     setEditingMember(null);
@@ -2640,7 +2865,7 @@ function AttendancePanel() {
 
   async function deactivateMember(id: number) {
     await fetch(`/api/attendance/members/${id}`, {
-      method: "PATCH", headers: { "Content-Type": "application/json" },
+      method: "PATCH", headers: authHeaders(token),
       body: JSON.stringify({ active: false }),
     });
     qc.invalidateQueries({ queryKey: ["attendance"] });
@@ -2648,7 +2873,7 @@ function AttendancePanel() {
 
   async function doImport() {
     setImporting(true);
-    await fetch("/api/attendance/import", { method: "POST" });
+    await fetch("/api/attendance/import", { method: "POST", headers: authHeaders(token) });
     qc.invalidateQueries({ queryKey: ["attendance"] });
     setImporting(false);
   }
@@ -2664,14 +2889,21 @@ function AttendancePanel() {
           <p className="text-sm text-muted-foreground">Track daily presence, mark status, and add notes per member</p>
         </div>
         <div className="flex items-center gap-2">
-          {(data?.members.length ?? 0) === 0 && (
+          {canEdit && (data?.members.length ?? 0) === 0 && (
             <Button size="sm" variant="outline" onClick={doImport} disabled={importing}>
               {importing ? "Importing…" : "Import from Sheets"}
             </Button>
           )}
-          <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white" onClick={() => setShowAdd((v) => !v)}>
-            + Add Member
-          </Button>
+          {canEdit && (
+            <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white" onClick={() => setShowAdd((v) => !v)}>
+              + Add Member
+            </Button>
+          )}
+          {!canEdit && (
+            <Badge className="text-[10px] px-2 py-1 bg-zinc-500/20 text-zinc-400 border-zinc-500/30 border flex items-center gap-1">
+              <Eye className="h-3 w-3" />View only
+            </Badge>
+          )}
         </div>
       </div>
 
@@ -2769,15 +3001,16 @@ function AttendancePanel() {
                 {dateCols.map((d) => {
                   const dt = new Date(d + "T12:00:00");
                   const isToday = d === todayStr;
+                  const isTomorrow = d === tomorrowStr;
                   const isWknd = dt.getDay() === 0 || dt.getDay() === 6;
                   return (
                     <th
                       key={d}
-                      className={`text-center px-0 py-1 border-b border-white/10 w-12 ${isToday ? "bg-violet-900/40" : ""}`}
-                      style={isWknd && !isToday ? { background: "repeating-linear-gradient(135deg, #0f0f12 0px, #0f0f12 4px, #16141a 4px, #16141a 8px)" } : undefined}
+                      className={`text-center px-0 py-1 border-b border-white/10 w-12 ${isToday ? "bg-violet-900/40" : isTomorrow ? "bg-teal-900/30" : ""}`}
+                      style={isWknd && !isToday && !isTomorrow ? { background: "repeating-linear-gradient(135deg, #0f0f12 0px, #0f0f12 4px, #16141a 4px, #16141a 8px)" } : undefined}
                     >
-                      <div className={`text-[11px] font-semibold ${isToday ? "text-violet-300" : isWknd ? "text-amber-700/80" : "text-muted-foreground"}`}>{dt.getDate()}</div>
-                      <div className={`text-[9px] ${isToday ? "text-violet-400" : isWknd ? "text-amber-800/70" : "text-zinc-600"}`}>{WDAYS[dt.getDay()]}</div>
+                      <div className={`text-[11px] font-semibold ${isToday ? "text-violet-300" : isTomorrow ? "text-teal-300" : isWknd ? "text-amber-700/80" : "text-muted-foreground"}`}>{dt.getDate()}</div>
+                      <div className={`text-[9px] ${isToday ? "text-violet-400" : isTomorrow ? "text-teal-500" : isWknd ? "text-amber-800/70" : "text-zinc-600"}`}>{WDAYS[dt.getDay()]}</div>
                     </th>
                   );
                 })}
@@ -2786,7 +3019,7 @@ function AttendancePanel() {
                 <th className="text-center text-xs text-yellow-400/70 font-medium px-2 py-2 border-b border-white/10 w-8">Late</th>
                 <th className="text-center text-xs text-blue-400/70 font-medium px-2 py-2 border-b border-white/10 w-8">PTO</th>
                 <th className="text-center text-xs text-red-400/70 font-medium px-2 py-2 border-b border-white/10 w-10">NSNC</th>
-                <th className="text-center text-xs text-muted-foreground/50 font-medium px-1 py-2 border-b border-white/10 w-6" title="Edit member">⋯</th>
+                {canEdit && <th className="text-center text-xs text-muted-foreground/50 font-medium px-1 py-2 border-b border-white/10 w-6" title="Edit member">⋯</th>}
               </tr>
             </thead>
             <tbody>
@@ -2812,21 +3045,22 @@ function AttendancePanel() {
                     </td>
                     {dateCols.map((d) => {
                       const rec = recordMap.get(`${member.id}_${d}`);
-                      const isFuture = d > todayStr;
+                      const isTomorrow = d === tomorrowStr;
+                      const isFuture = d > tomorrowStr;
                       const isToday = d === todayStr;
                       const dt = new Date(d + "T12:00:00");
                       const isWknd = dt.getDay() === 0 || dt.getDay() === 6;
                       return (
                         <td
                           key={d}
-                          onClick={() => !isFuture && openCell(member, d)}
-                          title={rec?.note ? `📝 ${rec.note}` : undefined}
+                          onClick={() => canEdit && !isFuture && openCell(member, d)}
+                          title={rec?.note ? `📝 ${rec.note}` : (canEdit && isTomorrow) ? "Click to pre-confirm tomorrow's attendance" : undefined}
                           className={`text-center border-b border-white/5 w-12 h-8 transition-colors
-                            ${isToday ? "bg-violet-950/40" : ""}
-                            ${isFuture ? "opacity-25 cursor-default" : "cursor-pointer hover:bg-white/5"}`}
-                          style={isWknd && !isToday ? { background: "repeating-linear-gradient(135deg, #0f0f12 0px, #0f0f12 4px, #16141a 4px, #16141a 8px)" } : undefined}
+                            ${isToday ? "bg-violet-950/40" : isTomorrow ? "bg-teal-950/30" : ""}
+                            ${isFuture || !canEdit ? "opacity-20 cursor-default" : "cursor-pointer hover:bg-white/5"}`}
+                          style={isWknd && !isToday && !isTomorrow ? { background: "repeating-linear-gradient(135deg, #0f0f12 0px, #0f0f12 4px, #16141a 4px, #16141a 8px)" } : undefined}
                         >
-                          <AttCell status={rec?.status ?? ""} note={rec?.note} weekend={isWknd} />
+                          <AttCell status={rec?.status ?? ""} note={rec?.note} weekend={isWknd && !isTomorrow} />
                         </td>
                       );
                     })}
@@ -2836,7 +3070,7 @@ function AttendancePanel() {
                     <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-blue-400">{cPto || "—"}</td>
                     <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-red-400">{cNsnc || "—"}</td>
                     <td className="text-center border-b border-white/5">
-                      <button onClick={() => setEditingMember(member)} className="text-zinc-600 hover:text-zinc-300 transition-colors px-1 text-base leading-none">⋯</button>
+                      {canEdit && <button onClick={() => setEditingMember(member)} className="text-zinc-600 hover:text-zinc-300 transition-colors px-1 text-base leading-none">⋯</button>}
                     </td>
                   </tr>
                 );
@@ -2947,9 +3181,9 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <PasswordGate>
+        <LoginGate>
           <Dashboard />
-        </PasswordGate>
+        </LoginGate>
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>

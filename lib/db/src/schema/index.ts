@@ -19,3 +19,4 @@
 
 export * from "./phoneCalls";
 export * from "./attendance";
+export * from "./users";
