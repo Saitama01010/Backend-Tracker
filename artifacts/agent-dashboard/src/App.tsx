@@ -2544,7 +2544,9 @@ function AttendancePanel() {
   }, [data]);
 
   const visible = useMemo(
-    () => (data?.members ?? []).filter((m) => deptFilter === "All" || m.department === deptFilter),
+    () => (data?.members ?? [])
+      .filter((m) => deptFilter === "All" || m.department === deptFilter)
+      .sort((a, b) => parseFloat(a.shift || "0") - parseFloat(b.shift || "0")),
     [data, deptFilter],
   );
 
