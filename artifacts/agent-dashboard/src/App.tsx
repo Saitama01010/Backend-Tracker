@@ -284,6 +284,19 @@ const PHONE_ALIASES: Record<string, string> = {
   "youssef-john marcus": "youssef nasser",
 };
 
+// Maps normalized SHEET agent name → normalized PBX (VoSLogic) agent name
+// Format: "QuoName-PBXAlias" sheet entries decode as QuoName=Quo key, PBXAlias=PBX key
+const SHEET_TO_PBX: Record<string, string> = {
+  "ahmed ayman-levi miller": "levi miller",       // PBX: Levi Miller = Ahmed Ayman
+  "youssef nady-jacob xander": "jacob xander",    // PBX: Jacob Xander = Youssef Nady
+  "zeiad fouad-zack ford": "rick miller",          // PBX: Rick Miller = Zeiad Fouad
+  "nour-michael belfort-2900": "michael belfort",  // PBX: Michael Belfort = Nour/Michael
+  "mohammed ayman-max francis-2268": "max francis",
+  "engy-ellie moser-2046": "ellie moser",
+  "muhamed-ryan henderson": "jacob ahmed",         // PBX: Jacob Ahmed = Ryan Henderson
+  "abdlrhman-jacob stephenson": "abdulrhman isawi",
+};
+
 // Maps normalized SHEET agent name → normalized PHONE (OpenPhone) agent name
 const SHEET_TO_PHONE: Record<string, string> = {
   "abdlrhman-jacob stephenson": "abdulrhman isawi",
@@ -1157,14 +1170,19 @@ function useLiveCalls(): Set<string> {
   return useMemo(() => new Set((q.data?.active ?? []).map(normalizeAgent)), [q.data]);
 }
 
-type PbxCalls = Map<string, { calls: number; inbound: number; outbound: number }>;
+type PbxAgentEntry = { calls: number; inbound: number; outbound: number; groups: string[] };
+type PbxCalls = Map<string, PbxAgentEntry>;
 
 function useVosCalls(): PbxCalls {
-  const q = useQuery<{ dashboard: { callsByAgent: { agentName: string; calls: number; inbound: number; outbound: number }[] } }>({
+  const q = useQuery<{
+    dashboard: { callsByAgent: { agentName: string; calls: number; inbound: number; outbound: number }[] };
+    agents: { id: number; name: string }[];
+    ringGroups: { id: number; name: string; agentIds: number[] }[];
+  }>({
     queryKey: ["vosStats"],
     queryFn: async () => {
       const r = await fetch("/api/vos/stats");
-      if (!r.ok) return { dashboard: { callsByAgent: [] } };
+      if (!r.ok) return { dashboard: { callsByAgent: [] }, agents: [], ringGroups: [] };
       return r.json();
     },
     staleTime: 30_000,
@@ -1173,8 +1191,26 @@ function useVosCalls(): PbxCalls {
   });
   return useMemo(() => {
     const m: PbxCalls = new Map();
-    for (const a of q.data?.dashboard.callsByAgent ?? []) {
-      m.set(normalizeAgent(a.agentName), { calls: a.calls, inbound: a.inbound, outbound: a.outbound });
+    const data = q.data;
+    if (!data) return m;
+    // Build agent ID → ring group names
+    const agentGroups = new Map<number, string[]>();
+    for (const g of data.ringGroups ?? []) {
+      for (const id of g.agentIds) {
+        if (!agentGroups.has(id)) agentGroups.set(id, []);
+        agentGroups.get(id)!.push(g.name);
+      }
+    }
+    // Build normalized PBX name → agent ID
+    const nameToId = new Map<string, number>();
+    for (const a of data.agents ?? []) {
+      nameToId.set(normalizeAgent(a.name), a.id);
+    }
+    for (const a of data.dashboard?.callsByAgent ?? []) {
+      const key = normalizeAgent(a.agentName);
+      const id = nameToId.get(key);
+      const groups = id !== undefined ? (agentGroups.get(id) ?? []) : [];
+      m.set(key, { calls: a.calls, inbound: a.inbound, outbound: a.outbound, groups });
     }
     return m;
   }, [q.data]);
@@ -1188,7 +1224,14 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData }: { agentL
   const getPhone = (agent: string) =>
     directKeys ? phoneData.get(normalizeAgent(agent)) : phoneData.get(sheetToPhoneKey(agent));
 
-  const getPbx = (agent: string) => pbxData?.get(directKeys ? normalizeAgent(agent) : sheetToPhoneKey(agent));
+  const getPbx = (agent: string) => {
+    if (!pbxData) return undefined;
+    const norm = normalizeAgent(agent);
+    if (directKeys) return pbxData.get(norm);
+    // Check explicit PBX alias map first, then fall back to phone key
+    const pbxKey = SHEET_TO_PBX[norm] ?? sheetToPhoneKey(agent);
+    return pbxData.get(pbxKey);
+  };
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1716,8 +1759,21 @@ function TeamPanel({
       }
     }
 
+    // PBX-only agents: in the right ring group but not already listed or covered by a sheet alias
+    const pbxRingGroup = mode === "retention" ? "Retention" : mode === "nsf" ? "Back-end" : null;
+    // Don't add standalone rows for PBX names that are already covered as aliases via SHEET_TO_PBX
+    const coveredPbxKeys = new Set(Object.values(SHEET_TO_PBX));
+    if (pbxRingGroup && pbxData) {
+      for (const [pbxKey, pbxAgent] of pbxData.entries()) {
+        if (pbxAgent.groups.includes(pbxRingGroup) && !addedKeys.has(pbxKey) && !coveredPbxKeys.has(pbxKey)) {
+          result.push(pbxKey.replace(/\b\w/g, (c) => c.toUpperCase()));
+          addedKeys.add(pbxKey);
+        }
+      }
+    }
+
     return result;
-  }, [aggregated, phoneData, mode]);
+  }, [aggregated, phoneData, mode, pbxData]);
 
   function refresh() {
     statusQ.refetch();
@@ -1922,8 +1978,17 @@ function CSPanel() {
         addedKeys.add(k);
       }
     }
+    // PBX-only agents in the Customer Support ring group
+    if (pbxData) {
+      for (const [pbxKey, pbxAgent] of pbxData.entries()) {
+        if (pbxAgent.groups.includes("Customer Support") && !addedKeys.has(pbxKey)) {
+          result.push(pbxKey.replace(/\b\w/g, (c) => c.toUpperCase()));
+          addedKeys.add(pbxKey);
+        }
+      }
+    }
     return result;
-  }, [phoneData]);
+  }, [phoneData, pbxData]);
 
   const totals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0, missed = 0, uniqueContacts = 0;
