@@ -1998,6 +1998,18 @@ function CSPanel() {
     return { calls, seconds, answered, missed, uniqueContacts };
   }, [phoneData]);
 
+  // PBX call totals for agents in allAgents (each agent looked up by direct or alias key)
+  const pbxTotalCalls = useMemo(() => {
+    if (!pbxData) return 0;
+    let total = 0;
+    for (const agent of allAgents) {
+      const norm = normalizeAgent(agent);
+      const pbxKey = SHEET_TO_PBX[norm] ?? norm;
+      total += pbxData.get(pbxKey)?.calls ?? 0;
+    }
+    return total;
+  }, [pbxData, allAgents]);
+
   function refresh() { phoneQ.refetch(); }
 
   return (
@@ -2006,7 +2018,7 @@ function CSPanel() {
         <div>
           <CardTitle className="text-xl">CS Team</CardTitle>
           <p className="text-sm text-muted-foreground mt-1">
-            Call activity · live from OpenPhone
+            Call activity · live from OpenPhone + PBX
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={refresh} disabled={phoneQ.isFetching}>
@@ -2020,8 +2032,8 @@ function CSPanel() {
         <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <StatTile label="Agents" value={CS_AGENTS.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
-          <StatTile label="Total calls" value={totals.calls.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
+          <StatTile label="Agents" value={allAgents.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+          <StatTile label="Total calls" value={(totals.calls + pbxTotalCalls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
           <StatTile label="Answered" value={totals.answered.toLocaleString()} tone="emerald" />
           <StatTile label="Missed" value={totals.missed.toLocaleString()} tone="rose" />
           <StatTile label="Time on calls" value={formatHours(totals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
