@@ -410,20 +410,22 @@ router.get("/quo/sync-state", async (req, res) => {
 
 router.get("/quo/live", async (req, res) => {
   try {
-    // DB check: only trust in-progress records from the last 15 minutes.
-    // Calls older than that which are still "in-progress" in the DB are stale
-    // (they completed but the sync window moved past them before they could be updated).
-    const since15 = new Date(Date.now() - 15 * 60 * 1000);
+    // DB check: use syncedAt (refreshed on every re-sync) rather than createdAt
+    // (the OpenPhone call-start time). A call running for 57 minutes has createdAt
+    // from 57 min ago — it would fail a 15-min createdAt window. syncedAt is
+    // stamped to now() on every upsert, so in-progress calls stay fresh across
+    // sync cycles. 35 minutes covers at least 2 full sync cycles (15 min each).
+    const since35 = new Date(Date.now() - 35 * 60 * 1000);
     const dbRows = await db
       .select({ agentName: phoneCallsTable.agentName })
       .from(phoneCallsTable)
-      .where(and(gte(phoneCallsTable.createdAt, since15), eq(phoneCallsTable.status, "in-progress")));
+      .where(and(gte(phoneCallsTable.syncedAt, since35), eq(phoneCallsTable.status, "in-progress")));
     const active = new Set(dbRows.map((r) => r.agentName).filter(Boolean) as string[]);
 
     // Real-time supplement: hit the OpenPhone conversations API for the last
-    // 2 minutes to catch brand-new calls that haven't been synced into the DB yet.
+    // 8 minutes to catch brand-new calls that haven't been synced into the DB yet.
     try {
-      const since2 = new Date(Date.now() - 2 * 60 * 1000);
+      const since2 = new Date(Date.now() - 8 * 60 * 1000);
       const [convRes, linesRes] = await Promise.all([
         quoFetch<{ data: { id: string; phoneNumberId: string; participants: string[] }[] }>(
           `/conversations?updatedAfter=${encodeURIComponent(since2.toISOString())}&maxResults=50`
