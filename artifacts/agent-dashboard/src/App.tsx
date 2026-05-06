@@ -1254,8 +1254,8 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                 <Th id="__vmbrief__" label="No VM" tone="text-orange-400" tip="Outbound calls that reached voicemail but the agent hung up without leaving a message." />
                 <Th id="__unique__" label="CX Reached" tone="text-sky-400" tip="Unique phone numbers the agent dialed outbound. Each number counted once no matter how many times they called it." />
                 <Th id="__time__" label="Talk time" tip="Total duration of all calls combined." />
-                <Th id="__resp__" label="Response %" tone="text-amber-400" tip="Percentage of total calls that resulted in a real conversation (Answered ÷ Total Calls)." />
                 <TableHead className="whitespace-nowrap text-right text-violet-400">Last call</TableHead>
+                <Th id="__resp__" label="Response %" tone="text-amber-400" tip="Percentage of total calls that resulted in a real conversation (Answered ÷ Total Calls)." />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1290,8 +1290,8 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.vmBrief ? "text-orange-400" : "text-muted-foreground/40"}`}>{ph?.vmBrief ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.uniqueContacts ? "text-sky-400" : "text-muted-foreground/40"}`}>{ph?.uniqueContacts ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!ph?.seconds ? "text-muted-foreground/40" : ""}`}>{ph?.seconds ? formatDuration(ph.seconds) : "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.calls ? "text-amber-400" : "text-muted-foreground/40"}`}>{ph ? responseRate(ph.answered, ph.calls) : "—"}</TableCell>
                     <TableCell className="text-right"><TimeSince isoStr={ph?.lastCallAt} /></TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.calls ? "text-amber-400" : "text-muted-foreground/40"}`}>{ph ? responseRate(ph.answered, ph.calls) : "—"}</TableCell>
                   </TableRow>
                 );
               })}
@@ -1309,8 +1309,8 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                   <TableCell className="text-right tabular-nums font-mono font-bold text-orange-400">{totVmBrief || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totUniq || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold">{totSecs ? formatDuration(totSecs) : "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-amber-400">{responseRate(totAns, totCalls)}</TableCell>
                   <TableCell />
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-amber-400">{responseRate(totAns, totCalls)}</TableCell>
                 </TableRow>
               </TableHeader>
             )}
