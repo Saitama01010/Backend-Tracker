@@ -1188,7 +1188,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData }: { agentL
   const getPhone = (agent: string) =>
     directKeys ? phoneData.get(normalizeAgent(agent)) : phoneData.get(sheetToPhoneKey(agent));
 
-  const getPbx = (agent: string) => pbxData?.get(normalizeAgent(agent));
+  const getPbx = (agent: string) => pbxData?.get(directKeys ? normalizeAgent(agent) : sheetToPhoneKey(agent));
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
