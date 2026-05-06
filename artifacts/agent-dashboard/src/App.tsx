@@ -1281,7 +1281,12 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                         {agent}
                       </div>
                     </TableCell>
-                    <TableCell className="text-right"><TimeSince isoStr={ph?.lastCallAt} /></TableCell>
+                    <TableCell className="text-right">
+                      {isLive
+                        ? <span className="text-emerald-400 font-medium text-xs">On call</span>
+                        : <TimeSince isoStr={ph?.lastCallAt} />
+                      }
+                    </TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>{ph?.calls ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.outbound ? "text-fuchsia-400" : "text-muted-foreground/40"}`}>{ph?.outbound ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.inbound ? "text-cyan-400" : "text-muted-foreground/40"}`}>{ph?.inbound ?? "—"}</TableCell>
