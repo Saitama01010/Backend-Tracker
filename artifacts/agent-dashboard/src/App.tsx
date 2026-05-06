@@ -1183,23 +1183,39 @@ type PbxAgentEntry = {
 };
 type PbxCalls = Map<string, PbxAgentEntry>;
 
-function useVosCalls(): PbxCalls {
-  const q = useQuery<{
-    dashboard: { callsByAgent: { agentName: string; calls: number; inbound: number; outbound: number }[] };
-    agents: { id: number; name: string }[];
-    ringGroups: { id: number; name: string; agentIds: number[] }[];
-    callHistory?: { agentName: string; calls: number; inbound: number; outbound: number; answered: number; missed: number; voicemail: number; durationSeconds: number; lastCallAt: string | null }[];
-  }>({
+interface VosStatsResponse {
+  dashboard: { callsByAgent: { agentName: string; calls: number; inbound: number; outbound: number }[] };
+  agents: { id: number; name: string }[];
+  ringGroups: { id: number; name: string; agentIds: number[] }[];
+  callHistory?: { agentName: string; calls: number; inbound: number; outbound: number; answered: number; missed: number; voicemail: number; durationSeconds: number; lastCallAt: string | null }[];
+  ringGroupMissed?: Record<number, number>;
+}
+
+function useVosStats() {
+  return useQuery<VosStatsResponse>({
     queryKey: ["vosStats"],
     queryFn: async () => {
       const r = await fetch("/api/vos/stats");
-      if (!r.ok) return { dashboard: { callsByAgent: [] }, agents: [], ringGroups: [], callHistory: [] };
+      if (!r.ok) return { dashboard: { callsByAgent: [] }, agents: [], ringGroups: [], callHistory: [], ringGroupMissed: {} };
       return r.json();
     },
     staleTime: 30_000,
     refetchInterval: 60_000,
     refetchOnWindowFocus: true,
   });
+}
+
+/** Returns missed call counts per ring group ID sourced from PBX voicemail/no-answer records. */
+function useVosRingGroupMissed(): Map<number, number> {
+  const q = useVosStats();
+  return useMemo(() => {
+    const raw = q.data?.ringGroupMissed ?? {};
+    return new Map(Object.entries(raw).map(([k, v]) => [Number(k), v as number]));
+  }, [q.data]);
+}
+
+function useVosCalls(): PbxCalls {
+  const q = useVosStats();
   return useMemo(() => {
     const m: PbxCalls = new Map();
     const data = q.data;
@@ -1240,7 +1256,7 @@ function useVosCalls(): PbxCalls {
   }, [q.data]);
 }
 
-function ByCallStatsView({ agentList, phoneData, directKeys, pbxData }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics>; directKeys?: boolean; pbxData?: PbxCalls }) {
+function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMissed }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics>; directKeys?: boolean; pbxData?: PbxCalls; extraMissed?: number }) {
   const liveAgents = useLiveCalls();
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "__calls__", dir: "desc" });
@@ -1318,7 +1334,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData }: { agentL
   const totOut = visible.reduce((s, a) => s + (getPhone(a)?.outbound ?? 0) + (getPbx(a)?.outbound ?? 0), 0);
   const totIn = visible.reduce((s, a) => s + (getPhone(a)?.inbound ?? 0) + (getPbx(a)?.inbound ?? 0), 0);
   const totAns = visible.reduce((s, a) => s + (getPhone(a)?.answered ?? 0) + (getPbx(a)?.answered ?? 0), 0);
-  const totMissed = visible.reduce((s, a) => s + (getPhone(a)?.missed ?? 0) + (getPbx(a)?.missed ?? 0), 0);
+  const totMissed = visible.reduce((s, a) => s + (getPhone(a)?.missed ?? 0) + (getPbx(a)?.missed ?? 0), 0) + (extraMissed ?? 0);
   const totVm = visible.reduce((s, a) => s + (getPhone(a)?.voicemail ?? 0) + (getPbx(a)?.voicemail ?? 0), 0);
   const totVmBrief = visible.reduce((s, a) => s + (getPhone(a)?.vmBrief ?? 0), 0);
   const totUniq = visible.reduce((s, a) => s + (getPhone(a)?.uniqueContacts ?? 0), 0);
@@ -1669,6 +1685,9 @@ function TeamPanel({
   statusQueryFn?: () => Promise<SheetData>;
 }) {
   const pbxData = useVosCalls();
+  const ringGroupMissed = useVosRingGroupMissed();
+  // Retention ring group = 2, Back-end (NSF) ring group = 3 in VoSLogic
+  const pbxMissed = mode === "retention" ? (ringGroupMissed.get(2) ?? 0) : mode === "nsf" ? (ringGroupMissed.get(3) ?? 0) : 0;
   const statusQ = useQuery({
     queryKey: ["status", sheetKey],
     queryFn: statusQueryFn ?? (() => fetchHeaderCsv(urls.status)),
@@ -1891,7 +1910,7 @@ function TeamPanel({
                 )}
               </TabsList>
               <TabsContent value="call">
-                <ByCallStatsView agentList={callAgentList} phoneData={phoneData} pbxData={pbxData} />
+                <ByCallStatsView agentList={callAgentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} />
               </TabsContent>
               {aggregated && !("error" in aggregated) && (
                 <>
@@ -1942,6 +1961,9 @@ const CS_AGENTS = ["Nora Adam", "Leo Carter", "Carla Bennet"];
 
 function CSPanel() {
   const pbxData = useVosCalls();
+  const ringGroupMissed = useVosRingGroupMissed();
+  // CS ring group ID = 4 in VoSLogic
+  const pbxMissed = ringGroupMissed.get(4) ?? 0;
   const todayIso = toIsoDate(new Date());
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
@@ -2066,12 +2088,12 @@ function CSPanel() {
           <StatTile label="Agents" value={allAgents.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
           <StatTile label="Total calls" value={(totals.calls + pbxTotalCalls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
           <StatTile label="Answered" value={totals.answered.toLocaleString()} tone="emerald" />
-          <StatTile label="Missed" value={totals.missed.toLocaleString()} tone="rose" />
+          <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
           <StatTile label="Time on calls" value={formatHours(totals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
           <StatTile label="Response rate" value={responseRate(totals.answered, totals.calls)} tone="amber" />
         </div>
 
-        <ByCallStatsView agentList={allAgents} phoneData={phoneData} pbxData={pbxData} />
+        <ByCallStatsView agentList={allAgents} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} />
       </CardContent>
     </Card>
   );
