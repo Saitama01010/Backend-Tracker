@@ -1245,6 +1245,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
             <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
               <TableRow>
                 <Th id="__agent__" label="Agent" align="left" />
+                <TableHead className="whitespace-nowrap text-right text-violet-400">Last call</TableHead>
                 <Th id="__calls__" label="Calls" tip="Total number of calls (inbound + outbound) in the selected period." />
                 <Th id="__outbound__" label="Outbound" tone="text-fuchsia-400" tip="Calls the agent placed to customers." />
                 <Th id="__inbound__" label="Inbound" tone="text-cyan-400" tip="Calls received from customers." />
@@ -1254,7 +1255,6 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                 <Th id="__vmbrief__" label="No VM" tone="text-orange-400" tip="Outbound calls that reached voicemail but the agent hung up without leaving a message." />
                 <Th id="__unique__" label="CX Reached" tone="text-sky-400" tip="Unique phone numbers the agent dialed outbound. Each number counted once no matter how many times they called it." />
                 <Th id="__time__" label="Talk time" tip="Total duration of all calls combined." />
-                <TableHead className="whitespace-nowrap text-right text-violet-400">Last call</TableHead>
                 <Th id="__resp__" label="Response %" tone="text-amber-400" tip="Percentage of total calls that resulted in a real conversation (Answered ÷ Total Calls)." />
               </TableRow>
             </TableHeader>
@@ -1281,6 +1281,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                         {agent}
                       </div>
                     </TableCell>
+                    <TableCell className="text-right"><TimeSince isoStr={ph?.lastCallAt} /></TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>{ph?.calls ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.outbound ? "text-fuchsia-400" : "text-muted-foreground/40"}`}>{ph?.outbound ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.inbound ? "text-cyan-400" : "text-muted-foreground/40"}`}>{ph?.inbound ?? "—"}</TableCell>
@@ -1290,7 +1291,6 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.vmBrief ? "text-orange-400" : "text-muted-foreground/40"}`}>{ph?.vmBrief ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.uniqueContacts ? "text-sky-400" : "text-muted-foreground/40"}`}>{ph?.uniqueContacts ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!ph?.seconds ? "text-muted-foreground/40" : ""}`}>{ph?.seconds ? formatDuration(ph.seconds) : "—"}</TableCell>
-                    <TableCell className="text-right"><TimeSince isoStr={ph?.lastCallAt} /></TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.calls ? "text-amber-400" : "text-muted-foreground/40"}`}>{ph ? responseRate(ph.answered, ph.calls) : "—"}</TableCell>
                   </TableRow>
                 );
@@ -1300,6 +1300,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
               <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
                 <TableRow>
                   <TableCell className="font-bold">Whole team</TableCell>
+                  <TableCell />
                   <TableCell className="text-right tabular-nums font-mono font-bold">{totCalls || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-fuchsia-400">{totOut || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{totIn || "—"}</TableCell>
