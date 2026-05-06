@@ -1170,7 +1170,17 @@ function useLiveCalls(): Set<string> {
   return useMemo(() => new Set((q.data?.active ?? []).map(normalizeAgent)), [q.data]);
 }
 
-type PbxAgentEntry = { calls: number; inbound: number; outbound: number; groups: string[] };
+type PbxAgentEntry = {
+  calls: number;
+  inbound: number;
+  outbound: number;
+  answered: number;
+  missed: number;
+  voicemail: number;
+  durationSeconds: number;
+  lastCallAt: string | null;
+  groups: string[];
+};
 type PbxCalls = Map<string, PbxAgentEntry>;
 
 function useVosCalls(): PbxCalls {
@@ -1178,11 +1188,12 @@ function useVosCalls(): PbxCalls {
     dashboard: { callsByAgent: { agentName: string; calls: number; inbound: number; outbound: number }[] };
     agents: { id: number; name: string }[];
     ringGroups: { id: number; name: string; agentIds: number[] }[];
+    callHistory?: { agentName: string; calls: number; inbound: number; outbound: number; answered: number; missed: number; voicemail: number; durationSeconds: number; lastCallAt: string | null }[];
   }>({
     queryKey: ["vosStats"],
     queryFn: async () => {
       const r = await fetch("/api/vos/stats");
-      if (!r.ok) return { dashboard: { callsByAgent: [] }, agents: [], ringGroups: [] };
+      if (!r.ok) return { dashboard: { callsByAgent: [] }, agents: [], ringGroups: [], callHistory: [] };
       return r.json();
     },
     staleTime: 30_000,
@@ -1206,11 +1217,24 @@ function useVosCalls(): PbxCalls {
     for (const a of data.agents ?? []) {
       nameToId.set(normalizeAgent(a.name), a.id);
     }
-    for (const a of data.dashboard?.callsByAgent ?? []) {
+    // Prefer callHistory (rich data) — fall back to dashboard callsByAgent
+    const source = (data.callHistory?.length ? data.callHistory : data.dashboard?.callsByAgent) ?? [];
+    for (const a of source) {
       const key = normalizeAgent(a.agentName);
       const id = nameToId.get(key);
       const groups = id !== undefined ? (agentGroups.get(id) ?? []) : [];
-      m.set(key, { calls: a.calls, inbound: a.inbound, outbound: a.outbound, groups });
+      const rich = a as { answered?: unknown; missed?: unknown; voicemail?: unknown; durationSeconds?: unknown; lastCallAt?: unknown };
+      m.set(key, {
+        calls: a.calls,
+        inbound: a.inbound,
+        outbound: a.outbound,
+        answered: typeof rich.answered === "number" ? rich.answered : 0,
+        missed: typeof rich.missed === "number" ? rich.missed : 0,
+        voicemail: typeof rich.voicemail === "number" ? rich.voicemail : 0,
+        durationSeconds: typeof rich.durationSeconds === "number" ? rich.durationSeconds : 0,
+        lastCallAt: typeof rich.lastCallAt === "string" ? rich.lastCallAt : null,
+        groups,
+      });
     }
     return m;
   }, [q.data]);
@@ -1293,12 +1317,12 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData }: { agentL
   const totCalls = totQuoCalls + totPbxCalls;
   const totOut = visible.reduce((s, a) => s + (getPhone(a)?.outbound ?? 0) + (getPbx(a)?.outbound ?? 0), 0);
   const totIn = visible.reduce((s, a) => s + (getPhone(a)?.inbound ?? 0) + (getPbx(a)?.inbound ?? 0), 0);
-  const totAns = visible.reduce((s, a) => s + (getPhone(a)?.answered ?? 0), 0);
-  const totMissed = visible.reduce((s, a) => s + (getPhone(a)?.missed ?? 0), 0);
-  const totVm = visible.reduce((s, a) => s + (getPhone(a)?.voicemail ?? 0), 0);
+  const totAns = visible.reduce((s, a) => s + (getPhone(a)?.answered ?? 0) + (getPbx(a)?.answered ?? 0), 0);
+  const totMissed = visible.reduce((s, a) => s + (getPhone(a)?.missed ?? 0) + (getPbx(a)?.missed ?? 0), 0);
+  const totVm = visible.reduce((s, a) => s + (getPhone(a)?.voicemail ?? 0) + (getPbx(a)?.voicemail ?? 0), 0);
   const totVmBrief = visible.reduce((s, a) => s + (getPhone(a)?.vmBrief ?? 0), 0);
   const totUniq = visible.reduce((s, a) => s + (getPhone(a)?.uniqueContacts ?? 0), 0);
-  const totSecs = visible.reduce((s, a) => s + (getPhone(a)?.seconds ?? 0), 0);
+  const totSecs = visible.reduce((s, a) => s + (getPhone(a)?.seconds ?? 0) + (getPbx(a)?.durationSeconds ?? 0), 0);
 
   return (
     <div className="space-y-4">
@@ -1341,6 +1365,13 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData }: { agentL
                 const combinedCalls = (ph?.calls ?? 0) + (px?.calls ?? 0);
                 const combinedOut = (ph?.outbound ?? 0) + (px?.outbound ?? 0);
                 const combinedIn = (ph?.inbound ?? 0) + (px?.inbound ?? 0);
+                const combinedAns = (ph?.answered ?? 0) + (px?.answered ?? 0);
+                const combinedMissed = (ph?.missed ?? 0) + (px?.missed ?? 0);
+                const combinedVm = (ph?.voicemail ?? 0) + (px?.voicemail ?? 0);
+                const combinedSecs = (ph?.seconds ?? 0) + (px?.durationSeconds ?? 0);
+                const lastCall = ph?.lastCallAt && px?.lastCallAt
+                  ? (ph.lastCallAt > px.lastCallAt ? ph.lastCallAt : px.lastCallAt)
+                  : (ph?.lastCallAt ?? px?.lastCallAt ?? null);
                 const phoneKey = directKeys ? normalizeAgent(agent) : sheetToPhoneKey(agent);
                 const isLive = liveAgents.has(phoneKey);
                 return (
@@ -1359,20 +1390,20 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData }: { agentL
                     <TableCell className="text-right">
                       {isLive
                         ? <span className="text-emerald-400 font-medium text-xs">On call</span>
-                        : <TimeSince isoStr={ph?.lastCallAt} />
+                        : <TimeSince isoStr={lastCall ?? undefined} />
                       }
                     </TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!combinedCalls ? "text-muted-foreground/40" : ""}`}>{combinedCalls || "—"}</TableCell>
                     {pbxData && <TableCell className={`text-right tabular-nums font-mono ${px?.calls ? "text-blue-400" : "text-muted-foreground/40"}`}>{px?.calls || "—"}</TableCell>}
                     <TableCell className={`text-right tabular-nums font-mono ${combinedOut ? "text-fuchsia-400" : "text-muted-foreground/40"}`}>{combinedOut || "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${combinedIn ? "text-cyan-400" : "text-muted-foreground/40"}`}>{combinedIn || "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.answered ? "text-emerald-400" : "text-muted-foreground/40"}`}>{ph?.answered ?? "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.missed ? "text-rose-400" : "text-muted-foreground/40"}`}>{ph?.missed ?? "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.voicemail ? "text-amber-400" : "text-muted-foreground/40"}`}>{ph?.voicemail ?? "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.vmBrief ? "text-orange-400" : "text-muted-foreground/40"}`}>{ph?.vmBrief ?? "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.uniqueContacts ? "text-sky-400" : "text-muted-foreground/40"}`}>{ph?.uniqueContacts ?? "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${!ph?.seconds ? "text-muted-foreground/40" : ""}`}>{ph?.seconds ? formatDuration(ph.seconds) : "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${combinedCalls ? "text-amber-400" : "text-muted-foreground/40"}`}>{(ph || px) ? responseRate(ph?.answered ?? 0, combinedCalls) : "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${combinedAns ? "text-emerald-400" : "text-muted-foreground/40"}`}>{combinedAns || "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${combinedMissed ? "text-rose-400" : "text-muted-foreground/40"}`}>{combinedMissed || "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${combinedVm ? "text-amber-400" : "text-muted-foreground/40"}`}>{combinedVm || "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.vmBrief ? "text-orange-400" : "text-muted-foreground/40"}`}>{ph?.vmBrief || "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.uniqueContacts ? "text-sky-400" : "text-muted-foreground/40"}`}>{ph?.uniqueContacts || "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${!combinedSecs ? "text-muted-foreground/40" : ""}`}>{combinedSecs ? formatDuration(combinedSecs) : "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${combinedCalls ? "text-amber-400" : "text-muted-foreground/40"}`}>{(ph || px) ? responseRate(combinedAns, combinedCalls) : "—"}</TableCell>
                   </TableRow>
                 );
               })}
