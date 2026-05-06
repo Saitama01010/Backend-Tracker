@@ -1157,7 +1157,30 @@ function useLiveCalls(): Set<string> {
   return useMemo(() => new Set((q.data?.active ?? []).map(normalizeAgent)), [q.data]);
 }
 
-function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics>; directKeys?: boolean }) {
+type PbxCalls = Map<string, { calls: number; inbound: number; outbound: number }>;
+
+function useVosCalls(): PbxCalls {
+  const q = useQuery<{ dashboard: { callsByAgent: { agentName: string; calls: number; inbound: number; outbound: number }[] } }>({
+    queryKey: ["vosStats"],
+    queryFn: async () => {
+      const r = await fetch("/api/vos/stats");
+      if (!r.ok) return { dashboard: { callsByAgent: [] } };
+      return r.json();
+    },
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+  });
+  return useMemo(() => {
+    const m: PbxCalls = new Map();
+    for (const a of q.data?.dashboard.callsByAgent ?? []) {
+      m.set(normalizeAgent(a.agentName), { calls: a.calls, inbound: a.inbound, outbound: a.outbound });
+    }
+    return m;
+  }, [q.data]);
+}
+
+function ByCallStatsView({ agentList, phoneData, directKeys, pbxData }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics>; directKeys?: boolean; pbxData?: PbxCalls }) {
   const liveAgents = useLiveCalls();
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "__calls__", dir: "desc" });
@@ -1165,18 +1188,20 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
   const getPhone = (agent: string) =>
     directKeys ? phoneData.get(normalizeAgent(agent)) : phoneData.get(sheetToPhoneKey(agent));
 
+  const getPbx = (agent: string) => pbxData?.get(normalizeAgent(agent));
+
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const withCalls = agentList.filter((a) => (getPhone(a)?.calls ?? 0) > 0);
+    const withCalls = agentList.filter((a) => (getPhone(a)?.calls ?? 0) > 0 || (getPbx(a)?.calls ?? 0) > 0);
     const list = q ? withCalls.filter((a) => a.toLowerCase().includes(q)) : withCalls;
     return [...list].sort((a, b) => {
       const phA = getPhone(a);
       const phB = getPhone(b);
       let av: number = 0;
       let bv: number = 0;
-      if (sort.col === "__calls__") { av = phA?.calls ?? 0; bv = phB?.calls ?? 0; }
-      else if (sort.col === "__outbound__") { av = phA?.outbound ?? 0; bv = phB?.outbound ?? 0; }
-      else if (sort.col === "__inbound__") { av = phA?.inbound ?? 0; bv = phB?.inbound ?? 0; }
+      if (sort.col === "__calls__") { av = (phA?.calls ?? 0) + (getPbx(a)?.calls ?? 0); bv = (phB?.calls ?? 0) + (getPbx(b)?.calls ?? 0); }
+      else if (sort.col === "__outbound__") { av = (phA?.outbound ?? 0) + (getPbx(a)?.outbound ?? 0); bv = (phB?.outbound ?? 0) + (getPbx(b)?.outbound ?? 0); }
+      else if (sort.col === "__inbound__") { av = (phA?.inbound ?? 0) + (getPbx(a)?.inbound ?? 0); bv = (phB?.inbound ?? 0) + (getPbx(b)?.inbound ?? 0); }
       else if (sort.col === "__answered__") { av = phA?.answered ?? 0; bv = phB?.answered ?? 0; }
       else if (sort.col === "__missed__") { av = phA?.missed ?? 0; bv = phB?.missed ?? 0; }
       else if (sort.col === "__vm__") { av = phA?.voicemail ?? 0; bv = phB?.voicemail ?? 0; }
@@ -1187,7 +1212,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
       else if (sort.col === "__agent__") { return sort.dir === "asc" ? a.localeCompare(b) : b.localeCompare(a); }
       return sort.dir === "asc" ? av - bv : bv - av;
     });
-  }, [agentList, search, sort, phoneData]);
+  }, [agentList, search, sort, phoneData, pbxData]);
 
   function toggle(col: string) {
     setSort((s) => s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: col === "__agent__" ? "asc" : "desc" });
@@ -1220,9 +1245,11 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
     );
   }
 
-  const totCalls = visible.reduce((s, a) => s + (getPhone(a)?.calls ?? 0), 0);
-  const totOut = visible.reduce((s, a) => s + (getPhone(a)?.outbound ?? 0), 0);
-  const totIn = visible.reduce((s, a) => s + (getPhone(a)?.inbound ?? 0), 0);
+  const totQuoCalls = visible.reduce((s, a) => s + (getPhone(a)?.calls ?? 0), 0);
+  const totPbxCalls = visible.reduce((s, a) => s + (getPbx(a)?.calls ?? 0), 0);
+  const totCalls = totQuoCalls + totPbxCalls;
+  const totOut = visible.reduce((s, a) => s + (getPhone(a)?.outbound ?? 0) + (getPbx(a)?.outbound ?? 0), 0);
+  const totIn = visible.reduce((s, a) => s + (getPhone(a)?.inbound ?? 0) + (getPbx(a)?.inbound ?? 0), 0);
   const totAns = visible.reduce((s, a) => s + (getPhone(a)?.answered ?? 0), 0);
   const totMissed = visible.reduce((s, a) => s + (getPhone(a)?.missed ?? 0), 0);
   const totVm = visible.reduce((s, a) => s + (getPhone(a)?.voicemail ?? 0), 0);
@@ -1246,9 +1273,10 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
               <TableRow>
                 <Th id="__agent__" label="Agent" align="left" />
                 <TableHead className="whitespace-nowrap text-right text-violet-400">Last call</TableHead>
-                <Th id="__calls__" label="Calls" tip="Total number of calls (inbound + outbound) in the selected period." />
-                <Th id="__outbound__" label="Outbound" tone="text-fuchsia-400" tip="Calls the agent placed to customers." />
-                <Th id="__inbound__" label="Inbound" tone="text-cyan-400" tip="Calls received from customers." />
+                <Th id="__calls__" label="Calls" tip="Total calls across all phone systems (Quo + PBX) in the selected period." />
+                {pbxData && <Th id="__pbx__" label="PBX" tone="text-blue-400" tip="Calls via the PBX phone system only." />}
+                <Th id="__outbound__" label="Outbound" tone="text-fuchsia-400" tip="Calls the agent placed to customers (all systems)." />
+                <Th id="__inbound__" label="Inbound" tone="text-cyan-400" tip="Calls received from customers (all systems)." />
                 <Th id="__answered__" label="Answered" tone="text-emerald-400" tip="Calls where a real conversation happened. Inbound: agent picked up. Outbound: customer stayed on for 60+ seconds." />
                 <Th id="__missed__" label="Missed" tone="text-rose-400" tip="Calls where no one answered at all — phone rang but nothing picked up." />
                 <Th id="__vm__" label="VM Left" tone="text-amber-400" tip="Outbound calls where the agent left a voicemail message (20–59s after VM answered)." />
@@ -1261,11 +1289,15 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
             <TableBody>
               {visible.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={12} className="text-center py-12 text-muted-foreground">No agents match the current filters.</TableCell>
+                  <TableCell colSpan={pbxData ? 13 : 12} className="text-center py-12 text-muted-foreground">No agents match the current filters.</TableCell>
                 </TableRow>
               )}
               {visible.map((agent) => {
                 const ph = getPhone(agent);
+                const px = getPbx(agent);
+                const combinedCalls = (ph?.calls ?? 0) + (px?.calls ?? 0);
+                const combinedOut = (ph?.outbound ?? 0) + (px?.outbound ?? 0);
+                const combinedIn = (ph?.inbound ?? 0) + (px?.inbound ?? 0);
                 const phoneKey = directKeys ? normalizeAgent(agent) : sheetToPhoneKey(agent);
                 const isLive = liveAgents.has(phoneKey);
                 return (
@@ -1287,16 +1319,17 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                         : <TimeSince isoStr={ph?.lastCallAt} />
                       }
                     </TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${!ph?.calls ? "text-muted-foreground/40" : ""}`}>{ph?.calls ?? "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.outbound ? "text-fuchsia-400" : "text-muted-foreground/40"}`}>{ph?.outbound ?? "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.inbound ? "text-cyan-400" : "text-muted-foreground/40"}`}>{ph?.inbound ?? "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${!combinedCalls ? "text-muted-foreground/40" : ""}`}>{combinedCalls || "—"}</TableCell>
+                    {pbxData && <TableCell className={`text-right tabular-nums font-mono ${px?.calls ? "text-blue-400" : "text-muted-foreground/40"}`}>{px?.calls || "—"}</TableCell>}
+                    <TableCell className={`text-right tabular-nums font-mono ${combinedOut ? "text-fuchsia-400" : "text-muted-foreground/40"}`}>{combinedOut || "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${combinedIn ? "text-cyan-400" : "text-muted-foreground/40"}`}>{combinedIn || "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.answered ? "text-emerald-400" : "text-muted-foreground/40"}`}>{ph?.answered ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.missed ? "text-rose-400" : "text-muted-foreground/40"}`}>{ph?.missed ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.voicemail ? "text-amber-400" : "text-muted-foreground/40"}`}>{ph?.voicemail ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.vmBrief ? "text-orange-400" : "text-muted-foreground/40"}`}>{ph?.vmBrief ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${ph?.uniqueContacts ? "text-sky-400" : "text-muted-foreground/40"}`}>{ph?.uniqueContacts ?? "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!ph?.seconds ? "text-muted-foreground/40" : ""}`}>{ph?.seconds ? formatDuration(ph.seconds) : "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.calls ? "text-amber-400" : "text-muted-foreground/40"}`}>{ph ? responseRate(ph.answered, ph.calls) : "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${combinedCalls ? "text-amber-400" : "text-muted-foreground/40"}`}>{(ph || px) ? responseRate(ph?.answered ?? 0, combinedCalls) : "—"}</TableCell>
                   </TableRow>
                 );
               })}
@@ -1307,6 +1340,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys }: { agentList: stri
                   <TableCell className="font-bold">Whole team</TableCell>
                   <TableCell />
                   <TableCell className="text-right tabular-nums font-mono font-bold">{totCalls || "—"}</TableCell>
+                  {pbxData && <TableCell className="text-right tabular-nums font-mono font-bold text-blue-400">{totPbxCalls || "—"}</TableCell>}
                   <TableCell className="text-right tabular-nums font-mono font-bold text-fuchsia-400">{totOut || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{totIn || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totAns || "—"}</TableCell>
@@ -1560,6 +1594,7 @@ function TeamPanel({
   mode: TeamMode;
   statusQueryFn?: () => Promise<SheetData>;
 }) {
+  const pbxData = useVosCalls();
   const statusQ = useQuery({
     queryKey: ["status", sheetKey],
     queryFn: statusQueryFn ?? (() => fetchHeaderCsv(urls.status)),
@@ -1769,7 +1804,7 @@ function TeamPanel({
                 )}
               </TabsList>
               <TabsContent value="call">
-                <ByCallStatsView agentList={callAgentList} phoneData={phoneData} />
+                <ByCallStatsView agentList={callAgentList} phoneData={phoneData} pbxData={pbxData} />
               </TabsContent>
               {aggregated && !("error" in aggregated) && (
                 <>
@@ -1819,6 +1854,7 @@ function TeamPanel({
 const CS_AGENTS = ["Nora Adam", "Leo Carter", "Carla Bennet"];
 
 function CSPanel() {
+  const pbxData = useVosCalls();
   const todayIso = toIsoDate(new Date());
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
@@ -1927,7 +1963,7 @@ function CSPanel() {
           <StatTile label="Response rate" value={responseRate(totals.answered, totals.calls)} tone="amber" />
         </div>
 
-        <ByCallStatsView agentList={allAgents} phoneData={phoneData} />
+        <ByCallStatsView agentList={allAgents} phoneData={phoneData} pbxData={pbxData} />
       </CardContent>
     </Card>
   );
@@ -2846,16 +2882,23 @@ function VoSPanel() {
   const totCalls = visible.reduce((s, a) => s + a.calls, 0);
   const totIn = visible.reduce((s, a) => s + a.inbound, 0);
   const totOut = visible.reduce((s, a) => s + a.outbound, 0);
+  const totAvgDur = totCalls > 0 ? Math.round(visible.reduce((s, a) => s + a.avgDuration * a.calls, 0) / totCalls) : 0;
+  const visibleNameSet = useMemo(() => new Set(visible.map((a) => a.agentName.trim().toLowerCase())), [visible]);
+  const filteredActiveCalls = (liveQ.data?.liveCalls ?? []).filter((c) => c.agentName && visibleNameSet.has(c.agentName.trim().toLowerCase())).length;
+
+  const tileTotals = groupFilter === "All" && d
+    ? { activeCalls: d.activeCalls, totalCalls: d.totalCallsToday, inbound: d.totalInboundToday, outbound: d.totalOutboundToday, missed: d.missedCallsToday, avgDuration: d.avgDurationToday }
+    : { activeCalls: filteredActiveCalls, totalCalls: totCalls, inbound: totIn, outbound: totOut, missed: null as number | null, avgDuration: totAvgDur };
 
   return (
     <Card>
       <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-4">
         <div>
           <CardTitle className="text-xl flex items-center gap-2">
-            VoSLogic
+            PBX
             <Badge className="text-[10px] px-1.5 py-0.5 bg-blue-500/20 text-blue-300 border-blue-500/30">Live</Badge>
           </CardTitle>
-          <p className="text-sm text-muted-foreground mt-1">Real-time call stats from VoSLogic phone system · refreshes every 30s</p>
+          <p className="text-sm text-muted-foreground mt-1">Real-time call stats from PBX phone system · refreshes every 30s</p>
         </div>
         <Button variant="outline" size="sm" onClick={() => { q.refetch(); liveQ.refetch(); }} disabled={isFetching}>
           <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`} />Refresh
@@ -2871,12 +2914,12 @@ function VoSPanel() {
         {d && (
           <>
             <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
-              <StatTile label="Active calls" value={d.activeCalls} icon={<PhoneCall className="h-3.5 w-3.5" />} tone="emerald" />
-              <StatTile label="Total today" value={d.totalCallsToday} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
-              <StatTile label="Inbound today" value={d.totalInboundToday} icon={<PhoneIncoming className="h-3.5 w-3.5" />} tone="sky" />
-              <StatTile label="Outbound today" value={d.totalOutboundToday} icon={<PhoneOutgoing className="h-3.5 w-3.5" />} tone="violet" />
-              <StatTile label="Missed today" value={d.missedCallsToday} icon={<PhoneMissed className="h-3.5 w-3.5" />} tone="rose" />
-              <StatTile label="Avg duration" value={formatDuration(d.avgDurationToday)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
+              <StatTile label="Active calls" value={tileTotals.activeCalls} icon={<PhoneCall className="h-3.5 w-3.5" />} tone="emerald" />
+              <StatTile label="Total today" value={tileTotals.totalCalls} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
+              <StatTile label="Inbound today" value={tileTotals.inbound} icon={<PhoneIncoming className="h-3.5 w-3.5" />} tone="sky" />
+              <StatTile label="Outbound today" value={tileTotals.outbound} icon={<PhoneOutgoing className="h-3.5 w-3.5" />} tone="violet" />
+              {tileTotals.missed !== null && <StatTile label="Missed today" value={tileTotals.missed} icon={<PhoneMissed className="h-3.5 w-3.5" />} tone="rose" />}
+              <StatTile label="Avg duration" value={formatDuration(tileTotals.avgDuration)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
             </div>
 
             {(liveQ.data?.liveCalls ?? []).length > 0 && (
@@ -3081,7 +3124,7 @@ function Dashboard() {
               <TabsTrigger value="nsf" data-testid="tab-nsf">NSF Team</TabsTrigger>
               <TabsTrigger value="cs" data-testid="tab-cs">CS Team</TabsTrigger>
               <TabsTrigger value="quo-lines" data-testid="tab-quo-lines">Quo Lines</TabsTrigger>
-              <TabsTrigger value="vos" data-testid="tab-vos">VoSLogic</TabsTrigger>
+              <TabsTrigger value="vos" data-testid="tab-vos">PBX</TabsTrigger>
             </TabsList>
             <TabsContent value="retention">
               <TeamPanel urls={RETENTION} sheetKey="retention" label="Retention Team" mode="retention" statusQueryFn={fetchRetentionCombinedSheet} />
