@@ -1773,10 +1773,9 @@ function TeamPanel({
   }, [aggregated]);
 
   const phoneTotals = useMemo(() => {
-    let calls = 0;
-    let seconds = 0;
-    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; }
-    return { calls, seconds };
+    let calls = 0, seconds = 0, answered = 0;
+    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; }
+    return { calls, seconds, answered };
   }, [phoneData]);
 
   // Build the "By call" agent list:
@@ -1824,6 +1823,20 @@ function TeamPanel({
 
     return result;
   }, [aggregated, phoneData, mode, pbxData]);
+
+  const pbxTotals = useMemo(() => {
+    if (!pbxData) return { calls: 0, answered: 0, seconds: 0 };
+    let calls = 0, answered = 0, seconds = 0;
+    for (const agent of callAgentList) {
+      const norm = normalizeAgent(agent);
+      const pbxKey = SHEET_TO_PBX[norm] ?? norm;
+      const px = pbxData.get(pbxKey);
+      calls += px?.calls ?? 0;
+      answered += px?.answered ?? 0;
+      seconds += px?.durationSeconds ?? 0;
+    }
+    return { calls, answered, seconds };
+  }, [pbxData, callAgentList]);
 
   function refresh() {
     statusQ.refetch();
@@ -1873,14 +1886,24 @@ function TeamPanel({
               )}
               <StatTile
                 label="Total calls"
-                value={phoneTotals.calls.toLocaleString()}
+                value={(phoneTotals.calls + pbxTotals.calls).toLocaleString()}
                 icon={<Phone className="h-3.5 w-3.5" />}
                 tone="sky"
               />
               <StatTile
+                label="Answered"
+                value={(phoneTotals.answered + pbxTotals.answered).toLocaleString()}
+                tone="emerald"
+              />
+              <StatTile
                 label="Time on calls"
-                value={formatHours(phoneTotals.seconds)}
+                value={formatHours(phoneTotals.seconds + pbxTotals.seconds)}
                 icon={<Clock className="h-3.5 w-3.5" />}
+                tone="amber"
+              />
+              <StatTile
+                label="Response rate"
+                value={responseRate(phoneTotals.answered + pbxTotals.answered, phoneTotals.calls + pbxTotals.calls)}
                 tone="amber"
               />
               {aggregated && !("error" in aggregated) && (mode === "nsf" ? (
@@ -2052,15 +2075,18 @@ function CSPanel() {
   }, [phoneData]);
 
   // PBX call totals for agents in allAgents (each agent looked up by direct or alias key)
-  const pbxTotalCalls = useMemo(() => {
-    if (!pbxData) return 0;
-    let total = 0;
+  const pbxTotals = useMemo(() => {
+    if (!pbxData) return { calls: 0, answered: 0, seconds: 0 };
+    let calls = 0, answered = 0, seconds = 0;
     for (const agent of allAgents) {
       const norm = normalizeAgent(agent);
       const pbxKey = SHEET_TO_PBX[norm] ?? norm;
-      total += pbxData.get(pbxKey)?.calls ?? 0;
+      const px = pbxData.get(pbxKey);
+      calls += px?.calls ?? 0;
+      answered += px?.answered ?? 0;
+      seconds += px?.durationSeconds ?? 0;
     }
-    return total;
+    return { calls, answered, seconds };
   }, [pbxData, allAgents]);
 
   function refresh() { phoneQ.refetch(); }
@@ -2086,11 +2112,11 @@ function CSPanel() {
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <StatTile label="Agents" value={allAgents.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
-          <StatTile label="Total calls" value={(totals.calls + pbxTotalCalls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
-          <StatTile label="Answered" value={totals.answered.toLocaleString()} tone="emerald" />
+          <StatTile label="Total calls" value={(totals.calls + pbxTotals.calls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
+          <StatTile label="Answered" value={(totals.answered + pbxTotals.answered).toLocaleString()} tone="emerald" />
           <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
-          <StatTile label="Time on calls" value={formatHours(totals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
-          <StatTile label="Response rate" value={responseRate(totals.answered, totals.calls)} tone="amber" />
+          <StatTile label="Time on calls" value={formatHours(totals.seconds + pbxTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
+          <StatTile label="Response rate" value={responseRate(totals.answered + pbxTotals.answered, totals.calls + pbxTotals.calls)} tone="amber" />
         </div>
 
         <ByCallStatsView agentList={allAgents} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} />
