@@ -2800,7 +2800,7 @@ function Dashboard() {
 // ─── Attendance ────────────────────────────────────────────────────────────────
 
 interface AttMember { id: number; name: string; shift: string; department: string; active: boolean; }
-interface AttRecord { id: number; memberId: number; date: string; status: string; note: string | null; }
+interface AttRecord { id: number; memberId: number; date: string; status: string; note: string | null; coaching: boolean; }
 interface AttData { members: AttMember[]; records: AttRecord[]; }
 
 const ATT_STATUS = [
@@ -2813,7 +2813,7 @@ const ATT_STATUS = [
   { s: "",     label: "Clear",     cell: "",                                    badge: "text-zinc-500" },
 ] as const;
 
-function AttCell({ status, note, weekend }: { status: string; note?: string | null; weekend?: boolean }) {
+function AttCell({ status, note, coaching, weekend }: { status: string; note?: string | null; coaching?: boolean; weekend?: boolean }) {
   const cfg = ATT_STATUS.find((x) => x.s === status);
   if (!status) return weekend
     ? <span className="text-zinc-800 text-xs font-medium select-none">—</span>
@@ -2823,6 +2823,7 @@ function AttCell({ status, note, weekend }: { status: string; note?: string | nu
     <span className={`relative inline-flex items-center justify-center px-1.5 h-5 rounded text-[10px] font-bold whitespace-nowrap ${cfg?.cell ?? ""}`}>
       {label}
       {note && <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-red-500 ring-1 ring-zinc-900" />}
+      {coaching && <span className="absolute -bottom-1 -right-1 w-2 h-2 rounded-full bg-indigo-400 ring-1 ring-zinc-900" title="Got coaching" />}
     </span>
   );
 }
@@ -2841,6 +2842,7 @@ function AttendancePanel() {
   const [editCell, setEditCell] = useState<{ memberId: number; date: string; name: string } | null>(null);
   const [editStatus, setEditStatus] = useState("");
   const [editNote, setEditNote] = useState("");
+  const [editCoaching, setEditCoaching] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState("");
   const [newShift, setNewShift] = useState("");
@@ -2857,9 +2859,13 @@ function AttendancePanel() {
   const dateCols = useMemo(() => {
     const cols: string[] = [];
     const d = new Date(monthStart);
-    while (d <= monthEnd) { cols.push(d.toISOString().slice(0, 10)); d.setDate(d.getDate() + 1); }
+    while (d <= monthEnd) {
+      const iso = d.toISOString().slice(0, 10);
+      if (iso <= tomorrowStr) cols.push(iso);
+      d.setDate(d.getDate() + 1);
+    }
     return cols;
-  }, [monthOff]);
+  }, [monthOff, tomorrowStr]);
 
   const qc = useQueryClient();
   const { data, isLoading } = useQuery<AttData>({
@@ -2918,10 +2924,10 @@ function AttendancePanel() {
       .sort((a, b) => a.dept.localeCompare(b.dept));
   }, [data, recordMap, todayStr]);
 
-  async function upsert(memberId: number, date: string, status: string, note: string) {
+  async function upsert(memberId: number, date: string, status: string, note: string, coaching: boolean) {
     await fetch("/api/attendance/record", {
       method: "PUT", headers: authHeaders(token),
-      body: JSON.stringify({ memberId, date, status, note: note || null }),
+      body: JSON.stringify({ memberId, date, status, note: note || null, coaching }),
     });
     qc.invalidateQueries({ queryKey: ["attendance"] });
   }
@@ -2931,11 +2937,12 @@ function AttendancePanel() {
     setEditCell({ memberId: m.id, date, name: m.name });
     setEditStatus(rec?.status ?? "");
     setEditNote(rec?.note ?? "");
+    setEditCoaching(rec?.coaching ?? false);
   }
 
   async function saveCell() {
     if (!editCell) return;
-    await upsert(editCell.memberId, editCell.date, editStatus, editNote);
+    await upsert(editCell.memberId, editCell.date, editStatus, editNote, editCoaching);
     setEditCell(null);
   }
 
@@ -3157,7 +3164,7 @@ function AttendancePanel() {
                             ${!canEdit ? "opacity-20" : ""}`}
                           style={isWknd && !isToday && !isTomorrow ? { background: "repeating-linear-gradient(135deg, #0f0f12 0px, #0f0f12 4px, #16141a 4px, #16141a 8px)" } : undefined}
                         >
-                          <AttCell status={rec?.status ?? ""} note={rec?.note} weekend={isWknd && !isTomorrow} />
+                          <AttCell status={rec?.status ?? ""} note={rec?.note} coaching={rec?.coaching} weekend={isWknd && !isTomorrow} />
                         </td>
                       );
                     })}
@@ -3197,6 +3204,7 @@ function AttendancePanel() {
           </span>
         ))}
         <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> Has note</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-indigo-400 inline-block" /> Got coaching</span>
         <span className="ml-auto italic">Click any past cell to mark attendance or add a note</span>
       </div>
 
@@ -3232,6 +3240,19 @@ function AttendancePanel() {
                 className="h-8 text-sm"
                 onKeyDown={(e) => e.key === "Enter" && saveCell()}
               />
+            </div>
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1.5 block">Coaching</Label>
+              <button
+                onClick={() => setEditCoaching((v) => !v)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded border text-xs font-medium transition-all w-full
+                  ${editCoaching
+                    ? "bg-indigo-500/25 text-indigo-300 border-indigo-500/50 ring-2 ring-indigo-400/40"
+                    : "bg-zinc-800/60 text-zinc-400 border-zinc-700/50 hover:opacity-90"}`}
+              >
+                <span className={`w-2 h-2 rounded-full ${editCoaching ? "bg-indigo-400" : "bg-zinc-600"}`} />
+                {editCoaching ? "Got coaching today" : "No coaching"}
+              </button>
             </div>
             <div className="flex gap-2 justify-end pt-1">
               <Button size="sm" variant="ghost" onClick={() => setEditCell(null)}>Cancel</Button>

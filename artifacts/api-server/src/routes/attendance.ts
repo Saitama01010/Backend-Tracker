@@ -115,16 +115,16 @@ router.patch("/attendance/members/:id", async (req, res) => {
 
 router.put("/attendance/record", async (req, res) => {
   try {
-    const { memberId, date, status, note } = req.body as {
-      memberId: number; date: string; status: string; note?: string;
+    const { memberId, date, status, note, coaching } = req.body as {
+      memberId: number; date: string; status: string; note?: string; coaching?: boolean;
     };
     if (!memberId || !date) return res.status(400).json({ error: "memberId and date required" });
     const [record] = await db
       .insert(attendanceRecordsTable)
-      .values({ memberId, date, status: status ?? "", note: note ?? null })
+      .values({ memberId, date, status: status ?? "", note: note ?? null, coaching: coaching ?? false })
       .onConflictDoUpdate({
         target: [attendanceRecordsTable.memberId, attendanceRecordsTable.date],
-        set: { status: status ?? "", note: note ?? null, updatedAt: new Date() },
+        set: { status: status ?? "", note: note ?? null, coaching: coaching ?? false, updatedAt: new Date() },
       })
       .returning();
     res.json(record);

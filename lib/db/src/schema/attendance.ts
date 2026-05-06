@@ -25,6 +25,7 @@ export const attendanceRecordsTable = pgTable(
     date: text("date").notNull(),
     status: text("status").notNull().default(""),
     note: text("note"),
+    coaching: boolean("coaching").notNull().default(false),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },
   (t) => [unique("attendance_records_member_date").on(t.memberId, t.date)],
