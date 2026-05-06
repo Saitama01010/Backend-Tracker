@@ -2681,6 +2681,317 @@ function QuoLinesPanel() {
   );
 }
 
+// ─── VoSLogic Panel ────────────────────────────────────────────────────────────
+
+interface VosAgentStat {
+  agentName: string;
+  calls: number;
+  inbound: number;
+  outbound: number;
+  avgDuration: number;
+}
+
+interface VosLiveCall {
+  id: number;
+  direction: string;
+  agentName: string | null;
+  phoneLabel: string;
+  ringGroupName: string | null;
+  duration: number;
+  startedAt: string;
+}
+
+interface VosAgentStatus {
+  id: number;
+  name: string;
+  extension: string;
+  status: string;
+  callsToday: number;
+}
+
+interface VosRingGroup {
+  id: number;
+  name: string;
+  agentIds: number[];
+}
+
+interface VosAgent {
+  id: number;
+  name: string;
+  extension: string;
+  status: string;
+  ringGroupIds: number[];
+}
+
+interface VosDashboardData {
+  activeCalls: number;
+  totalAgents: number;
+  onlineAgents: number;
+  availableAgents: number;
+  totalCallsToday: number;
+  avgDurationToday: number;
+  totalInboundToday: number;
+  totalOutboundToday: number;
+  missedCallsToday: number;
+  callsByAgent: VosAgentStat[];
+  liveCalls: VosLiveCall[];
+  agentStatuses: VosAgentStatus[];
+}
+
+interface VosStatsResponse {
+  dashboard: VosDashboardData;
+  agents: VosAgent[];
+  ringGroups: VosRingGroup[];
+}
+
+function VoSPanel() {
+  const [search, setSearch] = useState("");
+  const [groupFilter, setGroupFilter] = useState("All");
+  const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "calls", dir: "desc" });
+
+  const q = useQuery<VosStatsResponse>({
+    queryKey: ["vosStats"],
+    queryFn: async () => {
+      const r = await fetch("/api/vos/stats");
+      if (!r.ok) throw new Error("Failed to load VoSLogic stats");
+      return r.json() as Promise<VosStatsResponse>;
+    },
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+  });
+
+  const liveQ = useQuery<{ liveCalls: VosLiveCall[]; agentStatuses: VosAgentStatus[] }>({
+    queryKey: ["vosLive"],
+    queryFn: async () => {
+      const r = await fetch("/api/vos/live");
+      if (!r.ok) return { liveCalls: [], agentStatuses: [] };
+      return r.json();
+    },
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: true,
+  });
+
+  const liveAgentNames = useMemo(() => {
+    const s = new Set<string>();
+    for (const c of liveQ.data?.liveCalls ?? []) if (c.agentName) s.add(c.agentName.trim().toLowerCase());
+    for (const a of liveQ.data?.agentStatuses ?? []) if (a.status === "on_call") s.add(a.name.trim().toLowerCase());
+    return s;
+  }, [liveQ.data]);
+
+  const agentGroupMap = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const g of q.data?.ringGroups ?? []) for (const id of g.agentIds) m.set(id, g.name);
+    return m;
+  }, [q.data]);
+
+  const agentIdMap = useMemo(() => {
+    const m = new Map<string, VosAgent>();
+    for (const a of q.data?.agents ?? []) m.set(a.name.trim().toLowerCase(), a);
+    return m;
+  }, [q.data]);
+
+  const groups = useMemo(() => {
+    const s = new Set<string>(["All"]);
+    for (const g of q.data?.ringGroups ?? []) s.add(g.name);
+    return [...s];
+  }, [q.data]);
+
+  function toggle(col: string) {
+    setSort((s) => s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: "desc" });
+  }
+
+  function SortTh({ col, label, tone = "" }: { col: string; label: string; tone?: string }) {
+    const active = sort.col === col;
+    return (
+      <TableHead className={`whitespace-nowrap text-right ${tone}`}>
+        <button type="button" onClick={() => toggle(col)}
+          className={`inline-flex items-center gap-1 flex-row-reverse font-semibold hover:text-foreground ${active ? "text-violet-300" : "text-muted-foreground"}`}>
+          {label}
+          {active ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
+        </button>
+      </TableHead>
+    );
+  }
+
+  const visible = useMemo(() => {
+    const stats = q.data?.dashboard.callsByAgent ?? [];
+    const q2 = search.trim().toLowerCase();
+    let list = stats.filter((a) => a.calls > 0);
+    if (q2) list = list.filter((a) => a.agentName.toLowerCase().includes(q2));
+    if (groupFilter !== "All") {
+      const group = q.data?.ringGroups.find((g) => g.name === groupFilter);
+      if (group) {
+        const ids = new Set(group.agentIds);
+        list = list.filter((a) => {
+          const agent = agentIdMap.get(a.agentName.trim().toLowerCase());
+          return agent && ids.has(agent.id);
+        });
+      }
+    }
+    return [...list].sort((a, b) => {
+      let av = 0, bv = 0;
+      if (sort.col === "calls") { av = a.calls; bv = b.calls; }
+      else if (sort.col === "inbound") { av = a.inbound; bv = b.inbound; }
+      else if (sort.col === "outbound") { av = a.outbound; bv = b.outbound; }
+      else if (sort.col === "avgDuration") { av = a.avgDuration; bv = b.avgDuration; }
+      else if (sort.col === "name") return sort.dir === "asc" ? a.agentName.localeCompare(b.agentName) : b.agentName.localeCompare(a.agentName);
+      return sort.dir === "asc" ? av - bv : bv - av;
+    });
+  }, [q.data, search, groupFilter, sort, agentIdMap]);
+
+  const d = q.data?.dashboard;
+  const isFetching = q.isFetching || liveQ.isFetching;
+  const totCalls = visible.reduce((s, a) => s + a.calls, 0);
+  const totIn = visible.reduce((s, a) => s + a.inbound, 0);
+  const totOut = visible.reduce((s, a) => s + a.outbound, 0);
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-4">
+        <div>
+          <CardTitle className="text-xl flex items-center gap-2">
+            VoSLogic
+            <Badge className="text-[10px] px-1.5 py-0.5 bg-blue-500/20 text-blue-300 border-blue-500/30">Live</Badge>
+          </CardTitle>
+          <p className="text-sm text-muted-foreground mt-1">Real-time call stats from VoSLogic phone system · refreshes every 30s</p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => { q.refetch(); liveQ.refetch(); }} disabled={isFetching}>
+          <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`} />Refresh
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        {q.isLoading && <Skeleton className="h-40 w-full" />}
+        {q.error && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+            {String(q.error)}
+          </div>
+        )}
+        {d && (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+              <StatTile label="Active calls" value={d.activeCalls} icon={<PhoneCall className="h-3.5 w-3.5" />} tone="emerald" />
+              <StatTile label="Total today" value={d.totalCallsToday} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
+              <StatTile label="Inbound today" value={d.totalInboundToday} icon={<PhoneIncoming className="h-3.5 w-3.5" />} tone="sky" />
+              <StatTile label="Outbound today" value={d.totalOutboundToday} icon={<PhoneOutgoing className="h-3.5 w-3.5" />} tone="violet" />
+              <StatTile label="Missed today" value={d.missedCallsToday} icon={<PhoneMissed className="h-3.5 w-3.5" />} tone="rose" />
+              <StatTile label="Avg duration" value={formatDuration(d.avgDurationToday)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
+            </div>
+
+            {(liveQ.data?.liveCalls ?? []).length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Live calls right now</p>
+                <div className="flex flex-wrap gap-2">
+                  {(liveQ.data?.liveCalls ?? []).map((c) => (
+                    <div key={c.id} className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-xs">
+                      <span className="relative flex h-2 w-2 shrink-0">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                      </span>
+                      <span className="text-emerald-300 font-medium">{c.agentName ?? "Unknown"}</span>
+                      <span className="text-zinc-500">·</span>
+                      <span className="text-zinc-400">{c.direction === "outbound" ? "↑" : "↓"} {formatDuration(c.duration)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="relative w-full sm:max-w-xs">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input placeholder="Search agents…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+              </div>
+              <div className="flex gap-1.5 flex-wrap">
+                {groups.map((g) => (
+                  <button key={g} onClick={() => setGroupFilter(g)}
+                    className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${groupFilter === g ? "bg-violet-600 text-white" : "text-muted-foreground hover:text-white hover:bg-white/5"}`}>
+                    {g}
+                  </button>
+                ))}
+              </div>
+              <Badge variant="secondary" className="font-mono ml-auto">{visible.length} agents</Badge>
+            </div>
+
+            <div className="rounded-lg border bg-card overflow-hidden">
+              <div className="overflow-x-auto max-h-[60vh]">
+                <Table>
+                  <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+                    <TableRow>
+                      <TableHead className="text-left text-muted-foreground">
+                        <button type="button" onClick={() => toggle("name")}
+                          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${sort.col === "name" ? "text-violet-300" : "text-muted-foreground"}`}>
+                          Agent {sort.col === "name" ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
+                        </button>
+                      </TableHead>
+                      <TableHead className="text-center text-xs text-muted-foreground font-medium">Status</TableHead>
+                      <SortTh col="calls" label="Total calls" />
+                      <SortTh col="inbound" label="Inbound" tone="text-cyan-400" />
+                      <SortTh col="outbound" label="Outbound" tone="text-fuchsia-400" />
+                      <SortTh col="avgDuration" label="Avg duration" />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {visible.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center py-12 text-muted-foreground">No agents match the current filters.</TableCell>
+                      </TableRow>
+                    )}
+                    {visible.map((agent) => {
+                      const nameKey = agent.agentName.trim().toLowerCase();
+                      const isLive = liveAgentNames.has(nameKey);
+                      const vosAgent = agentIdMap.get(nameKey);
+                      const statusObj = liveQ.data?.agentStatuses.find((s) => s.name.trim().toLowerCase() === nameKey);
+                      const status = statusObj?.status ?? vosAgent?.status ?? "offline";
+                      const statusColor = status === "on_call" ? "text-emerald-400" : status === "available" ? "text-sky-400" : status === "idle" ? "text-amber-400" : "text-zinc-500";
+                      const statusLabel = status === "on_call" ? "On call" : status === "available" ? "Available" : status === "idle" ? "Idle" : "Offline";
+                      const group = vosAgent ? agentGroupMap.get(vosAgent.id) : undefined;
+                      return (
+                        <TableRow key={agent.agentName} className="hover-elevate">
+                          <TableCell className="font-medium whitespace-nowrap">
+                            <div className="flex items-center gap-2">
+                              {isLive && (
+                                <span className="relative flex h-2.5 w-2.5 shrink-0">
+                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+                                </span>
+                              )}
+                              <span>{agent.agentName}</span>
+                              {group && <Badge className="text-[9px] px-1 py-0 bg-violet-500/15 text-violet-300 border-violet-500/20">{group}</Badge>}
+                            </div>
+                          </TableCell>
+                          <TableCell className={`text-center text-xs font-medium ${statusColor}`}>{statusLabel}</TableCell>
+                          <TableCell className={`text-right tabular-nums font-mono ${!agent.calls ? "text-muted-foreground/40" : ""}`}>{agent.calls || "—"}</TableCell>
+                          <TableCell className={`text-right tabular-nums font-mono ${agent.inbound ? "text-cyan-400" : "text-muted-foreground/40"}`}>{agent.inbound || "—"}</TableCell>
+                          <TableCell className={`text-right tabular-nums font-mono ${agent.outbound ? "text-fuchsia-400" : "text-muted-foreground/40"}`}>{agent.outbound || "—"}</TableCell>
+                          <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{agent.avgDuration ? formatDuration(agent.avgDuration) : "—"}</TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                  {visible.length > 0 && (
+                    <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
+                      <TableRow>
+                        <TableCell className="font-bold">Whole team</TableCell>
+                        <TableCell />
+                        <TableCell className="text-right tabular-nums font-mono font-bold">{totCalls || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{totIn || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono font-bold text-fuchsia-400">{totOut || "—"}</TableCell>
+                        <TableCell />
+                      </TableRow>
+                    </TableHeader>
+                  )}
+                </Table>
+              </div>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 type DashView = "metrics" | "attendance";
 
 function Dashboard() {
@@ -2765,11 +3076,12 @@ function Dashboard() {
       <main className="max-w-[1400px] mx-auto px-6 py-8">
         {view === "metrics" && can("view_metrics") ? (
           <Tabs defaultValue="retention" className="space-y-6">
-            <TabsList className="grid w-full max-w-xl grid-cols-4">
+            <TabsList className="grid w-full max-w-2xl grid-cols-5">
               <TabsTrigger value="retention" data-testid="tab-retention">Retention Team</TabsTrigger>
               <TabsTrigger value="nsf" data-testid="tab-nsf">NSF Team</TabsTrigger>
               <TabsTrigger value="cs" data-testid="tab-cs">CS Team</TabsTrigger>
               <TabsTrigger value="quo-lines" data-testid="tab-quo-lines">Quo Lines</TabsTrigger>
+              <TabsTrigger value="vos" data-testid="tab-vos">VoSLogic</TabsTrigger>
             </TabsList>
             <TabsContent value="retention">
               <TeamPanel urls={RETENTION} sheetKey="retention" label="Retention Team" mode="retention" statusQueryFn={fetchRetentionCombinedSheet} />
@@ -2782,6 +3094,9 @@ function Dashboard() {
             </TabsContent>
             <TabsContent value="quo-lines">
               <QuoLinesPanel />
+            </TabsContent>
+            <TabsContent value="vos">
+              <VoSPanel />
             </TabsContent>
           </Tabs>
         ) : view === "attendance" && can("view_attendance") ? (
@@ -2796,6 +3111,7 @@ function Dashboard() {
     </div>
   );
 }
+
 
 // ─── Attendance ────────────────────────────────────────────────────────────────
 
