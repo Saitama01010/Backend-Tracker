@@ -3577,6 +3577,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
   const items = lockedTeam ? allItems.filter((it) => it.team === lockedTeam) : allItems;
   const fetchedAt = q.data?.fetchedAt ?? 0;
   const [teamFilter, setTeamFilter] = useState<string>("all");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "pbx" | "quo">("all");
   const [search, setSearch] = useState("");
 
   const teams = useMemo(() => {
@@ -3600,12 +3601,13 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
       if (teamFilter === "backend") list = list.filter((it) => it.team === "retention" || it.team === "cs");
       else list = list.filter((it) => it.team === teamFilter);
     }
+    if (sourceFilter !== "all") list = list.filter((it) => it.source === sourceFilter);
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       list = list.filter((it) => it.fromNumber.includes(q) || it.ringGroupName.toLowerCase().includes(q));
     }
     return [...list].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [items, teamFilter, lockedTeam, search]);
+  }, [items, teamFilter, sourceFilter, lockedTeam, search]);
 
   return (
     <Card>
@@ -3669,6 +3671,24 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
               ))}
             </>
           )}
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-muted-foreground">Source:</span>
+          </div>
+          {(["all", "pbx", "quo"] as const).map((s) => (
+            <button
+              key={s}
+              onClick={() => setSourceFilter(s)}
+              className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
+                sourceFilter === s
+                  ? s === "quo"
+                    ? "bg-sky-500/25 text-sky-200 border-sky-500/40"
+                    : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
+                  : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"
+              }`}
+            >
+              {s === "all" ? "All" : s === "quo" ? "Quo" : "PBX"}
+            </button>
+          ))}
           <div className={`${lockedTeam ? "" : "ml-auto"} flex items-center gap-2`}>
             <Search className="h-3.5 w-3.5 text-muted-foreground" />
             <Input
