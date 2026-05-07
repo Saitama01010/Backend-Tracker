@@ -39,8 +39,9 @@ router.post("/auth/login", async (req, res) => {
     return;
   }
   const permissions = parsePermissions(user.permissions, user.role);
-  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions });
-  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions } });
+  const teamAccess = (user.teamAccess ?? null) as "retention" | "nsf" | "cs" | null;
+  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess });
+  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess } });
 });
 
 router.get("/auth/me", requireAuth, (req, res) => {

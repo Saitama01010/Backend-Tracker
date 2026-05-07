@@ -22,6 +22,7 @@ const SELECTABLE = {
   username: portalUsersTable.username,
   role: portalUsersTable.role,
   permissions: portalUsersTable.permissions,
+  teamAccess: portalUsersTable.teamAccess,
   active: portalUsersTable.active,
   createdAt: portalUsersTable.createdAt,
 };
@@ -31,8 +32,14 @@ router.get("/users", requireAuth, requireRole("admin"), async (_req, res) => {
   res.json(users.map((u) => ({ ...u, permissions: parsePermissions(u.permissions, u.role) })));
 });
 
+const VALID_TEAM_ACCESS = ["retention", "nsf", "cs"] as const;
+type ValidTeamAccess = typeof VALID_TEAM_ACCESS[number];
+function parseTeamAccess(v: unknown): ValidTeamAccess | null {
+  return typeof v === "string" && VALID_TEAM_ACCESS.includes(v as ValidTeamAccess) ? (v as ValidTeamAccess) : null;
+}
+
 router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
-  const { username, password, role, permissions } = req.body ?? {};
+  const { username, password, role, permissions, teamAccess } = req.body ?? {};
   if (!username || !password || !["admin", "edit", "view"].includes(role)) {
     res.status(400).json({ error: "username, password and role required" });
     return;
@@ -41,20 +48,21 @@ router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
   const passwordHash = await bcrypt.hash(password, 10);
   const [user] = await db
     .insert(portalUsersTable)
-    .values({ username: username.trim().toLowerCase(), passwordHash, role, permissions: JSON.stringify(perms) })
+    .values({ username: username.trim().toLowerCase(), passwordHash, role, permissions: JSON.stringify(perms), teamAccess: parseTeamAccess(teamAccess) })
     .returning(SELECTABLE);
   res.json({ ...user, permissions: parsePermissions(user.permissions, user.role) });
 });
 
 router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) => {
   const id = Number(req.params.id);
-  const { username, password, role, active, permissions } = req.body ?? {};
+  const { username, password, role, active, permissions, teamAccess } = req.body ?? {};
   const updates: Record<string, unknown> = {};
   if (username) updates["username"] = username.trim().toLowerCase();
   if (password) updates["passwordHash"] = await bcrypt.hash(password, 10);
   if (role && ["admin", "edit", "view"].includes(role)) updates["role"] = role;
   if (typeof active === "boolean") updates["active"] = active;
   if (Array.isArray(permissions)) updates["permissions"] = JSON.stringify(permissions);
+  if ("teamAccess" in (req.body ?? {})) updates["teamAccess"] = parseTeamAccess(teamAccess);
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: "Nothing to update" });
     return;

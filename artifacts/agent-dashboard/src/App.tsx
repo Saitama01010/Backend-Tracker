@@ -65,7 +65,8 @@ const ALL_PERMISSIONS: { key: Permission; label: string; desc: string }[] = [
   { key: "manage_members",   label: "Manage Members",     desc: "Add, edit, or remove attendance members" },
 ];
 
-interface AuthUser { id: number; username: string; role: "admin" | "edit" | "view"; permissions: Permission[]; }
+type TeamAccess = "retention" | "nsf" | "cs";
+interface AuthUser { id: number; username: string; role: "admin" | "edit" | "view"; permissions: Permission[]; teamAccess?: TeamAccess | null; }
 interface AuthCtx { user: AuthUser; token: string; logout: () => void; can: (p: Permission) => boolean; }
 const UserContext = createContext<AuthCtx | null>(null);
 function useUser() {
@@ -2403,7 +2404,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
 
 // ─── User Management Panel (Admin only) ──────────────────────────────────────
 
-interface PortalUser { id: number; username: string; role: string; permissions: Permission[]; active: boolean; }
+interface PortalUser { id: number; username: string; role: string; permissions: Permission[]; teamAccess?: TeamAccess | null; active: boolean; }
 
 const DEFAULT_PERMS: Record<string, Permission[]> = {
   admin: ["view_metrics", "view_attendance", "edit_attendance", "manage_members"],
@@ -2433,6 +2434,13 @@ function PermCheckboxes({ perms, onChange, disabled }: { perms: Permission[]; on
   );
 }
 
+const TEAM_ACCESS_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "CS" };
+const TEAM_ACCESS_COLORS: Record<string, string> = {
+  retention: "bg-violet-500/20 text-violet-300 border-violet-500/30",
+  nsf:       "bg-sky-500/20 text-sky-300 border-sky-500/30",
+  cs:        "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
+};
+
 function UserManagementPanel({ onClose }: { onClose: () => void }) {
   const { token } = useUser();
   const [users, setUsers] = useState<PortalUser[]>([]);
@@ -2441,11 +2449,13 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState<"admin" | "edit" | "view">("view");
   const [newPerms, setNewPerms] = useState<Permission[]>(DEFAULT_PERMS["view"]);
+  const [newTeamAccess, setNewTeamAccess] = useState<TeamAccess | "">("");
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editPw, setEditPw] = useState("");
   const [editRole, setEditRole] = useState<"admin" | "edit" | "view">("view");
   const [editPerms, setEditPerms] = useState<Permission[]>([]);
+  const [editTeamAccess, setEditTeamAccess] = useState<TeamAccess | "">("");
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -2462,8 +2472,8 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
     if (!newUsername.trim() || !newPassword.trim()) return;
     setSaving(true); setError("");
     const perms = newRole === "admin" ? DEFAULT_PERMS["admin"] : newPerms;
-    const r = await fetch("/api/users", { method: "POST", headers: authHeaders(token), body: JSON.stringify({ username: newUsername.trim(), password: newPassword.trim(), role: newRole, permissions: perms }) });
-    if (r.ok) { setNewUsername(""); setNewPassword(""); setNewRole("view"); setNewPerms(DEFAULT_PERMS["view"]); await load(); }
+    const r = await fetch("/api/users", { method: "POST", headers: authHeaders(token), body: JSON.stringify({ username: newUsername.trim(), password: newPassword.trim(), role: newRole, permissions: perms, teamAccess: newTeamAccess || null }) });
+    if (r.ok) { setNewUsername(""); setNewPassword(""); setNewRole("view"); setNewPerms(DEFAULT_PERMS["view"]); setNewTeamAccess(""); await load(); }
     else { const d = await r.json() as { error?: string }; setError(d.error ?? "Failed to add user"); }
     setSaving(false);
   }
@@ -2479,6 +2489,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
     setEditPw("");
     setEditRole(u.role as "admin" | "edit" | "view");
     setEditPerms(u.permissions);
+    setEditTeamAccess((u.teamAccess ?? "") as TeamAccess | "");
   }
 
   const roleBadge = (role: string) =>
@@ -2514,6 +2525,12 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                 <option value="edit">Edit</option>
                 <option value="admin">Admin</option>
               </select>
+              <select value={newTeamAccess} onChange={(e) => setNewTeamAccess(e.target.value as TeamAccess | "")} className="h-8 rounded-md bg-zinc-800 border border-white/10 text-sm text-white px-2 focus:outline-none focus:ring-2 focus:ring-violet-500/50">
+                <option value="">All Teams</option>
+                <option value="retention">Retention</option>
+                <option value="nsf">NSF</option>
+                <option value="cs">CS</option>
+              </select>
             </div>
             {newRole !== "admin" && (
               <div>
@@ -2542,6 +2559,11 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                     <Badge className={`text-[10px] px-1.5 py-0 flex items-center gap-1 border ${roleBadge(u.role)}`}>
                       {roleIcon(u.role)}{u.role}
                     </Badge>
+                    {u.teamAccess && (
+                      <Badge className={`text-[10px] px-1.5 py-0 border ${TEAM_ACCESS_COLORS[u.teamAccess] ?? ""}`}>
+                        {TEAM_ACCESS_LABELS[u.teamAccess] ?? u.teamAccess}
+                      </Badge>
+                    )}
                     {!u.active && <Badge className="text-[10px] px-1.5 py-0 bg-red-500/20 text-red-400 border-red-500/30">Disabled</Badge>}
                     {/* Permission pills */}
                     {u.role !== "admin" && (u.permissions ?? []).map((p) => {
@@ -2574,6 +2596,12 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                         <option value="edit">Edit</option>
                         <option value="admin">Admin</option>
                       </select>
+                      <select value={editTeamAccess} onChange={(e) => setEditTeamAccess(e.target.value as TeamAccess | "")} className="h-7 rounded-md bg-zinc-800 border border-white/10 text-xs text-white px-2 focus:outline-none focus:ring-2 focus:ring-violet-500/50">
+                        <option value="">All Teams</option>
+                        <option value="retention">Retention</option>
+                        <option value="nsf">NSF</option>
+                        <option value="cs">CS</option>
+                      </select>
                     </div>
                     {editRole !== "admin" && (
                       <div>
@@ -2584,7 +2612,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                     {editRole === "admin" && <p className="text-[11px] text-zinc-500">Admins always have full access.</p>}
                     <div className="flex gap-2 justify-end">
                       <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditingId(null)}>Cancel</Button>
-                      <Button size="sm" className="h-7 text-xs bg-violet-600 hover:bg-violet-700 text-white px-3" onClick={() => patchUser(u.id, { role: editRole, permissions: editRole === "admin" ? DEFAULT_PERMS["admin"] : editPerms, ...(editPw ? { password: editPw } : {}) })}>
+                      <Button size="sm" className="h-7 text-xs bg-violet-600 hover:bg-violet-700 text-white px-3" onClick={() => patchUser(u.id, { role: editRole, permissions: editRole === "admin" ? DEFAULT_PERMS["admin"] : editPerms, teamAccess: editTeamAccess || null, ...(editPw ? { password: editPw } : {}) })}>
                         <KeyRound className="h-3 w-3 mr-1" />Save
                       </Button>
                     </div>
@@ -3229,7 +3257,9 @@ function maskNumber(num: string): string {
 
 function formatCallTime(iso: string): string {
   const d = new Date(iso);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: true });
+  const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" });
+  const time = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/New_York" });
+  return `${date}, ${time}`;
 }
 
 const TEAM_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "CS", other: "Other" };
@@ -3240,10 +3270,12 @@ const TEAM_COLORS: Record<string, string> = {
   other: "bg-zinc-500/15 text-zinc-300 border-zinc-500/20",
 };
 
-function MissedNoCBPanel() {
+function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
   const q = useMissedNoCB();
   const qc = useQueryClient();
-  const items = q.data?.items ?? [];
+  const allItems = q.data?.items ?? [];
+  // If the user has a team scope, only ever show their team's items
+  const items = lockedTeam ? allItems.filter((it) => it.team === lockedTeam) : allItems;
   const fetchedAt = q.data?.fetchedAt ?? 0;
   const [teamFilter, setTeamFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
@@ -3262,13 +3294,13 @@ function MissedNoCBPanel() {
 
   const visible = useMemo(() => {
     let list = items;
-    if (teamFilter !== "all") list = list.filter((it) => it.team === teamFilter);
+    if (!lockedTeam && teamFilter !== "all") list = list.filter((it) => it.team === teamFilter);
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       list = list.filter((it) => it.fromNumber.includes(q) || it.ringGroupName.toLowerCase().includes(q));
     }
     return [...list].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [items, teamFilter, search]);
+  }, [items, teamFilter, lockedTeam, search]);
 
   return (
     <Card>
@@ -3341,7 +3373,7 @@ function MissedNoCBPanel() {
             <Table>
               <TableHeader>
                 <TableRow className="border-zinc-800 bg-zinc-900/60">
-                  <TableHead className="text-xs w-28">Time</TableHead>
+                  <TableHead className="text-xs w-36">Date & Time</TableHead>
                   <TableHead className="text-xs">Number</TableHead>
                   <TableHead className="text-xs">Team</TableHead>
                   <TableHead className="text-xs w-20">Source</TableHead>
@@ -3388,6 +3420,16 @@ function Dashboard() {
   const [showUsers, setShowUsers] = useState(false);
   const defaultView: DashView = can("view_metrics") ? "metrics" : "attendance";
   const [view, setView] = useState<DashView>(defaultView);
+
+  const ta = user.teamAccess ?? null;
+  const allTeams = ta === null;
+  const metricsTabs = [
+    ...(allTeams || ta === "retention" ? [{ value: "retention", label: "Retention" }] : []),
+    ...(allTeams || ta === "nsf"       ? [{ value: "nsf",       label: "NSF"       }] : []),
+    ...(allTeams || ta === "cs"        ? [{ value: "cs",        label: "CS Team"   }] : []),
+    { value: "missed-no-cb", label: "Missed / No CB" },
+    ...(allTeams ? [{ value: "quo-lines", label: "Quo Lines" }, { value: "vos", label: "PBX" }] : []),
+  ];
 
   const roleBadgeCls =
     user.role === "admin" ? "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30" :
@@ -3464,33 +3506,40 @@ function Dashboard() {
 
       <main className="max-w-[1400px] mx-auto px-6 py-8">
         {view === "metrics" && can("view_metrics") ? (
-          <Tabs defaultValue="retention" className="space-y-6">
-            <TabsList className="grid w-full max-w-3xl grid-cols-6">
-              <TabsTrigger value="retention" data-testid="tab-retention">Retention</TabsTrigger>
-              <TabsTrigger value="nsf" data-testid="tab-nsf">NSF</TabsTrigger>
-              <TabsTrigger value="cs" data-testid="tab-cs">CS Team</TabsTrigger>
-              <TabsTrigger value="missed-no-cb" data-testid="tab-missed-no-cb">Missed / No CB</TabsTrigger>
-              <TabsTrigger value="quo-lines" data-testid="tab-quo-lines">Quo Lines</TabsTrigger>
-              <TabsTrigger value="vos" data-testid="tab-vos">PBX</TabsTrigger>
+          <Tabs defaultValue={ta ?? "retention"} className="space-y-6">
+            <TabsList className="grid w-full max-w-3xl" style={{ gridTemplateColumns: `repeat(${metricsTabs.length}, minmax(0, 1fr))` }}>
+              {metricsTabs.map((t) => (
+                <TabsTrigger key={t.value} value={t.value} data-testid={`tab-${t.value}`}>{t.label}</TabsTrigger>
+              ))}
             </TabsList>
-            <TabsContent value="retention">
-              <TeamPanel urls={RETENTION} sheetKey="retention" label="Retention Team" mode="retention" statusQueryFn={fetchRetentionCombinedSheet} />
-            </TabsContent>
-            <TabsContent value="nsf">
-              <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" statusQueryFn={fetchNSFCombinedSheet} />
-            </TabsContent>
-            <TabsContent value="cs">
-              <CSPanel />
-            </TabsContent>
+            {(allTeams || ta === "retention") && (
+              <TabsContent value="retention">
+                <TeamPanel urls={RETENTION} sheetKey="retention" label="Retention Team" mode="retention" statusQueryFn={fetchRetentionCombinedSheet} />
+              </TabsContent>
+            )}
+            {(allTeams || ta === "nsf") && (
+              <TabsContent value="nsf">
+                <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" statusQueryFn={fetchNSFCombinedSheet} />
+              </TabsContent>
+            )}
+            {(allTeams || ta === "cs") && (
+              <TabsContent value="cs">
+                <CSPanel />
+              </TabsContent>
+            )}
             <TabsContent value="missed-no-cb">
-              <MissedNoCBPanel />
+              <MissedNoCBPanel lockedTeam={ta} />
             </TabsContent>
-            <TabsContent value="quo-lines">
-              <QuoLinesPanel />
-            </TabsContent>
-            <TabsContent value="vos">
-              <VoSPanel />
-            </TabsContent>
+            {allTeams && (
+              <TabsContent value="quo-lines">
+                <QuoLinesPanel />
+              </TabsContent>
+            )}
+            {allTeams && (
+              <TabsContent value="vos">
+                <VoSPanel />
+              </TabsContent>
+            )}
           </Tabs>
         ) : view === "attendance" && can("view_attendance") ? (
           <AttendancePanel />

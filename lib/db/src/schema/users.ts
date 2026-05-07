@@ -5,12 +5,17 @@ import { z } from "zod/v4";
 export const ALL_PERMISSIONS = ["view_metrics", "view_attendance", "edit_attendance", "manage_members"] as const;
 export type Permission = typeof ALL_PERMISSIONS[number];
 
+export const ALL_TEAM_ACCESS = ["retention", "nsf", "cs"] as const;
+export type TeamAccess = typeof ALL_TEAM_ACCESS[number];
+
 export const portalUsersTable = pgTable("portal_users", {
   id: serial("id").primaryKey(),
   username: text("username").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
   role: text("role", { enum: ["admin", "edit", "view"] }).notNull().default("view"),
   permissions: text("permissions").notNull().default("[]"),
+  // null = unrestricted (sees all teams); "retention"|"nsf"|"cs" = scoped to that team only
+  teamAccess: text("team_access"),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

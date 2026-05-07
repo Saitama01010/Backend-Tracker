@@ -7,6 +7,7 @@ export interface AuthPayload {
   username: string;
   role: "admin" | "edit" | "view";
   permissions: Permission[];
+  teamAccess?: "retention" | "nsf" | "cs" | null;
 }
 
 declare global {
