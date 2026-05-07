@@ -242,7 +242,7 @@ async function seedAttendanceRecords() {
 }
 
 async function clearTeamAccessRestrictions() {
-  // One-time fix: remove team locks from specific users so they see all data.
+  // Remove team locks from specific users so they see all data.
   const targets = ["rick miller", "retention"];
   for (const username of targets) {
     const [updated] = await db
@@ -254,6 +254,19 @@ async function clearTeamAccessRestrictions() {
   }
 }
 
+async function deactivateFormerUsers() {
+  // Deactivate accounts for users who are no longer with the team.
+  const targets = ["retetnion", "retention"];
+  for (const username of targets) {
+    const [updated] = await db
+      .update(portalUsersTable)
+      .set({ active: false })
+      .where(eq(portalUsersTable.username, username))
+      .returning({ id: portalUsersTable.id, username: portalUsersTable.username });
+    if (updated) logger.info({ username }, "startup: deactivated former user account");
+  }
+}
+
 app.listen(port, async (err) => {
   if (err) {
     logger.error({ err }, "Error listening on port");
@@ -262,6 +275,7 @@ app.listen(port, async (err) => {
   logger.info({ port }, "Server listening");
   await seedAdminUser();
   await clearTeamAccessRestrictions();
+  await deactivateFormerUsers();
   await seedAttendanceMembers();
   await seedAttendanceRecords();
 });

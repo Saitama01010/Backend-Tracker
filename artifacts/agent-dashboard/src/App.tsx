@@ -3624,7 +3624,11 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
     if (sourceFilter !== "all") list = list.filter((it) => it.source === sourceFilter);
     if (search.trim()) {
       const q = search.trim().toLowerCase();
-      list = list.filter((it) => it.fromNumber.includes(q) || it.ringGroupName.toLowerCase().includes(q));
+      list = list.filter((it) =>
+        it.fromNumber.includes(q) ||
+        it.ringGroupName.toLowerCase().includes(q) ||
+        (it.toNumber ?? "").toLowerCase().includes(q)
+      );
     }
     return [...list].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [items, teamFilter, sourceFilter, lockedTeam, search]);
@@ -3739,7 +3743,8 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                   <TableHead className="text-xs">Number</TableHead>
                   {!lockedTeam && <TableHead className="text-xs">Team</TableHead>}
                   <TableHead className="text-xs w-20">Source</TableHead>
-                  <TableHead className="text-xs">Ring Group / Line</TableHead>
+                  <TableHead className="text-xs">Ring Group</TableHead>
+                  <TableHead className="text-xs">Line</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -3765,6 +3770,9 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {it.ringGroupName}
+                    </TableCell>
+                    <TableCell className="text-xs text-zinc-300">
+                      {it.toNumber || "—"}
                     </TableCell>
                   </TableRow>
                 ))}
