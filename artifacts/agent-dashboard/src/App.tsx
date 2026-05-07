@@ -3355,7 +3355,7 @@ function MissedNoCBPanel() {
                       {formatCallTime(it.createdAt)}
                     </TableCell>
                     <TableCell className="font-mono text-xs tracking-wider">
-                      {maskNumber(it.fromNumber)}
+                      {it.fromNumber}
                     </TableCell>
                     <TableCell>
                       <Badge className={`text-[10px] px-1.5 py-0 ${TEAM_COLORS[it.team] ?? TEAM_COLORS["other"]}`}>
