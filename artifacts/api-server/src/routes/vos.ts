@@ -123,7 +123,8 @@ function teamFromRingGroupName(name: string): "retention" | "nsf" | "cs" | "othe
 async function fetchAgentCallsForDate(
   agentId: number,
   expectedCount: number,
-  today: string
+  today: string,
+  yesterday: string
 ): Promise<{
   answered: number;
   missed: number;
@@ -151,7 +152,9 @@ async function fetchAgentCallsForDate(
     for (const call of data.calls) {
       const dateStr = call.createdAt.slice(0, 10);
       if (dateStr > today) continue;
-      if (dateStr < today) { done = true; break; }
+      // Accept today OR yesterday — the VoSLogic backend uses its own local timezone
+      // which may be a full day behind the server's UTC date in the late-evening hours.
+      if (dateStr < yesterday) { done = true; break; }
 
       if (totalSeen >= cap) { done = true; break; }
       totalSeen++;
@@ -199,10 +202,14 @@ async function scanRingGroupCalls(
   const missedCounts: VosRingGroupMissed = {};
   const missedRecords: Array<{ id: number; fromNumber: string; toNumber: string; createdAt: string; ringGroupId: number; ringGroupName: string }> = [];
   const pbxOutboundCalls: Array<{ toNumber: string; createdAt: string }> = [];
+  // Deduplicate by call ID — some VoSLogic API pages return overlapping records
+  const seenCallIds = new Set<number>();
 
   if (lineToRingGroupId.size === 0) return { missedCounts, missedRecords, pbxOutboundCalls };
 
-  const pagesToScan = Math.min(12, Math.ceil((totalCallsToday * 1.5) / 100) + 2);
+  // Always scan at least 10 pages (1000 calls) so we cover a full day even if
+  // totalCallsToday is 0 (e.g. just after UTC midnight when VoSLogic hasn't reset yet).
+  const pagesToScan = Math.max(10, Math.min(20, Math.ceil((totalCallsToday * 1.5) / 100) + 2));
 
   for (let page = 1; page <= pagesToScan; page++) {
     const data = await vosFetch<{ calls: VosCallRaw[] }>(
@@ -225,6 +232,10 @@ async function scanRingGroupCalls(
 
       const rgId = lineToRingGroupId.get(call.toNumber);
       if (rgId === undefined) continue;
+
+      // Skip duplicate call IDs (VoSLogic sometimes returns the same call on multiple pages)
+      if (seenCallIds.has(call.id)) continue;
+      seenCallIds.add(call.id);
 
       missedCounts[rgId] = (missedCounts[rgId] ?? 0) + 1;
 
@@ -258,6 +269,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
   const t0 = Date.now();
   try {
     const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
 
     const [dashboard, agentList, ringGroups] = await Promise.all([
       vosFetch<VosDashboard>("/api/dashboard"),
@@ -308,7 +320,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
               outboundCallbacks: [] as Array<{ toNumber: string; createdAt: string }>,
             };
           }
-          const detail = await fetchAgentCallsForDate(agentId, a.calls, today);
+          const detail = await fetchAgentCallsForDate(agentId, a.calls, today, yesterday);
           const rgIds = agentToRingGroups.get(agentId) ?? [];
           for (const line of detail.inboundToNumbers) {
             if (!lineRingGroupCounts.has(line)) lineRingGroupCounts.set(line, new Map());
