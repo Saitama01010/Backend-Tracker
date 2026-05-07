@@ -30,11 +30,27 @@ interface QuoPhoneNumber {
   users: { id: string; firstName: string; lastName: string; email: string }[];
 }
 
+// Exact line name → team (mirrors quoSync.ts LINE_TEAM_MAP)
+const LINE_TEAM_MAP: Record<string, "retention" | "nsf" | "cs"> = {
+  "ahmed ayman-levi miller":         "cs",
+  "youssef nady-jacob xander":       "cs",
+  "nour-michael belfort-2900":       "cs",
+  "levi ob":                         "cs",
+  "jacob ob":                        "cs",
+  "adam ob":                         "retention",
+  "rick ob":                         "retention",
+  "ryan ob":                         "retention",
+  "abdlrhman-jacob stephenson":      "retention",
+  "zeiad fouad-zack ford":           "retention",
+  "mohammed ayman-max francis-2268": "retention",
+};
+
 function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   const n = name.toLowerCase().trim();
-  if (/retention|ob|outbound|jacob|levi|ryan|mike|adam|rick|zeiad|zack/.test(n)) return "retention";
-  if (/nsf|national settlement|ellie|alex|katie|jenny|estella|talia|rika|austin/.test(n)) return "nsf";
-  if (/\bcs\b|customer support/.test(n) || name === "CS Team") return "cs";
+  if (n in LINE_TEAM_MAP) return LINE_TEAM_MAP[n];
+  if (/\bcs\b|customer support|talia|hiba|nourhan|rasha|bassant|ella monroe/.test(n) || name === "CS Team") return "cs";
+  if (/retention|ob|outbound|ryan|abdlrhman|rick|zeiad|zack|henry.?hart|chase.?miller|katherine|karma|leo.?carter|fares/.test(n)) return "retention";
+  if (/nsf|national settlement|ellie|alex|katie|jenny|estella|rika|austin/.test(n)) return "nsf";
   return null;
 }
 
@@ -42,35 +58,34 @@ function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
 // they used. This ensures agents who call from shared/unclassified lines still
 // appear in the correct team bucket.
 const AGENT_TEAM: Record<string, "retention" | "nsf" | "cs"> = {
-  // Retention
-  "ryan henderson": "retention",
-  "jacob stephenson": "retention",
-  "abdulrhman isawi": "retention",
-  "jacob xander": "retention",
-  "youssef nady": "retention",
-  "levi miller": "retention",
-  "ahmed ayman": "retention",
-  "rick miller": "retention",
-  "zeiad fouad": "retention",
-  "michael belfort": "retention",
-  "max francis": "retention",
-  "mike johnson": "retention",
-  "john marcus": "retention",
-  "youssef nasser": "retention",
-  "michael ross": "retention",
+  // Retention — current roster (May 2026)
+  "ryan henderson":    "retention",
+  "henry hart":        "retention",
+  "chase miller":      "retention",
+  "katherine adams":   "retention",
+  "jacob stephenson":  "retention",
+  "abdulrhman isawi":  "retention",
+  "rick miller":       "retention",
+  "zeiad fouad":       "retention",
+  "leo carter":        "retention",
   // NSF
-  "alex cruz": "nsf",
-  "austin white": "nsf",
-  "rika hart": "nsf",
-  "jenny morgan": "nsf",
-  "estella cruz": "nsf",
-  "talia morgan": "nsf",
-  "katie miller": "nsf",
-  "ellie moser": "nsf",
-  // CS
-  "nora adam": "cs",
-  "carla bennet": "cs",
-  "leo carter": "cs",
+  "alex cruz":         "nsf",
+  "austin white":      "nsf",
+  "rika hart":         "nsf",
+  "jenny morgan":      "nsf",
+  "estella cruz":      "nsf",
+  "katie miller":      "nsf",
+  "ellie moser":       "nsf",
+  // CS — includes agents moved from retention/nsf
+  "ahmed ayman":       "cs",
+  "levi miller":       "cs",
+  "youssef nady":      "cs",
+  "jacob xander":      "cs",
+  "michael belfort":   "cs",
+  "talia morgan":      "cs",
+  "ella monroe":       "cs",
+  "nora adam":         "cs",
+  "carla bennet":      "cs",
 };
 
 function agentTeam(agentName: string): "retention" | "nsf" | "cs" | null {
