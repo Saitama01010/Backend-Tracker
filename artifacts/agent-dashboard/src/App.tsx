@@ -3324,33 +3324,48 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
 
       <CardContent className="space-y-5">
         {/* Team count tiles */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <StatTile label="Total missed / no CB" value={q.isLoading ? "…" : items.length.toLocaleString()} tone="rose" icon={<PhoneOff className="h-3.5 w-3.5" />} />
-          <StatTile label="Retention" value={q.isLoading ? "…" : (counts["retention"] ?? 0).toLocaleString()} tone="violet" />
-          <StatTile label="NSF" value={q.isLoading ? "…" : (counts["nsf"] ?? 0).toLocaleString()} tone="sky" />
-          <StatTile label="CS" value={q.isLoading ? "…" : (counts["cs"] ?? 0).toLocaleString()} tone="emerald" />
-        </div>
-
-        {/* Filters */}
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="flex items-center gap-1.5">
-            <Filter className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-xs text-muted-foreground">Team:</span>
+        {lockedTeam ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-sm">
+            <StatTile label="Missed / No CB" value={q.isLoading ? "…" : items.length.toLocaleString()} tone="rose" icon={<PhoneOff className="h-3.5 w-3.5" />} />
+            <StatTile
+              label={TEAM_LABELS[lockedTeam] ?? lockedTeam}
+              value={q.isLoading ? "…" : (counts[lockedTeam] ?? 0).toLocaleString()}
+              tone={lockedTeam === "retention" ? "violet" : lockedTeam === "nsf" ? "sky" : "emerald"}
+            />
           </div>
-          {["all", ...teams].map((t) => (
-            <button
-              key={t}
-              onClick={() => setTeamFilter(t)}
-              className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
-                teamFilter === t
-                  ? "bg-violet-500/25 text-violet-200 border-violet-500/40"
-                  : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"
-              }`}
-            >
-              {t === "all" ? "All" : TEAM_LABELS[t] ?? t}
-            </button>
-          ))}
-          <div className="ml-auto flex items-center gap-2">
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <StatTile label="Total missed / no CB" value={q.isLoading ? "…" : items.length.toLocaleString()} tone="rose" icon={<PhoneOff className="h-3.5 w-3.5" />} />
+            <StatTile label="Retention" value={q.isLoading ? "…" : (counts["retention"] ?? 0).toLocaleString()} tone="violet" />
+            <StatTile label="NSF" value={q.isLoading ? "…" : (counts["nsf"] ?? 0).toLocaleString()} tone="sky" />
+            <StatTile label="CS" value={q.isLoading ? "…" : (counts["cs"] ?? 0).toLocaleString()} tone="emerald" />
+          </div>
+        )}
+
+        {/* Filters — hidden for team-locked users */}
+        <div className="flex items-center gap-3 flex-wrap">
+          {!lockedTeam && (
+            <>
+              <div className="flex items-center gap-1.5">
+                <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-xs text-muted-foreground">Team:</span>
+              </div>
+              {["all", ...teams].map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTeamFilter(t)}
+                  className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
+                    teamFilter === t
+                      ? "bg-violet-500/25 text-violet-200 border-violet-500/40"
+                      : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"
+                  }`}
+                >
+                  {t === "all" ? "All" : TEAM_LABELS[t] ?? t}
+                </button>
+              ))}
+            </>
+          )}
+          <div className={`${lockedTeam ? "" : "ml-auto"} flex items-center gap-2`}>
             <Search className="h-3.5 w-3.5 text-muted-foreground" />
             <Input
               placeholder="Search number or group…"
@@ -3375,7 +3390,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                 <TableRow className="border-zinc-800 bg-zinc-900/60">
                   <TableHead className="text-xs w-36">Date & Time</TableHead>
                   <TableHead className="text-xs">Number</TableHead>
-                  <TableHead className="text-xs">Team</TableHead>
+                  {!lockedTeam && <TableHead className="text-xs">Team</TableHead>}
                   <TableHead className="text-xs w-20">Source</TableHead>
                   <TableHead className="text-xs">Ring Group / Line</TableHead>
                 </TableRow>
@@ -3389,11 +3404,13 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                     <TableCell className="font-mono text-xs tracking-wider">
                       {it.fromNumber}
                     </TableCell>
-                    <TableCell>
-                      <Badge className={`text-[10px] px-1.5 py-0 ${TEAM_COLORS[it.team] ?? TEAM_COLORS["other"]}`}>
-                        {TEAM_LABELS[it.team] ?? it.team}
-                      </Badge>
-                    </TableCell>
+                    {!lockedTeam && (
+                      <TableCell>
+                        <Badge className={`text-[10px] px-1.5 py-0 ${TEAM_COLORS[it.team] ?? TEAM_COLORS["other"]}`}>
+                          {TEAM_LABELS[it.team] ?? it.team}
+                        </Badge>
+                      </TableCell>
+                    )}
                     <TableCell>
                       <Badge className={`text-[10px] px-1.5 py-0 border ${it.source === "quo" ? "bg-sky-500/20 text-sky-300 border-sky-500/30" : "bg-zinc-700/40 text-zinc-300 border-zinc-600/30"}`}>
                         {it.source === "quo" ? "Quo" : "PBX"}
