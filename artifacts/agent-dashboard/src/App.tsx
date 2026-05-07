@@ -2606,6 +2606,26 @@ function LoginGate({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // On mount, refresh user data from DB so permission/teamAccess changes
+  // take effect on the next page load without requiring re-login.
+  useEffect(() => {
+    const token = localStorage.getItem("tracker_token");
+    if (!token) return;
+    fetch("/api/auth/me", { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => {
+        if (!r.ok) { logout(); return; }
+        return r.json() as Promise<{ token: string; user: AuthUser }>;
+      })
+      .then((data) => {
+        if (!data) return;
+        localStorage.setItem("tracker_token", data.token);
+        localStorage.setItem("tracker_user", JSON.stringify(data.user));
+        setAuth(data);
+      })
+      .catch(() => { /* network error — keep existing auth */ });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const logout = useCallback(() => {
     localStorage.removeItem("tracker_token");
     localStorage.removeItem("tracker_user");

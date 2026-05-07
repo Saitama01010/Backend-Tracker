@@ -44,8 +44,20 @@ router.post("/auth/login", async (req, res) => {
   res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess } });
 });
 
-router.get("/auth/me", requireAuth, (req, res) => {
-  res.json({ user: req.user });
+router.get("/auth/me", requireAuth, async (req, res) => {
+  const [user] = await db
+    .select()
+    .from(portalUsersTable)
+    .where(eq(portalUsersTable.id, req.user!.userId))
+    .limit(1);
+  if (!user || !user.active) {
+    res.status(401).json({ error: "User not found or inactive" });
+    return;
+  }
+  const permissions = parsePermissions(user.permissions, user.role);
+  const teamAccess = (user.teamAccess ?? null) as "retention" | "nsf" | "cs" | null;
+  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess });
+  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess } });
 });
 
 export default router;
