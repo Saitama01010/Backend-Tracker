@@ -574,9 +574,14 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
 }
 
 void refreshCallHistory(rootLogger);
-setInterval(() => void refreshCallHistory(rootLogger), 5 * 60 * 1000);
+setInterval(() => void refreshCallHistory(rootLogger), 2 * 60 * 1000);
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
+
+router.post("/vos/refresh", (_req, res) => {
+  void refreshCallHistory(rootLogger);
+  res.json({ ok: true });
+});
 
 router.get("/vos/stats", async (req, res) => {
   try {

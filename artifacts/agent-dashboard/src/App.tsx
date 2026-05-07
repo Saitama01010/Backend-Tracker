@@ -1301,8 +1301,8 @@ function useMissedNoCB() {
       if (!r.ok) return { items: [], fetchedAt: 0 };
       return r.json();
     },
-    staleTime: 60_000,
-    refetchInterval: 5 * 60_000,
+    staleTime: 30_000,
+    refetchInterval: 90_000,
     refetchOnWindowFocus: true,
   });
 }
@@ -3639,7 +3639,10 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             {fetchedAt > 0 && <span>Updated {new Date(fetchedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/Los_Angeles" })} PDT</span>}
-            <Button size="sm" variant="ghost" className="h-7 px-2 gap-1" onClick={() => qc.invalidateQueries({ queryKey: ["missedNoCB"] })}>
+            <Button size="sm" variant="ghost" className="h-7 px-2 gap-1" onClick={async () => {
+              await fetch("/api/vos/refresh", { method: "POST" });
+              await qc.invalidateQueries({ queryKey: ["missedNoCB"] });
+            }}>
               <RefreshCw className="h-3 w-3" /> Refresh
             </Button>
           </div>
