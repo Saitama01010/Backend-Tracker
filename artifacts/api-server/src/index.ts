@@ -2,7 +2,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { db } from "@workspace/db";
 import { portalUsersTable, ALL_PERMISSIONS, attendanceMembersTable, attendanceRecordsTable } from "@workspace/db/schema";
-import { count } from "drizzle-orm";
+import { count, eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 
 const rawPort = process.env["PORT"];
@@ -241,6 +241,19 @@ async function seedAttendanceRecords() {
   logger.info({ count: records.length }, "Seeded attendance records");
 }
 
+async function clearTeamAccessRestrictions() {
+  // One-time fix: remove team locks from specific users so they see all data.
+  const targets = ["rick miller"];
+  for (const username of targets) {
+    const [updated] = await db
+      .update(portalUsersTable)
+      .set({ teamAccess: null })
+      .where(eq(portalUsersTable.username, username))
+      .returning({ id: portalUsersTable.id, username: portalUsersTable.username });
+    if (updated) logger.info({ username }, "startup: cleared teamAccess restriction");
+  }
+}
+
 app.listen(port, async (err) => {
   if (err) {
     logger.error({ err }, "Error listening on port");
@@ -248,6 +261,7 @@ app.listen(port, async (err) => {
   }
   logger.info({ port }, "Server listening");
   await seedAdminUser();
+  await clearTeamAccessRestrictions();
   await seedAttendanceMembers();
   await seedAttendanceRecords();
 });
