@@ -298,6 +298,13 @@ const PHONE_ALIASES: Record<string, string> = {
   "mike johnson": "youssef nasser",
   "john marcus": "youssef nasser",
   "youssef-john marcus": "youssef nasser",
+  // Retention: Arabic OpenPhone name → English display name
+  "abdulrhman isawi": "jacob stephenson",
+  "zeiad fouad": "rick miller",
+  // CS: Arabic OpenPhone name → English display name
+  "ahmed ayman": "levi miller",
+  "hiba kamil": "ella monroe",
+  "youssef nady": "jacob xander",
 };
 
 // Maps normalized SHEET agent name → normalized PBX (VoSLogic) agent name
