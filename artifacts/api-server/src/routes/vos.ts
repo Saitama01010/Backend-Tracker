@@ -2,6 +2,7 @@ import { Router } from "express";
 import { db, phoneCallsTable } from "@workspace/db";
 import { and, eq, gte, inArray } from "drizzle-orm";
 import type { Logger } from "pino";
+import { logger as rootLogger } from "../lib/logger";
 
 const router = Router();
 
@@ -482,8 +483,8 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
   }
 }
 
-void refreshCallHistory();
-setInterval(() => void refreshCallHistory(), 5 * 60 * 1000);
+void refreshCallHistory(rootLogger);
+setInterval(() => void refreshCallHistory(rootLogger), 5 * 60 * 1000);
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
@@ -529,10 +530,76 @@ router.get("/vos/stats", async (req, res) => {
  *
  * Returns today's missed PBX ring-group calls that had no callback
  * (neither PBX outbound nor Quo outbound) after the time of the missed call.
- * Results are from the background-refresh cache (updated every 5 min).
+ * When the full PBX cache is ready, returns combined PBX+Quo results.
+ * When the PBX scan is still warming up, returns Quo-DB-only results immediately.
  */
-router.get("/vos/missed-no-callback", (_req, res) => {
-  res.json({ items: missedNoCallbackCache, fetchedAt: callHistoryFetchedAt });
+router.get("/vos/missed-no-callback", async (req, res) => {
+  // Fast path: full cache is ready
+  if (callHistoryFetchedAt > 0) {
+    return res.json({ items: missedNoCallbackCache, fetchedAt: callHistoryFetchedAt });
+  }
+  // PBX scan still in progress — serve Quo DB-only results so the page isn't empty
+  try {
+    const window36h = new Date(Date.now() - 36 * 60 * 60 * 1000);
+    const [quoMissed, quoOutbound] = await Promise.all([
+      db
+        .select({
+          participant: phoneCallsTable.participant,
+          lineTeam: phoneCallsTable.lineTeam,
+          lineName: phoneCallsTable.lineName,
+          status: phoneCallsTable.status,
+          createdAt: phoneCallsTable.createdAt,
+        })
+        .from(phoneCallsTable)
+        .where(
+          and(
+            eq(phoneCallsTable.direction, "incoming"),
+            inArray(phoneCallsTable.status, ["no-answer", "voicemail", "missed", "voicemail-brief"]),
+            gte(phoneCallsTable.createdAt, window36h)
+          )
+        ),
+      db
+        .select({ participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
+        .from(phoneCallsTable)
+        .where(and(eq(phoneCallsTable.direction, "outgoing"), gte(phoneCallsTable.createdAt, window36h))),
+    ]);
+
+    const callbackTimes = new Map<string, Date[]>();
+    for (const row of quoOutbound) {
+      const norm = normalizePhone(row.participant);
+      if (!norm) continue;
+      if (!callbackTimes.has(norm)) callbackTimes.set(norm, []);
+      callbackTimes.get(norm)!.push(new Date(row.createdAt));
+    }
+
+    const items: MissedNoCallbackItem[] = [];
+    for (const row of quoMissed) {
+      const norm = normalizePhone(row.participant);
+      const missedAt = new Date(row.createdAt);
+      const times = callbackTimes.get(norm);
+      const hasCallback = times?.some((t) => t >= missedAt) ?? false;
+      if (!hasCallback) {
+        const t = row.lineTeam;
+        const team: MissedNoCallbackItem["team"] =
+          t === "retention" || t === "nsf" || t === "cs" ? t : "other";
+        items.push({
+          id: `quo-${norm}-${row.createdAt.toISOString()}`,
+          fromNumber: row.participant,
+          toNumber: row.lineName,
+          createdAt: row.createdAt.toISOString(),
+          ringGroupId: -1,
+          ringGroupName: "OpenPhone",
+          team,
+          source: "quo",
+        });
+      }
+    }
+
+    return res.json({ items, fetchedAt: 0 });
+  } catch (err) {
+    req.log.error(err, "vos missed-no-callback fallback error");
+    return res.json({ items: missedNoCallbackCache, fetchedAt: callHistoryFetchedAt });
+  }
 });
 
 router.get("/vos/live", async (req, res) => {

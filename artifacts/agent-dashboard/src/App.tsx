@@ -3257,8 +3257,8 @@ function maskNumber(num: string): string {
 
 function formatCallTime(iso: string): string {
   const d = new Date(iso);
-  const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" });
-  const time = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/New_York" });
+  const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/Los_Angeles" });
+  const time = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/Los_Angeles" });
   return `${date}, ${time}`;
 }
 
@@ -3311,7 +3311,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
             <CardTitle className="text-base">Missed Calls — No Callback</CardTitle>
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            {fetchedAt > 0 && <span>Updated {new Date(fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
+            {fetchedAt > 0 && <span>Updated {new Date(fetchedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/Los_Angeles" })} PDT</span>}
             <Button size="sm" variant="ghost" className="h-7 px-2 gap-1" onClick={() => qc.invalidateQueries({ queryKey: ["missedNoCB"] })}>
               <RefreshCw className="h-3 w-3" /> Refresh
             </Button>
