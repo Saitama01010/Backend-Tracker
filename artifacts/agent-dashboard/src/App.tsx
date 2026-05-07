@@ -3441,9 +3441,11 @@ function Dashboard() {
   const ta = user.teamAccess ?? null;
   const allTeams = ta === null;
   const metricsTabs = [
-    ...(allTeams || ta === "retention" ? [{ value: "retention", label: "Retention" }] : []),
-    ...(allTeams || ta === "nsf"       ? [{ value: "nsf",       label: "NSF"       }] : []),
-    ...(allTeams || ta === "cs"        ? [{ value: "cs",        label: "CS Team"   }] : []),
+    ...(allTeams ? [
+      { value: "retention", label: "Retention" },
+      { value: "nsf",       label: "NSF"       },
+      { value: "cs",        label: "CS Team"   },
+    ] : []),
     { value: "missed-no-cb", label: "Missed / No CB" },
     ...(allTeams ? [{ value: "quo-lines", label: "Quo Lines" }, { value: "vos", label: "PBX" }] : []),
   ];
