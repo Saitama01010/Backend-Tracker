@@ -131,10 +131,12 @@ async function fetchAgentCallsForDate(
   durationSeconds: number;
   lastCallAt: string | null;
   inboundToNumbers: string[];
+  outboundCallbacks: Array<{ toNumber: string; createdAt: string }>;
 }> {
   let answered = 0, missed = 0, voicemail = 0, durationSeconds = 0;
   let lastCallAt: string | null = null;
   const inboundToNumbers: string[] = [];
+  const outboundCallbacks: Array<{ toNumber: string; createdAt: string }> = [];
   let totalSeen = 0;
   const cap = expectedCount;
   let page = 1;
@@ -165,13 +167,19 @@ async function fetchAgentCallsForDate(
       if (call.direction === "inbound" && call.toNumber && call.status === "completed") {
         inboundToNumbers.push(call.toNumber);
       }
+
+      // Collect every outbound call this agent made today for callback detection.
+      // Use direction !== "inbound" to be safe regardless of the exact enum value.
+      if (call.direction !== "inbound" && call.toNumber) {
+        outboundCallbacks.push({ toNumber: call.toNumber, createdAt: call.createdAt });
+      }
     }
 
     if (done) break;
     page++;
   }
 
-  return { answered, missed, voicemail, durationSeconds, lastCallAt, inboundToNumbers };
+  return { answered, missed, voicemail, durationSeconds, lastCallAt, inboundToNumbers, outboundCallbacks };
 }
 
 /**
@@ -203,8 +211,9 @@ async function scanRingGroupCalls(
     if (!data.calls?.length) break;
 
     for (const call of data.calls) {
-      // Collect PBX outbound calls for callback detection
-      if (call.direction === "outbound" && call.toNumber && call.status === "completed") {
+      // Collect PBX outbound calls for callback detection.
+      // Use direction !== "inbound" to match regardless of exact enum value ("outbound"/"outgoing").
+      if (call.direction !== "inbound" && call.toNumber) {
         pbxOutboundCalls.push({ toNumber: call.toNumber, createdAt: call.createdAt });
       }
 
@@ -274,6 +283,9 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     const results: VosCallHistoryStat[] = [];
 
     const lineRingGroupCounts = new Map<string, Map<number, number>>();
+    // Outbound call records collected from per-agent scans — the most complete
+    // source of PBX callbacks because per-agent scans cover the full agent call list.
+    const agentOutboundCallbacks: Array<{ toNumber: string; createdAt: string }> = [];
 
     const CONCURRENCY = 5;
     for (let i = 0; i < agents.length; i += CONCURRENCY) {
@@ -293,6 +305,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
               durationSeconds: Math.round((a.avgDuration ?? 0) * a.calls),
               lastCallAt: null,
               inboundToNumbers: [] as string[],
+              outboundCallbacks: [] as Array<{ toNumber: string; createdAt: string }>,
             };
           }
           const detail = await fetchAgentCallsForDate(agentId, a.calls, today);
@@ -315,12 +328,16 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
             durationSeconds: detail.durationSeconds,
             lastCallAt: detail.lastCallAt,
             inboundToNumbers: detail.inboundToNumbers,
+            outboundCallbacks: detail.outboundCallbacks,
           };
         })
       );
       for (const r of batchResults) {
-        const { inboundToNumbers: _, ...stat } = r;
+        const { inboundToNumbers: _, outboundCallbacks: __, ...stat } = r;
         results.push(stat satisfies VosCallHistoryStat);
+        // Feed every per-agent outbound call into the callback map immediately
+        // so it's available for cross-referencing after all agents are scanned.
+        for (const cb of __) agentOutboundCallbacks.push(cb);
       }
     }
 
@@ -346,17 +363,23 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       callbackTimes.get(norm)!.push(at);
     };
 
-    // PBX outbound calls from the global scan
+    // Per-agent outbound calls — most complete PBX source (full per-agent history scanned above)
+    for (const c of agentOutboundCallbacks) {
+      addCallback(c.toNumber, new Date(c.createdAt));
+    }
+
+    // Global scan outbound calls — supplementary, catches any agents not in dashboard.callsByAgent
     for (const c of scanResult.pbxOutboundCalls) {
       addCallback(c.toNumber, new Date(c.createdAt));
     }
 
-    // Quo DB outbound calls today
-    const startOfToday = new Date(today + "T00:00:00.000Z");
+    // Quo DB outbound calls — use a 36-hour window to cover any timezone offset between
+    // the server (UTC) and the business's local time, ensuring no callbacks are missed.
+    const window36h = new Date(Date.now() - 36 * 60 * 60 * 1000);
     const quoOutbound = await db
       .select({ participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
       .from(phoneCallsTable)
-      .where(and(eq(phoneCallsTable.direction, "outgoing"), gte(phoneCallsTable.createdAt, startOfToday)));
+      .where(and(eq(phoneCallsTable.direction, "outgoing"), gte(phoneCallsTable.createdAt, window36h)));
 
     for (const row of quoOutbound) {
       addCallback(row.participant, new Date(row.createdAt));
