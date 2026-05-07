@@ -3556,11 +3556,12 @@ function formatCallTime(iso: string): string {
   return `${date}, ${time}`;
 }
 
-const TEAM_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "CS", other: "Other" };
+const TEAM_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "CS", backend: "Retention & CS", other: "Other" };
 const TEAM_COLORS: Record<string, string> = {
   retention: "bg-violet-500/15 text-violet-300 border-violet-500/20",
   nsf: "bg-sky-500/15 text-sky-300 border-sky-500/20",
   cs: "bg-emerald-500/15 text-emerald-300 border-emerald-500/20",
+  backend: "bg-violet-500/15 text-violet-300 border-violet-500/20",
   other: "bg-zinc-500/15 text-zinc-300 border-zinc-500/20",
 };
 
@@ -3582,13 +3583,19 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
-    for (const it of items) c[it.team] = (c[it.team] ?? 0) + 1;
+    for (const it of items) {
+      c[it.team] = (c[it.team] ?? 0) + 1;
+      if (it.team === "retention" || it.team === "cs") c["backend"] = (c["backend"] ?? 0) + 1;
+    }
     return c;
   }, [items]);
 
   const visible = useMemo(() => {
     let list = items;
-    if (!lockedTeam && teamFilter !== "all") list = list.filter((it) => it.team === teamFilter);
+    if (!lockedTeam && teamFilter !== "all") {
+      if (teamFilter === "backend") list = list.filter((it) => it.team === "retention" || it.team === "cs");
+      else list = list.filter((it) => it.team === teamFilter);
+    }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       list = list.filter((it) => it.fromNumber.includes(q) || it.ringGroupName.toLowerCase().includes(q));
@@ -3628,11 +3635,10 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
             />
           </div>
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <StatTile label="Total missed / no CB" value={q.isLoading ? "…" : items.length.toLocaleString()} tone="rose" icon={<PhoneOff className="h-3.5 w-3.5" />} />
-            <StatTile label="Retention" value={q.isLoading ? "…" : (counts["retention"] ?? 0).toLocaleString()} tone="violet" />
+            <StatTile label="Retention & CS" value={q.isLoading ? "…" : (counts["backend"] ?? 0).toLocaleString()} tone="violet" />
             <StatTile label="NSF" value={q.isLoading ? "…" : (counts["nsf"] ?? 0).toLocaleString()} tone="sky" />
-            <StatTile label="CS" value={q.isLoading ? "…" : (counts["cs"] ?? 0).toLocaleString()} tone="emerald" />
           </div>
         )}
 
@@ -3644,7 +3650,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                 <Filter className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="text-xs text-muted-foreground">Team:</span>
               </div>
-              {["all", ...teams].map((t) => (
+              {(["all", "backend", "nsf"] as const).map((t) => (
                 <button
                   key={t}
                   onClick={() => setTeamFilter(t)}
