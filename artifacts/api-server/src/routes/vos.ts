@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, phoneCallsTable } from "@workspace/db";
-import { and, eq, gte } from "drizzle-orm";
+import { and, eq, gte, inArray } from "drizzle-orm";
 import type { Logger } from "pino";
 
 const router = Router();
@@ -94,13 +94,14 @@ export interface VosCallHistoryStat {
 export type VosRingGroupMissed = Record<number, number>;
 
 export interface MissedNoCallbackItem {
-  id: number;
+  id: string | number;
   fromNumber: string;
   toNumber: string;
   createdAt: string;
   ringGroupId: number;
   ringGroupName: string;
   team: "retention" | "nsf" | "cs" | "other";
+  source: "pbx" | "quo";
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -406,13 +407,54 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       const hasCallback = times?.some((t) => t >= missedAt) ?? false;
       if (!hasCallback) {
         missedNoCB.push({
-          id: rec.id,
+          id: String(rec.id),
           fromNumber: rec.fromNumber,
           toNumber: rec.toNumber,
           createdAt: rec.createdAt,
           ringGroupId: rec.ringGroupId,
           ringGroupName: rec.ringGroupName,
           team: teamFromRingGroupName(rec.ringGroupName),
+          source: "pbx",
+        });
+      }
+    }
+
+    // Quo (OpenPhone) missed calls — reuse the same callbackTimes map already built above
+    const quoMissed = await db
+      .select({
+        participant: phoneCallsTable.participant,
+        lineTeam: phoneCallsTable.lineTeam,
+        lineName: phoneCallsTable.lineName,
+        status: phoneCallsTable.status,
+        createdAt: phoneCallsTable.createdAt,
+      })
+      .from(phoneCallsTable)
+      .where(
+        and(
+          eq(phoneCallsTable.direction, "incoming"),
+          inArray(phoneCallsTable.status, ["no-answer", "voicemail", "missed", "voicemail-brief"]),
+          gte(phoneCallsTable.createdAt, window36h)
+        )
+      );
+
+    for (const row of quoMissed) {
+      const norm = normalizePhone(row.participant);
+      const missedAt = new Date(row.createdAt);
+      const times = callbackTimes.get(norm);
+      const hasCallback = times?.some((t) => t >= missedAt) ?? false;
+      if (!hasCallback) {
+        const t = row.lineTeam;
+        const team: MissedNoCallbackItem["team"] =
+          t === "retention" || t === "nsf" || t === "cs" ? t : "other";
+        missedNoCB.push({
+          id: `quo-${norm}-${row.createdAt.toISOString()}`,
+          fromNumber: row.participant,
+          toNumber: row.lineName,
+          createdAt: row.createdAt.toISOString(),
+          ringGroupId: -1,
+          ringGroupName: "OpenPhone",
+          team,
+          source: "quo",
         });
       }
     }

@@ -1259,13 +1259,14 @@ function useVosCalls(): PbxCalls {
 }
 
 interface MissedNoCallbackItem {
-  id: number;
+  id: string | number;
   fromNumber: string;
   toNumber: string;
   createdAt: string;
   ringGroupId: number;
   ringGroupName: string;
   team: "retention" | "nsf" | "cs" | "other";
+  source?: "pbx" | "quo";
 }
 
 function useMissedNoCB() {
@@ -3285,7 +3286,7 @@ function MissedNoCBPanel() {
           </div>
         </div>
         <p className="text-xs text-muted-foreground mt-1">
-          PBX ring-group missed calls with no outbound callback (PBX or Quo) made after the missed call today.
+          Missed calls (PBX ring groups + Quo/OpenPhone) with no outbound callback made after the missed call today.
         </p>
       </CardHeader>
 
@@ -3343,12 +3344,13 @@ function MissedNoCBPanel() {
                   <TableHead className="text-xs w-28">Time</TableHead>
                   <TableHead className="text-xs">Number</TableHead>
                   <TableHead className="text-xs">Team</TableHead>
-                  <TableHead className="text-xs">Ring Group</TableHead>
+                  <TableHead className="text-xs w-20">Source</TableHead>
+                  <TableHead className="text-xs">Ring Group / Line</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {visible.map((it) => (
-                  <TableRow key={it.id} className="border-zinc-800 hover:bg-zinc-800/40">
+                  <TableRow key={String(it.id)} className="border-zinc-800 hover:bg-zinc-800/40">
                     <TableCell className="text-xs tabular-nums text-muted-foreground whitespace-nowrap">
                       {formatCallTime(it.createdAt)}
                     </TableCell>
@@ -3358,6 +3360,11 @@ function MissedNoCBPanel() {
                     <TableCell>
                       <Badge className={`text-[10px] px-1.5 py-0 ${TEAM_COLORS[it.team] ?? TEAM_COLORS["other"]}`}>
                         {TEAM_LABELS[it.team] ?? it.team}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge className={`text-[10px] px-1.5 py-0 border ${it.source === "quo" ? "bg-sky-500/20 text-sky-300 border-sky-500/30" : "bg-zinc-700/40 text-zinc-300 border-zinc-600/30"}`}>
+                        {it.source === "quo" ? "Quo" : "PBX"}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
