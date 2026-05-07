@@ -331,12 +331,9 @@ const SHEET_TO_PHONE: Record<string, string> = {
   "mohammed ayman-max francis-2268": "max francis",
   // NSF combined OpenPhone display names
   "engy-ellie moser-2046": "ellie moser",
-  // Display-name → phone-key for RetentionCSPanel (agents with Arabic OpenPhone names)
-  "jacob stephenson": "abdulrhman isawi",
-  "rick miller": "zeiad fouad",
-  "levi miller": "ahmed ayman",
-  "ella monroe": "hiba kamil",
-  "jacob xander": "youssef nady",
+  // Note: jacob stephenson, rick miller, levi miller, ella monroe, jacob xander
+  // no longer need entries here — PHONE_ALIASES now maps their Arabic OpenPhone names
+  // directly to these English display-name keys in the phone data map.
 };
 
 function sheetToPhoneKey(sheetAgent: string): string {
