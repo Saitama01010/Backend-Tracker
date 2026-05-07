@@ -26,11 +26,29 @@ async function quoFetch<T>(path: string, attempt = 0): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// Exact line name → team overrides (takes priority over regex, handles moved agents)
+const LINE_TEAM_MAP: Record<string, "retention" | "nsf" | "cs"> = {
+  "ahmed ayman-levi miller":         "cs",
+  "youssef nady-jacob xander":       "cs",
+  "nour-michael belfort-2900":       "cs",
+  "levi ob":                         "cs",   // Ahmed Ayman → CS
+  "jacob ob":                        "cs",   // Youssef Nady → CS
+  "adam ob":                         "retention",
+  "rick ob":                         "retention",
+  "ryan ob":                         "retention",
+  "abdlrhman-jacob stephenson":      "retention",
+  "zeiad fouad-zack ford":           "retention",
+  "mohammed ayman-max francis-2268": "retention",
+};
+
 function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   const n = name.toLowerCase().trim();
-  if (/retention|ob|outbound|jacob|levi|ryan|mike|adam|rick|zeiad|zack/.test(n)) return "retention";
-  if (/nsf|national settlement|ellie|alex|katie|jenny|estella|talia|rika|austin/.test(n)) return "nsf";
-  if (/\bcs\b|customer support/.test(n) || name === "CS Team") return "cs";
+  // Exact overrides first (agents who moved teams)
+  if (n in LINE_TEAM_MAP) return LINE_TEAM_MAP[n];
+  // CS — check before retention because some names overlap
+  if (/\bcs\b|customer support|talia|hiba|nourhan|rasha|bassant|ella monroe/.test(n) || name === "CS Team") return "cs";
+  if (/retention|ob|outbound|ryan|abdlrhman|rick|zeiad|zack|henry.?hart|chase.?miller|katherine|karma|leo.?carter|fares/.test(n)) return "retention";
+  if (/nsf|national settlement|ellie|alex|katie|jenny|estella|rika|austin/.test(n)) return "nsf";
   return null;
 }
 
@@ -76,6 +94,11 @@ const USER_EMAIL_OVERRIDES: Record<string, string> = {
   "toqahossam548@gmail.com": "Talia Morgan",
   "samafarouk90@gmail.com": "Katie Miller",
   "ingimahmoud01@gmail.com": "Ellie Moser",
+  // New members from May 2026 roster update
+  "hiba.kamil.r@gmail.com":   "Ella Monroe",    // CS
+  "saifaziz.598@gmail.com":   "Henry Hart",     // Retention
+  "natef737@gmail.com":       "Chase Miller",   // Retention
+  "karmaafarouk@gmail.com":   "Katherine Adams", // Retention
   // Resolved via /users endpoint
   "ahmedatta9696@gmail.com": "Elias Boone",
   "crazyanas36@gmail.com": "Kyle Scott",
