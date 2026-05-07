@@ -195,7 +195,8 @@ async function fetchAgentCallsForDate(
 async function scanRingGroupCalls(
   lineToRingGroupId: Map<string, number>,
   ringGroupIdToName: Map<number, string>,
-  totalCallsToday: number
+  totalCallsToday: number,
+  agentToRingGroups: Map<number, number[]>
 ): Promise<{
   missedCounts: VosRingGroupMissed;
   missedRecords: Array<{ id: number; fromNumber: string; toNumber: string; createdAt: string; ringGroupId: number; ringGroupName: string }>;
@@ -207,11 +208,15 @@ async function scanRingGroupCalls(
   // Deduplicate by call ID — some VoSLogic API pages return overlapping records
   const seenCallIds = new Set<number>();
 
-  if (lineToRingGroupId.size === 0) return { missedCounts, missedRecords, pbxOutboundCalls };
-
   // Always scan at least 10 pages (1000 calls) so we cover a full day even if
   // totalCallsToday is 0 (e.g. just after UTC midnight when VoSLogic hasn't reset yet).
   const pagesToScan = Math.max(10, Math.min(20, Math.ceil((totalCallsToday * 1.5) / 100) + 2));
+
+  // Work on a mutable copy so we can augment it from answered calls seen during scan
+  const lineMap = new Map(lineToRingGroupId);
+
+  // Collect missed calls whose line wasn't in lineMap at scan time; retry after map is seeded
+  const pendingMissed: VosCallRaw[] = [];
 
   for (let page = 1; page <= pagesToScan; page++) {
     const data = await vosFetch<{ calls: VosCallRaw[] }>(
@@ -226,14 +231,33 @@ async function scanRingGroupCalls(
         pbxOutboundCalls.push({ toNumber: call.toNumber, createdAt: call.createdAt });
       }
 
+      // Seed lineMap from answered inbound calls — this handles the case where a ring
+      // group's line has no answered calls among the initially-scanned agent histories
+      // (e.g. a team where all calls went to voicemail today).
+      if (
+        call.direction === "inbound" &&
+        call.agentId !== null && call.agentId !== undefined &&
+        call.toNumber && !lineMap.has(call.toNumber)
+      ) {
+        const rgIds = agentToRingGroups.get(call.agentId);
+        if (rgIds?.length) {
+          // Pick the first ring group for this agent as the best guess for this line
+          lineMap.set(call.toNumber, rgIds[0]);
+        }
+      }
+
       // Ring group missed: inbound, no agent, unanswered
       if (call.agentId !== null && call.agentId !== undefined) continue;
       if (call.direction !== "inbound") continue;
       if (call.status !== "voicemail" && call.status !== "no-answer" && call.status !== "missed") continue;
       if (!call.toNumber) continue;
 
-      const rgId = lineToRingGroupId.get(call.toNumber);
-      if (rgId === undefined) continue;
+      const rgId = lineMap.get(call.toNumber);
+      if (rgId === undefined) {
+        // Line not yet known — save for a second pass after the map is fully seeded
+        pendingMissed.push(call);
+        continue;
+      }
 
       // Skip duplicate call IDs (VoSLogic sometimes returns the same call on multiple pages)
       if (seenCallIds.has(call.id)) continue;
@@ -252,6 +276,24 @@ async function scanRingGroupCalls(
         });
       }
     }
+  }
+
+  // Second pass: process calls whose line wasn't known until later in the scan
+  for (const call of pendingMissed) {
+    if (!call.toNumber || !call.fromNumber) continue;
+    const rgId = lineMap.get(call.toNumber);
+    if (rgId === undefined) continue;
+    if (seenCallIds.has(call.id)) continue;
+    seenCallIds.add(call.id);
+    missedCounts[rgId] = (missedCounts[rgId] ?? 0) + 1;
+    missedRecords.push({
+      id: call.id,
+      fromNumber: call.fromNumber,
+      toNumber: call.toNumber,
+      createdAt: call.createdAt,
+      ringGroupId: rgId,
+      ringGroupName: ringGroupIdToName.get(rgId) ?? String(rgId),
+    });
   }
 
   return { missedCounts, missedRecords, pbxOutboundCalls };
@@ -364,7 +406,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       if (bestRg >= 0) lineToRingGroupId.set(line, bestRg);
     }
 
-    const scanResult = await scanRingGroupCalls(lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600);
+    const scanResult = await scanRingGroupCalls(lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600, agentToRingGroups);
 
     // ── Cross-reference missed records against callbacks ──────────────────────
     // Build callback lookup: normalized phone → all times an outbound call was made today
