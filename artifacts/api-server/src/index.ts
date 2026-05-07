@@ -243,7 +243,7 @@ async function seedAttendanceRecords() {
 
 async function clearTeamAccessRestrictions() {
   // One-time fix: remove team locks from specific users so they see all data.
-  const targets = ["rick miller"];
+  const targets = ["rick miller", "retention"];
   for (const username of targets) {
     const [updated] = await db
       .update(portalUsersTable)
