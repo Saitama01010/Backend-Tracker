@@ -78,6 +78,9 @@ interface VosCallRaw {
   fromNumber?: string;
   toNumber?: string;
   createdAt: string;
+  // VoSLogic may include ring group info directly on call records
+  ringGroupId?: number | null;
+  ringGroupName?: string | null;
 }
 
 export interface VosCallHistoryStat {
@@ -205,17 +208,24 @@ async function scanRingGroupCalls(
   const missedCounts: VosRingGroupMissed = {};
   const missedRecords: Array<{ id: number; fromNumber: string; toNumber: string; createdAt: string; ringGroupId: number; ringGroupName: string }> = [];
   const pbxOutboundCalls: Array<{ toNumber: string; createdAt: string }> = [];
-  // Deduplicate by call ID — some VoSLogic API pages return overlapping records
   const seenCallIds = new Set<number>();
 
-  // Always scan at least 10 pages (1000 calls) so we cover a full day even if
-  // totalCallsToday is 0 (e.g. just after UTC midnight when VoSLogic hasn't reset yet).
   const pagesToScan = Math.max(10, Math.min(20, Math.ceil((totalCallsToday * 1.5) / 100) + 2));
 
-  // Work on a mutable copy so we can augment it from answered calls seen during scan
+  // Layer 1: start with per-agent-derived map
+  // Layer 2: merge persistent cache so previously-learned mappings survive days with no answered calls
   const lineMap = new Map(lineToRingGroupId);
+  for (const [line, rgId] of persistentLineRgMap) {
+    if (!lineMap.has(line)) lineMap.set(line, rgId);
+  }
 
-  // Collect missed calls whose line wasn't in lineMap at scan time; retry after map is seeded
+  // Helper: record a new line→ring group mapping into both lineMap and the persistent cache
+  const learnLine = (line: string, rgId: number) => {
+    if (!lineMap.has(line)) lineMap.set(line, rgId);
+    if (!persistentLineRgMap.has(line)) persistentLineRgMap.set(line, rgId);
+  };
+
+  // Calls whose toNumber wasn't in lineMap when first seen — retried after full scan
   const pendingMissed: VosCallRaw[] = [];
 
   for (let page = 1; page <= pagesToScan; page++) {
@@ -225,46 +235,51 @@ async function scanRingGroupCalls(
     if (!data.calls?.length) break;
 
     for (const call of data.calls) {
-      // Collect PBX outbound calls for callback detection.
-      // Use direction !== "inbound" to match regardless of exact enum value ("outbound"/"outgoing").
       if (call.direction !== "inbound" && call.toNumber) {
         pbxOutboundCalls.push({ toNumber: call.toNumber, createdAt: call.createdAt });
       }
 
-      // Seed lineMap from answered inbound calls — this handles the case where a ring
-      // group's line has no answered calls among the initially-scanned agent histories
-      // (e.g. a team where all calls went to voicemail today).
+      // Layer 3a: if the API returns ringGroupId directly on the call record, learn it immediately
+      if (call.toNumber && call.ringGroupId != null && ringGroupIdToName.has(call.ringGroupId)) {
+        learnLine(call.toNumber, call.ringGroupId);
+      }
+
+      // Layer 3b: seed from answered inbound calls via agent→ring group membership
       if (
         call.direction === "inbound" &&
-        call.agentId !== null && call.agentId !== undefined &&
-        call.toNumber && !lineMap.has(call.toNumber)
+        call.agentId != null &&
+        call.toNumber
       ) {
         const rgIds = agentToRingGroups.get(call.agentId);
-        if (rgIds?.length) {
-          // Pick the first ring group for this agent as the best guess for this line
-          lineMap.set(call.toNumber, rgIds[0]);
-        }
+        if (rgIds?.length) learnLine(call.toNumber, rgIds[0]);
       }
 
       // Ring group missed: inbound, no agent, unanswered
-      if (call.agentId !== null && call.agentId !== undefined) continue;
+      if (call.agentId != null) continue;
       if (call.direction !== "inbound") continue;
       if (call.status !== "voicemail" && call.status !== "no-answer" && call.status !== "missed") continue;
       if (!call.toNumber) continue;
 
+      // Layer 3c: if the missed call itself carries a ringGroupId, learn it now
+      if (call.ringGroupId != null && ringGroupIdToName.has(call.ringGroupId)) {
+        learnLine(call.toNumber, call.ringGroupId);
+      }
+      // Layer 3d: if the missed call has a ringGroupName, resolve it to an id
+      if (call.ringGroupName && !lineMap.has(call.toNumber)) {
+        for (const [rgId, rgName] of ringGroupIdToName) {
+          if (rgName === call.ringGroupName) { learnLine(call.toNumber, rgId); break; }
+        }
+      }
+
       const rgId = lineMap.get(call.toNumber);
       if (rgId === undefined) {
-        // Line not yet known — save for a second pass after the map is fully seeded
         pendingMissed.push(call);
         continue;
       }
 
-      // Skip duplicate call IDs (VoSLogic sometimes returns the same call on multiple pages)
       if (seenCallIds.has(call.id)) continue;
       seenCallIds.add(call.id);
-
       missedCounts[rgId] = (missedCounts[rgId] ?? 0) + 1;
-
       if (call.fromNumber) {
         missedRecords.push({
           id: call.id,
@@ -278,7 +293,7 @@ async function scanRingGroupCalls(
     }
   }
 
-  // Second pass: process calls whose line wasn't known until later in the scan
+  // Second pass: retry calls that were pending because their line wasn't known yet
   for (const call of pendingMissed) {
     if (!call.toNumber || !call.fromNumber) continue;
     const rgId = lineMap.get(call.toNumber);
@@ -300,6 +315,11 @@ async function scanRingGroupCalls(
 }
 
 // ─── Call history — background-refreshed cache ───────────────────────────────
+
+// Persistent line→ring group map: accumulates across refreshes within a server session.
+// Once a mapping is learned (e.g. +19498210062 → ring group 4) it is never lost, so
+// ring groups with no answered calls on a given day still get their missed calls counted.
+const persistentLineRgMap = new Map<string, number>();
 
 let callHistoryCache: VosCallHistoryStat[] = [];
 let callHistoryFetchedAt = 0;
@@ -405,6 +425,34 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       }
       if (bestRg >= 0) lineToRingGroupId.set(line, bestRg);
     }
+
+    // ── Probe unrepresented ring groups ───────────────────────────────────────
+    // If a ring group has no lines in lineToRingGroupId (e.g. all calls went to
+    // voicemail today so no agent answered), fetch one page of any member agent's
+    // recent call history to discover the phone lines for that ring group.
+    const representedRgIds = new Set(lineToRingGroupId.values());
+    const probeTasks: Promise<void>[] = [];
+    for (const rg of ringGroups) {
+      if (representedRgIds.has(rg.id)) continue; // already have lines for this RG
+      // Also skip if the persistent cache already covers it
+      if ([...persistentLineRgMap.values()].includes(rg.id)) continue;
+      const probeAgentId = rg.agentIds[0];
+      if (probeAgentId == null) continue;
+      probeTasks.push((async () => {
+        try {
+          const data = await vosFetch<{ calls: VosCallRaw[] }>(
+            `/api/calls?agentId=${probeAgentId}&limit=100&page=1`
+          );
+          for (const call of data.calls ?? []) {
+            if (call.direction === "inbound" && call.toNumber) {
+              lineToRingGroupId.set(call.toNumber, rg.id);
+              persistentLineRgMap.set(call.toNumber, rg.id);
+            }
+          }
+        } catch { /* ignore probe failures */ }
+      })());
+    }
+    if (probeTasks.length > 0) await Promise.all(probeTasks);
 
     const scanResult = await scanRingGroupCalls(lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600, agentToRingGroups);
 
