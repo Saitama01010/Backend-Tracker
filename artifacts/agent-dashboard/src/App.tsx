@@ -2222,6 +2222,19 @@ function RetentionCSPanel() {
   const todayIso = toIsoDate(new Date());
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
+  const [dayAgentFilter, setDayAgentFilter] = useState("");
+
+  const fromDate = from ? parseDate(from) : null;
+  const toDate = to ? parseDate(to) : null;
+  if (toDate) toDate.setHours(23, 59, 59, 999);
+
+  const statusQ = useQuery({
+    queryKey: ["status", "retention"],
+    queryFn: fetchRetentionCombinedSheet,
+    staleTime: 1000 * 10,
+    refetchOnWindowFocus: true,
+    refetchInterval: 15 * 1000,
+  });
 
   const phoneQ = useQuery<PhoneStatsResponse | null>({
     queryKey: ["phoneStats", "backend", from, to],
@@ -2236,6 +2249,21 @@ function RetentionCSPanel() {
     refetchOnWindowFocus: true,
     refetchInterval: 15 * 1000,
   });
+
+  const aggregated = useMemo(() => {
+    if (!statusQ.data) return null;
+    return aggregate(statusQ.data, "retention", fromDate, toDate);
+  }, [statusQ.data, from, to]);
+
+  const aggregatedForDay = useMemo(() => {
+    if (!statusQ.data) return null;
+    return aggregate(statusQ.data, "retention", fromDate, toDate, dayAgentFilter || undefined);
+  }, [statusQ.data, from, to, dayAgentFilter]);
+
+  const dayAgentOptions = useMemo(() => {
+    if (!aggregated || "error" in aggregated) return [];
+    return aggregated.byAgent.map((a) => a.agent).sort((a, b) => a.localeCompare(b));
+  }, [aggregated]);
 
   const retentionPhoneData = useMemo(() => buildTeamPhoneData("retention", phoneQ.data), [phoneQ.data]);
   const csPhoneData = useMemo(() => buildTeamPhoneData("cs", phoneQ.data), [phoneQ.data]);
@@ -2318,7 +2346,7 @@ function RetentionCSPanel() {
     return { calls, answered, seconds };
   }, [pbxData, agentList]);
 
-  function refresh() { phoneQ.refetch(); }
+  function refresh() { statusQ.refetch(); phoneQ.refetch(); }
 
   return (
     <Card>
@@ -2326,20 +2354,25 @@ function RetentionCSPanel() {
         <div>
           <CardTitle className="text-xl">Retention &amp; CS Team</CardTitle>
           <p className="text-sm text-muted-foreground mt-1">
-            Call activity · live from OpenPhone + PBX ·{" "}
+            Calls &amp; retention files · live from OpenPhone + PBX ·{" "}
             <span className="inline-flex items-center gap-1">
               <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30">Retention</span>
               <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">CS</span>
             </span>
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={refresh} disabled={phoneQ.isFetching}>
-          <RefreshCw className={`h-4 w-4 mr-2 ${phoneQ.isFetching ? "animate-spin" : ""}`} />
+        <Button variant="outline" size="sm" onClick={refresh} disabled={phoneQ.isFetching || statusQ.isFetching}>
+          <RefreshCw className={`h-4 w-4 mr-2 ${(phoneQ.isFetching || statusQ.isFetching) ? "animate-spin" : ""}`} />
           Refresh
         </Button>
       </CardHeader>
       <CardContent className="space-y-6">
-        {phoneQ.isLoading && <TableSkeleton />}
+        {(phoneQ.isLoading || statusQ.isLoading) && <TableSkeleton />}
+        {aggregated && "error" in aggregated && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+            {aggregated.error}
+          </div>
+        )}
         <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <StatTile label="Agents" value={agentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
@@ -2348,8 +2381,67 @@ function RetentionCSPanel() {
           <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
           <StatTile label="Time on calls" value={formatHours(totals.seconds + pbxTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
           <StatTile label="Response rate" value={responseRate(totals.answered + pbxTotals.answered, totals.calls + pbxTotals.calls)} tone="amber" />
+          {aggregated && !("error" in aggregated) && (
+            <>
+              <StatTile label="Today's retains" value={aggregated.todayRetained.toLocaleString()} tone="emerald" />
+              <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />
+              <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />
+              <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />
+            </>
+          )}
         </div>
-        <ByCallStatsView agentList={agentList} phoneData={combinedPhoneData} pbxData={pbxData} extraMissed={pbxMissed} agentDept={agentDept} />
+
+        <Tabs defaultValue="call" className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="call">By call</TabsTrigger>
+            {aggregated && !("error" in aggregated) && (
+              <>
+                <TabsTrigger value="files">By files</TabsTrigger>
+                <TabsTrigger value="day">By day</TabsTrigger>
+              </>
+            )}
+          </TabsList>
+          <TabsContent value="call">
+            <ByCallStatsView agentList={agentList} phoneData={combinedPhoneData} pbxData={pbxData} extraMissed={pbxMissed} agentDept={agentDept} />
+          </TabsContent>
+          {aggregated && !("error" in aggregated) && (
+            <>
+              <TabsContent value="files">
+                <ByFilesView data={aggregated} />
+              </TabsContent>
+              <TabsContent value="day">
+                <div className="space-y-3">
+                  {dayAgentOptions.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={dayAgentFilter}
+                        onChange={(e) => setDayAgentFilter(e.target.value)}
+                        className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
+                      >
+                        <option value="">All agents</option>
+                        {dayAgentOptions.map((n) => (
+                          <option key={n} value={n}>{n}</option>
+                        ))}
+                      </select>
+                      {dayAgentFilter && (
+                        <button
+                          type="button"
+                          onClick={() => setDayAgentFilter("")}
+                          className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {aggregatedForDay && !("error" in aggregatedForDay) && (
+                    <ByDayView data={aggregatedForDay} />
+                  )}
+                </div>
+              </TabsContent>
+            </>
+          )}
+        </Tabs>
       </CardContent>
     </Card>
   );
