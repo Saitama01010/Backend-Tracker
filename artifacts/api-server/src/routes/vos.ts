@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { db, phoneCallsTable } from "@workspace/db";
+import { and, eq, gte } from "drizzle-orm";
 import type { Logger } from "pino";
 
 const router = Router();
@@ -89,16 +91,35 @@ export interface VosCallHistoryStat {
   lastCallAt: string | null;
 }
 
-// Ring group missed = voicemail/no-answer calls counted per ring group ID
 export type VosRingGroupMissed = Record<number, number>;
+
+export interface MissedNoCallbackItem {
+  id: number;
+  fromNumber: string;
+  toNumber: string;
+  createdAt: string;
+  ringGroupId: number;
+  ringGroupName: string;
+  team: "retention" | "nsf" | "cs" | "other";
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function normalizePhone(num: string): string {
+  const digits = (num ?? "").replace(/\D/g, "");
+  return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+
+function teamFromRingGroupName(name: string): "retention" | "nsf" | "cs" | "other" {
+  const n = name.toLowerCase();
+  if (n.includes("retention")) return "retention";
+  if (n.includes("back") || n.includes("nsf")) return "nsf";
+  if (n.includes("customer") || n.includes("support") || n === "cs" || n.includes("cs team")) return "cs";
+  return "other";
+}
 
 // ─── Per-agent status breakdown ───────────────────────────────────────────────
 
-/**
- * Fetch status breakdown for a specific agent's calls today.
- * Also collects inbound toNumber values (the ring group phone lines this agent
- * receives calls on) so the caller can build a line → ring group mapping.
- */
 async function fetchAgentCallsForDate(
   agentId: number,
   expectedCount: number,
@@ -141,7 +162,6 @@ async function fetchAgentCallsForDate(
       if (call.status === "voicemail") voicemail++;
       if (call.duration) durationSeconds += call.duration;
 
-      // Collect inbound lines to build ring group → phone line mapping
       if (call.direction === "inbound" && call.toNumber && call.status === "completed") {
         inboundToNumbers.push(call.toNumber);
       }
@@ -155,23 +175,25 @@ async function fetchAgentCallsForDate(
 }
 
 /**
- * Scan recent unfiltered call pages for voicemail/no-answer calls (agentId=null)
- * and count them per ring group using the provided phone line → ring group ID map.
- *
- * Since ALL historical calls show today's date in VoSLogic (a VoSLogic bug),
- * we cannot rely on date-based termination. Instead we scan a fixed window of
- * pages that covers a full day's call volume across all ring groups (~10 pages).
+ * Scan recent unfiltered call pages for:
+ *  1. Inbound voicemail/no-answer (agentId=null) → ring group missed counts + individual records
+ *  2. All outbound completed calls → PBX callback numbers (for missed-no-callback detection)
  */
-async function fetchRingGroupMissed(
+async function scanRingGroupCalls(
   lineToRingGroupId: Map<string, number>,
+  ringGroupIdToName: Map<number, string>,
   totalCallsToday: number
-): Promise<VosRingGroupMissed> {
-  const missed: VosRingGroupMissed = {};
-  if (lineToRingGroupId.size === 0) return missed;
+): Promise<{
+  missedCounts: VosRingGroupMissed;
+  missedRecords: Array<{ id: number; fromNumber: string; toNumber: string; createdAt: string; ringGroupId: number; ringGroupName: string }>;
+  pbxOutboundCalls: Array<{ toNumber: string; createdAt: string }>;
+}> {
+  const missedCounts: VosRingGroupMissed = {};
+  const missedRecords: Array<{ id: number; fromNumber: string; toNumber: string; createdAt: string; ringGroupId: number; ringGroupName: string }> = [];
+  const pbxOutboundCalls: Array<{ toNumber: string; createdAt: string }> = [];
 
-  // Scan enough pages to cover today's calls. Each page = 100 records.
-  // Total daily volume (answered + voicemail) is typically 800-1000 records.
-  // We also cap using the dashboard's totalCallsToday as a guide.
+  if (lineToRingGroupId.size === 0) return { missedCounts, missedRecords, pbxOutboundCalls };
+
   const pagesToScan = Math.min(12, Math.ceil((totalCallsToday * 1.5) / 100) + 2);
 
   for (let page = 1; page <= pagesToScan; page++) {
@@ -181,22 +203,36 @@ async function fetchRingGroupMissed(
     if (!data.calls?.length) break;
 
     for (const call of data.calls) {
-      // Only count unanswered inbound calls with no agent
+      // Collect PBX outbound calls for callback detection
+      if (call.direction === "outbound" && call.toNumber && call.status === "completed") {
+        pbxOutboundCalls.push({ toNumber: call.toNumber, createdAt: call.createdAt });
+      }
+
+      // Ring group missed: inbound, no agent, unanswered
       if (call.agentId !== null && call.agentId !== undefined) continue;
       if (call.direction !== "inbound") continue;
       if (call.status !== "voicemail" && call.status !== "no-answer" && call.status !== "missed") continue;
+      if (!call.toNumber) continue;
 
-      const line = call.toNumber;
-      if (!line) continue;
+      const rgId = lineToRingGroupId.get(call.toNumber);
+      if (rgId === undefined) continue;
 
-      const rgId = lineToRingGroupId.get(line);
-      if (rgId !== undefined) {
-        missed[rgId] = (missed[rgId] ?? 0) + 1;
+      missedCounts[rgId] = (missedCounts[rgId] ?? 0) + 1;
+
+      if (call.fromNumber) {
+        missedRecords.push({
+          id: call.id,
+          fromNumber: call.fromNumber,
+          toNumber: call.toNumber,
+          createdAt: call.createdAt,
+          ringGroupId: rgId,
+          ringGroupName: ringGroupIdToName.get(rgId) ?? String(rgId),
+        });
       }
     }
   }
 
-  return missed;
+  return { missedCounts, missedRecords, pbxOutboundCalls };
 }
 
 // ─── Call history — background-refreshed cache ───────────────────────────────
@@ -205,19 +241,8 @@ let callHistoryCache: VosCallHistoryStat[] = [];
 let callHistoryFetchedAt = 0;
 let callHistoryFetching = false;
 let ringGroupMissedCache: VosRingGroupMissed = {};
+let missedNoCallbackCache: MissedNoCallbackItem[] = [];
 
-/**
- * Refresh today's per-agent call history plus ring group missed counts.
- *
- * Strategy:
- *   1. Fetch dashboard + agents list + ring groups in parallel
- *   2. For each agent in dashboard.callsByAgent, fetch their calls to get status breakdown.
- *      Also collect the inbound toNumber values (= ring group phone lines).
- *   3. Build a phone line → ring group ID map from the collected toNumbers.
- *   4. Scan unfiltered recent call pages for voicemail/no-answer calls; match by toNumber
- *      to attribute them to the correct ring group.
- *   5. Cache everything.
- */
 async function refreshCallHistory(log?: Logger): Promise<void> {
   if (callHistoryFetching) return;
   callHistoryFetching = true;
@@ -231,11 +256,9 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       vosFetch<VosRingGroup[]>("/api/ring-groups"),
     ]);
 
-    // Build name → id lookup
     const nameToId = new Map<string, number>();
     for (const a of agentList) nameToId.set(a.name.trim(), a.id);
 
-    // Build agentId → ring group IDs lookup
     const agentToRingGroups = new Map<number, number[]>();
     for (const rg of ringGroups) {
       for (const agentId of rg.agentIds) {
@@ -244,11 +267,12 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       }
     }
 
+    const ringGroupIdToName = new Map<number, string>();
+    for (const rg of ringGroups) ringGroupIdToName.set(rg.id, rg.name);
+
     const agents = dashboard.callsByAgent ?? [];
     const results: VosCallHistoryStat[] = [];
 
-    // Collect inbound phone lines per ring group while fetching per-agent data
-    // lineToRingGroupId: phone number string → ring group ID (first ring group wins)
     const lineRingGroupCounts = new Map<string, Map<number, number>>();
 
     const CONCURRENCY = 5;
@@ -272,7 +296,6 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
             };
           }
           const detail = await fetchAgentCallsForDate(agentId, a.calls, today);
-          // Associate collected phone lines with this agent's ring groups
           const rgIds = agentToRingGroups.get(agentId) ?? [];
           for (const line of detail.inboundToNumbers) {
             if (!lineRingGroupCounts.has(line)) lineRingGroupCounts.set(line, new Map());
@@ -301,7 +324,6 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       }
     }
 
-    // Build best phone line → ring group mapping (most-common ring group per line wins)
     const lineToRingGroupId = new Map<string, number>();
     for (const [line, rgCounts] of lineRingGroupCounts.entries()) {
       let bestRg = -1, bestCount = 0;
@@ -311,15 +333,69 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       if (bestRg >= 0) lineToRingGroupId.set(line, bestRg);
     }
 
-    // Scan recent call pages for ring group voicemail/missed counts
-    const rgMissed = await fetchRingGroupMissed(lineToRingGroupId, dashboard.totalCallsToday ?? 600);
+    const scanResult = await scanRingGroupCalls(lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600);
+
+    // ── Cross-reference missed records against callbacks ──────────────────────
+    // Build callback lookup: normalized phone → all times an outbound call was made today
+    const callbackTimes = new Map<string, Date[]>();
+
+    const addCallback = (rawPhone: string, at: Date) => {
+      const norm = normalizePhone(rawPhone);
+      if (!norm) return;
+      if (!callbackTimes.has(norm)) callbackTimes.set(norm, []);
+      callbackTimes.get(norm)!.push(at);
+    };
+
+    // PBX outbound calls from the global scan
+    for (const c of scanResult.pbxOutboundCalls) {
+      addCallback(c.toNumber, new Date(c.createdAt));
+    }
+
+    // Quo DB outbound calls today
+    const startOfToday = new Date(today + "T00:00:00.000Z");
+    const quoOutbound = await db
+      .select({ participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
+      .from(phoneCallsTable)
+      .where(and(eq(phoneCallsTable.direction, "outgoing"), gte(phoneCallsTable.createdAt, startOfToday)));
+
+    for (const row of quoOutbound) {
+      addCallback(row.participant, new Date(row.createdAt));
+    }
+
+    // Determine which missed calls had no callback after the missed call time
+    const missedNoCB: MissedNoCallbackItem[] = [];
+    for (const rec of scanResult.missedRecords) {
+      const norm = normalizePhone(rec.fromNumber);
+      const missedAt = new Date(rec.createdAt);
+      const times = callbackTimes.get(norm);
+      const hasCallback = times?.some((t) => t >= missedAt) ?? false;
+      if (!hasCallback) {
+        missedNoCB.push({
+          id: rec.id,
+          fromNumber: rec.fromNumber,
+          toNumber: rec.toNumber,
+          createdAt: rec.createdAt,
+          ringGroupId: rec.ringGroupId,
+          ringGroupName: rec.ringGroupName,
+          team: teamFromRingGroupName(rec.ringGroupName),
+        });
+      }
+    }
 
     callHistoryCache = results;
     callHistoryFetchedAt = Date.now();
-    ringGroupMissedCache = rgMissed;
+    ringGroupMissedCache = scanResult.missedCounts;
+    missedNoCallbackCache = missedNoCB;
 
     log?.info(
-      { agents: results.length, ringGroupMissed: rgMissed, lines: lineToRingGroupId.size, ms: Date.now() - t0, today },
+      {
+        agents: results.length,
+        ringGroupMissed: scanResult.missedCounts,
+        missedNoCB: missedNoCB.length,
+        lines: lineToRingGroupId.size,
+        ms: Date.now() - t0,
+        today,
+      },
       "vos: call history refreshed"
     );
   } catch (err) {
@@ -329,19 +405,11 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
   }
 }
 
-// Kick off immediately on startup, then every 5 minutes
 void refreshCallHistory();
 setInterval(() => void refreshCallHistory(), 5 * 60 * 1000);
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-/**
- * GET /api/vos/stats
- *
- * Returns cached per-agent call history (answered/missed/voicemail/duration/lastCallAt)
- * from the background refresh job, plus live dashboard + agents + ring-groups +
- * ring group missed call counts.
- */
 router.get("/vos/stats", async (req, res) => {
   try {
     const [agents, ringGroups, dashboard] = await Promise.all([
@@ -379,7 +447,17 @@ router.get("/vos/stats", async (req, res) => {
   }
 });
 
-// GET /api/vos/live — currently active calls (fast — just dashboard)
+/**
+ * GET /api/vos/missed-no-callback
+ *
+ * Returns today's missed PBX ring-group calls that had no callback
+ * (neither PBX outbound nor Quo outbound) after the time of the missed call.
+ * Results are from the background-refresh cache (updated every 5 min).
+ */
+router.get("/vos/missed-no-callback", (_req, res) => {
+  res.json({ items: missedNoCallbackCache, fetchedAt: callHistoryFetchedAt });
+});
+
 router.get("/vos/live", async (req, res) => {
   try {
     const dashboard = await vosFetch<VosDashboard>("/api/dashboard");
@@ -390,7 +468,6 @@ router.get("/vos/live", async (req, res) => {
   }
 });
 
-// GET /api/vos/debug/calls?agentId=X&limit=N — raw call records for inspection
 router.get("/vos/debug/calls", async (req, res) => {
   try {
     const agentId = req.query["agentId"] ? `&agentId=${req.query["agentId"]}` : "";

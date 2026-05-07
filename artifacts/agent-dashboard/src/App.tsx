@@ -49,6 +49,8 @@ import {
   KeyRound,
   UserCheck,
   UserX,
+  PhoneOff,
+  Filter,
 } from "lucide-react";
 
 const queryClient = new QueryClient();
@@ -1254,6 +1256,30 @@ function useVosCalls(): PbxCalls {
     }
     return m;
   }, [q.data]);
+}
+
+interface MissedNoCallbackItem {
+  id: number;
+  fromNumber: string;
+  toNumber: string;
+  createdAt: string;
+  ringGroupId: number;
+  ringGroupName: string;
+  team: "retention" | "nsf" | "cs" | "other";
+}
+
+function useMissedNoCB() {
+  return useQuery<{ items: MissedNoCallbackItem[]; fetchedAt: number }>({
+    queryKey: ["missedNoCB"],
+    queryFn: async () => {
+      const r = await fetch("/api/vos/missed-no-callback");
+      if (!r.ok) return { items: [], fetchedAt: 0 };
+      return r.json();
+    },
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
+    refetchOnWindowFocus: true,
+  });
 }
 
 function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMissed }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics>; directKeys?: boolean; pbxData?: PbxCalls; extraMissed?: number }) {
@@ -3191,6 +3217,163 @@ function VoSPanel() {
   );
 }
 
+// ─── Missed / No Callback Panel ───────────────────────────────────────────────
+
+function maskNumber(num: string): string {
+  const digits = num.replace(/\D/g, "");
+  const last = digits.slice(-10);
+  if (last.length === 10) return `(${last.slice(0,3)}) ${last.slice(3,6)}-${last.slice(6)}`.replace(/\d{4}$/, (m) => "****".slice(0, m.length));
+  return num.length > 4 ? `${"*".repeat(num.length - 4)}${num.slice(-4)}` : num;
+}
+
+function formatCallTime(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: true });
+}
+
+const TEAM_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "CS", other: "Other" };
+const TEAM_COLORS: Record<string, string> = {
+  retention: "bg-violet-500/15 text-violet-300 border-violet-500/20",
+  nsf: "bg-sky-500/15 text-sky-300 border-sky-500/20",
+  cs: "bg-emerald-500/15 text-emerald-300 border-emerald-500/20",
+  other: "bg-zinc-500/15 text-zinc-300 border-zinc-500/20",
+};
+
+function MissedNoCBPanel() {
+  const q = useMissedNoCB();
+  const qc = useQueryClient();
+  const items = q.data?.items ?? [];
+  const fetchedAt = q.data?.fetchedAt ?? 0;
+  const [teamFilter, setTeamFilter] = useState<string>("all");
+  const [search, setSearch] = useState("");
+
+  const teams = useMemo(() => {
+    const s = new Set<string>();
+    for (const it of items) if (it.team !== "other") s.add(it.team);
+    return Array.from(s).sort();
+  }, [items]);
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const it of items) c[it.team] = (c[it.team] ?? 0) + 1;
+    return c;
+  }, [items]);
+
+  const visible = useMemo(() => {
+    let list = items;
+    if (teamFilter !== "all") list = list.filter((it) => it.team === teamFilter);
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter((it) => it.fromNumber.includes(q) || it.ringGroupName.toLowerCase().includes(q));
+    }
+    return [...list].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [items, teamFilter, search]);
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <PhoneOff className="h-4 w-4 text-rose-400" />
+            <CardTitle className="text-base">Missed Calls — No Callback</CardTitle>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            {fetchedAt > 0 && <span>Updated {new Date(fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
+            <Button size="sm" variant="ghost" className="h-7 px-2 gap-1" onClick={() => qc.invalidateQueries({ queryKey: ["missedNoCB"] })}>
+              <RefreshCw className="h-3 w-3" /> Refresh
+            </Button>
+          </div>
+        </div>
+        <p className="text-xs text-muted-foreground mt-1">
+          PBX ring-group missed calls with no outbound callback (PBX or Quo) made after the missed call today.
+        </p>
+      </CardHeader>
+
+      <CardContent className="space-y-5">
+        {/* Team count tiles */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <StatTile label="Total missed / no CB" value={q.isLoading ? "…" : items.length.toLocaleString()} tone="rose" icon={<PhoneOff className="h-3.5 w-3.5" />} />
+          <StatTile label="Retention" value={q.isLoading ? "…" : (counts["retention"] ?? 0).toLocaleString()} tone="violet" />
+          <StatTile label="NSF" value={q.isLoading ? "…" : (counts["nsf"] ?? 0).toLocaleString()} tone="sky" />
+          <StatTile label="CS" value={q.isLoading ? "…" : (counts["cs"] ?? 0).toLocaleString()} tone="emerald" />
+        </div>
+
+        {/* Filters */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-1.5">
+            <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="text-xs text-muted-foreground">Team:</span>
+          </div>
+          {["all", ...teams].map((t) => (
+            <button
+              key={t}
+              onClick={() => setTeamFilter(t)}
+              className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
+                teamFilter === t
+                  ? "bg-violet-500/25 text-violet-200 border-violet-500/40"
+                  : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"
+              }`}
+            >
+              {t === "all" ? "All" : TEAM_LABELS[t] ?? t}
+            </button>
+          ))}
+          <div className="ml-auto flex items-center gap-2">
+            <Search className="h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              placeholder="Search number or group…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-7 w-44 text-xs"
+            />
+          </div>
+        </div>
+
+        {/* Table */}
+        {q.isLoading ? (
+          <div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-9 w-full" />)}</div>
+        ) : visible.length === 0 ? (
+          <div className="py-16 text-center text-muted-foreground text-sm">
+            {items.length === 0 ? "No missed calls without a callback today." : "No results match the current filters."}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-zinc-800 overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow className="border-zinc-800 bg-zinc-900/60">
+                  <TableHead className="text-xs w-28">Time</TableHead>
+                  <TableHead className="text-xs">Number</TableHead>
+                  <TableHead className="text-xs">Team</TableHead>
+                  <TableHead className="text-xs">Ring Group</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {visible.map((it) => (
+                  <TableRow key={it.id} className="border-zinc-800 hover:bg-zinc-800/40">
+                    <TableCell className="text-xs tabular-nums text-muted-foreground whitespace-nowrap">
+                      {formatCallTime(it.createdAt)}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs tracking-wider">
+                      {maskNumber(it.fromNumber)}
+                    </TableCell>
+                    <TableCell>
+                      <Badge className={`text-[10px] px-1.5 py-0 ${TEAM_COLORS[it.team] ?? TEAM_COLORS["other"]}`}>
+                        {TEAM_LABELS[it.team] ?? it.team}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {it.ringGroupName}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 type DashView = "metrics" | "attendance";
 
 function Dashboard() {
@@ -3275,10 +3458,11 @@ function Dashboard() {
       <main className="max-w-[1400px] mx-auto px-6 py-8">
         {view === "metrics" && can("view_metrics") ? (
           <Tabs defaultValue="retention" className="space-y-6">
-            <TabsList className="grid w-full max-w-2xl grid-cols-5">
-              <TabsTrigger value="retention" data-testid="tab-retention">Retention Team</TabsTrigger>
-              <TabsTrigger value="nsf" data-testid="tab-nsf">NSF Team</TabsTrigger>
+            <TabsList className="grid w-full max-w-3xl grid-cols-6">
+              <TabsTrigger value="retention" data-testid="tab-retention">Retention</TabsTrigger>
+              <TabsTrigger value="nsf" data-testid="tab-nsf">NSF</TabsTrigger>
               <TabsTrigger value="cs" data-testid="tab-cs">CS Team</TabsTrigger>
+              <TabsTrigger value="missed-no-cb" data-testid="tab-missed-no-cb">Missed / No CB</TabsTrigger>
               <TabsTrigger value="quo-lines" data-testid="tab-quo-lines">Quo Lines</TabsTrigger>
               <TabsTrigger value="vos" data-testid="tab-vos">PBX</TabsTrigger>
             </TabsList>
@@ -3290,6 +3474,9 @@ function Dashboard() {
             </TabsContent>
             <TabsContent value="cs">
               <CSPanel />
+            </TabsContent>
+            <TabsContent value="missed-no-cb">
+              <MissedNoCBPanel />
             </TabsContent>
             <TabsContent value="quo-lines">
               <QuoLinesPanel />
