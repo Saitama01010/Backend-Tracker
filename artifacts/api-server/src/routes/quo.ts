@@ -58,6 +58,12 @@ function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   return null;
 }
 
+// Participant numbers to exclude from all stats (blocked/spam callers)
+const PARTICIPANT_BLOCKLIST = new Set([
+  "+17035075710",
+  "17035075710",
+]);
+
 // Agent-name → team override. Calls are bucketed by who made them, not which line
 // they used. This ensures agents who call from shared/unclassified lines still
 // appear in the correct team bucket.
