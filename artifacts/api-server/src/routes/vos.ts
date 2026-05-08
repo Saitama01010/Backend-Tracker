@@ -118,6 +118,10 @@ function normalizePhone(num: string): string {
 // Ring groups whose missed calls should never appear in the missed-no-callback panel.
 const EXCLUDED_RING_GROUPS = new Set(["MX Retention"]);
 
+// Only these Quo/OpenPhone line names are team-shared lines.
+// Personal agent lines (e.g. "Rick Miller RT OB", "Jenny NSF") are excluded.
+const TEAM_QUO_LINES = ["Retention", "CS Team", "Main NSF"];
+
 function teamFromRingGroupName(name: string): "retention" | "nsf" | "cs" | "other" {
   const n = name.toLowerCase();
   if (n.includes("retention")) return "retention";
@@ -530,7 +534,8 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
         and(
           eq(phoneCallsTable.direction, "incoming"),
           inArray(phoneCallsTable.status, ["no-answer", "voicemail", "missed", "voicemail-brief"]),
-          gte(phoneCallsTable.createdAt, window36h)
+          gte(phoneCallsTable.createdAt, window36h),
+          inArray(phoneCallsTable.lineName, TEAM_QUO_LINES)
         )
       );
 
