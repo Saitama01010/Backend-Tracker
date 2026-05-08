@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import Papa from "papaparse";
-import { createContext, useContext, Fragment, useEffect, useMemo, useState, useCallback } from "react";
+import { createContext, useContext, Fragment, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -51,6 +51,9 @@ import {
   UserX,
   PhoneOff,
   Filter,
+  MessageCircle,
+  Send,
+  Sparkles,
 } from "lucide-react";
 
 const queryClient = new QueryClient();
@@ -4095,10 +4098,146 @@ function Dashboard() {
           </div>
         )}
       </main>
+      <SamiaChat />
     </div>
   );
 }
 
+
+// ─── Samia AI Chat ─────────────────────────────────────────────────────────────
+
+interface SamiaMessage { role: "user" | "assistant"; content: string }
+
+function SamiaChat() {
+  const [open, setOpen] = useState(false);
+  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<SamiaMessage[]>([]);
+  const [loading, setLoading] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const { token } = useUser();
+
+  useEffect(() => {
+    if (open) {
+      setTimeout(() => inputRef.current?.focus(), 80);
+      if (messages.length === 0) {
+        setMessages([{ role: "assistant", content: "Hey! I'm Samia 👋 Ask me anything about the numbers — missed calls, answered rates, agent stats, you name it." }]);
+      }
+    }
+  }, [open]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  async function send() {
+    const text = input.trim();
+    if (!text || loading) return;
+    setInput("");
+    const history = messages.filter((m) => m.role !== "assistant" || messages.indexOf(m) > 0);
+    setMessages((prev) => [...prev, { role: "user", content: text }]);
+    setLoading(true);
+    try {
+      const res = await fetch("/api/samia/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ message: text, history }),
+      });
+      const data = (await res.json()) as { reply?: string; error?: string };
+      setMessages((prev) => [...prev, { role: "assistant", content: data.reply ?? "Sorry, something went wrong." }]);
+    } catch {
+      setMessages((prev) => [...prev, { role: "assistant", content: "Network error — try again." }]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <>
+      {/* Floating bubble */}
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white shadow-[0_0_32px_-4px_rgba(168,85,247,0.7)] flex items-center justify-center hover:scale-105 transition-transform"
+        aria-label="Open Samia"
+      >
+        {open ? <X className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
+      </button>
+
+      {/* Chat panel */}
+      {open && (
+        <div className="fixed bottom-24 right-6 z-50 w-[360px] max-h-[560px] flex flex-col rounded-2xl border border-white/10 bg-zinc-900/95 backdrop-blur-xl shadow-2xl overflow-hidden">
+          {/* Header */}
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-white/8 bg-gradient-to-r from-violet-600/20 to-fuchsia-600/20">
+            <div className="h-9 w-9 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white font-bold text-sm shadow-md flex-shrink-0">
+              S
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-white leading-none">Samia</p>
+              <p className="text-[10px] text-violet-300 mt-0.5 flex items-center gap-1">
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                AI Analyst · Live data
+              </p>
+            </div>
+            <button onClick={() => setOpen(false)} className="ml-auto text-zinc-500 hover:text-white transition-colors">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          {/* Messages */}
+          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
+            {messages.map((m, i) => (
+              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                {m.role === "assistant" && (
+                  <div className="h-6 w-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
+                )}
+                <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
+                  m.role === "user"
+                    ? "bg-violet-600 text-white rounded-br-sm"
+                    : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
+                }`}>
+                  {m.content}
+                </div>
+              </div>
+            ))}
+            {loading && (
+              <div className="flex justify-start">
+                <div className="h-6 w-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
+                <div className="bg-zinc-800 rounded-2xl rounded-bl-sm px-3 py-2">
+                  <div className="flex gap-1 items-center h-4">
+                    <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:0ms]" />
+                    <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:150ms]" />
+                    <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:300ms]" />
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={bottomRef} />
+          </div>
+
+          {/* Input */}
+          <div className="px-3 pb-3 pt-2 border-t border-white/8 flex gap-2 items-center">
+            <input
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
+              placeholder="Ask Samia anything..."
+              disabled={loading}
+              className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-violet-500 disabled:opacity-50"
+            />
+            <button
+              onClick={() => void send()}
+              disabled={!input.trim() || loading}
+              className="h-9 w-9 rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity flex-shrink-0"
+            >
+              <Send className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 
 // ─── Attendance ────────────────────────────────────────────────────────────────
 
