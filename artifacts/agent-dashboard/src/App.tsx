@@ -3642,7 +3642,6 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
     const c: Record<string, number> = {};
     for (const it of items) {
       c[it.team] = (c[it.team] ?? 0) + 1;
-      if (it.team === "retention" || it.team === "cs") c["backend"] = (c["backend"] ?? 0) + 1;
     }
     return c;
   }, [items]);
@@ -3650,8 +3649,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
   const visible = useMemo(() => {
     let list = items;
     if (!lockedTeam && teamFilter !== "all") {
-      if (teamFilter === "backend") list = list.filter((it) => it.team === "retention" || it.team === "cs");
-      else list = list.filter((it) => it.team === teamFilter);
+      list = list.filter((it) => it.team === teamFilter);
     }
     if (sourceFilter !== "all") list = list.filter((it) => it.source === sourceFilter);
     if (lineFilter !== "all") list = list.filter((it) => it.toNumber === lineFilter);
@@ -3701,9 +3699,10 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
             />
           </div>
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <StatTile label="Total missed / no CB" value={q.isLoading ? "…" : items.length.toLocaleString()} tone="rose" icon={<PhoneOff className="h-3.5 w-3.5" />} />
-            <StatTile label="Retention & CS" value={q.isLoading ? "…" : (counts["backend"] ?? 0).toLocaleString()} tone="violet" />
+            <StatTile label="Retention" value={q.isLoading ? "…" : (counts["retention"] ?? 0).toLocaleString()} tone="violet" />
+            <StatTile label="Internal CS" value={q.isLoading ? "…" : (counts["cs"] ?? 0).toLocaleString()} tone="emerald" />
             <StatTile label="NSF" value={q.isLoading ? "…" : (counts["nsf"] ?? 0).toLocaleString()} tone="sky" />
           </div>
         )}
@@ -3716,13 +3715,19 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                 <Filter className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="text-xs text-muted-foreground">Team:</span>
               </div>
-              {(["all", "backend", "nsf"] as const).map((t) => (
+              {(["all", "retention", "cs", "nsf"] as const).map((t) => (
                 <button
                   key={t}
                   onClick={() => setTeamFilter(t)}
                   className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
                     teamFilter === t
-                      ? "bg-violet-500/25 text-violet-200 border-violet-500/40"
+                      ? t === "retention"
+                        ? "bg-violet-500/25 text-violet-200 border-violet-500/40"
+                        : t === "cs"
+                        ? "bg-emerald-500/25 text-emerald-200 border-emerald-500/40"
+                        : t === "nsf"
+                        ? "bg-sky-500/25 text-sky-200 border-sky-500/40"
+                        : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
                       : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"
                   }`}
                 >
