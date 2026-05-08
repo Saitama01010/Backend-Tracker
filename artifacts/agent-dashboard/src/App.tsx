@@ -4311,7 +4311,7 @@ function SamiaChat() {
     if (open) {
       setTimeout(() => inputRef.current?.focus(), 80);
       if (messages.length === 0) {
-        setMessages([{ role: "assistant", content: "Hey! I'm Samia 👋 Ask me anything about the numbers — missed calls, answered rates, agent stats, you name it." }]);
+        setMessages([{ role: "assistant", content: "Oh, you opened the chat. Bold. I'm Samia — I know every number in this dashboard better than you do. Ask me something. Try not to disappoint me." }]);
       }
     }
   }, [open]);
