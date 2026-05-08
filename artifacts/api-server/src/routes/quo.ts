@@ -53,7 +53,7 @@ function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   const n = name.toLowerCase().trim();
   if (n in LINE_TEAM_MAP) return LINE_TEAM_MAP[n];
   if (/\bcs\b|customer support|talia|hiba|nourhan|rasha|bassant|ella monroe/.test(n) || name === "CS Team") return "cs";
-  if (/retention|ob|outbound|ryan|abdlrhman|rick|zeiad|zack|henry.?hart|katherine|karma|leo.?carter|fares/.test(n)) return "retention";
+  if (/retention|ob|outbound|ryan|abdlrhman|rick|zeiad|zack|henry.?hart|katherine|karma/.test(n)) return "retention";
   if (/nsf|national settlement|ellie|alex|katie|jenny|estella|rika|austin/.test(n)) return "nsf";
   return null;
 }
@@ -76,7 +76,8 @@ const AGENT_TEAM: Record<string, "retention" | "nsf" | "cs"> = {
   "abdulrhman isawi":  "retention",
   "rick miller":       "retention",
   "zeiad fouad":       "retention",
-  "leo carter":        "retention",
+  "leo carter":        "cs",
+  "fares":             "cs",
   // NSF
   "alex cruz":         "nsf",
   "austin white":      "nsf",

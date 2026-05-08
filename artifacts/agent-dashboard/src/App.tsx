@@ -311,8 +311,6 @@ const TEAM_ALLOWLIST: Record<string, Set<string>> = {
     "talia morgan", "tuqa hossam",
     // Michael Belfort / Nour (Nour-Michael Belfort-2900 line)
     "michael belfort", "nouralden",
-    // Leo Carter / Fares
-    "leo carter", "fares",
     // Legacy extras kept for historical data
     "max francis", "youssef nasser", "michael ross",
   ]),
@@ -343,6 +341,8 @@ const TEAM_ALLOWLIST: Record<string, Set<string>> = {
     "jacob xander", "youssef nady",
     // Carla Bennet / Bassant Emad
     "carla bennet", "bassant emad",
+    // Leo Carter / Fares
+    "leo carter", "fares",
   ]),
 };
 
