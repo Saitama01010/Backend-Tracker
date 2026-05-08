@@ -284,7 +284,7 @@ const PHONE_BLOCKLIST = new Set(["shahin ."]);
 // Extra phone-only agents per team (not in the Google Sheet, but on the team)
 // Keys must match OpenPhone agent names (normalized lowercase)
 const TEAM_PHONE_EXTRAS: Record<string, string[]> = {
-  retention: ["Youssef Nasser", "Michael Ross"],
+  retention: ["Michael Ross"],
   nsf: [],
   cs: [],
 };
@@ -305,8 +305,6 @@ const TEAM_ALLOWLIST: Record<string, Set<string>> = {
     "jacob stephenson", "abdulrhman isawi",
     // Katherine Adams / Karma Farouk
     "katherine adams", "karma farouk",
-    // Talia Morgan / Tuqa Hossam
-    "talia morgan", "tuqa hossam",
     // Rick Miller / Zeiad Fouad
     "rick miller", "zeiad fouad",
     // Legacy extras kept for historical data
@@ -341,6 +339,8 @@ const TEAM_ALLOWLIST: Record<string, Set<string>> = {
     "jacob xander", "youssef nady",
     // Carla Bennet / Bassant Emad
     "carla bennet", "bassant emad",
+    // Talia Morgan / Tuqa Hossam
+    "talia morgan", "tuqa hossam",
   ]),
 };
 
@@ -2252,8 +2252,8 @@ function TeamPanel({
   );
 }
 
-const CS_AGENTS = ["Ella Monroe", "Chase Miller", "Eli Adam", "Leo Carter", "Nora Adam", "Jacob Xander", "Carla Bennet"];
-const RETENTION_AGENTS = ["Levi Miller", "Henry Hart", "Ryan Henderson", "Michael Belfort", "Jacob Stephenson", "Katherine Adams", "Talia Morgan", "Rick Miller"];
+const CS_AGENTS = ["Ella Monroe", "Chase Miller", "Eli Adam", "Leo Carter", "Nora Adam", "Jacob Xander", "Carla Bennet", "Talia Morgan"];
+const RETENTION_AGENTS = ["Levi Miller", "Henry Hart", "Ryan Henderson", "Michael Belfort", "Jacob Stephenson", "Katherine Adams", "Rick Miller"];
 
 function CSPanel() {
   const pbxData = useVosCalls();
