@@ -207,7 +207,7 @@ router.post("/attendance/import", async (req, res) => {
   }
 });
 
-// ─── Auto-mark attendance from first call of the day ─────────────────────────
+// ─── Helpers shared by auto-mark and call-logs ───────────────────────────────
 //
 // Shift N = N PM Egypt time (UTC+2) → UTC hour = N + 10
 // (e.g. shift 4 = 4 PM Egypt = 14:00 UTC, shift 8 = 8 PM Egypt = 18:00 UTC)
@@ -240,64 +240,209 @@ function parsePdt(s: string): Date {
   return new Date(s + '-07:00');
 }
 
-router.post("/attendance/auto-mark", async (req, res) => {
+// Build a Quo first-call map for a given Egypt-date day window.
+async function buildQuoFirstCallMap(dayStartUtc: Date, dayEndUtc: Date): Promise<Map<string, Date>> {
+  const rows = await db
+    .select({ agentName: phoneCallsTable.agentName, firstCallAt: min(phoneCallsTable.createdAt) })
+    .from(phoneCallsTable)
+    .where(and(gte(phoneCallsTable.createdAt, dayStartUtc), lte(phoneCallsTable.createdAt, dayEndUtc)))
+    .groupBy(phoneCallsTable.agentName);
+  const map = new Map<string, Date>();
+  for (const row of rows) {
+    if (row.agentName && row.firstCallAt) map.set(row.agentName.trim().toLowerCase(), new Date(row.firstCallAt));
+  }
+  return map;
+}
+
+// Resolve the earliest first-call Date for a member across all their agent name aliases.
+function resolveFirstCall(
+  member: { name: string },
+  vosFirstCall: Map<string, Date>,
+  quoFirstCall: Map<string, Date>,
+): Date | null {
+  const agentNames: string[] = MEMBER_TO_AGENT_NAMES[member.name]
+    ?? [member.name.split("-")[0].trim(), member.name];
+  let firstCallAt: Date | null = null;
+  for (const nameLower of agentNames.map((n) => n.trim().toLowerCase())) {
+    const vos = vosFirstCall.get(nameLower);
+    if (vos && (!firstCallAt || vos < firstCallAt)) firstCallAt = vos;
+    const quo = quoFirstCall.get(nameLower);
+    if (quo && (!firstCallAt || quo < firstCallAt)) firstCallAt = quo;
+  }
+  return firstCallAt;
+}
+
+// ─── GET /attendance/call-logs?date=YYYY-MM-DD ───────────────────────────────
+// Returns per-agent call data (first call time, shift info, existing record) for
+// any date. Used by Samia to preview before writing historical attendance.
+router.get("/attendance/call-logs", async (req, res) => {
   try {
-    // Today's date in Egypt timezone (UTC+2)
     const nowUtc = new Date();
     const egyptOffsetMs = 2 * 60 * 60 * 1000;
-    const egyptNow = new Date(nowUtc.getTime() + egyptOffsetMs);
-    const todayEgypt = egyptNow.toISOString().slice(0, 10);
+    const defaultDate = new Date(nowUtc.getTime() + egyptOffsetMs).toISOString().slice(0, 10);
+    const date = ((req.query["date"] as string) || defaultDate).trim().slice(0, 10);
 
-    // Egypt day window in UTC:
-    //   midnight Egypt (UTC+2) = todayEgypt T00:00+02:00 = todayEgypt-1 T22:00Z
-    //   end of Egypt day       = todayEgypt T23:59:59+02:00
-    const dayStartUtc = new Date(`${todayEgypt}T00:00:00+02:00`);
-    const dayEndUtc   = new Date(`${todayEgypt}T23:59:59+02:00`);
+    const dayStartUtc = new Date(`${date}T00:00:00+02:00`);
+    const dayEndUtc   = new Date(`${date}T23:59:59+02:00`);
+    const isToday = date === defaultDate;
 
-    // Build VoS first-call map: agentName (lowercase) → Date (UTC)
-    // VoS timestamps are PDT strings (no timezone). Interpret as UTC-7.
-    // Only include calls that fall within today's Egypt day window.
+    // VoS only has today's data; skip for historical dates.
     const vosFirstCall = new Map<string, Date>();
-    for (const stat of getCallHistoryCache()) {
-      if (stat.firstCallAt) {
-        const d = parsePdt(stat.firstCallAt);
-        if (d >= dayStartUtc && d <= dayEndUtc) {
-          const key = stat.agentName.trim().toLowerCase();
-          const existing = vosFirstCall.get(key);
-          if (!existing || d < existing) vosFirstCall.set(key, d);
+    if (isToday) {
+      for (const stat of getCallHistoryCache()) {
+        if (stat.firstCallAt) {
+          const d = parsePdt(stat.firstCallAt);
+          if (d >= dayStartUtc && d <= dayEndUtc) {
+            const key = stat.agentName.trim().toLowerCase();
+            const existing = vosFirstCall.get(key);
+            if (!existing || d < existing) vosFirstCall.set(key, d);
+          }
         }
       }
     }
 
-    // Query Quo DB for first call per agentName today.
-    // Quo DB stores UTC timestamps (TIMESTAMPTZ), so compare directly with the Egypt day window.
-    const quoRows = await db
-      .select({
-        agentName: phoneCallsTable.agentName,
-        firstCallAt: min(phoneCallsTable.createdAt),
-      })
-      .from(phoneCallsTable)
-      .where(and(gte(phoneCallsTable.createdAt, dayStartUtc), lte(phoneCallsTable.createdAt, dayEndUtc)))
-      .groupBy(phoneCallsTable.agentName);
+    const quoFirstCall = await buildQuoFirstCallMap(dayStartUtc, dayEndUtc);
 
-    const quoFirstCall = new Map<string, Date>();
-    for (const row of quoRows) {
-      if (row.agentName && row.firstCallAt) {
-        quoFirstCall.set(row.agentName.trim().toLowerCase(), new Date(row.firstCallAt));
-      }
-    }
-
-    // Fetch all active members
     const members = await db
       .select()
       .from(attendanceMembersTable)
-      .where(eq(attendanceMembersTable.active, true));
+      .where(eq(attendanceMembersTable.active, true))
+      .orderBy(attendanceMembersTable.department, attendanceMembersTable.name);
 
-    // Fetch existing records for today (to avoid overwriting manual entries)
-    const existingRecords = await db
-      .select()
+    const existingRecords = members.length > 0
+      ? await db.select().from(attendanceRecordsTable)
+          .where(and(inArray(attendanceRecordsTable.memberId, members.map((m) => m.id)), eq(attendanceRecordsTable.date, date)))
+      : [];
+    const existingMap = new Map(existingRecords.map((r) => [r.memberId, r]));
+
+    const agents = members.map((member) => {
+      const shiftNum = parseInt(member.shift || "0");
+      const shiftStartUtc = shiftNum
+        ? new Date(`${date}T${String(shiftNum + 10).padStart(2, "0")}:00:00Z`)
+        : null;
+      const shiftStartEgypt = shiftNum ? `${date}T${String(shiftNum).padStart(2, "0")}:00:00+02:00` : null;
+
+      const firstCallAt = resolveFirstCall(member, vosFirstCall, quoFirstCall);
+      const minsLate = firstCallAt && shiftStartUtc
+        ? Math.round((firstCallAt.getTime() - shiftStartUtc.getTime()) / 60000)
+        : null;
+
+      let autoStatus: string;
+      if (!shiftNum) autoStatus = "no_shift";
+      else if (firstCallAt === null) autoStatus = shiftStartUtc && nowUtc > shiftStartUtc ? "no_calls" : "shift_not_started";
+      else autoStatus = (minsLate ?? 0) <= 10 ? "on_time" : "late";
+
+      const existingRecord = existingMap.get(member.id) ?? null;
+      return {
+        memberId: member.id,
+        memberName: member.name,
+        department: member.department,
+        shift: member.shift,
+        shiftStartEgypt,
+        firstCallAt: firstCallAt?.toISOString() ?? null,
+        minsLate,
+        autoStatus,
+        existingRecord: existingRecord
+          ? { status: existingRecord.status, note: existingRecord.note ?? "", coaching: existingRecord.coaching }
+          : null,
+      };
+    });
+
+    res.json({ date, agents });
+  } catch (err) {
+    req.log.error(err, "attendance call-logs error");
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ─── POST /attendance/set ────────────────────────────────────────────────────
+// Batch-write attendance records. Used by Samia for historical dates.
+// Pass force=true to overwrite existing records; otherwise existing records are skipped.
+router.post("/attendance/set", async (req, res) => {
+  try {
+    const { records, force = false } = req.body as {
+      records: { date: string; memberName: string; status: string; note?: string; coaching?: boolean }[];
+      force?: boolean;
+    };
+    if (!Array.isArray(records) || records.length === 0) {
+      return res.status(400).json({ error: "records array required" });
+    }
+
+    const members = await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true));
+    const memberMap = new Map<string, typeof members[0]>(members.map((m) => [m.name.toLowerCase().trim(), m]));
+
+    type SetResult = { memberName: string; date: string; status: string; action: string };
+    const results: SetResult[] = [];
+
+    for (const rec of records) {
+      const member = memberMap.get(rec.memberName.toLowerCase().trim());
+      if (!member) {
+        results.push({ memberName: rec.memberName, date: rec.date, status: rec.status, action: "skipped: member not found" });
+        continue;
+      }
+      const existing = await db.select({ id: attendanceRecordsTable.id })
+        .from(attendanceRecordsTable)
+        .where(and(eq(attendanceRecordsTable.memberId, member.id), eq(attendanceRecordsTable.date, rec.date)))
+        .limit(1);
+
+      if (existing.length > 0 && !force) {
+        results.push({ memberName: rec.memberName, date: rec.date, status: rec.status, action: "skipped: record exists (use force=true to overwrite)" });
+        continue;
+      }
+
+      await db.insert(attendanceRecordsTable)
+        .values({ memberId: member.id, date: rec.date, status: rec.status, note: rec.note ?? null, coaching: rec.coaching ?? false })
+        .onConflictDoUpdate({
+          target: [attendanceRecordsTable.memberId, attendanceRecordsTable.date],
+          set: { status: rec.status, note: rec.note ?? null, coaching: rec.coaching ?? false, updatedAt: new Date() },
+        });
+
+      results.push({ memberName: rec.memberName, date: rec.date, status: rec.status, action: existing.length > 0 ? "updated" : "created" });
+    }
+
+    res.json({ success: true, results });
+  } catch (err) {
+    req.log.error(err, "attendance set error");
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ─── POST /attendance/auto-mark ──────────────────────────────────────────────
+// Accepts optional { date: "YYYY-MM-DD" } body (Egypt date).
+// Defaults to today in Egypt. For past dates, VoS is skipped (only Quo DB).
+router.post("/attendance/auto-mark", async (req, res) => {
+  try {
+    const nowUtc = new Date();
+    const egyptOffsetMs = 2 * 60 * 60 * 1000;
+    const defaultEgyptDate = new Date(nowUtc.getTime() + egyptOffsetMs).toISOString().slice(0, 10);
+    const targetDate: string = ((req.body as { date?: string })?.date ?? defaultEgyptDate).trim().slice(0, 10);
+    const isToday = targetDate === defaultEgyptDate;
+
+    const dayStartUtc = new Date(`${targetDate}T00:00:00+02:00`);
+    const dayEndUtc   = new Date(`${targetDate}T23:59:59+02:00`);
+
+    // VoS only has today's live data; use it only for today.
+    const vosFirstCall = new Map<string, Date>();
+    if (isToday) {
+      for (const stat of getCallHistoryCache()) {
+        if (stat.firstCallAt) {
+          const d = parsePdt(stat.firstCallAt);
+          if (d >= dayStartUtc && d <= dayEndUtc) {
+            const key = stat.agentName.trim().toLowerCase();
+            const existing = vosFirstCall.get(key);
+            if (!existing || d < existing) vosFirstCall.set(key, d);
+          }
+        }
+      }
+    }
+
+    const quoFirstCall = await buildQuoFirstCallMap(dayStartUtc, dayEndUtc);
+
+    const members = await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true));
+
+    const existingRecords = await db.select()
       .from(attendanceRecordsTable)
-      .where(eq(attendanceRecordsTable.date, todayEgypt));
+      .where(eq(attendanceRecordsTable.date, targetDate));
     const existingSet = new Set(existingRecords.map((r) => r.memberId));
 
     const results: { name: string; status: string; note: string; skipped?: string }[] = [];
@@ -306,65 +451,40 @@ router.post("/attendance/auto-mark", async (req, res) => {
       const shiftNum = parseInt(member.shift || "0");
       if (!shiftNum) { results.push({ name: member.name, status: "", note: "", skipped: "no shift" }); continue; }
 
-      // Shift start in UTC: shift N PM Egypt = (N+12) hour Egypt = (N+12-2) hour UTC = (N+10) UTC
-      const shiftStartUtcHour = shiftNum + 10; // e.g. shift 4 → 14 UTC
-      const shiftStartUtc = new Date(`${todayEgypt}T${String(shiftStartUtcHour).padStart(2, "0")}:00:00Z`);
+      const shiftStartUtcHour = shiftNum + 10;
+      const shiftStartUtc = new Date(`${targetDate}T${String(shiftStartUtcHour).padStart(2, "0")}:00:00Z`);
 
-      // Only auto-mark if the shift has already started
-      if (nowUtc < shiftStartUtc) {
+      // For today: skip if shift hasn't started. For past dates: always process.
+      if (isToday && nowUtc < shiftStartUtc) {
         results.push({ name: member.name, status: "", note: "", skipped: "shift not started yet" });
         continue;
       }
 
-      // Don't overwrite manual entries
       if (existingSet.has(member.id)) {
         results.push({ name: member.name, status: "", note: "", skipped: "already has record" });
         continue;
       }
 
-      // Resolve VoS/Quo agent names for this member
-      const agentNames: string[] = MEMBER_TO_AGENT_NAMES[member.name]
-        ?? [member.name.split("-")[0].trim(), member.name];
-      const agentNamesLower = agentNames.map((n) => n.trim().toLowerCase());
-
-      // Find earliest first call across all known names.
-      // vosFirstCall values are already Date (parsed as PDT → UTC).
-      // quoFirstCall values are already Date (UTC from DB).
-      let firstCallAt: Date | null = null;
-      for (const nameLower of agentNamesLower) {
-        const vos = vosFirstCall.get(nameLower);
-        if (vos && (!firstCallAt || vos < firstCallAt)) firstCallAt = vos;
-        const quo = quoFirstCall.get(nameLower);
-        if (quo && (!firstCallAt || quo < firstCallAt)) firstCallAt = quo;
-      }
+      const firstCallAt = resolveFirstCall(member, vosFirstCall, quoFirstCall);
 
       if (!firstCallAt) {
-        results.push({ name: member.name, status: "", note: "", skipped: "no calls today" });
+        results.push({ name: member.name, status: "", note: "", skipped: "no calls found" });
         continue;
       }
 
       const minsLate = Math.round((firstCallAt.getTime() - shiftStartUtc.getTime()) / 60000);
       const GRACE_MINS = 10;
+      const status = minsLate <= GRACE_MINS ? "in" : "late";
+      const note   = minsLate <= GRACE_MINS ? "" : lateNote(minsLate);
 
-      let status: string;
-      let note: string;
-      if (minsLate <= GRACE_MINS) {
-        status = "in";
-        note = "";
-      } else {
-        status = "late";
-        note = lateNote(minsLate);
-      }
-
-      await db
-        .insert(attendanceRecordsTable)
-        .values({ memberId: member.id, date: todayEgypt, status, note: note || null, coaching: false })
+      await db.insert(attendanceRecordsTable)
+        .values({ memberId: member.id, date: targetDate, status, note: note || null, coaching: false })
         .onConflictDoNothing();
 
       results.push({ name: member.name, status, note });
     }
 
-    res.json({ success: true, date: todayEgypt, results });
+    res.json({ success: true, date: targetDate, results });
   } catch (err) {
     req.log.error(err, "attendance auto-mark error");
     res.status(500).json({ error: String(err) });

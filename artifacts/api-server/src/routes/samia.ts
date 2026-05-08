@@ -458,72 +458,159 @@ router.post("/samia/chat", async (req, res) => {
         type: "function",
         function: {
           name: "auto_mark_attendance",
-          description: "Automatically mark today's attendance for all agents. Checks each agent's first call of the day against their shift start time (shift N = N PM Egypt time). Marks on-time if within 10 minutes of shift start, late otherwise. Skips agents whose shift hasn't started yet or who already have a manual attendance record.",
-          parameters: { type: "object", properties: {}, required: [] },
+          description: "Automatically mark attendance for all agents on a given date. Fetches each agent's first call from the database, compares to their shift start (shift N = N PM Egypt time), marks on-time (within 10 min grace) or late. Skips agents who already have a record. For today, also skips agents whose shift hasn't started yet. For past dates, uses OpenPhone DB only (VoS has no historical data).",
+          parameters: {
+            type: "object",
+            properties: {
+              date: {
+                type: "string",
+                description: "Date to mark attendance for, as YYYY-MM-DD in Egypt time. Omit or pass null for today.",
+              },
+            },
+            required: [],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "get_call_logs",
+          description: "Get per-agent call data for a specific date: first call time, shift info, computed on-time/late status, and any existing attendance record. Use this to preview what auto_mark_attendance would do, or to show the manager the data before writing.",
+          parameters: {
+            type: "object",
+            properties: {
+              date: {
+                type: "string",
+                description: "Date in YYYY-MM-DD format (Egypt time). Omit for today.",
+              },
+            },
+            required: [],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "set_attendance",
+          description: "Write attendance records for specific agents on specific dates. Use for manual corrections or when auto_mark misses someone. Pass force=true to overwrite existing records.",
+          parameters: {
+            type: "object",
+            properties: {
+              records: {
+                type: "array",
+                description: "Array of attendance records to write.",
+                items: {
+                  type: "object",
+                  properties: {
+                    date:       { type: "string", description: "YYYY-MM-DD (Egypt time)" },
+                    memberName: { type: "string", description: "Exact member name from the attendance system" },
+                    status:     { type: "string", enum: ["in", "late", "absent", "off", "pto"], description: "Attendance status" },
+                    note:       { type: "string", description: "Optional note (e.g. 'late 23min')" },
+                    coaching:   { type: "boolean", description: "Whether this agent is in coaching" },
+                  },
+                  required: ["date", "memberName", "status"],
+                },
+              },
+              force: {
+                type: "boolean",
+                description: "If true, overwrite existing records. Default false (skip existing).",
+              },
+            },
+            required: ["records"],
+          },
         },
       },
     ];
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-5.1",
-      messages,
-      tools,
-      max_completion_tokens: 600,
-    });
+    // ── Multi-turn tool loop (up to 4 rounds) ─────────────────────────────────
+    let currentMessages = [...messages];
+    let finalReply: string | null = null;
+    let attendanceMarked = false;
 
-    const choice = completion.choices[0];
+    for (let round = 0; round < 4; round++) {
+      const completion = await openai.chat.completions.create({
+        model: "gpt-5.1",
+        messages: currentMessages,
+        tools,
+        max_completion_tokens: 800,
+      });
 
-    // ── Tool call: auto-mark attendance ────────────────────────────────────────
-    if (choice?.finish_reason === "tool_calls" && choice.message?.tool_calls?.length) {
-      const toolCall = choice.message.tool_calls.find((tc) => tc.function.name === "auto_mark_attendance");
-      if (toolCall) {
-        const markRes = await fetch(`${base}/api/attendance/auto-mark`, { method: "POST" });
-        const markData = await markRes.json() as {
-          success: boolean;
-          date: string;
-          results: { name: string; status: string; note: string; skipped?: string }[];
-        };
+      const choice = completion.choices[0];
 
-        const marked  = markData.results.filter((r) => r.status);
-        const onTime  = marked.filter((r) => r.status === "in");
-        const late    = marked.filter((r) => r.status === "late");
-        const skipped = markData.results.filter((r) => !r.status);
-        const notStarted = skipped.filter((r) => r.skipped === "shift not started yet").length;
-        const noCalls    = skipped.filter((r) => r.skipped === "no calls today").length;
-        const existing   = skipped.filter((r) => r.skipped === "already has record").length;
+      if (choice?.finish_reason !== "tool_calls" || !choice.message?.tool_calls?.length) {
+        finalReply = choice?.message?.content ?? "Sorry, I couldn't generate a response.";
+        break;
+      }
 
-        const toolResult = JSON.stringify({
-          date: markData.date,
-          marked: marked.length,
-          onTime: onTime.length,
-          onTimeAgents: onTime.map((r) => r.name),
-          late: late.length,
-          lateAgents: late.map((r) => ({ name: r.name, note: r.note })),
-          skipped: skipped.length,
-          notStartedYet: notStarted,
-          noCalls,
-          alreadyHadRecord: existing,
-        });
+      // Add the assistant's tool-call message to the thread
+      currentMessages.push(choice.message);
 
-        const followUpMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-          ...messages,
-          choice.message,
-          { role: "tool", tool_call_id: toolCall.id, content: toolResult },
-        ];
+      // Execute all tool calls in this round (may be parallel)
+      for (const toolCall of choice.message.tool_calls) {
+        const fnName = toolCall.function.name;
+        let toolResult: string;
 
-        const followUp = await openai.chat.completions.create({
-          model: "gpt-5.1",
-          messages: followUpMessages,
-          max_completion_tokens: 600,
-        });
+        try {
+          if (fnName === "auto_mark_attendance") {
+            const args = JSON.parse(toolCall.function.arguments || "{}") as { date?: string };
+            const body = args.date ? JSON.stringify({ date: args.date }) : "{}";
+            const markRes = await fetch(`${base}/api/attendance/auto-mark`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body,
+            });
+            const markData = await markRes.json() as {
+              success: boolean; date: string;
+              results: { name: string; status: string; note: string; skipped?: string }[];
+            };
+            attendanceMarked = true;
+            const marked   = markData.results.filter((r) => r.status);
+            const onTime   = marked.filter((r) => r.status === "in");
+            const late     = marked.filter((r) => r.status === "late");
+            const skipped  = markData.results.filter((r) => !r.status);
+            toolResult = JSON.stringify({
+              date: markData.date,
+              marked: marked.length,
+              onTime: onTime.length,
+              onTimeAgents: onTime.map((r) => r.name),
+              late: late.length,
+              lateAgents: late.map((r) => ({ name: r.name, note: r.note })),
+              skippedTotal: skipped.length,
+              skippedReasons: skipped.reduce((acc, r) => {
+                const k = r.skipped ?? "unknown"; acc[k] = (acc[k] ?? 0) + 1; return acc;
+              }, {} as Record<string, number>),
+              skippedAgents: skipped.map((r) => ({ name: r.name, reason: r.skipped })),
+            });
 
-        const reply = followUp.choices[0]?.message?.content ?? "Attendance marked.";
-        return res.json({ reply, attendanceMarked: true });
+          } else if (fnName === "get_call_logs") {
+            const args = JSON.parse(toolCall.function.arguments || "{}") as { date?: string };
+            const url = args.date ? `${base}/api/attendance/call-logs?date=${args.date}` : `${base}/api/attendance/call-logs`;
+            const logsRes = await fetch(url);
+            toolResult = JSON.stringify(await logsRes.json());
+
+          } else if (fnName === "set_attendance") {
+            const args = JSON.parse(toolCall.function.arguments || "{}");
+            const setRes = await fetch(`${base}/api/attendance/set`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(args),
+            });
+            toolResult = JSON.stringify(await setRes.json());
+            attendanceMarked = true;
+
+          } else {
+            toolResult = JSON.stringify({ error: `Unknown tool: ${fnName}` });
+          }
+        } catch (e) {
+          toolResult = JSON.stringify({ error: String(e) });
+        }
+
+        currentMessages.push({ role: "tool", tool_call_id: toolCall.id, content: toolResult });
       }
     }
 
-    const reply = choice?.message?.content ?? "Sorry, I couldn't generate a response.";
-    return res.json({ reply });
+    if (!finalReply) finalReply = "Done.";
+    return res.json({ reply: finalReply, attendanceMarked });
   } catch (err) {
     req.log.error(err, "samia chat error");
     return res.status(500).json({ error: "AI request failed" });
