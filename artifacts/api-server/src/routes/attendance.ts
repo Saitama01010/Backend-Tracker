@@ -4,7 +4,7 @@ import {
   attendanceMembersTable,
   attendanceRecordsTable,
 } from "@workspace/db";
-import { eq, and, gte, lte, inArray, min, ilike, sql } from "drizzle-orm";
+import { eq, and, or, gte, lte, inArray, min, ilike, sql } from "drizzle-orm";
 import { getCallHistoryCache } from "./vos";
 
 const router = Router();
@@ -215,13 +215,14 @@ router.post("/attendance/import", async (req, res) => {
 // Mapping from attendance member name → VoS/PBX agent display names used in
 // call history. Only needed where the name doesn't match directly.
 const MEMBER_TO_AGENT_NAMES: Record<string, string[]> = {
-  "Ahmed Ayman-Levi Miller":         ["Levi Miller", "Ahmed Ayman"],
-  "Zeiad Fouad-Zack Ford":           ["Rick Miller", "Zeiad Fouad"],
-  "Abdlrhman-Jacob Stephenson":      ["Jacob Stephenson", "Abdulrhman Isawi"],
-  "Nour-Michael Belfort-2900":       ["Michael Belfort", "Nouralden"],
-  "Jacob Ahmed":                     ["Ryan Henderson", "Jacob Ahmed"],
-  "Mohammed Ayman-Max Francis-2268": ["Henry Hart", "Max Francis"],
-  "Youssef Nady-Jacob Xander":       ["Jacob Xander", "Youssef Nady"],
+  // Member name → all VoS/PBX/Quo agent display names that belong to this person
+  "Levi Miller":       ["Levi Miller", "Ahmed Ayman"],
+  "Rick Miller":       ["Rick Miller", "Zeiad Fouad"],
+  "Jacob Stephenson":  ["Jacob Stephenson", "Abdulrhman Isawi"],
+  "Michael Belfort":   ["Michael Belfort", "Nouralden"],
+  "Ryan Henderson":    ["Ryan Henderson", "Jacob Ahmed"],
+  "Henry Hart":        ["Henry Hart", "Max Francis"],
+  "Jacob Xander":      ["Jacob Xander", "Youssef Nady"],
 };
 
 function lateNote(minsLate: number): string {
@@ -241,12 +242,23 @@ function parsePdt(s: string): Date {
 }
 
 // Build a Quo calls map: agentName (lowercase) → all call timestamps within the day window.
-// We store every timestamp so callers can filter per-agent by shift start.
+// Only counts valid attendance signals:
+//   - Outbound calls (agent dialed out, any status)
+//   - Inbound calls answered by the agent (direction=incoming, status=completed)
 async function buildQuoCallsMap(dayStartUtc: Date, dayEndUtc: Date): Promise<Map<string, Date[]>> {
   const rows = await db
     .select({ agentName: phoneCallsTable.agentName, createdAt: phoneCallsTable.createdAt })
     .from(phoneCallsTable)
-    .where(and(gte(phoneCallsTable.createdAt, dayStartUtc), lte(phoneCallsTable.createdAt, dayEndUtc)));
+    .where(
+      and(
+        gte(phoneCallsTable.createdAt, dayStartUtc),
+        lte(phoneCallsTable.createdAt, dayEndUtc),
+        or(
+          eq(phoneCallsTable.direction, "outgoing"),
+          and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed")),
+        ),
+      ),
+    );
   const map = new Map<string, Date[]>();
   for (const row of rows) {
     if (row.agentName && row.createdAt) {
