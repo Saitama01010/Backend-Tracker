@@ -338,6 +338,14 @@ let ringGroupMissedCache: VosRingGroupMissed = {};
 let missedNoCallbackCache: MissedNoCallbackItem[] = [];
 let ringGroupNameCache = new Map<number, string>(); // rgId → name, updated each refresh
 
+// Cumulative ring group missed counts — survive across refreshes within a server session.
+// VoSLogic's global /api/calls endpoint doesn't paginate (always returns the same recent
+// snapshot), so each refresh only sees the latest ~100 calls. By accumulating counts via
+// seenMissedCallIds we build up the true daily total across all 15-minute refresh cycles.
+const cumulativeRingGroupMissed: VosRingGroupMissed = {};
+const seenMissedCallIds = new Set<number>();
+let cumulativeDate = ""; // reset accumulators when date changes (midnight rollover)
+
 async function refreshCallHistory(log?: Logger): Promise<void> {
   if (callHistoryFetching) return;
   callHistoryFetching = true;
@@ -440,27 +448,47 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       if (bestRg >= 0) lineToRingGroupId.set(line, bestRg);
     }
 
-    // ── Probe unrepresented ring groups ───────────────────────────────────────
-    // If a ring group has no lines in lineToRingGroupId (e.g. all calls went to
-    // voicemail today so no agent answered), fetch one page of any member agent's
-    // recent call history to discover the phone lines for that ring group.
-    const representedRgIds = new Set(lineToRingGroupId.values());
-    const probeTasks: Promise<void>[] = [];
+    // ── Probe to build complete line→ring group map ────────────────────────────
+    // For each ring group, probe every member agent whose inbound lines aren't
+    // yet in the map. This covers agents who had voicemail-only days (no answered
+    // calls → not in callsByAgent → lines never learned from per-agent scan).
+    // Uses persistentLineRgMap so mappings survive across refreshes.
+    const linesAlreadyMapped = new Set(lineToRingGroupId.keys());
+    const probeAgentIds = new Set<number>(); // avoid duplicate probes across ring groups
+
     for (const rg of ringGroups) {
-      if (representedRgIds.has(rg.id)) continue; // already have lines for this RG
-      // Also skip if the persistent cache already covers it
-      if ([...persistentLineRgMap.values()].includes(rg.id)) continue;
-      const probeAgentId = rg.agentIds[0];
-      if (probeAgentId == null) continue;
+      for (const agentId of rg.agentIds) {
+        // Skip if EVERY line for this agent is already mapped to this ring group
+        const knownLinesForRg = [...persistentLineRgMap.entries()]
+          .filter(([, rgId]) => rgId === rg.id)
+          .map(([line]) => line);
+        if (knownLinesForRg.length > 0 && linesAlreadyMapped.has(knownLinesForRg[0])) continue;
+        if (probeAgentIds.has(agentId)) continue;
+        probeAgentIds.add(agentId);
+      }
+    }
+
+    // Build a map of agentId → ring group id for probe attribution
+    const agentIdToRgId = new Map<number, number>();
+    for (const rg of ringGroups) {
+      for (const agentId of rg.agentIds) {
+        if (!agentIdToRgId.has(agentId)) agentIdToRgId.set(agentId, rg.id);
+      }
+    }
+
+    const probeTasks: Promise<void>[] = [];
+    for (const agentId of probeAgentIds) {
+      const rgId = agentIdToRgId.get(agentId);
+      if (rgId == null) continue;
       probeTasks.push((async () => {
         try {
           const data = await vosFetch<{ calls: VosCallRaw[] }>(
-            `/api/calls?agentId=${probeAgentId}&limit=100&page=1`
+            `/api/calls?agentId=${agentId}&limit=100&page=1`
           );
           for (const call of data.calls ?? []) {
-            if (call.direction === "inbound" && call.toNumber) {
-              lineToRingGroupId.set(call.toNumber, rg.id);
-              persistentLineRgMap.set(call.toNumber, rg.id);
+            if (call.direction === "inbound" && call.toNumber && !persistentLineRgMap.has(call.toNumber)) {
+              lineToRingGroupId.set(call.toNumber, rgId);
+              persistentLineRgMap.set(call.toNumber, rgId);
             }
           }
         } catch { /* ignore probe failures */ }
@@ -565,15 +593,33 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       }
     }
 
+    // ── Accumulate ring group missed counts across refreshes ──────────────────
+    // Reset if date has changed (midnight rollover) to avoid counting yesterday's calls.
+    if (cumulativeDate !== today) {
+      cumulativeDate = today;
+      for (const k of Object.keys(cumulativeRingGroupMissed)) delete cumulativeRingGroupMissed[k as unknown as number];
+      seenMissedCallIds.clear();
+    }
+    // Merge new missed records into cumulative map, deduplicating by call ID.
+    let newCount = 0;
+    for (const rec of scanResult.missedRecords) {
+      if (seenMissedCallIds.has(rec.id)) continue;
+      seenMissedCallIds.add(rec.id);
+      cumulativeRingGroupMissed[rec.ringGroupId] = (cumulativeRingGroupMissed[rec.ringGroupId] ?? 0) + 1;
+      newCount++;
+    }
+
     callHistoryCache = results;
     callHistoryFetchedAt = Date.now();
-    ringGroupMissedCache = scanResult.missedCounts;
+    ringGroupMissedCache = { ...cumulativeRingGroupMissed };
     missedNoCallbackCache = missedNoCB;
 
     log?.info(
       {
         agents: results.length,
-        ringGroupMissed: scanResult.missedCounts,
+        ringGroupMissed: ringGroupMissedCache,
+        newMissedThisCycle: newCount,
+        totalMissedAccumulated: seenMissedCallIds.size,
         missedNoCB: missedNoCB.length,
         lines: lineToRingGroupId.size,
         ms: Date.now() - t0,
@@ -843,8 +889,9 @@ router.get("/vos/debug/calls", async (req, res) => {
   try {
     const agentId = req.query["agentId"] ? `&agentId=${req.query["agentId"]}` : "";
     const limit = req.query["limit"] ?? 5;
+    const page = req.query["page"] ?? 1;
     const data = await vosFetch<{ calls: VosCallRaw[]; total: number }>(
-      `/api/calls?limit=${limit}&page=1${agentId}`
+      `/api/calls?limit=${limit}&page=${page}${agentId}`
     );
     res.json({ total: data.total, calls: data.calls });
   } catch (err) {
