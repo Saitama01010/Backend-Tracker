@@ -53,7 +53,7 @@ function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   const n = name.toLowerCase().trim();
   if (n in LINE_TEAM_MAP) return LINE_TEAM_MAP[n];
   if (/\bcs\b|customer support|talia|hiba|nourhan|rasha|bassant|ella monroe/.test(n) || name === "CS Team") return "cs";
-  if (/retention|ob|outbound|ryan|abdlrhman|rick|zeiad|zack|henry.?hart|chase.?miller|katherine|karma|leo.?carter|fares/.test(n)) return "retention";
+  if (/retention|ob|outbound|ryan|abdlrhman|rick|zeiad|zack|henry.?hart|katherine|karma|leo.?carter|fares/.test(n)) return "retention";
   if (/nsf|national settlement|ellie|alex|katie|jenny|estella|rika|austin/.test(n)) return "nsf";
   return null;
 }
@@ -71,7 +71,6 @@ const AGENT_TEAM: Record<string, "retention" | "nsf" | "cs"> = {
   // Retention — current roster (May 2026)
   "ryan henderson":    "retention",
   "henry hart":        "retention",
-  "chase miller":      "retention",
   "katherine adams":   "retention",
   "jacob stephenson":  "retention",
   "abdulrhman isawi":  "retention",
@@ -92,6 +91,8 @@ const AGENT_TEAM: Record<string, "retention" | "nsf" | "cs"> = {
   "michael belfort":   "retention",
   "talia morgan":      "retention",
   // CS
+  "chase miller":      "cs",
+  "nour eldin atef":   "cs",
   "youssef nady":      "cs",
   "jacob xander":      "cs",
   "ella monroe":       "cs",
