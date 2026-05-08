@@ -6,6 +6,13 @@ import { logger as rootLogger } from "../lib/logger";
 
 const router = Router();
 
+// Phone numbers to exclude from all missed call counts and records (blocked/spam callers).
+// Must be kept in sync with the same set in quo.ts.
+const PARTICIPANT_BLOCKLIST = new Set([
+  "+17035075710",
+  "17035075710",
+]);
+
 const VOS_BASE = "https://phonesystem.voslogic.com";
 
 // ─── Session ─────────────────────────────────────────────────────────────────
@@ -293,7 +300,7 @@ async function scanRingGroupCalls(
       seenCallIds.add(call.id);
       const rgName = ringGroupIdToName.get(rgId) ?? String(rgId);
       missedCounts[rgId] = (missedCounts[rgId] ?? 0) + 1;
-      if (call.fromNumber && !EXCLUDED_RING_GROUPS.has(rgName)) {
+      if (call.fromNumber && !EXCLUDED_RING_GROUPS.has(rgName) && !PARTICIPANT_BLOCKLIST.has(call.fromNumber)) {
         missedRecords.push({
           id: call.id,
           fromNumber: call.fromNumber,
@@ -309,6 +316,7 @@ async function scanRingGroupCalls(
   // Second pass: retry calls that were pending because their line wasn't known yet
   for (const call of pendingMissed) {
     if (!call.toNumber || !call.fromNumber) continue;
+    if (PARTICIPANT_BLOCKLIST.has(call.fromNumber)) continue;
     const rgId = lineMap.get(call.toNumber);
     if (rgId === undefined) continue;
     const rgName = ringGroupIdToName.get(rgId) ?? String(rgId);
@@ -582,6 +590,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       );
 
     for (const row of quoMissed) {
+      if (PARTICIPANT_BLOCKLIST.has(row.participant)) continue;
       const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);
       const times = callbackTimes.get(norm);
@@ -752,6 +761,7 @@ router.get("/vos/missed-no-callback", async (req, res) => {
 
     const items: MissedNoCallbackItem[] = [];
     for (const row of quoMissed) {
+      if (PARTICIPANT_BLOCKLIST.has(row.participant)) continue;
       const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);
       const times = callbackTimes.get(norm);
