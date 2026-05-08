@@ -168,13 +168,62 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
   return { headers: ["Agent", "Status", "Date"], rows };
 }
 
+const NAME_ALIASES: Record<string, string> = {
+  "kaite miller": "katie miller",
+};
+
+// NSF agent display names (normalized lowercase) — used to split the shared
+// Discord-bot sheet between NSF and CS.
+const NSF_AGENT_NAMES = new Set([
+  "austin white", "ahmed gamal",
+  "rika hart", "riham samir",
+  "jenny morgan", "ayaat",
+  "ellie moser", "engy mahmoud",
+  "estella cruz", "eman khamis",
+  "katie miller", "sama farouk",
+]);
+// CS agent display names (normalized lowercase)
+const CS_AGENT_NAMES = new Set([
+  "ella monroe", "hiba kamil",
+  "chase miller", "nour eldin atef",
+  "eli adam", "rasha emad",
+  "leo carter", "fares",
+  "nora adam", "nourhan ame",
+  "jacob xander", "youssef nady",
+  "carla bennet", "bassant emad",
+]);
+
+// Shared helper: parses the Discord-bot sheet and returns rows belonging to a team.
+async function fetchNewSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
+  const newSheet = await fetchHeaderCsv(NEW_NSF_URL);
+  const rows: Row[] = [];
+  for (const r of newSheet.rows) {
+    const tsRaw = (r["Timestamp"] ?? "").trim();
+    const d = parseEgyptTimestamp(tsRaw);
+    if (!d) continue;
+    const caDate = toCaliforniaDateStr(d);
+    if (caDate < "2026-05-04") continue;
+    const agentRaw = (r["Agent Name"] ?? "").trim();
+    const agentNorm = normalizeAgent(agentRaw);
+    // Include the row if the agent's normalized name (or any alias) belongs to this team.
+    const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
+    if (!teamNames.has(agentNorm) && !teamNames.has(resolvedKey)) continue;
+    rows.push({
+      Agent: agentRaw,
+      Status: (r["File Status"] ?? "").trim(),
+      Date: caDate,
+    });
+  }
+  return rows;
+}
+
 // Fetches both the old and new NSF sheets and merges them:
 //   – Old sheet  → all rows (historical records, unchanged)
-//   – New sheet  → only rows on/after RETENTION_CUTOVER (Discord-bot submissions)
+//   – New sheet  → only NSF-agent rows on/after RETENTION_CUTOVER
 async function fetchNSFCombinedSheet(): Promise<SheetData> {
-  const [oldSheet, newSheet] = await Promise.all([
+  const [oldSheet, newRows] = await Promise.all([
     fetchHeaderCsv(NSF.status),
-    fetchHeaderCsv(NEW_NSF_URL),
+    fetchNewSheetForTeam(NSF_AGENT_NAMES),
   ]);
 
   const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
@@ -183,7 +232,6 @@ async function fetchNSFCombinedSheet(): Promise<SheetData> {
 
   const rows: Row[] = [];
 
-  // Keep every row from the old sheet exactly as it was
   if (oldAgentCol && oldStatusCol) {
     for (const r of oldSheet.rows) {
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
@@ -196,21 +244,14 @@ async function fetchNSFCombinedSheet(): Promise<SheetData> {
     }
   }
 
-  // Add new-sheet rows that are on/after the cutover date.
-  // Timestamps are in Egypt time (UTC+2) — convert to California date.
-  for (const r of newSheet.rows) {
-    const tsRaw = (r["Timestamp"] ?? "").trim();
-    const d = parseEgyptTimestamp(tsRaw);
-    if (!d) continue;
-    const caDate = toCaliforniaDateStr(d);
-    if (caDate < "2026-05-04") continue;
-    rows.push({
-      Agent: (r["Agent Name"] ?? "").trim(),
-      Status: (r["File Status"] ?? "").trim(),
-      Date: caDate,
-    });
-  }
+  rows.push(...newRows);
+  return { headers: ["Agent", "Status", "Date"], rows };
+}
 
+// Fetches CS submissions from the shared Discord-bot sheet.
+// Filters to CS agents only — separate from NSF.
+async function fetchCSCombinedSheet(): Promise<SheetData> {
+  const rows = await fetchNewSheetForTeam(CS_AGENT_NAMES);
   return { headers: ["Agent", "Status", "Date"], rows };
 }
 
@@ -223,9 +264,6 @@ function findColumn(headers: string[], candidates: string[]): string | null {
   return null;
 }
 
-const NAME_ALIASES: Record<string, string> = {
-  "kaite miller": "katie miller",
-};
 const NAME_DISPLAY: Record<string, string> = {
   "katie miller": "Katie Miller",
 };
@@ -2225,6 +2263,19 @@ function CSPanel() {
   const todayIso = toIsoDate(new Date());
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
+  const [dayAgentFilter, setDayAgentFilter] = useState("");
+
+  const fromDate = from ? parseDate(from) : null;
+  const toDate = to ? parseDate(to) : null;
+  if (toDate) toDate.setHours(23, 59, 59, 999);
+
+  const statusQ = useQuery({
+    queryKey: ["status", "cs"],
+    queryFn: fetchCSCombinedSheet,
+    staleTime: 1000 * 10,
+    refetchOnWindowFocus: true,
+    refetchInterval: 15 * 1000,
+  });
 
   const phoneQ = useQuery<PhoneStatsResponse | null>({
     queryKey: ["phoneStats", "cs", from, to],
@@ -2240,6 +2291,21 @@ function CSPanel() {
     refetchInterval: 15 * 1000,
   });
 
+  const aggregated = useMemo(() => {
+    if (!statusQ.data) return null;
+    return aggregate(statusQ.data, "nsf", fromDate, toDate);
+  }, [statusQ.data, from, to]);
+
+  const aggregatedForDay = useMemo(() => {
+    if (!statusQ.data) return null;
+    return aggregate(statusQ.data, "nsf", fromDate, toDate, dayAgentFilter || undefined);
+  }, [statusQ.data, from, to, dayAgentFilter]);
+
+  const dayAgentOptions = useMemo(() => {
+    if (!aggregated || "error" in aggregated) return [];
+    return aggregated.byAgent.map((a) => a.agent).sort((a, b) => a.localeCompare(b));
+  }, [aggregated]);
+
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
     const allowlist = TEAM_ALLOWLIST["cs"];
     const map = new Map<string, PhoneAgentMetrics>();
@@ -2249,7 +2315,7 @@ function CSPanel() {
       const rawKey = normalizeAgent(agentName);
       if (PHONE_BLOCKLIST.has(rawKey)) continue;
       const key = PHONE_ALIASES[rawKey] ?? rawKey;
-      if (allowlist && !allowlist.has(key)) continue; // strict team allowlist
+      if (allowlist && !allowlist.has(key)) continue;
       const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
       for (const day of Object.values(days)) {
         acc.calls += day.totalCalls ?? 0;
@@ -2276,7 +2342,6 @@ function CSPanel() {
   }, [phoneQ.data]);
 
   const allAgents = useMemo(() => {
-    // phoneData is already filtered by allowlist; prefer CS_AGENTS display names, fill rest from phoneData
     const result: string[] = [];
     const addedKeys = new Set<string>();
     for (const a of CS_AGENTS) {
@@ -2284,12 +2349,8 @@ function CSPanel() {
       if (!addedKeys.has(k)) { result.push(a); addedKeys.add(k); }
     }
     for (const k of phoneData.keys()) {
-      if (!addedKeys.has(k)) {
-        result.push(k.replace(/\b\w/g, (c) => c.toUpperCase()));
-        addedKeys.add(k);
-      }
+      if (!addedKeys.has(k)) { result.push(k.replace(/\b\w/g, (c) => c.toUpperCase())); addedKeys.add(k); }
     }
-    // PBX-only agents in the Customer Support ring group
     if (pbxData) {
       for (const [pbxKey, pbxAgent] of pbxData.entries()) {
         if (pbxAgent.groups.includes("Customer Support") && !addedKeys.has(pbxKey)) {
@@ -2303,13 +2364,10 @@ function CSPanel() {
 
   const totals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0, missed = 0, uniqueContacts = 0;
-    for (const v of phoneData.values()) {
-      calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; uniqueContacts += v.uniqueContacts;
-    }
+    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; uniqueContacts += v.uniqueContacts; }
     return { calls, seconds, answered, missed, uniqueContacts };
   }, [phoneData]);
 
-  // PBX call totals for agents in allAgents (each agent looked up by direct or alias key)
   const pbxTotals = useMemo(() => {
     if (!pbxData) return { calls: 0, answered: 0, seconds: 0 };
     let calls = 0, answered = 0, seconds = 0;
@@ -2317,14 +2375,12 @@ function CSPanel() {
       const norm = normalizeAgent(agent);
       const pbxKey = SHEET_TO_PBX[norm] ?? norm;
       const px = pbxData.get(pbxKey);
-      calls += px?.calls ?? 0;
-      answered += px?.answered ?? 0;
-      seconds += px?.durationSeconds ?? 0;
+      calls += px?.calls ?? 0; answered += px?.answered ?? 0; seconds += px?.durationSeconds ?? 0;
     }
     return { calls, answered, seconds };
   }, [pbxData, allAgents]);
 
-  function refresh() { phoneQ.refetch(); }
+  function refresh() { statusQ.refetch(); phoneQ.refetch(); }
 
   return (
     <Card>
@@ -2332,16 +2388,16 @@ function CSPanel() {
         <div>
           <CardTitle className="text-xl">Internal CS</CardTitle>
           <p className="text-sm text-muted-foreground mt-1">
-            Call activity · live from OpenPhone + PBX
+            Call activity &amp; files · live from OpenPhone + PBX
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={refresh} disabled={phoneQ.isFetching}>
-          <RefreshCw className={`h-4 w-4 mr-2 ${phoneQ.isFetching ? "animate-spin" : ""}`} />
+        <Button variant="outline" size="sm" onClick={refresh} disabled={phoneQ.isFetching || statusQ.isFetching}>
+          <RefreshCw className={`h-4 w-4 mr-2 ${(phoneQ.isFetching || statusQ.isFetching) ? "animate-spin" : ""}`} />
           Refresh
         </Button>
       </CardHeader>
       <CardContent className="space-y-6">
-        {phoneQ.isLoading && <TableSkeleton />}
+        {(phoneQ.isLoading || statusQ.isLoading) && <TableSkeleton />}
 
         <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
 
@@ -2352,9 +2408,66 @@ function CSPanel() {
           <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
           <StatTile label="Time on calls" value={formatHours(totals.seconds + pbxTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
           <StatTile label="Response rate" value={responseRate(totals.answered + pbxTotals.answered, totals.calls + pbxTotals.calls)} tone="amber" />
+          {aggregated && !("error" in aggregated) && (
+            <>
+              <StatTile label="Today's files" value={aggregated.todayCount.toLocaleString()} tone="emerald" />
+              <StatTile label="This month's files" value={aggregated.monthCount.toLocaleString()} tone="emerald" />
+              <StatTile label="Total files" value={aggregated.totals.grand.toLocaleString()} tone="violet" />
+            </>
+          )}
         </div>
 
-        <ByCallStatsView agentList={allAgents} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} />
+        <Tabs defaultValue="call" className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="call">By call</TabsTrigger>
+            {aggregated && !("error" in aggregated) && (
+              <>
+                <TabsTrigger value="files">By files</TabsTrigger>
+                <TabsTrigger value="day">By day</TabsTrigger>
+              </>
+            )}
+          </TabsList>
+          <TabsContent value="call">
+            <ByCallStatsView agentList={allAgents} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} />
+          </TabsContent>
+          {aggregated && !("error" in aggregated) && (
+            <>
+              <TabsContent value="files">
+                <ByFilesView data={aggregated} />
+              </TabsContent>
+              <TabsContent value="day">
+                <div className="space-y-3">
+                  {dayAgentOptions.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={dayAgentFilter}
+                        onChange={(e) => setDayAgentFilter(e.target.value)}
+                        className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
+                      >
+                        <option value="">All agents</option>
+                        {dayAgentOptions.map((n) => (
+                          <option key={n} value={n}>{n}</option>
+                        ))}
+                      </select>
+                      {dayAgentFilter && (
+                        <button
+                          type="button"
+                          onClick={() => setDayAgentFilter("")}
+                          className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {aggregatedForDay && !("error" in aggregatedForDay) && (
+                    <ByDayView data={aggregatedForDay} />
+                  )}
+                </div>
+              </TabsContent>
+            </>
+          )}
+        </Tabs>
       </CardContent>
     </Card>
   );
