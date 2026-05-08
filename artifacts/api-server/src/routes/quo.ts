@@ -32,7 +32,7 @@ interface QuoPhoneNumber {
 
 // Exact line name → team (mirrors quoSync.ts LINE_TEAM_MAP)
 const LINE_TEAM_MAP: Record<string, "retention" | "nsf" | "cs"> = {
-  "ahmed ayman-levi miller":         "cs",
+  "ahmed ayman-levi miller":         "retention", // Ahmed Ayman → Retention
   "youssef nady-jacob xander":       "cs",
   "nour-michael belfort-2900":       "retention", // Michael Belfort → Retention
   "levi ob":                         "retention", // Ahmed Ayman → Retention

@@ -28,7 +28,7 @@ async function quoFetch<T>(path: string, attempt = 0): Promise<T> {
 
 // Exact line name → team overrides (takes priority over regex, handles moved agents)
 const LINE_TEAM_MAP: Record<string, "retention" | "nsf" | "cs"> = {
-  "ahmed ayman-levi miller":         "cs",
+  "ahmed ayman-levi miller":         "retention", // Ahmed Ayman → Retention
   "youssef nady-jacob xander":       "cs",
   "nour-michael belfort-2900":       "retention", // Michael Belfort → Retention
   "levi ob":                         "retention", // Ahmed Ayman → Retention
