@@ -83,6 +83,7 @@ Your personality: professional but warm, sharp, and helpful. Speak like a smart 
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  images?: string[];
 }
 
 // ─── CSV parsing ──────────────────────────────────────────────────────────────
@@ -252,7 +253,7 @@ async function fetchSheetSummary(
 
 router.post("/samia/chat", async (req, res) => {
   try {
-    const { message, history = [] } = req.body as { message: string; history: ChatMessage[] };
+    const { message, images = [], history = [] } = req.body as { message: string; images?: string[]; history: ChatMessage[] };
     if (!message?.trim()) {
       return res.status(400).json({ error: "message is required" });
     }
@@ -503,10 +504,36 @@ router.post("/samia/chat", async (req, res) => {
       ? `\n\nLIVE DASHBOARD DATA (as of ${new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })} LA time):\n${lines.join("\n")}`
       : "\n\n[Live stats unavailable right now]";
 
+    // Build history messages — include images if present
+    const historyMessages: OpenAI.Chat.ChatCompletionMessageParam[] = history.slice(-10).map((m) => {
+      if (m.role === "user" && m.images?.length) {
+        return {
+          role: "user",
+          content: [
+            ...m.images.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+            { type: "text" as const, text: m.content },
+          ],
+        };
+      }
+      return { role: m.role, content: m.content } as OpenAI.Chat.ChatCompletionMessageParam;
+    });
+
+    // Build the current user message — include images if provided
+    const userContent: OpenAI.Chat.ChatCompletionMessageParam =
+      images.length > 0
+        ? {
+            role: "user",
+            content: [
+              ...images.map((url: string) => ({ type: "image_url" as const, image_url: { url } })),
+              { type: "text" as const, text: message },
+            ],
+          }
+        : { role: "user", content: message };
+
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       { role: "system", content: SAMIA_SYSTEM + statsContext },
-      ...history.slice(-10).map((m) => ({ role: m.role, content: m.content } as OpenAI.Chat.ChatCompletionMessageParam)),
-      { role: "user", content: message },
+      ...historyMessages,
+      userContent,
     ];
 
     const tools: OpenAI.Chat.ChatCompletionTool[] = [

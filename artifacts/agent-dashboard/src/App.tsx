@@ -54,6 +54,7 @@ import {
   MessageCircle,
   Send,
   Sparkles,
+  Paperclip,
 } from "lucide-react";
 
 const queryClient = new QueryClient();
@@ -4296,15 +4297,17 @@ function Dashboard() {
 
 // ─── Samia AI Chat ─────────────────────────────────────────────────────────────
 
-interface SamiaMessage { role: "user" | "assistant"; content: string }
+interface SamiaMessage { role: "user" | "assistant"; content: string; images?: string[] }
 
 function SamiaChat() {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<SamiaMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  const [pendingImages, setPendingImages] = useState<string[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const { token } = useUser();
 
   useEffect(() => {
@@ -4320,18 +4323,43 @@ function SamiaChat() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
+  function readFileAsDataURL(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function addImages(files: FileList | File[]) {
+    const arr = Array.from(files).filter((f) => f.type.startsWith("image/")).slice(0, 4);
+    const urls = await Promise.all(arr.map(readFileAsDataURL));
+    setPendingImages((prev) => [...prev, ...urls].slice(0, 4));
+  }
+
+  function handlePaste(e: React.ClipboardEvent) {
+    const items = Array.from(e.clipboardData.items).filter((i) => i.type.startsWith("image/"));
+    if (items.length === 0) return;
+    e.preventDefault();
+    const files = items.map((i) => i.getAsFile()).filter(Boolean) as File[];
+    void addImages(files);
+  }
+
   async function send() {
     const text = input.trim();
-    if (!text || loading) return;
+    if ((!text && pendingImages.length === 0) || loading) return;
+    const images = [...pendingImages];
     setInput("");
+    setPendingImages([]);
     const history = messages.filter((m) => m.role !== "assistant" || messages.indexOf(m) > 0);
-    setMessages((prev) => [...prev, { role: "user", content: text }]);
+    setMessages((prev) => [...prev, { role: "user", content: text, images: images.length ? images : undefined }]);
     setLoading(true);
     try {
       const res = await fetch("/api/samia/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ message: text, history }),
+        body: JSON.stringify({ message: text || "What do you see in this image?", images, history }),
       });
       const data = (await res.json()) as { reply?: string; error?: string };
       setMessages((prev) => [...prev, { role: "assistant", content: data.reply ?? "Sorry, something went wrong." }]);
@@ -4380,12 +4408,19 @@ function SamiaChat() {
                 {m.role === "assistant" && (
                   <div className="h-6 w-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
                 )}
-                <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                  m.role === "user"
-                    ? "bg-violet-600 text-white rounded-br-sm"
-                    : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
-                }`}>
-                  {m.content}
+                <div className={`max-w-[80%] flex flex-col gap-1.5 ${m.role === "user" ? "items-end" : "items-start"}`}>
+                  {m.images?.map((src, idx) => (
+                    <img key={idx} src={src} alt="attachment" className="max-w-[220px] rounded-xl border border-white/10 object-cover" />
+                  ))}
+                  {m.content && (
+                    <div className={`rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
+                      m.role === "user"
+                        ? "bg-violet-600 text-white rounded-br-sm"
+                        : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
+                    }`}>
+                      {m.content}
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -4405,23 +4440,59 @@ function SamiaChat() {
           </div>
 
           {/* Input */}
-          <div className="px-3 pb-3 pt-2 border-t border-white/8 flex gap-2 items-center">
-            <input
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
-              placeholder="Ask Samia anything..."
-              disabled={loading}
-              className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-violet-500 disabled:opacity-50"
-            />
-            <button
-              onClick={() => void send()}
-              disabled={!input.trim() || loading}
-              className="h-9 w-9 rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity flex-shrink-0"
-            >
-              <Send className="h-4 w-4" />
-            </button>
+          <div className="px-3 pb-3 pt-2 border-t border-white/8 flex flex-col gap-2">
+            {/* Pending image thumbnails */}
+            {pendingImages.length > 0 && (
+              <div className="flex gap-2 flex-wrap">
+                {pendingImages.map((src, idx) => (
+                  <div key={idx} className="relative group">
+                    <img src={src} alt="pending" className="h-16 w-16 rounded-lg object-cover border border-white/10" />
+                    <button
+                      onClick={() => setPendingImages((p) => p.filter((_, i) => i !== idx))}
+                      className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-zinc-700 border border-white/20 text-zinc-300 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <X className="h-2.5 w-2.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2 items-center">
+              {/* Hidden file input */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(e) => { if (e.target.files) { void addImages(e.target.files); e.target.value = ""; } }}
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={loading}
+                title="Attach image"
+                className="h-9 w-9 rounded-xl bg-zinc-800 border border-white/10 text-zinc-400 hover:text-violet-400 flex items-center justify-center transition-colors disabled:opacity-40 flex-shrink-0"
+              >
+                <Paperclip className="h-4 w-4" />
+              </button>
+              <input
+                ref={inputRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
+                onPaste={handlePaste}
+                placeholder="Ask Samia anything… or paste a screenshot"
+                disabled={loading}
+                className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-violet-500 disabled:opacity-50"
+              />
+              <button
+                onClick={() => void send()}
+                disabled={(!input.trim() && pendingImages.length === 0) || loading}
+                className="h-9 w-9 rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity flex-shrink-0"
+              >
+                <Send className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </div>
       )}
