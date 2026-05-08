@@ -3598,11 +3598,18 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
   const fetchedAt = q.data?.fetchedAt ?? 0;
   const [teamFilter, setTeamFilter] = useState<string>("all");
   const [sourceFilter, setSourceFilter] = useState<"all" | "pbx" | "quo">("all");
+  const [lineFilter, setLineFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
 
   const teams = useMemo(() => {
     const s = new Set<string>();
     for (const it of items) if (it.team !== "other") s.add(it.team);
+    return Array.from(s).sort();
+  }, [items]);
+
+  const lines = useMemo(() => {
+    const s = new Set<string>();
+    for (const it of items) if (it.toNumber) s.add(it.toNumber);
     return Array.from(s).sort();
   }, [items]);
 
@@ -3622,6 +3629,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
       else list = list.filter((it) => it.team === teamFilter);
     }
     if (sourceFilter !== "all") list = list.filter((it) => it.source === sourceFilter);
+    if (lineFilter !== "all") list = list.filter((it) => it.toNumber === lineFilter);
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       list = list.filter((it) =>
@@ -3631,7 +3639,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
       );
     }
     return [...list].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [items, teamFilter, sourceFilter, lockedTeam, search]);
+  }, [items, teamFilter, sourceFilter, lineFilter, lockedTeam, search]);
 
   return (
     <Card>
@@ -3716,10 +3724,27 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
               {s === "all" ? "All" : s === "quo" ? "Quo" : "PBX"}
             </button>
           ))}
-          <div className={`${lockedTeam ? "" : "ml-auto"} flex items-center gap-2`}>
+          {lines.length > 0 && (
+            <>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-muted-foreground">Line:</span>
+              </div>
+              <select
+                value={lineFilter}
+                onChange={(e) => setLineFilter(e.target.value)}
+                className="h-7 rounded-md border border-zinc-700/50 bg-zinc-800/50 text-xs text-zinc-300 px-2 focus:outline-none focus:border-zinc-500 cursor-pointer"
+              >
+                <option value="all">All lines</option>
+                {lines.map((l) => (
+                  <option key={l} value={l}>{l}</option>
+                ))}
+              </select>
+            </>
+          )}
+          <div className={`${lockedTeam && lines.length === 0 ? "" : "ml-auto"} flex items-center gap-2`}>
             <Search className="h-3.5 w-3.5 text-muted-foreground" />
             <Input
-              placeholder="Search number or group…"
+              placeholder="Search number or line…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="h-7 w-44 text-xs"
