@@ -271,19 +271,20 @@ async function buildQuoCallsMap(dayStartUtc: Date, dayEndUtc: Date): Promise<Map
   return map;
 }
 
-// Find the earliest call for a member that is >= (shiftStartUtc - 30 min).
-// This prevents yesterday's US-afternoon calls (which fall in the Egypt midnight window)
-// from being counted as today's attendance signal.
+// Find the earliest call for a member within the Egypt calendar day.
+// Uses dayStartUtc as the floor so agents who log in before their scheduled
+// shift (very common on night shifts) are still detected as present.
 // shiftStartUtc=null means no shift — return null.
 function resolveFirstCall(
   member: { name: string },
+  dayStartUtc: Date,
   shiftStartUtc: Date | null,
   vosFirstCall: Map<string, Date>,
   quoCalls: Map<string, Date[]>,
 ): Date | null {
   if (!shiftStartUtc) return null;
-  // Allow calls starting 30 minutes before the shift (e.g. agent logs in early)
-  const floor = new Date(shiftStartUtc.getTime() - 30 * 60 * 1000);
+  // Any call on or after midnight Egypt counts as an attendance signal.
+  const floor = dayStartUtc;
 
   const agentNames: string[] = MEMBER_TO_AGENT_NAMES[member.name]
     ?? [member.name.split("-")[0].trim(), member.name];
@@ -351,12 +352,14 @@ router.get("/attendance/call-logs", async (req, res) => {
 
     const agents = members.map((member) => {
       const shiftNum = parseInt(member.shift || "0");
+      // Shift N = midnight Egypt + (N-4) hours.
+      // Shift 4 = midnight Egypt = dayStartUtc, shift 5 = 01:00 Egypt, etc.
       const shiftStartUtc = shiftNum
-        ? new Date(`${date}T${String(shiftNum + 10).padStart(2, "0")}:00:00Z`)
+        ? new Date(dayStartUtc.getTime() + (shiftNum - 4) * 3600 * 1000)
         : null;
-      const shiftStartEgypt = shiftNum ? `${date}T${String(shiftNum).padStart(2, "0")}:00:00+02:00` : null;
+      const shiftStartEgypt = shiftNum ? `${date}T${String(shiftNum - 4).padStart(2, "0")}:00:00+02:00` : null;
 
-      const firstCallAt = resolveFirstCall(member, shiftStartUtc, vosFirstCall, quoCalls);
+      const firstCallAt = resolveFirstCall(member, dayStartUtc, shiftStartUtc, vosFirstCall, quoCalls);
       const minsLate = firstCallAt && shiftStartUtc
         ? Math.round((firstCallAt.getTime() - shiftStartUtc.getTime()) / 60000)
         : null;
@@ -485,8 +488,8 @@ router.post("/attendance/auto-mark", async (req, res) => {
       const shiftNum = parseInt(member.shift || "0");
       if (!shiftNum) { results.push({ name: member.name, status: "", note: "", skipped: "no shift" }); continue; }
 
-      const shiftStartUtcHour = shiftNum + 10;
-      const shiftStartUtc = new Date(`${targetDate}T${String(shiftStartUtcHour).padStart(2, "0")}:00:00Z`);
+      // Shift N = midnight Egypt + (N-4) hours
+      const shiftStartUtc = new Date(dayStartUtc.getTime() + (shiftNum - 4) * 3600 * 1000);
 
       // For today: skip if shift hasn't started. For past dates: always process.
       if (isToday && nowUtc < shiftStartUtc) {
@@ -499,7 +502,7 @@ router.post("/attendance/auto-mark", async (req, res) => {
         continue;
       }
 
-      const firstCallAt = resolveFirstCall(member, shiftStartUtc, vosFirstCall, quoCalls);
+      const firstCallAt = resolveFirstCall(member, dayStartUtc, shiftStartUtc, vosFirstCall, quoCalls);
 
       if (!firstCallAt) {
         results.push({ name: member.name, status: "", note: "", skipped: "no calls found" });
