@@ -20,6 +20,8 @@ You know the team structure:
 - CS (Customer Support) handles inbound calls — no retains/cancels sheet.
 - PBX (VoSLogic) tracks all phone calls across all teams via ring groups.
 
+You can also take attendance. When the user asks you to mark attendance, take attendance, or check who is late, use the auto_mark_attendance tool. It checks each agent's first call of the day against their shift start time and marks them on-time or late automatically. It skips anyone whose shift hasn't started yet or who already has a manual record.
+
 Your personality: professional but warm, sharp, and helpful. Speak like a smart analyst who knows the numbers cold.`;
 
 interface ChatMessage {
@@ -451,13 +453,76 @@ router.post("/samia/chat", async (req, res) => {
       { role: "user", content: message },
     ];
 
+    const tools: OpenAI.Chat.ChatCompletionTool[] = [
+      {
+        type: "function",
+        function: {
+          name: "auto_mark_attendance",
+          description: "Automatically mark today's attendance for all agents. Checks each agent's first call of the day against their shift start time (shift N = N PM Egypt time). Marks on-time if within 10 minutes of shift start, late otherwise. Skips agents whose shift hasn't started yet or who already have a manual attendance record.",
+          parameters: { type: "object", properties: {}, required: [] },
+        },
+      },
+    ];
+
     const completion = await openai.chat.completions.create({
       model: "gpt-5.1",
       messages,
+      tools,
       max_completion_tokens: 600,
     });
 
-    const reply = completion.choices[0]?.message?.content ?? "Sorry, I couldn't generate a response.";
+    const choice = completion.choices[0];
+
+    // ── Tool call: auto-mark attendance ────────────────────────────────────────
+    if (choice?.finish_reason === "tool_calls" && choice.message?.tool_calls?.length) {
+      const toolCall = choice.message.tool_calls.find((tc) => tc.function.name === "auto_mark_attendance");
+      if (toolCall) {
+        const markRes = await fetch(`${base}/api/attendance/auto-mark`, { method: "POST" });
+        const markData = await markRes.json() as {
+          success: boolean;
+          date: string;
+          results: { name: string; status: string; note: string; skipped?: string }[];
+        };
+
+        const marked  = markData.results.filter((r) => r.status);
+        const onTime  = marked.filter((r) => r.status === "in");
+        const late    = marked.filter((r) => r.status === "late");
+        const skipped = markData.results.filter((r) => !r.status);
+        const notStarted = skipped.filter((r) => r.skipped === "shift not started yet").length;
+        const noCalls    = skipped.filter((r) => r.skipped === "no calls today").length;
+        const existing   = skipped.filter((r) => r.skipped === "already has record").length;
+
+        const toolResult = JSON.stringify({
+          date: markData.date,
+          marked: marked.length,
+          onTime: onTime.length,
+          onTimeAgents: onTime.map((r) => r.name),
+          late: late.length,
+          lateAgents: late.map((r) => ({ name: r.name, note: r.note })),
+          skipped: skipped.length,
+          notStartedYet: notStarted,
+          noCalls,
+          alreadyHadRecord: existing,
+        });
+
+        const followUpMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+          ...messages,
+          choice.message,
+          { role: "tool", tool_call_id: toolCall.id, content: toolResult },
+        ];
+
+        const followUp = await openai.chat.completions.create({
+          model: "gpt-5.1",
+          messages: followUpMessages,
+          max_completion_tokens: 600,
+        });
+
+        const reply = followUp.choices[0]?.message?.content ?? "Attendance marked.";
+        return res.json({ reply, attendanceMarked: true });
+      }
+    }
+
+    const reply = choice?.message?.content ?? "Sorry, I couldn't generate a response.";
     return res.json({ reply });
   } catch (err) {
     req.log.error(err, "samia chat error");

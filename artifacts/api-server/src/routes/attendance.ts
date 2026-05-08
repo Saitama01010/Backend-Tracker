@@ -4,7 +4,7 @@ import {
   attendanceMembersTable,
   attendanceRecordsTable,
 } from "@workspace/db";
-import { eq, and, gte, lte, min } from "drizzle-orm";
+import { eq, and, gte, lte, inArray, min } from "drizzle-orm";
 import { getCallHistoryCache } from "./vos";
 
 const router = Router();
@@ -231,6 +231,15 @@ function lateNote(minsLate: number): string {
   return m > 0 ? `late ${h}h ${m}min` : `late ${h}h`;
 }
 
+// VoS/PBX timestamps have no timezone indicator and are in PDT (UTC-7).
+// Quo DB timestamps are stored as UTC (TIMESTAMPTZ from OpenPhone API).
+// Egypt is UTC+2. Attendance sheet dates are Egypt time.
+function parsePdt(s: string): Date {
+  // If the string already has a timezone (+, -, or Z) treat it as-is.
+  if (/[Z+]/.test(s) || (s.includes('-') && s.lastIndexOf('-') > 7)) return new Date(s);
+  return new Date(s + '-07:00');
+}
+
 router.post("/attendance/auto-mark", async (req, res) => {
   try {
     // Today's date in Egypt timezone (UTC+2)
@@ -239,19 +248,29 @@ router.post("/attendance/auto-mark", async (req, res) => {
     const egyptNow = new Date(nowUtc.getTime() + egyptOffsetMs);
     const todayEgypt = egyptNow.toISOString().slice(0, 10);
 
-    // Window: from midnight Egypt time today (= todayEgypt T00:00 Egypt = todayEgypt T-02:00 UTC)
+    // Egypt day window in UTC:
+    //   midnight Egypt (UTC+2) = todayEgypt T00:00+02:00 = todayEgypt-1 T22:00Z
+    //   end of Egypt day       = todayEgypt T23:59:59+02:00
     const dayStartUtc = new Date(`${todayEgypt}T00:00:00+02:00`);
     const dayEndUtc   = new Date(`${todayEgypt}T23:59:59+02:00`);
 
-    // Build VoS first-call map: agentName (lowercase) → firstCallAt ISO
-    const vosFirstCall = new Map<string, string>();
+    // Build VoS first-call map: agentName (lowercase) → Date (UTC)
+    // VoS timestamps are PDT strings (no timezone). Interpret as UTC-7.
+    // Only include calls that fall within today's Egypt day window.
+    const vosFirstCall = new Map<string, Date>();
     for (const stat of getCallHistoryCache()) {
       if (stat.firstCallAt) {
-        vosFirstCall.set(stat.agentName.trim().toLowerCase(), stat.firstCallAt);
+        const d = parsePdt(stat.firstCallAt);
+        if (d >= dayStartUtc && d <= dayEndUtc) {
+          const key = stat.agentName.trim().toLowerCase();
+          const existing = vosFirstCall.get(key);
+          if (!existing || d < existing) vosFirstCall.set(key, d);
+        }
       }
     }
 
-    // Query Quo DB for first call per agentName today
+    // Query Quo DB for first call per agentName today.
+    // Quo DB stores UTC timestamps (TIMESTAMPTZ), so compare directly with the Egypt day window.
     const quoRows = await db
       .select({
         agentName: phoneCallsTable.agentName,
@@ -308,14 +327,13 @@ router.post("/attendance/auto-mark", async (req, res) => {
         ?? [member.name.split("-")[0].trim(), member.name];
       const agentNamesLower = agentNames.map((n) => n.trim().toLowerCase());
 
-      // Find earliest first call across all known names
+      // Find earliest first call across all known names.
+      // vosFirstCall values are already Date (parsed as PDT → UTC).
+      // quoFirstCall values are already Date (UTC from DB).
       let firstCallAt: Date | null = null;
       for (const nameLower of agentNamesLower) {
         const vos = vosFirstCall.get(nameLower);
-        if (vos) {
-          const d = new Date(vos);
-          if (!firstCallAt || d < firstCallAt) firstCallAt = d;
-        }
+        if (vos && (!firstCallAt || vos < firstCallAt)) firstCallAt = vos;
         const quo = quoFirstCall.get(nameLower);
         if (quo && (!firstCallAt || quo < firstCallAt)) firstCallAt = quo;
       }
