@@ -2282,10 +2282,11 @@ function CSPanel() {
   );
 }
 
-function RetentionCSPanel() {
+function RetentionPanel() {
   const pbxData = useVosCalls();
   const ringGroupMissed = useVosRingGroupMissed();
-  const pbxMissed = (ringGroupMissed.get(2) ?? 0) + (ringGroupMissed.get(4) ?? 0);
+  // Retention ring group ID = 2 in VoSLogic
+  const pbxMissed = ringGroupMissed.get(2) ?? 0;
 
   const todayIso = toIsoDate(new Date());
   const [from, setFrom] = useState(todayIso);
@@ -2305,7 +2306,7 @@ function RetentionCSPanel() {
   });
 
   const phoneQ = useQuery<PhoneStatsResponse | null>({
-    queryKey: ["phoneStats", "backend", from, to],
+    queryKey: ["phoneStats", "retention", from, to],
     queryFn: async () => {
       const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
       const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
@@ -2333,72 +2334,30 @@ function RetentionCSPanel() {
     return aggregated.byAgent.map((a) => a.agent).sort((a, b) => a.localeCompare(b));
   }, [aggregated]);
 
-  const retentionPhoneData = useMemo(() => buildTeamPhoneData("retention", phoneQ.data), [phoneQ.data]);
-  const csPhoneData = useMemo(() => buildTeamPhoneData("cs", phoneQ.data), [phoneQ.data]);
+  const phoneData = useMemo(() => buildTeamPhoneData("retention", phoneQ.data), [phoneQ.data]);
 
-  const combinedPhoneData = useMemo(() => {
-    const merged = new Map(retentionPhoneData);
-    for (const [key, val] of csPhoneData) {
-      const e = merged.get(key);
-      if (e) {
-        const mergedLast = e.lastCallAt && val.lastCallAt ? (e.lastCallAt > val.lastCallAt ? e.lastCallAt : val.lastCallAt) : (e.lastCallAt ?? val.lastCallAt);
-        merged.set(key, { calls: e.calls + val.calls, seconds: e.seconds + val.seconds, answered: e.answered + val.answered, missed: e.missed + val.missed, voicemail: e.voicemail + val.voicemail, vmBrief: e.vmBrief + val.vmBrief, inbound: e.inbound + val.inbound, outbound: e.outbound + val.outbound, uniqueContacts: e.uniqueContacts + val.uniqueContacts, lastCallAt: mergedLast });
-      } else {
-        merged.set(key, val);
-      }
-    }
-    return merged;
-  }, [retentionPhoneData, csPhoneData]);
-
-  const { agentList, agentDept } = useMemo(() => {
-    const dept = new Map<string, "Retention" | "CS">();
+  const agentList = useMemo(() => {
     const result: string[] = [];
     const addedKeys = new Set<string>();
-
     for (const a of RETENTION_AGENTS) {
       const k = normalizeAgent(a);
-      if (!addedKeys.has(k)) { result.push(a); addedKeys.add(k); dept.set(k, "Retention"); }
+      if (!addedKeys.has(k)) { result.push(a); addedKeys.add(k); }
     }
     for (const extra of TEAM_PHONE_EXTRAS["retention"] ?? []) {
       const k = normalizeAgent(extra);
-      if (!addedKeys.has(k)) { result.push(extra); addedKeys.add(k); dept.set(k, "Retention"); }
+      if (!addedKeys.has(k)) { result.push(extra); addedKeys.add(k); }
     }
-    for (const k of retentionPhoneData.keys()) {
-      if (!addedKeys.has(k)) {
-        result.push(k.replace(/\b\w/g, (c) => c.toUpperCase()));
-        addedKeys.add(k); dept.set(k, "Retention");
-      }
+    for (const k of phoneData.keys()) {
+      if (!addedKeys.has(k)) { result.push(k.replace(/\b\w/g, (c) => c.toUpperCase())); addedKeys.add(k); }
     }
-
-    for (const a of CS_AGENTS) {
-      const k = normalizeAgent(a);
-      if (!addedKeys.has(k)) { result.push(a); addedKeys.add(k); dept.set(k, "CS"); }
-    }
-    for (const k of csPhoneData.keys()) {
-      if (!addedKeys.has(k)) {
-        result.push(k.replace(/\b\w/g, (c) => c.toUpperCase()));
-        addedKeys.add(k); dept.set(k, "CS");
-      }
-    }
-    if (pbxData) {
-      for (const [pbxKey, pbxAgent] of pbxData.entries()) {
-        if (pbxAgent.groups.includes("Customer Support") && !addedKeys.has(pbxKey)) {
-          result.push(pbxKey.replace(/\b\w/g, (c) => c.toUpperCase()));
-          addedKeys.add(pbxKey); dept.set(pbxKey, "CS");
-        }
-      }
-    }
-
-    return { agentList: result, agentDept: dept };
-  }, [retentionPhoneData, csPhoneData, pbxData]);
+    return result;
+  }, [phoneData]);
 
   const totals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0, missed = 0;
-    for (const v of combinedPhoneData.values()) {
-      calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed;
-    }
+    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; }
     return { calls, seconds, answered, missed };
-  }, [combinedPhoneData]);
+  }, [phoneData]);
 
   const pbxTotals = useMemo(() => {
     if (!pbxData) return { calls: 0, answered: 0, seconds: 0 };
@@ -2407,9 +2366,7 @@ function RetentionCSPanel() {
       const norm = normalizeAgent(agent);
       const pbxKey = SHEET_TO_PBX[norm] ?? norm;
       const px = pbxData.get(pbxKey);
-      calls += px?.calls ?? 0;
-      answered += px?.answered ?? 0;
-      seconds += px?.durationSeconds ?? 0;
+      calls += px?.calls ?? 0; answered += px?.answered ?? 0; seconds += px?.durationSeconds ?? 0;
     }
     return { calls, answered, seconds };
   }, [pbxData, agentList]);
@@ -2420,13 +2377,9 @@ function RetentionCSPanel() {
     <Card>
       <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-4">
         <div>
-          <CardTitle className="text-xl">Retention &amp; Internal CS</CardTitle>
+          <CardTitle className="text-xl">Retention</CardTitle>
           <p className="text-sm text-muted-foreground mt-1">
-            Calls &amp; retention files · live from OpenPhone + PBX ·{" "}
-            <span className="inline-flex items-center gap-1">
-              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30">Retention</span>
-              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">CS</span>
-            </span>
+            Calls &amp; retention files · live from OpenPhone + PBX
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={refresh} disabled={phoneQ.isFetching || statusQ.isFetching}>
@@ -2470,7 +2423,7 @@ function RetentionCSPanel() {
             )}
           </TabsList>
           <TabsContent value="call">
-            <ByCallStatsView agentList={agentList} phoneData={combinedPhoneData} pbxData={pbxData} extraMissed={pbxMissed} agentDept={agentDept} />
+            <ByCallStatsView agentList={agentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} />
           </TabsContent>
           {aggregated && !("error" in aggregated) && (
             <>
@@ -4000,10 +3953,9 @@ function Dashboard() {
   const ta = user.teamAccess ?? null;
   const allTeams = ta === null;
   const metricsTabs = [
-    ...(allTeams ? [
-      { value: "backend",   label: "Retention & CS" },
-      { value: "nsf",       label: "NSF"            },
-    ] : []),
+    ...((allTeams || ta === "retention") ? [{ value: "retention", label: "Retention" }] : []),
+    ...((allTeams || ta === "cs")        ? [{ value: "cs",        label: "Internal CS" }] : []),
+    ...((allTeams || ta === "nsf")       ? [{ value: "nsf",       label: "NSF" }] : []),
     { value: "missed-no-cb", label: "Missed / No CB" },
     ...(allTeams ? [{ value: "quo-lines", label: "Quo Lines" }, { value: "vos", label: "PBX" }] : []),
   ];
@@ -4083,15 +4035,20 @@ function Dashboard() {
 
       <main className="max-w-[1400px] mx-auto px-6 py-8">
         {view === "metrics" && can("view_metrics") ? (
-          <Tabs defaultValue={ta ?? "backend"} className="space-y-6">
+          <Tabs defaultValue={ta ?? "retention"} className="space-y-6">
             <TabsList className="grid w-full max-w-3xl" style={{ gridTemplateColumns: `repeat(${metricsTabs.length}, minmax(0, 1fr))` }}>
               {metricsTabs.map((t) => (
                 <TabsTrigger key={t.value} value={t.value} data-testid={`tab-${t.value}`}>{t.label}</TabsTrigger>
               ))}
             </TabsList>
-            {allTeams && (
-              <TabsContent value="backend">
-                <RetentionCSPanel />
+            {(allTeams || ta === "retention") && (
+              <TabsContent value="retention">
+                <RetentionPanel />
+              </TabsContent>
+            )}
+            {(allTeams || ta === "cs") && (
+              <TabsContent value="cs">
+                <CSPanel />
               </TabsContent>
             )}
             {(allTeams || ta === "nsf") && (
