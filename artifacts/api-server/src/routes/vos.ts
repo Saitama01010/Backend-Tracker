@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, phoneCallsTable } from "@workspace/db";
-import { and, eq, gte, inArray } from "drizzle-orm";
+import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Logger } from "pino";
 import { logger as rootLogger } from "../lib/logger";
 
@@ -336,6 +336,7 @@ let callHistoryFetchedAt = 0;
 let callHistoryFetching = false;
 let ringGroupMissedCache: VosRingGroupMissed = {};
 let missedNoCallbackCache: MissedNoCallbackItem[] = [];
+let ringGroupNameCache = new Map<number, string>(); // rgId → name, updated each refresh
 
 async function refreshCallHistory(log?: Logger): Promise<void> {
   if (callHistoryFetching) return;
@@ -363,7 +364,10 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     }
 
     const ringGroupIdToName = new Map<number, string>();
-    for (const rg of ringGroups) ringGroupIdToName.set(rg.id, rg.name);
+    for (const rg of ringGroups) {
+      ringGroupIdToName.set(rg.id, rg.name);
+      ringGroupNameCache.set(rg.id, rg.name);
+    }
 
     const agents = dashboard.callsByAgent ?? [];
     const results: VosCallHistoryStat[] = [];
@@ -661,7 +665,8 @@ router.get("/vos/missed-no-callback", async (req, res) => {
           and(
             eq(phoneCallsTable.direction, "incoming"),
             inArray(phoneCallsTable.status, ["no-answer", "voicemail", "missed", "voicemail-brief"]),
-            gte(phoneCallsTable.createdAt, window36h)
+            gte(phoneCallsTable.createdAt, window36h),
+            inArray(phoneCallsTable.lineName, TEAM_QUO_LINES)
           )
         ),
       db
@@ -705,6 +710,74 @@ router.get("/vos/missed-no-callback", async (req, res) => {
   } catch (err) {
     req.log.error(err, "vos missed-no-callback fallback error");
     return res.json({ items: missedNoCallbackCache, fetchedAt: callHistoryFetchedAt });
+  }
+});
+
+router.get("/vos/missed-daily", async (req, res) => {
+  try {
+    const window14d = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+
+    // Quo: daily missed counts by team from phone_calls DB (team lines only)
+    const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
+    const rows = await db.execute(sql`
+      SELECT
+        (created_at AT TIME ZONE 'America/Los_Angeles')::date AS day,
+        line_team,
+        COUNT(*)::int AS cnt
+      FROM phone_calls
+      WHERE direction = 'incoming'
+        AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
+        AND line_name IN (${teamLinesInList})
+        AND created_at >= ${window14d}
+      GROUP BY day, line_team
+      ORDER BY day DESC, line_team
+    `);
+
+    // PBX: today's totals from the live ringGroupMissedCache, bucketed by team
+    const pbxByTeam: Record<string, number> = {};
+    for (const [rgId, count] of Object.entries(ringGroupMissedCache)) {
+      const name = ringGroupNameCache.get(Number(rgId)) ?? "";
+      const team = teamFromRingGroupName(name);
+      pbxByTeam[team] = (pbxByTeam[team] ?? 0) + count;
+    }
+    const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+
+    // Merge Quo rows into a map keyed by date
+    type TeamDay = { retention: { quo: number; pbx: number }; cs: { quo: number; pbx: number }; nsf: { quo: number; pbx: number } };
+    const dayMap = new Map<string, TeamDay>();
+
+    const getDay = (d: string): TeamDay => {
+      if (!dayMap.has(d)) dayMap.set(d, {
+        retention: { quo: 0, pbx: 0 },
+        cs: { quo: 0, pbx: 0 },
+        nsf: { quo: 0, pbx: 0 },
+      });
+      return dayMap.get(d)!;
+    };
+
+    for (const r of rows.rows as { day: unknown; line_team: string; cnt: number }[]) {
+      const dateStr = r.day instanceof Date ? r.day.toISOString().split("T")[0] : String(r.day);
+      const d = getDay(dateStr);
+      const team = r.line_team as "retention" | "cs" | "nsf";
+      if (team === "retention" || team === "cs" || team === "nsf") d[team].quo += r.cnt;
+    }
+
+    // Stamp today's PBX onto today's entry
+    if (pbxByTeam["retention"] || pbxByTeam["cs"] || pbxByTeam["nsf"]) {
+      const d = getDay(todayStr);
+      d.retention.pbx = pbxByTeam["retention"] ?? 0;
+      d.cs.pbx = pbxByTeam["cs"] ?? 0;
+      d.nsf.pbx = pbxByTeam["nsf"] ?? 0;
+    }
+
+    const days = Array.from(dayMap.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([date, t]) => ({ date, ...t }));
+
+    res.json({ days });
+  } catch (err) {
+    req.log.error(err, "vos missed-daily error");
+    res.status(500).json({ error: String(err) });
   }
 });
 

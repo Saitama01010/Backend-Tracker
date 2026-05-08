@@ -1307,6 +1307,27 @@ function useMissedNoCB() {
   });
 }
 
+type DailyMissedDay = {
+  date: string;
+  retention: { quo: number; pbx: number };
+  cs: { quo: number; pbx: number };
+  nsf: { quo: number; pbx: number };
+};
+
+function useMissedDaily() {
+  return useQuery<{ days: DailyMissedDay[] }>({
+    queryKey: ["missedDaily"],
+    queryFn: async () => {
+      const r = await fetch("/api/vos/missed-daily");
+      if (!r.ok) return { days: [] };
+      return r.json();
+    },
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
+    refetchOnWindowFocus: true,
+  });
+}
+
 function buildTeamPhoneData(teamMode: string, data: PhoneStatsResponse | null | undefined): Map<string, PhoneAgentMetrics> {
   const allowlist = TEAM_ALLOWLIST[teamMode];
   const map = new Map<string, PhoneAgentMetrics>();
@@ -3805,8 +3826,86 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
             </Table>
           </div>
         )}
+
+        {/* Daily missed record */}
+        <DailyMissedRecord />
       </CardContent>
     </Card>
+  );
+}
+
+function DailyMissedRecord() {
+  const { data, isLoading } = useMissedDaily();
+  const days = data?.days ?? [];
+  if (isLoading) return <div className="space-y-1.5">{Array.from({length:3}).map((_,i)=><Skeleton key={i} className="h-8 w-full"/>)}</div>;
+  if (days.length === 0) return null;
+
+  const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+
+  const fmt = (d: string) => {
+    if (d === todayStr) return "Today";
+    const dt = new Date(d + "T12:00:00");
+    return dt.toLocaleDateString("en-US", { month: "short", day: "numeric", weekday: "short" });
+  };
+
+  return (
+    <div className="border-t border-zinc-800 pt-4">
+      <p className="text-xs font-medium text-zinc-400 mb-2">Daily Missed — All calls (PBX + Quo)</p>
+      <div className="rounded-lg border border-zinc-800 overflow-hidden">
+        <Table>
+          <TableHeader>
+            <TableRow className="border-zinc-800 bg-zinc-900/60">
+              <TableHead className="text-xs w-28">Date</TableHead>
+              <TableHead className="text-xs text-violet-300">Retention</TableHead>
+              <TableHead className="text-xs text-emerald-300">CS</TableHead>
+              <TableHead className="text-xs text-sky-300">NSF</TableHead>
+              <TableHead className="text-xs text-right">Total</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {days.map((d) => {
+              const ret = d.retention.quo + d.retention.pbx;
+              const cs  = d.cs.quo  + d.cs.pbx;
+              const nsf = d.nsf.quo + d.nsf.pbx;
+              const total = ret + cs + nsf;
+              const isToday = d.date === todayStr;
+              return (
+                <TableRow key={d.date} className={`border-zinc-800 ${isToday ? "bg-zinc-800/30" : "hover:bg-zinc-800/20"}`}>
+                  <TableCell className={`text-xs tabular-nums ${isToday ? "text-white font-medium" : "text-zinc-400"}`}>
+                    {fmt(d.date)}
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    <span className="text-violet-300 font-medium">{ret}</span>
+                    {(d.retention.pbx > 0 || d.retention.quo > 0) && (
+                      <span className="text-zinc-600 ml-1 text-[10px]">
+                        {d.retention.quo}q {d.retention.pbx}p
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    <span className="text-emerald-300 font-medium">{cs}</span>
+                    {(d.cs.pbx > 0 || d.cs.quo > 0) && (
+                      <span className="text-zinc-600 ml-1 text-[10px]">
+                        {d.cs.quo}q {d.cs.pbx}p
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    <span className="text-sky-300 font-medium">{nsf}</span>
+                    {(d.nsf.pbx > 0 || d.nsf.quo > 0) && (
+                      <span className="text-zinc-600 ml-1 text-[10px]">
+                        {d.nsf.quo}q {d.nsf.pbx}p
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-xs text-right font-semibold text-zinc-200">{total}</TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
   );
 }
 
