@@ -307,6 +307,10 @@ const TEAM_ALLOWLIST: Record<string, Set<string>> = {
     "katherine adams", "karma farouk",
     // Rick Miller / Zeiad Fouad
     "rick miller", "zeiad fouad",
+    // Talia Morgan / Tuqa Hossam
+    "talia morgan", "tuqa hossam",
+    // Michael Belfort / Nour (Nour-Michael Belfort-2900 line)
+    "michael belfort", "nouralden",
     // Legacy extras kept for historical data
     "max francis", "youssef nasser", "michael ross",
   ]),
@@ -339,8 +343,6 @@ const TEAM_ALLOWLIST: Record<string, Set<string>> = {
     "jacob xander", "youssef nady",
     // Carla Bennet / Bassant Emad
     "carla bennet", "bassant emad",
-    // Talia Morgan / Tuqa Hossam
-    "talia morgan", "tuqa hossam",
   ]),
 };
 
@@ -2252,8 +2254,8 @@ function TeamPanel({
   );
 }
 
-const CS_AGENTS = ["Ella Monroe", "Chase Miller", "Eli Adam", "Leo Carter", "Nora Adam", "Jacob Xander", "Carla Bennet", "Talia Morgan"];
-const RETENTION_AGENTS = ["Levi Miller", "Henry Hart", "Ryan Henderson", "Michael Belfort", "Jacob Stephenson", "Katherine Adams", "Rick Miller"];
+const CS_AGENTS = ["Ella Monroe", "Chase Miller", "Eli Adam", "Leo Carter", "Nora Adam", "Jacob Xander", "Carla Bennet"];
+const RETENTION_AGENTS = ["Levi Miller", "Henry Hart", "Ryan Henderson", "Michael Belfort", "Jacob Stephenson", "Katherine Adams", "Talia Morgan", "Rick Miller"];
 
 function CSPanel() {
   const pbxData = useVosCalls();

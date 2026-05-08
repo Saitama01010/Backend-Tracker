@@ -34,10 +34,12 @@ interface QuoPhoneNumber {
 const LINE_TEAM_MAP: Record<string, "retention" | "nsf" | "cs"> = {
   "ahmed ayman-levi miller":         "cs",
   "youssef nady-jacob xander":       "cs",
-  "nour-michael belfort-2900":       "cs",
-  "levi ob":                         "cs",
+  "nour-michael belfort-2900":       "retention", // Michael Belfort → Retention
+  "levi ob":                         "retention", // Ahmed Ayman → Retention
+  "levi cs ob":                      "retention", // Ahmed Ayman → Retention
+  "talia nsf":                       "retention", // Talia Morgan → Retention
+  "talia morgan cs ob":              "retention", // Talia Morgan → Retention
   "jacob ob":                        "cs",
-  "levi cs ob":                      "retention", // Levi Miller → Retention (name has "cs" but is a retention line)
   "jacob cs ob":                     "retention", // Jacob Xander → Retention
   "adam ob":                         "retention",
   "rick ob":                         "retention",
