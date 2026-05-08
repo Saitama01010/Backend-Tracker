@@ -115,6 +115,9 @@ function normalizePhone(num: string): string {
   return digits.length >= 10 ? digits.slice(-10) : digits;
 }
 
+// Ring groups whose missed calls should never appear in the missed-no-callback panel.
+const EXCLUDED_RING_GROUPS = new Set(["MX Retention"]);
+
 function teamFromRingGroupName(name: string): "retention" | "nsf" | "cs" | "other" {
   const n = name.toLowerCase();
   if (n.includes("retention")) return "retention";
@@ -279,15 +282,16 @@ async function scanRingGroupCalls(
 
       if (seenCallIds.has(call.id)) continue;
       seenCallIds.add(call.id);
+      const rgName = ringGroupIdToName.get(rgId) ?? String(rgId);
       missedCounts[rgId] = (missedCounts[rgId] ?? 0) + 1;
-      if (call.fromNumber) {
+      if (call.fromNumber && !EXCLUDED_RING_GROUPS.has(rgName)) {
         missedRecords.push({
           id: call.id,
           fromNumber: call.fromNumber,
           toNumber: call.toNumber,
           createdAt: call.createdAt,
           ringGroupId: rgId,
-          ringGroupName: ringGroupIdToName.get(rgId) ?? String(rgId),
+          ringGroupName: rgName,
         });
       }
     }
@@ -298,6 +302,8 @@ async function scanRingGroupCalls(
     if (!call.toNumber || !call.fromNumber) continue;
     const rgId = lineMap.get(call.toNumber);
     if (rgId === undefined) continue;
+    const rgName = ringGroupIdToName.get(rgId) ?? String(rgId);
+    if (EXCLUDED_RING_GROUPS.has(rgName)) continue;
     if (seenCallIds.has(call.id)) continue;
     seenCallIds.add(call.id);
     missedCounts[rgId] = (missedCounts[rgId] ?? 0) + 1;
@@ -307,7 +313,7 @@ async function scanRingGroupCalls(
       toNumber: call.toNumber,
       createdAt: call.createdAt,
       ringGroupId: rgId,
-      ringGroupName: ringGroupIdToName.get(rgId) ?? String(rgId),
+      ringGroupName: rgName,
     });
   }
 
