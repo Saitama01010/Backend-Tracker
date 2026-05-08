@@ -80,13 +80,14 @@ const AGENT_TEAM: Record<string, "retention" | "nsf" | "cs"> = {
   "estella cruz":      "nsf",
   "katie miller":      "nsf",
   "ellie moser":       "nsf",
-  // CS — includes agents moved from retention/nsf
-  "ahmed ayman":       "cs",
-  "levi miller":       "cs",
+  // Retention — agents moved from CS
+  "ahmed ayman":       "retention",
+  "levi miller":       "retention",
+  "michael belfort":   "retention",
+  "talia morgan":      "retention",
+  // CS
   "youssef nady":      "cs",
   "jacob xander":      "cs",
-  "michael belfort":   "cs",
-  "talia morgan":      "cs",
   "ella monroe":       "cs",
   "nora adam":         "cs",
   "carla bennet":      "cs",
