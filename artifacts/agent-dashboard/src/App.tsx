@@ -2209,8 +2209,8 @@ function TeamPanel({
   );
 }
 
-const CS_AGENTS = ["Levi Miller", "Ella Monroe", "Michael Belfort", "Nora Adam", "Jacob Xander", "Talia Morgan", "Carla Bennet"];
-const RETENTION_AGENTS = ["Ryan Henderson", "Henry Hart", "Chase Miller", "Jacob Stephenson", "Katherine Adams", "Leo Carter", "Rick Miller"];
+const CS_AGENTS = ["Ella Monroe", "Chase Miller", "Eli Adam", "Leo Carter", "Nora Adam", "Jacob Xander", "Carla Bennet"];
+const RETENTION_AGENTS = ["Levi Miller", "Henry Hart", "Ryan Henderson", "Michael Belfort", "Jacob Stephenson", "Katherine Adams", "Talia Morgan", "Rick Miller"];
 
 function CSPanel() {
   const pbxData = useVosCalls();
@@ -4360,6 +4360,8 @@ function AttendancePanel() {
   const [newShift, setNewShift] = useState("");
   const [newDept, setNewDept] = useState("");
   const [importing, setImporting] = useState(false);
+  const [autoMarking, setAutoMarking] = useState(false);
+  const [autoMarkResult, setAutoMarkResult] = useState<string | null>(null);
   const [editingMember, setEditingMember] = useState<AttMember | null>(null);
 
   const monthStart = new Date(today.getFullYear(), today.getMonth() + monthOff, 1);
@@ -4493,6 +4495,24 @@ function AttendancePanel() {
     setImporting(false);
   }
 
+  async function doAutoMark() {
+    setAutoMarking(true);
+    setAutoMarkResult(null);
+    try {
+      const r = await fetch("/api/attendance/auto-mark", { method: "POST", headers: authHeaders(token) });
+      const data = await r.json() as { success: boolean; results?: { name: string; status: string; note: string; skipped?: string }[] };
+      if (data.success && data.results) {
+        const marked = data.results.filter((x) => x.status);
+        const late = marked.filter((x) => x.status === "late");
+        const inTime = marked.filter((x) => x.status === "in");
+        setAutoMarkResult(`Marked ${marked.length} agents: ${inTime.length} on time${late.length ? `, ${late.length} late` : ""}`);
+      }
+      qc.invalidateQueries({ queryKey: ["attendance"] });
+    } finally {
+      setAutoMarking(false);
+    }
+  }
+
   const showTodaySummary = dateCols.includes(todayStr) && (data?.members?.length ?? 0) > 0;
 
   return (
@@ -4503,11 +4523,20 @@ function AttendancePanel() {
           <h2 className="text-xl font-semibold text-white">Attendance</h2>
           <p className="text-sm text-muted-foreground">Track daily presence, mark status, and add notes per member</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {canManage && (data?.members.length ?? 0) === 0 && (
             <Button size="sm" variant="outline" onClick={doImport} disabled={importing}>
               {importing ? "Importing…" : "Import from Sheets"}
             </Button>
+          )}
+          {canEdit && (
+            <Button size="sm" variant="outline" onClick={doAutoMark} disabled={autoMarking}
+              title="Check each agent's first call today vs their shift start and auto-mark late/on-time">
+              {autoMarking ? "Checking…" : "Auto-mark today"}
+            </Button>
+          )}
+          {autoMarkResult && (
+            <span className="text-xs text-emerald-400">{autoMarkResult}</span>
           )}
           {canManage && (
             <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white" onClick={() => setShowAdd((v) => !v)}>

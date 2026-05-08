@@ -93,6 +93,7 @@ export interface VosCallHistoryStat {
   voicemail: number;
   durationSeconds: number;
   lastCallAt: string | null;
+  firstCallAt: string | null;
 }
 
 export type VosRingGroupMissed = Record<number, number>;
@@ -143,11 +144,13 @@ async function fetchAgentCallsForDate(
   voicemail: number;
   durationSeconds: number;
   lastCallAt: string | null;
+  firstCallAt: string | null;
   inboundToNumbers: string[];
   outboundCallbacks: Array<{ toNumber: string; createdAt: string }>;
 }> {
   let answered = 0, missed = 0, voicemail = 0, durationSeconds = 0;
   let lastCallAt: string | null = null;
+  let firstCallAt: string | null = null;
   const inboundToNumbers: string[] = [];
   const outboundCallbacks: Array<{ toNumber: string; createdAt: string }> = [];
   let totalSeen = 0;
@@ -174,6 +177,8 @@ async function fetchAgentCallsForDate(
       if (call.status === "active" || call.status === "ringing") continue;
 
       if (!lastCallAt) lastCallAt = call.createdAt;
+      // Track earliest call (API returns newest-first, so the last one seen is earliest)
+      if (!firstCallAt || call.createdAt < firstCallAt) firstCallAt = call.createdAt;
       if (call.status === "completed") answered++;
       if (call.status === "no-answer" || call.status === "missed") missed++;
       if (call.status === "voicemail") voicemail++;
@@ -194,7 +199,7 @@ async function fetchAgentCallsForDate(
     page++;
   }
 
-  return { answered, missed, voicemail, durationSeconds, lastCallAt, inboundToNumbers, outboundCallbacks };
+  return { answered, missed, voicemail, durationSeconds, lastCallAt, firstCallAt, inboundToNumbers, outboundCallbacks };
 }
 
 /**
@@ -332,6 +337,7 @@ async function scanRingGroupCalls(
 const persistentLineRgMap = new Map<string, number>();
 
 let callHistoryCache: VosCallHistoryStat[] = [];
+export function getCallHistoryCache(): VosCallHistoryStat[] { return callHistoryCache; }
 let callHistoryFetchedAt = 0;
 let callHistoryFetching = false;
 let ringGroupMissedCache: VosRingGroupMissed = {};
@@ -404,6 +410,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
               voicemail: 0,
               durationSeconds: Math.round((a.avgDuration ?? 0) * a.calls),
               lastCallAt: null,
+              firstCallAt: null,
               inboundToNumbers: [] as string[],
               outboundCallbacks: [] as Array<{ toNumber: string; createdAt: string }>,
             };
@@ -427,6 +434,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
             voicemail: detail.voicemail,
             durationSeconds: detail.durationSeconds,
             lastCallAt: detail.lastCallAt,
+            firstCallAt: detail.firstCallAt,
             inboundToNumbers: detail.inboundToNumbers,
             outboundCallbacks: detail.outboundCallbacks,
           };
@@ -677,6 +685,7 @@ router.get("/vos/stats", async (req, res) => {
             voicemail: 0,
             durationSeconds: Math.round((a.avgDuration ?? 0) * a.calls),
             lastCallAt: null,
+            firstCallAt: null,
           }));
 
     res.json({

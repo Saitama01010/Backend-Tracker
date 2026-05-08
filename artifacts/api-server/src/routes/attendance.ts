@@ -1,10 +1,11 @@
 import { Router } from "express";
-import { db } from "@workspace/db";
+import { db, phoneCallsTable } from "@workspace/db";
 import {
   attendanceMembersTable,
   attendanceRecordsTable,
 } from "@workspace/db";
-import { eq, and, gte, lte, inArray } from "drizzle-orm";
+import { eq, and, gte, lte, min } from "drizzle-orm";
+import { getCallHistoryCache } from "./vos";
 
 const router = Router();
 
@@ -202,6 +203,152 @@ router.post("/attendance/import", async (req, res) => {
     res.json({ success: true, totalMembers, totalRecords });
   } catch (err) {
     req.log.error(err, "attendance import error");
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ─── Auto-mark attendance from first call of the day ─────────────────────────
+//
+// Shift N = N PM Egypt time (UTC+2) → UTC hour = N + 10
+// (e.g. shift 4 = 4 PM Egypt = 14:00 UTC, shift 8 = 8 PM Egypt = 18:00 UTC)
+//
+// Mapping from attendance member name → VoS/PBX agent display names used in
+// call history. Only needed where the name doesn't match directly.
+const MEMBER_TO_AGENT_NAMES: Record<string, string[]> = {
+  "Ahmed Ayman-Levi Miller":         ["Levi Miller", "Ahmed Ayman"],
+  "Zeiad Fouad-Zack Ford":           ["Rick Miller", "Zeiad Fouad"],
+  "Abdlrhman-Jacob Stephenson":      ["Jacob Stephenson", "Abdulrhman Isawi"],
+  "Nour-Michael Belfort-2900":       ["Michael Belfort", "Nouralden"],
+  "Jacob Ahmed":                     ["Ryan Henderson", "Jacob Ahmed"],
+  "Mohammed Ayman-Max Francis-2268": ["Henry Hart", "Max Francis"],
+  "Youssef Nady-Jacob Xander":       ["Jacob Xander", "Youssef Nady"],
+};
+
+function lateNote(minsLate: number): string {
+  if (minsLate < 60) return `late ${minsLate}min`;
+  const h = Math.floor(minsLate / 60);
+  const m = minsLate % 60;
+  return m > 0 ? `late ${h}h ${m}min` : `late ${h}h`;
+}
+
+router.post("/attendance/auto-mark", async (req, res) => {
+  try {
+    // Today's date in Egypt timezone (UTC+2)
+    const nowUtc = new Date();
+    const egyptOffsetMs = 2 * 60 * 60 * 1000;
+    const egyptNow = new Date(nowUtc.getTime() + egyptOffsetMs);
+    const todayEgypt = egyptNow.toISOString().slice(0, 10);
+
+    // Window: from midnight Egypt time today (= todayEgypt T00:00 Egypt = todayEgypt T-02:00 UTC)
+    const dayStartUtc = new Date(`${todayEgypt}T00:00:00+02:00`);
+    const dayEndUtc   = new Date(`${todayEgypt}T23:59:59+02:00`);
+
+    // Build VoS first-call map: agentName (lowercase) → firstCallAt ISO
+    const vosFirstCall = new Map<string, string>();
+    for (const stat of getCallHistoryCache()) {
+      if (stat.firstCallAt) {
+        vosFirstCall.set(stat.agentName.trim().toLowerCase(), stat.firstCallAt);
+      }
+    }
+
+    // Query Quo DB for first call per agentName today
+    const quoRows = await db
+      .select({
+        agentName: phoneCallsTable.agentName,
+        firstCallAt: min(phoneCallsTable.createdAt),
+      })
+      .from(phoneCallsTable)
+      .where(and(gte(phoneCallsTable.createdAt, dayStartUtc), lte(phoneCallsTable.createdAt, dayEndUtc)))
+      .groupBy(phoneCallsTable.agentName);
+
+    const quoFirstCall = new Map<string, Date>();
+    for (const row of quoRows) {
+      if (row.agentName && row.firstCallAt) {
+        quoFirstCall.set(row.agentName.trim().toLowerCase(), new Date(row.firstCallAt));
+      }
+    }
+
+    // Fetch all active members
+    const members = await db
+      .select()
+      .from(attendanceMembersTable)
+      .where(eq(attendanceMembersTable.active, true));
+
+    // Fetch existing records for today (to avoid overwriting manual entries)
+    const existingRecords = await db
+      .select()
+      .from(attendanceRecordsTable)
+      .where(eq(attendanceRecordsTable.date, todayEgypt));
+    const existingSet = new Set(existingRecords.map((r) => r.memberId));
+
+    const results: { name: string; status: string; note: string; skipped?: string }[] = [];
+
+    for (const member of members) {
+      const shiftNum = parseInt(member.shift || "0");
+      if (!shiftNum) { results.push({ name: member.name, status: "", note: "", skipped: "no shift" }); continue; }
+
+      // Shift start in UTC: shift N PM Egypt = (N+12) hour Egypt = (N+12-2) hour UTC = (N+10) UTC
+      const shiftStartUtcHour = shiftNum + 10; // e.g. shift 4 → 14 UTC
+      const shiftStartUtc = new Date(`${todayEgypt}T${String(shiftStartUtcHour).padStart(2, "0")}:00:00Z`);
+
+      // Only auto-mark if the shift has already started
+      if (nowUtc < shiftStartUtc) {
+        results.push({ name: member.name, status: "", note: "", skipped: "shift not started yet" });
+        continue;
+      }
+
+      // Don't overwrite manual entries
+      if (existingSet.has(member.id)) {
+        results.push({ name: member.name, status: "", note: "", skipped: "already has record" });
+        continue;
+      }
+
+      // Resolve VoS/Quo agent names for this member
+      const agentNames: string[] = MEMBER_TO_AGENT_NAMES[member.name]
+        ?? [member.name.split("-")[0].trim(), member.name];
+      const agentNamesLower = agentNames.map((n) => n.trim().toLowerCase());
+
+      // Find earliest first call across all known names
+      let firstCallAt: Date | null = null;
+      for (const nameLower of agentNamesLower) {
+        const vos = vosFirstCall.get(nameLower);
+        if (vos) {
+          const d = new Date(vos);
+          if (!firstCallAt || d < firstCallAt) firstCallAt = d;
+        }
+        const quo = quoFirstCall.get(nameLower);
+        if (quo && (!firstCallAt || quo < firstCallAt)) firstCallAt = quo;
+      }
+
+      if (!firstCallAt) {
+        results.push({ name: member.name, status: "", note: "", skipped: "no calls today" });
+        continue;
+      }
+
+      const minsLate = Math.round((firstCallAt.getTime() - shiftStartUtc.getTime()) / 60000);
+      const GRACE_MINS = 10;
+
+      let status: string;
+      let note: string;
+      if (minsLate <= GRACE_MINS) {
+        status = "in";
+        note = "";
+      } else {
+        status = "late";
+        note = lateNote(minsLate);
+      }
+
+      await db
+        .insert(attendanceRecordsTable)
+        .values({ memberId: member.id, date: todayEgypt, status, note: note || null, coaching: false })
+        .onConflictDoNothing();
+
+      results.push({ name: member.name, status, note });
+    }
+
+    res.json({ success: true, date: todayEgypt, results });
+  } catch (err) {
+    req.log.error(err, "attendance auto-mark error");
     res.status(500).json({ error: String(err) });
   }
 });
