@@ -1,0 +1,62 @@
+Here’s exactly what your dev needs to give me so I can auto-fill attendance for past days (like the 6th and 7th) **without you doing anything manually**.
+
+---
+
+## 1. I need a way to read historical call logs
+
+Right now, I only get *today’s* summarized stats and a special “auto_mark_attendance” that works only for **today**.
+
+To mark old days, I need a tool like:
+
+**Example tool spec (idea):**
+- **Name:** `get_call_logs`
+- **Inputs:**
+  - `date` (e.g., `"2026-05-06"`)
+  - *(optional)* `team` or `agent_name`
+- **Output (per agent per day):**
+  - `agent_name`
+  - `team` (Retention / NSF / CS)
+  - `shift_start_time` (e.g., `"2026-05-06T16:00:00+02:00"` – Egypt time)
+  - `first_call_time` (or `null` if no calls)
+  - `has_manual_attendance` (true/false)
+  - `manual_status` (if any: `"present"`, `"late"`, `"absent"`)
+
+If your PBX/OpenPhone dev already has an API or DB table with those, they just need to expose it to me via a tool.
+
+---
+
+## 2. I need a tool to *write* historical attendance
+
+Right now, I only see a “?” list and a helper that marks **today** automatically and silently. To fix past days, I need something like:
+
+**Example tool spec (idea):**
+- **Name:** `set_attendance`
+- **Input per record:**
+  - `date`
+  - `agent_name`
+  - `team`
+  - `status` (`"on_time"`, `"late"`, `"absent"`, `"no_calls"`)
+  - `source` (e.g., `"auto"` or `"manual"`)
+- Supports batch updates (array of such records)
+
+Then I can:
+1. Pull all first-call times for 2026-05-06.
+2. Compare to shift start.
+3. Decide on-time vs late vs no-calls.
+4. Push back into your attendance sheet/table with `set_attendance`.
+
+---
+
+## 3. Define the attendance rules explicitly
+
+Tell the dev to hard-code these rules, or give them to me in config:
+
+For each agent on a given date:
+
+1. **Skip** if:
+   - Shift hasn’t started yet (for that day), or
+   - There is already a **manual** record (respect TL overrides).
+
+2. Otherwise:
+   - If `first_call_time` is within **10 minutes** after `shift_start_time` → `status = "on_time"`.
+   - If `

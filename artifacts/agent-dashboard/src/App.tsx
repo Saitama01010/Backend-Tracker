@@ -706,16 +706,21 @@ function aggregate(
   let todayCount = 0;
   let monthCount = 0;
   if (dateColumn) {
-    const now = new Date();
-    const todayIso = toIsoDate(now);
-    const monthYear = now.getFullYear();
-    const monthMonth = now.getMonth();
+    // Use California time (America/Los_Angeles) — sheet dates are stored in CA time.
+    // Do NOT use browser local time here: Egypt browsers are UTC+2, so after midnight
+    // Egypt (= 10 PM CA) the dashboard would wrongly show 0 "today's retains".
+    const todayIso = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Los_Angeles",
+      year: "numeric", month: "2-digit", day: "2-digit",
+    }).format(new Date()); // "YYYY-MM-DD"
+    const thisMonthStr = todayIso.slice(0, 7); // "YYYY-MM"
     for (const r of status.rows) {
       const d = parseDate(r[dateColumn] ?? "");
       if (!d) continue;
       const rawStatus = normalizeStatus((r[statusColumn] ?? "").trim());
-      const isToday = toIsoDate(d) === todayIso;
-      const inThisMonth = d.getFullYear() === monthYear && d.getMonth() === monthMonth;
+      const dateStr = toIsoDate(d); // date-only, same in all TZs
+      const isToday = dateStr === todayIso;
+      const inThisMonth = dateStr.startsWith(thisMonthStr);
       if (isToday) todayCount += 1;
       if (inThisMonth) monthCount += 1;
       if (isPureRetainedStatus(rawStatus)) {
