@@ -3811,6 +3811,24 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
   const [lineFilter, setLineFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
 
+  const STORAGE_KEY = "missedNoCB_checked";
+  const [checked, setChecked] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]")); }
+    catch { return new Set(); }
+  });
+  const toggleChecked = (id: string) => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify([...next]));
+      return next;
+    });
+  };
+  const clearChecked = () => {
+    setChecked(new Set());
+    localStorage.removeItem(STORAGE_KEY);
+  };
+
   const teams = useMemo(() => {
     const s = new Set<string>();
     for (const it of items) if (it.team !== "other") s.add(it.team);
@@ -3858,6 +3876,11 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
             <CardTitle className="text-base">Missed Calls — No Callback</CardTitle>
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            {checked.size > 0 && (
+              <Button size="sm" variant="ghost" className="h-7 px-2 gap-1 text-zinc-400 hover:text-zinc-200" onClick={clearChecked}>
+                Clear {checked.size} checked
+              </Button>
+            )}
             {fetchedAt > 0 && <span>Updated {new Date(fetchedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/Los_Angeles" })} PDT</span>}
             <Button size="sm" variant="ghost" className="h-7 px-2 gap-1" onClick={async () => {
               await fetch("/api/vos/refresh", { method: "POST" });
@@ -3979,6 +4002,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
             <Table>
               <TableHeader>
                 <TableRow className="border-zinc-800 bg-zinc-900/60">
+                  <TableHead className="text-xs w-8 pr-0"></TableHead>
                   <TableHead className="text-xs w-36">Date & Time</TableHead>
                   <TableHead className="text-xs">Number</TableHead>
                   {!lockedTeam && <TableHead className="text-xs">Team</TableHead>}
@@ -3988,12 +4012,23 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {visible.map((it) => (
-                  <TableRow key={String(it.id)} className="border-zinc-800 hover:bg-zinc-800/40">
-                    <TableCell className="text-xs tabular-nums text-muted-foreground whitespace-nowrap">
+                {visible.map((it) => {
+                  const rowId = String(it.id);
+                  const isChecked = checked.has(rowId);
+                  return (
+                  <TableRow key={rowId} className={`border-zinc-800 transition-colors ${isChecked ? "opacity-40 bg-zinc-900/60" : "hover:bg-zinc-800/40"}`}>
+                    <TableCell className="pr-0 pl-3">
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => toggleChecked(rowId)}
+                        className="h-3.5 w-3.5 rounded border-zinc-600 bg-zinc-800 accent-emerald-500 cursor-pointer"
+                      />
+                    </TableCell>
+                    <TableCell className={`text-xs tabular-nums whitespace-nowrap ${isChecked ? "text-zinc-600" : "text-muted-foreground"}`}>
                       {formatCallTime(it.createdAt)}
                     </TableCell>
-                    <TableCell className="font-mono text-xs tracking-wider">
+                    <TableCell className={`font-mono text-xs tracking-wider ${isChecked ? "line-through text-zinc-600" : ""}`}>
                       {it.fromNumber}
                     </TableCell>
                     {!lockedTeam && (
@@ -4008,14 +4043,15 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                         {it.source === "quo" ? "Quo" : "PBX"}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
+                    <TableCell className={`text-xs ${isChecked ? "text-zinc-600" : "text-muted-foreground"}`}>
                       {it.ringGroupName}
                     </TableCell>
-                    <TableCell className="text-xs text-zinc-300">
+                    <TableCell className={`text-xs ${isChecked ? "text-zinc-600" : "text-zinc-300"}`}>
                       {it.toNumber || "—"}
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           </div>
