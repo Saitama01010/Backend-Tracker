@@ -283,9 +283,14 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
   for (const line of allLines) {
     for (const u of line.users ?? []) addUser(u);
   }
-  // Build set of internal (org-owned) phone numbers — calls between org lines are skipped
-  const internalNumbers = new Set(allLines.map((l) => l.number).filter(Boolean) as string[]);
-  logger.info({ lineCount: lines.length, userCount: userMap.size, internalNumbers: internalNumbers.size }, "quoSync: got lines");
+  // Build map of internal (org-owned) phone number → line name.
+  // Internal calls (one org line calling another) are kept but stored with the line name
+  // as the participant so it's clear this was an internal transfer, not an external customer.
+  const internalNumberToName = new Map<string, string>();
+  for (const l of allLines) {
+    if (l.number) internalNumberToName.set(l.number, l.name);
+  }
+  logger.info({ lineCount: lines.length, userCount: userMap.size, internalLines: internalNumberToName.size }, "quoSync: got lines");
 
   // Step 1: collect all (lineId → participants) from conversations
   const byLine = await fetchConversationsByLine(from, to, knownLineIds);
@@ -296,19 +301,20 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
   );
 
   // Step 2: build flat task list of (lineId, participant) pairs
-  // Skip internal participants (calls between org-owned lines)
-  const tasks: { lineId: string; participant: string }[] = [];
+  // Internal participants (org lines) are kept but their number is replaced with the line name
+  // so they appear as e.g. "Leo Carter CS OB" instead of a raw phone number.
+  const tasks: { lineId: string; participant: string; displayParticipant: string }[] = [];
   for (const [lineId, participants] of byLine) {
     for (const participant of participants) {
-      if (internalNumbers.has(participant)) continue;
-      tasks.push({ lineId, participant });
+      const internalName = internalNumberToName.get(participant);
+      tasks.push({ lineId, participant, displayParticipant: internalName ?? participant });
     }
   }
 
   // Step 3: fetch calls concurrently (limit=5 to avoid rate limits)
   let tasksDone = 0;
   const callsByTask = await withConcurrency(
-    tasks.map(({ lineId, participant }) => async () => {
+    tasks.map(({ lineId, participant, displayParticipant }) => async () => {
       const calls = await fetchCallsForParticipant(lineId, participant, from, to).catch((err) => {
         logger.error({ lineId, participant, err: String(err) }, "quoSync: call fetch error");
         return [] as Call[];
@@ -317,8 +323,8 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
       if (tasksDone % 100 === 0) {
         logger.info({ tasksDone, total: tasks.length }, "quoSync: call fetch progress");
       }
-      // Carry the customer number through — call.participants[0] is the LINE's own number, not the customer's
-      return { lineId, participant, calls };
+      // displayParticipant: for internal calls this is the line name; for external it's the phone number
+      return { lineId, participant: displayParticipant, calls };
     }),
     5,
   );
