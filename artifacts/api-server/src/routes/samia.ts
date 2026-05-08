@@ -12,14 +12,185 @@ const SAMIA_SYSTEM = `You are Samia, an intelligent performance analyst assistan
 
 Your job is to help the team understand their call center numbers — Retention, Internal CS, and NSF teams.
 
-You have access to live stats that will be injected into each message as a JSON block. Use them to answer questions precisely with actual numbers. Be concise, confident, and direct. When quoting numbers, be specific. Format numbers with commas. Use % for rates. If asked about a metric you don't have data for, say so honestly.
+You have access to live stats injected into each message. Use them to answer questions precisely with actual numbers. Be concise, confident, and direct. Format numbers with commas. Use % for rates. If asked about a metric you don't have data for, say so honestly.
 
-Your personality: professional but warm, sharp, and helpful. You speak like a smart analyst who knows the numbers cold.`;
+You know the team structure:
+- Retention agents track retains and cancels (from Google Sheets) plus outbound call stats (OpenPhone/Quo).
+- NSF (National Settlement) agents also track retains/cancels from their own sheet.
+- CS (Customer Support) handles inbound calls — no retains/cancels sheet.
+- PBX (VoSLogic) tracks all phone calls across all teams via ring groups.
+
+Your personality: professional but warm, sharp, and helpful. Speak like a smart analyst who knows the numbers cold.`;
 
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
 }
+
+// ─── CSV parsing ──────────────────────────────────────────────────────────────
+
+function parseCSV(text: string): string[][] {
+  const rows: string[][] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    const cells: string[] = [];
+    let cur = "";
+    let inQ = false;
+    for (const ch of line) {
+      if (ch === '"') { inQ = !inQ; }
+      else if (ch === "," && !inQ) { cells.push(cur.trim()); cur = ""; }
+      else { cur += ch; }
+    }
+    cells.push(cur.trim());
+    rows.push(cells);
+  }
+  return rows;
+}
+
+function parseCSVWithHeaders(text: string): Array<Record<string, string>> {
+  const rows = parseCSV(text);
+  if (rows.length < 2) return [];
+  const headers = (rows[0] ?? []).map((h) => h.trim());
+  return rows.slice(1).map((row) => {
+    const obj: Record<string, string> = {};
+    for (let i = 0; i < headers.length; i++) {
+      if (headers[i]) obj[headers[i]] = (row[i] ?? "").trim();
+    }
+    return obj;
+  });
+}
+
+function findCol(headers: string[], candidates: string[]): string | null {
+  const lower = headers.map((h) => h.toLowerCase().trim());
+  for (const c of candidates) {
+    const idx = lower.indexOf(c.toLowerCase());
+    if (idx >= 0) return headers[idx] ?? null;
+  }
+  return null;
+}
+
+// Egypt time = UTC+2
+function parseEgyptTimestamp(raw: string): Date | null {
+  if (!raw) return null;
+  // Formats: "5/7/2026 14:32:01", "2026-05-07 14:32:01"
+  const mSlash = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})[,\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (mSlash) {
+    const [, mon, day, yr, hr, min, sec] = mSlash;
+    const utcMs = Date.UTC(Number(yr), Number(mon) - 1, Number(day), Number(hr) - 2, Number(min), Number(sec ?? 0));
+    return new Date(utcMs);
+  }
+  const mIso = raw.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (mIso) {
+    const [, yr, mon, day, hr, min, sec] = mIso;
+    const utcMs = Date.UTC(Number(yr), Number(mon) - 1, Number(day), Number(hr) - 2, Number(min), Number(sec ?? 0));
+    return new Date(utcMs);
+  }
+  return null;
+}
+
+function toCaliforniaDateStr(d: Date): string {
+  return d.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+}
+
+function parseLegacyDate(s: string): string | null {
+  if (!s) return null;
+  const trimmed = s.trim();
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(trimmed);
+  if (iso) return `${iso[1]}-${String(iso[2]).padStart(2, "0")}-${String(iso[3]).padStart(2, "0")}`;
+  // M/D/YYYY
+  const mdy = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(trimmed);
+  if (mdy) return `${mdy[3]}-${String(mdy[1]).padStart(2, "0")}-${String(mdy[2]).padStart(2, "0")}`;
+  return null;
+}
+
+// ─── Sheet summary helper ────────────────────────────────────────────────────
+
+interface SheetSummary {
+  todayRetained: number;
+  todayCancelled: number;
+  monthRetained: number;
+  monthCancelled: number;
+  byAgent: Record<string, { todayRetained: number; todayCancelled: number; monthRetained: number; monthCancelled: number }>;
+}
+
+function isRetained(status: string): boolean {
+  return /retain/i.test(status);
+}
+function isCancelled(status: string): boolean {
+  return !!status && !isRetained(status) && !/idp/i.test(status);
+}
+
+async function fetchSheetSummary(
+  oldUrl: string,
+  newUrl: string,
+  newStatusCol: string,
+  cutoverDate: string,
+  todayStr: string,
+  monthStr: string,
+): Promise<SheetSummary> {
+  const result: SheetSummary = { todayRetained: 0, todayCancelled: 0, monthRetained: 0, monthCancelled: 0, byAgent: {} };
+
+  const ensure = (agent: string) => {
+    const key = agent.toLowerCase().trim();
+    if (!result.byAgent[key]) result.byAgent[key] = { todayRetained: 0, todayCancelled: 0, monthRetained: 0, monthCancelled: 0 };
+    return result.byAgent[key];
+  };
+
+  const tally = (agent: string, status: string, dateStr: string) => {
+    if (!agent || !dateStr) return;
+    const a = ensure(agent);
+    const retained = isRetained(status);
+    const cancelled = isCancelled(status);
+    if (dateStr === todayStr) {
+      if (retained) { result.todayRetained++; a.todayRetained++; }
+      if (cancelled) { result.todayCancelled++; a.todayCancelled++; }
+    }
+    if (dateStr.startsWith(monthStr)) {
+      if (retained) { result.monthRetained++; a.monthRetained++; }
+      if (cancelled) { result.monthCancelled++; a.monthCancelled++; }
+    }
+  };
+
+  const [oldText, newText] = await Promise.all([
+    fetch(oldUrl).then((r) => r.ok ? r.text() : ""),
+    fetch(newUrl).then((r) => r.ok ? r.text() : ""),
+  ]);
+
+  // Old sheet
+  if (oldText) {
+    const rows = parseCSVWithHeaders(oldText);
+    const headers = Object.keys(rows[0] ?? {});
+    const agentCol = findCol(headers, ["Agent", "Agent Name", "Rep"]);
+    const statusCol = findCol(headers, ["Status", "Result", "Outcome", "Disposition"]);
+    const dateCol = findCol(headers, ["Date", "Day", "Call Date"]);
+    for (const r of rows) {
+      const agent = agentCol ? (r[agentCol] ?? "") : "";
+      const status = statusCol ? (r[statusCol] ?? "") : "";
+      const rawDate = dateCol ? (r[dateCol] ?? "") : "";
+      const dateStr = parseLegacyDate(rawDate) ?? "";
+      tally(agent, status, dateStr);
+    }
+  }
+
+  // New sheet
+  if (newText) {
+    const rows = parseCSVWithHeaders(newText);
+    for (const r of rows) {
+      const tsRaw = r["Timestamp"] ?? "";
+      const d = parseEgyptTimestamp(tsRaw);
+      if (!d) continue;
+      const caDate = toCaliforniaDateStr(d);
+      if (caDate < cutoverDate) continue;
+      const agent = r["Agent Name"] ?? "";
+      const status = r[newStatusCol] ?? "";
+      tally(agent, status, caDate);
+    }
+  }
+
+  return result;
+}
+
+// ─── Route ────────────────────────────────────────────────────────────────────
 
 router.post("/samia/chat", async (req, res) => {
   try {
@@ -28,71 +199,250 @@ router.post("/samia/chat", async (req, res) => {
       return res.status(400).json({ error: "message is required" });
     }
 
-    // Fetch live stats in parallel
-    const [vosRes, quoRes] = await Promise.allSettled([
-      fetch(`http://localhost:${process.env["PORT"]}/api/vos/stats`).then((r) => r.ok ? r.json() : null),
-      fetch(`http://localhost:${process.env["PORT"]}/api/quo/stats?from=${new Date().toISOString().slice(0, 10)}T00:00:00.000Z&to=${new Date().toISOString()}`).then((r) => r.ok ? r.json() : null),
+    const port = process.env["PORT"];
+    const base = `http://localhost:${port}`;
+    const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+    const monthStr = todayStr.slice(0, 7);
+    const todayStart = `${todayStr}T00:00:00.000Z`;
+    const nowStr = new Date().toISOString();
+
+    const CUTOVER = "2026-05-04";
+    const OLD_RETENTION_URL = "https://docs.google.com/spreadsheets/d/1qF5Dc5quGrAywf5Rtx4q7DrX91VlNIFOfKr-REoSkII/export?format=csv&gid=0";
+    const NEW_RETENTION_URL = "https://docs.google.com/spreadsheets/d/1Eje6BABFbmRGHa6D1ET2sMvlE8o61iJ71yOvydD-R3o/export?format=csv&gid=837339339";
+    const OLD_NSF_URL = "https://docs.google.com/spreadsheets/d/16qoZESE0gGQPdOXQUSh2JsadWDmUE7OyCajRwBy0E38/export?format=csv&gid=0";
+    const NEW_NSF_URL = "https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=0";
+
+    // Fetch everything in parallel
+    const [
+      vosRes,
+      quoTodayRes,
+      quoMonthRes,
+      missedHourlyRes,
+      missedDailyRes,
+      missedNoCBRes,
+      vosLiveRes,
+      attendanceRes,
+      retentionSheetRes,
+      nsfSheetRes,
+    ] = await Promise.allSettled([
+      fetch(`${base}/api/vos/stats`).then((r) => r.ok ? r.json() : null),
+      fetch(`${base}/api/quo/stats?from=${encodeURIComponent(todayStart)}&to=${encodeURIComponent(nowStr)}`).then((r) => r.ok ? r.json() : null),
+      fetch(`${base}/api/quo/stats?from=${encodeURIComponent(monthStr + "T00:00:00.000Z")}&to=${encodeURIComponent(nowStr)}`).then((r) => r.ok ? r.json() : null),
+      fetch(`${base}/api/vos/missed-hourly`).then((r) => r.ok ? r.json() : null),
+      fetch(`${base}/api/vos/missed-daily`).then((r) => r.ok ? r.json() : null),
+      fetch(`${base}/api/vos/missed-no-callback`).then((r) => r.ok ? r.json() : null),
+      fetch(`${base}/api/vos/live`).then((r) => r.ok ? r.json() : null),
+      fetch(`${base}/api/attendance?from=${todayStr}&to=${todayStr}`).then((r) => r.ok ? r.json() : null),
+      fetchSheetSummary(OLD_RETENTION_URL, NEW_RETENTION_URL, "Cancel request update", CUTOVER, todayStr, monthStr).catch(() => null),
+      fetchSheetSummary(OLD_NSF_URL, NEW_NSF_URL, "File Status", CUTOVER, todayStr, monthStr).catch(() => null),
     ]);
 
-    const vos = vosRes.status === "fulfilled" ? vosRes.value : null;
-    const quo = quoRes.status === "fulfilled" ? quoRes.value : null;
+    const vos     = vosRes.status === "fulfilled" ? vosRes.value : null;
+    const quoToday = quoTodayRes.status === "fulfilled" ? quoTodayRes.value : null;
+    const quoMonth = quoMonthRes.status === "fulfilled" ? quoMonthRes.value : null;
+    const missedHourly = missedHourlyRes.status === "fulfilled" ? missedHourlyRes.value : null;
+    const missedDaily  = missedDailyRes.status === "fulfilled" ? missedDailyRes.value : null;
+    const missedNoCB   = missedNoCBRes.status === "fulfilled" ? missedNoCBRes.value : null;
+    const vosLive  = vosLiveRes.status === "fulfilled" ? vosLiveRes.value : null;
+    const attendance = attendanceRes.status === "fulfilled" ? attendanceRes.value : null;
+    const retSheet = retentionSheetRes.status === "fulfilled" ? retentionSheetRes.value : null;
+    const nsfSheet = nsfSheetRes.status === "fulfilled" ? nsfSheetRes.value : null;
 
-    // Build a concise stats summary for context
-    const statsLines: string[] = [];
+    const lines: string[] = [];
+    const L = (s: string) => lines.push(s);
 
-    if (vos) {
-      statsLines.push("=== PBX (VoSLogic) Live Stats ===");
-      if (vos.dashboard) {
-        const d = vos.dashboard;
-        statsLines.push(`Active calls: ${d.activeCalls ?? 0}`);
-        statsLines.push(`Total calls today: ${d.totalCallsToday ?? 0}`);
-        statsLines.push(`Inbound today: ${d.totalInboundToday ?? 0}`);
-        statsLines.push(`Outbound today: ${d.totalOutboundToday ?? 0}`);
-        statsLines.push(`Missed calls today (VoSLogic total): ${d.missedCallsToday ?? 0}`);
+    // ── PBX Dashboard ──────────────────────────────────────────────────────────
+    if (vos?.dashboard) {
+      const d = vos.dashboard;
+      L("=== PBX (VoSLogic) Dashboard — Today ===");
+      L(`Active calls right now: ${d.activeCalls ?? 0}`);
+      L(`Total agents: ${d.totalAgents ?? 0} | Online: ${d.onlineAgents ?? 0} | Available: ${d.availableAgents ?? 0}`);
+      L(`Total calls today: ${d.totalCallsToday ?? 0} (inbound: ${d.totalInboundToday ?? 0}, outbound: ${d.totalOutboundToday ?? 0})`);
+      L(`Missed calls today (PBX total): ${d.missedCallsToday ?? 0}`);
+    }
+
+    // ── Live calls ─────────────────────────────────────────────────────────────
+    if (vosLive?.liveCalls?.length) {
+      L("\n=== Live Calls Right Now (PBX) ===");
+      for (const c of vosLive.liveCalls) {
+        const agent = c.agentName ?? "unknown";
+        const dir = c.direction ?? "?";
+        const rg = c.ringGroupName ? ` [${c.ringGroupName}]` : "";
+        const dur = c.duration ? `${Math.floor(c.duration / 60)}m${c.duration % 60}s` : "just started";
+        L(`  ${agent}${rg} — ${dir}, ${dur}`);
       }
-      if (vos.ringGroupMissed && vos.ringGroups) {
-        const rgMap: Record<number, string> = {};
-        for (const rg of vos.ringGroups) rgMap[rg.id] = rg.name;
-        statsLines.push("Missed by ring group (PBX, cumulative today):");
-        for (const [id, cnt] of Object.entries(vos.ringGroupMissed)) {
-          statsLines.push(`  ${rgMap[Number(id)] ?? id}: ${cnt} missed`);
-        }
+    }
+
+    // ── PBX agent statuses ─────────────────────────────────────────────────────
+    if (vosLive?.agentStatuses?.length) {
+      L("\n=== Agent Statuses (PBX) ===");
+      for (const a of vosLive.agentStatuses) {
+        L(`  ${a.name} (ext ${a.extension}): ${a.status}, ${a.callsToday} calls today`);
       }
-      if (vos.callHistory?.length) {
-        statsLines.push("PBX per-agent today:");
-        for (const a of vos.callHistory.slice(0, 20)) {
-          statsLines.push(`  ${a.agentName}: ${a.calls} calls, ${a.answered} answered, ${a.missed} missed, ${Math.round(a.durationSeconds / 60)}min talk`);
+    }
+
+    // ── PBX per-agent call history ─────────────────────────────────────────────
+    if (vos?.callHistory?.length) {
+      L("\n=== PBX Per-Agent Stats — Today ===");
+      for (const a of vos.callHistory) {
+        const answerRate = a.calls > 0 ? Math.round((a.answered / a.calls) * 100) : 0;
+        L(`  ${a.agentName}: ${a.calls} calls | answered: ${a.answered} (${answerRate}%) | missed: ${a.missed} | voicemail: ${a.voicemail} | talk: ${Math.round(a.durationSeconds / 60)}min`);
+      }
+    }
+
+    // ── PBX missed by ring group ───────────────────────────────────────────────
+    if (vos?.ringGroupMissed && vos?.ringGroups) {
+      const rgMap: Record<number, string> = {};
+      for (const rg of vos.ringGroups) rgMap[rg.id] = rg.name;
+      const entries = Object.entries(vos.ringGroupMissed as Record<string, number>).filter(([, v]) => v > 0);
+      if (entries.length) {
+        L("\n=== Missed Calls by Ring Group (PBX cumulative today) ===");
+        for (const [id, cnt] of entries) {
+          L(`  ${rgMap[Number(id)] ?? `Ring group ${id}`}: ${cnt} missed`);
         }
       }
     }
 
-    if (quo) {
-      statsLines.push("=== OpenPhone (Quo) Stats — today ===");
-      if (quo.teamStats) {
-        for (const [team, agentDays] of Object.entries(quo.teamStats)) {
-          type DayStats = { totalCalls?: number; answered?: number; missed?: number; talkSeconds?: number; inbound?: number; outbound?: number };
-          const agentMap = agentDays as Record<string, Record<string, DayStats>>;
-          let teamCalls = 0, teamAnswered = 0, teamMissed = 0, teamSecs = 0;
-          const agentSummaries: string[] = [];
-          for (const [agent, days] of Object.entries(agentMap)) {
-            let calls = 0, answered = 0, missed = 0, secs = 0;
-            for (const day of Object.values(days)) {
-              calls += day.totalCalls ?? 0;
-              answered += day.answered ?? 0;
-              missed += day.missed ?? 0;
-              secs += day.talkSeconds ?? 0;
-            }
-            teamCalls += calls; teamAnswered += answered; teamMissed += missed; teamSecs += secs;
-            if (calls > 0) agentSummaries.push(`  ${agent}: ${calls} calls, ${answered} answered, ${missed} missed, ${Math.round(secs / 60)}min`);
+    // ── OpenPhone (Quo) stats — today ──────────────────────────────────────────
+    type DayStat = { totalCalls?: number; answered?: number; missed?: number; talkSeconds?: number; outbound?: number; inbound?: number; voicemail?: number; vmBrief?: number; uniqueContacts?: number };
+    if (quoToday?.teamStats) {
+      L("\n=== OpenPhone (Quo) Stats — Today ===");
+      for (const [team, agentMap] of Object.entries(quoToday.teamStats as Record<string, Record<string, Record<string, DayStat>>>)) {
+        let tc = 0, ta = 0, tm = 0, ts = 0, tout = 0, tin = 0;
+        const agentLines: string[] = [];
+        for (const [agent, days] of Object.entries(agentMap)) {
+          let calls = 0, ans = 0, miss = 0, secs = 0, out = 0, inn = 0, vm = 0, cxReached = 0;
+          for (const day of Object.values(days)) {
+            calls += day.totalCalls ?? 0;
+            ans += day.answered ?? 0;
+            miss += day.missed ?? 0;
+            secs += day.talkSeconds ?? 0;
+            out += day.outbound ?? 0;
+            inn += day.inbound ?? 0;
+            vm += (day.voicemail ?? 0) + (day.vmBrief ?? 0);
+            cxReached += day.uniqueContacts ?? 0;
           }
-          statsLines.push(`${team.toUpperCase()} team: ${teamCalls} calls, ${teamAnswered} answered, ${teamMissed} missed, ${Math.round(teamSecs / 60)}min talk`);
-          for (const s of agentSummaries) statsLines.push(s);
+          tc += calls; ta += ans; tm += miss; ts += secs; tout += out; tin += inn;
+          if (calls > 0) {
+            const ar = calls > 0 ? Math.round((ans / calls) * 100) : 0;
+            agentLines.push(`  ${agent}: ${calls} calls (${out} out/${inn} in) | answered: ${ans} (${ar}%) | missed: ${miss} | voicemail: ${vm} | CX reached: ${cxReached} | talk: ${Math.round(secs / 60)}min`);
+          }
+        }
+        const teamAr = tc > 0 ? Math.round((ta / tc) * 100) : 0;
+        L(`\n${team.toUpperCase()} team today: ${tc} calls (${tout} out/${tin} in) | answered: ${ta} (${teamAr}%) | missed: ${tm} | talk: ${Math.round(ts / 60)}min`);
+        for (const l of agentLines) L(l);
+      }
+    }
+
+    // ── OpenPhone stats — this month ───────────────────────────────────────────
+    if (quoMonth?.teamStats) {
+      L(`\n=== OpenPhone (Quo) Stats — This Month (${monthStr}) ===`);
+      for (const [team, agentMap] of Object.entries(quoMonth.teamStats as Record<string, Record<string, Record<string, DayStat>>>)) {
+        let tc = 0, ta = 0, tm = 0, ts = 0;
+        const agentLines: string[] = [];
+        for (const [agent, days] of Object.entries(agentMap)) {
+          let calls = 0, ans = 0, miss = 0, secs = 0, cxReached = 0;
+          for (const day of Object.values(days)) {
+            calls += day.totalCalls ?? 0;
+            ans += day.answered ?? 0;
+            miss += day.missed ?? 0;
+            secs += day.talkSeconds ?? 0;
+            cxReached += day.uniqueContacts ?? 0;
+          }
+          tc += calls; ta += ans; tm += miss; ts += secs;
+          if (calls > 0) {
+            const ar = calls > 0 ? Math.round((ans / calls) * 100) : 0;
+            agentLines.push(`  ${agent}: ${calls} calls | answered: ${ans} (${ar}%) | missed: ${miss} | CX reached: ${cxReached} | talk: ${Math.round(secs / 60)}min`);
+          }
+        }
+        const teamAr = tc > 0 ? Math.round((ta / tc) * 100) : 0;
+        L(`\n${team.toUpperCase()} team this month: ${tc} calls | answered: ${ta} (${teamAr}%) | missed: ${tm} | talk: ${Math.round(ts / 60)}min`);
+        for (const l of agentLines) L(l);
+      }
+    }
+
+    // ── Google Sheets retains / cancels ────────────────────────────────────────
+    if (retSheet) {
+      L("\n=== Retention Sheet — Retains & Cancels ===");
+      L(`Today (${todayStr}): ${retSheet.todayRetained} retains, ${retSheet.todayCancelled} cancels`);
+      L(`This month (${monthStr}): ${retSheet.monthRetained} retains, ${retSheet.monthCancelled} cancels`);
+      const agents = Object.entries(retSheet.byAgent).filter(([, v]) => v.monthRetained + v.monthCancelled > 0);
+      if (agents.length) {
+        L("Per-agent this month:");
+        for (const [agent, stats] of agents.sort(([, a], [, b]) => (b.monthRetained + b.monthCancelled) - (a.monthRetained + a.monthCancelled))) {
+          L(`  ${agent}: ${stats.monthRetained} retains, ${stats.monthCancelled} cancels (today: ${stats.todayRetained}R / ${stats.todayCancelled}C)`);
         }
       }
     }
 
-    const statsContext = statsLines.length
-      ? `\n\nLIVE DASHBOARD DATA (as of ${new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })} LA time):\n${statsLines.join("\n")}`
+    if (nsfSheet) {
+      L("\n=== NSF Sheet — Retains & Cancels ===");
+      L(`Today (${todayStr}): ${nsfSheet.todayRetained} retains, ${nsfSheet.todayCancelled} cancels`);
+      L(`This month (${monthStr}): ${nsfSheet.monthRetained} retains, ${nsfSheet.monthCancelled} cancels`);
+      const agents = Object.entries(nsfSheet.byAgent).filter(([, v]) => v.monthRetained + v.monthCancelled > 0);
+      if (agents.length) {
+        L("Per-agent this month:");
+        for (const [agent, stats] of agents.sort(([, a], [, b]) => (b.monthRetained + b.monthCancelled) - (a.monthRetained + a.monthCancelled))) {
+          L(`  ${agent}: ${stats.monthRetained} retains, ${stats.monthCancelled} cancels (today: ${stats.todayRetained}R / ${stats.todayCancelled}C)`);
+        }
+      }
+    }
+
+    // ── Missed — hourly breakdown ──────────────────────────────────────────────
+    if (missedHourly?.hours?.length) {
+      L("\n=== Missed Calls by Hour Today (LA time) ===");
+      L("Hour | Retention (Quo+PBX) | CS (Quo+PBX) | NSF (Quo+PBX)");
+      for (const h of missedHourly.hours as { hour: number; retention: { quo: number; pbx: number }; cs: { quo: number; pbx: number }; nsf: { quo: number; pbx: number } }[]) {
+        const fmt = (t: { quo: number; pbx: number }) => `${t.quo + t.pbx} (Q:${t.quo}/P:${t.pbx})`;
+        L(`  ${String(h.hour).padStart(2, "0")}:00 — Ret: ${fmt(h.retention)} | CS: ${fmt(h.cs)} | NSF: ${fmt(h.nsf)}`);
+      }
+    }
+
+    // ── Missed — 14-day trend ──────────────────────────────────────────────────
+    if (missedDaily?.days?.length) {
+      L("\n=== Missed Calls — Last 14 Days ===");
+      L("Date | Retention (Quo+PBX) | CS (Quo+PBX) | NSF (Quo+PBX)");
+      for (const d of (missedDaily.days as { date: string; retention: { quo: number; pbx: number }; cs: { quo: number; pbx: number }; nsf: { quo: number; pbx: number } }[]).slice(0, 14)) {
+        const total = (t: { quo: number; pbx: number }) => t.quo + t.pbx;
+        L(`  ${d.date} — Ret: ${total(d.retention)} | CS: ${total(d.cs)} | NSF: ${total(d.nsf)}`);
+      }
+    }
+
+    // ── Missed with no callback ────────────────────────────────────────────────
+    if (missedNoCB?.items?.length) {
+      const items = missedNoCB.items as { team: string; ringGroupName: string; createdAt: string }[];
+      const byTeam: Record<string, number> = {};
+      for (const it of items) byTeam[it.team] = (byTeam[it.team] ?? 0) + 1;
+      L("\n=== Missed Calls With No Callback (Today) ===");
+      L(`Total: ${items.length} unreturned`);
+      for (const [team, cnt] of Object.entries(byTeam)) {
+        L(`  ${team}: ${cnt} unreturned`);
+      }
+    }
+
+    // ── Attendance ─────────────────────────────────────────────────────────────
+    if (attendance?.members?.length) {
+      L("\n=== Attendance — Today ===");
+      const recMap: Record<number, { status: string; note?: string; coaching?: boolean }> = {};
+      for (const rec of attendance.records ?? []) recMap[rec.memberId] = rec;
+      const byDept: Record<string, string[]> = {};
+      for (const m of attendance.members as { id: number; name: string; shift: string; department: string }[]) {
+        const rec = recMap[m.id];
+        const statusLabel = rec?.status ? rec.status.toUpperCase() : "?";
+        const note = rec?.note ? ` (${rec.note})` : "";
+        const coaching = rec?.coaching ? " [coaching]" : "";
+        const dept = m.department || "Other";
+        if (!byDept[dept]) byDept[dept] = [];
+        byDept[dept].push(`  ${m.name} (shift ${m.shift}): ${statusLabel}${coaching}${note}`);
+      }
+      for (const [dept, entries] of Object.entries(byDept)) {
+        L(`${dept}:`);
+        for (const e of entries) L(e);
+      }
+    }
+
+    const statsContext = lines.length
+      ? `\n\nLIVE DASHBOARD DATA (as of ${new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })} LA time):\n${lines.join("\n")}`
       : "\n\n[Live stats unavailable right now]";
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
@@ -104,7 +454,7 @@ router.post("/samia/chat", async (req, res) => {
     const completion = await openai.chat.completions.create({
       model: "gpt-5.1",
       messages,
-      max_completion_tokens: 512,
+      max_completion_tokens: 600,
     });
 
     const reply = completion.choices[0]?.message?.content ?? "Sorry, I couldn't generate a response.";
