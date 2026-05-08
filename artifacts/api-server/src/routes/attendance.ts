@@ -240,34 +240,56 @@ function parsePdt(s: string): Date {
   return new Date(s + '-07:00');
 }
 
-// Build a Quo first-call map for a given Egypt-date day window.
-async function buildQuoFirstCallMap(dayStartUtc: Date, dayEndUtc: Date): Promise<Map<string, Date>> {
+// Build a Quo calls map: agentName (lowercase) → all call timestamps within the day window.
+// We store every timestamp so callers can filter per-agent by shift start.
+async function buildQuoCallsMap(dayStartUtc: Date, dayEndUtc: Date): Promise<Map<string, Date[]>> {
   const rows = await db
-    .select({ agentName: phoneCallsTable.agentName, firstCallAt: min(phoneCallsTable.createdAt) })
+    .select({ agentName: phoneCallsTable.agentName, createdAt: phoneCallsTable.createdAt })
     .from(phoneCallsTable)
-    .where(and(gte(phoneCallsTable.createdAt, dayStartUtc), lte(phoneCallsTable.createdAt, dayEndUtc)))
-    .groupBy(phoneCallsTable.agentName);
-  const map = new Map<string, Date>();
+    .where(and(gte(phoneCallsTable.createdAt, dayStartUtc), lte(phoneCallsTable.createdAt, dayEndUtc)));
+  const map = new Map<string, Date[]>();
   for (const row of rows) {
-    if (row.agentName && row.firstCallAt) map.set(row.agentName.trim().toLowerCase(), new Date(row.firstCallAt));
+    if (row.agentName && row.createdAt) {
+      const key = row.agentName.trim().toLowerCase();
+      const d = new Date(row.createdAt);
+      const arr = map.get(key);
+      if (arr) arr.push(d); else map.set(key, [d]);
+    }
   }
   return map;
 }
 
-// Resolve the earliest first-call Date for a member across all their agent name aliases.
+// Find the earliest call for a member that is >= (shiftStartUtc - 30 min).
+// This prevents yesterday's US-afternoon calls (which fall in the Egypt midnight window)
+// from being counted as today's attendance signal.
+// shiftStartUtc=null means no shift — return null.
 function resolveFirstCall(
   member: { name: string },
+  shiftStartUtc: Date | null,
   vosFirstCall: Map<string, Date>,
-  quoFirstCall: Map<string, Date>,
+  quoCalls: Map<string, Date[]>,
 ): Date | null {
+  if (!shiftStartUtc) return null;
+  // Allow calls starting 30 minutes before the shift (e.g. agent logs in early)
+  const floor = new Date(shiftStartUtc.getTime() - 30 * 60 * 1000);
+
   const agentNames: string[] = MEMBER_TO_AGENT_NAMES[member.name]
     ?? [member.name.split("-")[0].trim(), member.name];
+
   let firstCallAt: Date | null = null;
+
   for (const nameLower of agentNames.map((n) => n.trim().toLowerCase())) {
+    // VoS: single minimum value per agent — only use it if it's within the valid window
     const vos = vosFirstCall.get(nameLower);
-    if (vos && (!firstCallAt || vos < firstCallAt)) firstCallAt = vos;
-    const quo = quoFirstCall.get(nameLower);
-    if (quo && (!firstCallAt || quo < firstCallAt)) firstCallAt = quo;
+    if (vos && vos >= floor && (!firstCallAt || vos < firstCallAt)) firstCallAt = vos;
+
+    // Quo: all timestamps — find the earliest one within the valid window
+    const calls = quoCalls.get(nameLower);
+    if (calls) {
+      for (const d of calls) {
+        if (d >= floor && (!firstCallAt || d < firstCallAt)) firstCallAt = d;
+      }
+    }
   }
   return firstCallAt;
 }
@@ -301,7 +323,7 @@ router.get("/attendance/call-logs", async (req, res) => {
       }
     }
 
-    const quoFirstCall = await buildQuoFirstCallMap(dayStartUtc, dayEndUtc);
+    const quoCalls = await buildQuoCallsMap(dayStartUtc, dayEndUtc);
 
     const members = await db
       .select()
@@ -322,7 +344,7 @@ router.get("/attendance/call-logs", async (req, res) => {
         : null;
       const shiftStartEgypt = shiftNum ? `${date}T${String(shiftNum).padStart(2, "0")}:00:00+02:00` : null;
 
-      const firstCallAt = resolveFirstCall(member, vosFirstCall, quoFirstCall);
+      const firstCallAt = resolveFirstCall(member, shiftStartUtc, vosFirstCall, quoCalls);
       const minsLate = firstCallAt && shiftStartUtc
         ? Math.round((firstCallAt.getTime() - shiftStartUtc.getTime()) / 60000)
         : null;
@@ -436,7 +458,7 @@ router.post("/attendance/auto-mark", async (req, res) => {
       }
     }
 
-    const quoFirstCall = await buildQuoFirstCallMap(dayStartUtc, dayEndUtc);
+    const quoCalls = await buildQuoCallsMap(dayStartUtc, dayEndUtc);
 
     const members = await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true));
 
@@ -465,7 +487,7 @@ router.post("/attendance/auto-mark", async (req, res) => {
         continue;
       }
 
-      const firstCallAt = resolveFirstCall(member, vosFirstCall, quoFirstCall);
+      const firstCallAt = resolveFirstCall(member, shiftStartUtc, vosFirstCall, quoCalls);
 
       if (!firstCallAt) {
         results.push({ name: member.name, status: "", note: "", skipped: "no calls found" });
