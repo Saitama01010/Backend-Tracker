@@ -600,14 +600,30 @@ router.get("/attendance/agent-contacts", async (req, res) => {
       if (r.createdAt > new Date(entry.lastCallAt))  entry.lastCallAt  = r.createdAt.toISOString();
     }
 
+    const toCaliforniaTime = (iso: string) =>
+      new Date(iso).toLocaleString("en-US", {
+        timeZone: "America/Los_Angeles",
+        month: "numeric", day: "numeric",
+        hour: "numeric", minute: "2-digit",
+        hour12: true,
+      }) + " PDT";
+
     // Resolve distinct agents matched (for transparency)
     const agentNames = [...new Set(rows.map((r) => r.agentName).filter(Boolean))];
-    const contacts = [...contactMap.values()].sort((a, b) => b.calls - a.calls);
+    const contacts = [...contactMap.values()]
+      .sort((a, b) => b.calls - a.calls)
+      .map((c) => ({
+        ...c,
+        firstCallAt: toCaliforniaTime(c.firstCallAt),
+        lastCallAt:  toCaliforniaTime(c.lastCallAt),
+      }));
 
     return res.json({
       agentQuery: agentParam,
       agentsMatched: agentNames,
       date: egyptDate,
+      windowStart: toCaliforniaTime(dayStartUtc.toISOString()),
+      windowEnd:   toCaliforniaTime(dayEndUtc.toISOString()),
       totalCalls: rows.length,
       uniqueContacts: contacts.length,
       contacts,
