@@ -283,7 +283,9 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
   for (const line of allLines) {
     for (const u of line.users ?? []) addUser(u);
   }
-  logger.info({ lineCount: lines.length, userCount: userMap.size }, "quoSync: got lines");
+  // Build set of internal (org-owned) phone numbers — calls between org lines are skipped
+  const internalNumbers = new Set(allLines.map((l) => l.number).filter(Boolean) as string[]);
+  logger.info({ lineCount: lines.length, userCount: userMap.size, internalNumbers: internalNumbers.size }, "quoSync: got lines");
 
   // Step 1: collect all (lineId → participants) from conversations
   const byLine = await fetchConversationsByLine(from, to, knownLineIds);
@@ -294,9 +296,11 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
   );
 
   // Step 2: build flat task list of (lineId, participant) pairs
+  // Skip internal participants (calls between org-owned lines)
   const tasks: { lineId: string; participant: string }[] = [];
   for (const [lineId, participants] of byLine) {
     for (const participant of participants) {
+      if (internalNumbers.has(participant)) continue;
       tasks.push({ lineId, participant });
     }
   }
