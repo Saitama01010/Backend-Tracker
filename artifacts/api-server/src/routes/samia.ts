@@ -40,6 +40,12 @@ Status values: "in" (present/on-time), "late" (with note like "late 23min"), "of
 
 Member names must match exactly — they're in the attendance data shown above.
 
+## Phone contact lookup tool
+
+**get_agent_contacts(agentName, date?)** — Returns the list of phone numbers (participants) an agent spoke with on a given date, pulled from the OpenPhone database. Each contact includes the phone number, number of calls, total talk time, directions (inbound/outbound), and answered/missed status. Use this when asked "who did X call today", "what numbers did X speak with", "can you get me the phone numbers that X spoke with", etc. agentName is a partial name — the tool does a case-insensitive search. date defaults to today (Egypt time, YYYY-MM-DD).
+
+When presenting phone contacts, list them as a numbered list with the phone number and a short summary (calls, talk time, direction).
+
 Your personality: professional but warm, sharp, and helpful. Speak like a smart analyst who knows the numbers cold.`;
 
 interface ChatMessage {
@@ -509,6 +515,27 @@ router.post("/samia/chat", async (req, res) => {
       {
         type: "function",
         function: {
+          name: "get_agent_contacts",
+          description: "Returns the unique phone numbers (participants) an agent spoke with on a given date, from the OpenPhone database. Use when asked 'who did X call', 'what numbers did X speak with', 'get me the phone numbers that X spoke with today', etc.",
+          parameters: {
+            type: "object",
+            properties: {
+              agentName: {
+                type: "string",
+                description: "Partial or full agent name — case-insensitive search (e.g. 'talia', 'Talia Morgan').",
+              },
+              date: {
+                type: "string",
+                description: "Date in YYYY-MM-DD format (Egypt time). Omit for today.",
+              },
+            },
+            required: ["agentName"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
           name: "set_attendance",
           description: "Write attendance records for specific agents on specific dates. Use for manual corrections or when auto_mark misses someone. Pass force=true to overwrite existing records.",
           parameters: {
@@ -605,6 +632,13 @@ router.post("/samia/chat", async (req, res) => {
             const url = args.date ? `${base}/api/attendance/call-logs?date=${args.date}` : `${base}/api/attendance/call-logs`;
             const logsRes = await fetch(url);
             toolResult = JSON.stringify(await logsRes.json());
+
+          } else if (fnName === "get_agent_contacts") {
+            const args = JSON.parse(toolCall.function.arguments || "{}") as { agentName: string; date?: string };
+            const params = new URLSearchParams({ agent: args.agentName });
+            if (args.date) params.set("date", args.date);
+            const contactsRes = await fetch(`${base}/api/attendance/agent-contacts?${params.toString()}`);
+            toolResult = JSON.stringify(await contactsRes.json());
 
           } else if (fnName === "set_attendance") {
             const args = JSON.parse(toolCall.function.arguments || "{}");

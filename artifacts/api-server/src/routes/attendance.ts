@@ -4,7 +4,7 @@ import {
   attendanceMembersTable,
   attendanceRecordsTable,
 } from "@workspace/db";
-import { eq, and, gte, lte, inArray, min } from "drizzle-orm";
+import { eq, and, gte, lte, inArray, min, ilike, sql } from "drizzle-orm";
 import { getCallHistoryCache } from "./vos";
 
 const router = Router();
@@ -510,6 +510,106 @@ router.post("/attendance/auto-mark", async (req, res) => {
   } catch (err) {
     req.log.error(err, "attendance auto-mark error");
     res.status(500).json({ error: String(err) });
+  }
+});
+
+// GET /api/attendance/agent-contacts?agent=&date=
+// Returns unique phone numbers (participants) an agent spoke with on a given date.
+// date is YYYY-MM-DD in Egypt time (UTC+2). agent is a partial, case-insensitive name.
+router.get("/attendance/agent-contacts", async (req, res) => {
+  try {
+    const agentParam = ((req.query["agent"] as string) ?? "").trim();
+    const dateParam  = ((req.query["date"]  as string) ?? "").trim();
+    if (!agentParam) {
+      return res.status(400).json({ error: "agent param is required" });
+    }
+
+    // Build UTC range for the requested Egypt day.
+    // Egypt = UTC+2, so YYYY-MM-DD Egypt → starts at 22:00 UTC prev day.
+    let egyptDate: string;
+    if (dateParam) {
+      egyptDate = dateParam;
+    } else {
+      const now = new Date();
+      egyptDate = now.toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
+    }
+
+    const [yr, mo, dy] = egyptDate.split("-").map(Number);
+    // Day starts at 00:00 Egypt = 22:00 UTC of the previous calendar day
+    const dayStartUtc = new Date(Date.UTC(yr, mo - 1, dy, 0, 0, 0) - 2 * 3600 * 1000);
+    const dayEndUtc   = new Date(dayStartUtc.getTime() + 24 * 3600 * 1000 - 1);
+
+    // Fetch all matching rows from phone_calls
+    const rows = await db
+      .select({
+        participant:     phoneCallsTable.participant,
+        direction:       phoneCallsTable.direction,
+        status:          phoneCallsTable.status,
+        durationSeconds: phoneCallsTable.durationSeconds,
+        createdAt:       phoneCallsTable.createdAt,
+        agentName:       phoneCallsTable.agentName,
+      })
+      .from(phoneCallsTable)
+      .where(
+        and(
+          ilike(phoneCallsTable.agentName, `%${agentParam}%`),
+          gte(phoneCallsTable.createdAt, dayStartUtc),
+          lte(phoneCallsTable.createdAt, dayEndUtc),
+        ),
+      )
+      .orderBy(sql`${phoneCallsTable.createdAt} asc`);
+
+    // Group by participant
+    const contactMap = new Map<string, {
+      participant: string;
+      calls: number;
+      answered: number;
+      missed: number;
+      totalSeconds: number;
+      inbound: number;
+      outbound: number;
+      firstCallAt: string;
+      lastCallAt: string;
+    }>();
+
+    for (const r of rows) {
+      const key = r.participant;
+      let entry = contactMap.get(key);
+      if (!entry) {
+        entry = {
+          participant: key,
+          calls: 0, answered: 0, missed: 0,
+          totalSeconds: 0, inbound: 0, outbound: 0,
+          firstCallAt: r.createdAt.toISOString(),
+          lastCallAt:  r.createdAt.toISOString(),
+        };
+        contactMap.set(key, entry);
+      }
+      entry.calls++;
+      entry.totalSeconds += r.durationSeconds ?? 0;
+      if (r.status === "completed") entry.answered++;
+      else entry.missed++;
+      if (r.direction === "incoming") entry.inbound++;
+      else entry.outbound++;
+      if (r.createdAt < new Date(entry.firstCallAt)) entry.firstCallAt = r.createdAt.toISOString();
+      if (r.createdAt > new Date(entry.lastCallAt))  entry.lastCallAt  = r.createdAt.toISOString();
+    }
+
+    // Resolve distinct agents matched (for transparency)
+    const agentNames = [...new Set(rows.map((r) => r.agentName).filter(Boolean))];
+    const contacts = [...contactMap.values()].sort((a, b) => b.calls - a.calls);
+
+    return res.json({
+      agentQuery: agentParam,
+      agentsMatched: agentNames,
+      date: egyptDate,
+      totalCalls: rows.length,
+      uniqueContacts: contacts.length,
+      contacts,
+    });
+  } catch (err) {
+    req.log.error(err, "agent-contacts error");
+    return res.status(500).json({ error: String(err) });
   }
 });
 
