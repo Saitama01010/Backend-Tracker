@@ -591,6 +591,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
 
     for (const row of quoMissed) {
       if (PARTICIPANT_BLOCKLIST.has(row.participant)) continue;
+      if (/[a-zA-Z]/.test(row.participant)) continue; // skip internal line-name participants
       const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);
       const times = callbackTimes.get(norm);
@@ -762,6 +763,7 @@ router.get("/vos/missed-no-callback", async (req, res) => {
     const items: MissedNoCallbackItem[] = [];
     for (const row of quoMissed) {
       if (PARTICIPANT_BLOCKLIST.has(row.participant)) continue;
+      if (/[a-zA-Z]/.test(row.participant)) continue; // skip internal line-name participants
       const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);
       const times = callbackTimes.get(norm);
