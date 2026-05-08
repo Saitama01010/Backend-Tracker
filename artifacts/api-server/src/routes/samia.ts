@@ -42,9 +42,14 @@ Member names must match exactly — they're in the attendance data shown above.
 
 ## Phone contact lookup tool
 
-**get_agent_contacts(agentName, date?)** — Returns the list of phone numbers (participants) an agent spoke with on a given date, pulled from the OpenPhone database. Each contact includes the phone number, number of calls, total talk time, directions (inbound/outbound), and answered/missed status. Use this when asked "who did X call today", "what numbers did X speak with", "can you get me the phone numbers that X spoke with", etc. agentName is a partial name — the tool does a case-insensitive search. date defaults to today (Egypt time, YYYY-MM-DD).
+**get_agent_contacts(agentName, date?)** — Returns the list of phone numbers (participants) an agent spoke with, pulled from the OpenPhone database. Before querying, it automatically triggers a fresh sync of the last 3 hours so the data is as current as possible. Each contact includes the phone number, number of calls, total talk time, directions (inbound/outbound), and answered/missed status.
 
-When presenting phone contacts, list them as a numbered list with the phone number and a short summary (calls, talk time, direction).
+- When no date is given (or "today"): queries the **last 24 hours** from right now — this is intentional to capture full night-shift cycles that cross the Egypt calendar midnight.
+- When a specific date is given (YYYY-MM-DD Egypt time): queries that exact calendar day.
+
+Use this when asked "who did X call today", "what numbers did X speak with", "get me the phone numbers that X spoke with", etc. agentName is a partial name — case-insensitive search.
+
+When presenting phone contacts, list them as a clean numbered list: phone number, calls count, talk time, direction (in/out/both). Keep it tight — no extra commentary unless asked.
 
 Your personality: professional but warm, sharp, and helpful. Speak like a smart analyst who knows the numbers cold.`;
 
@@ -635,6 +640,20 @@ router.post("/samia/chat", async (req, res) => {
 
           } else if (fnName === "get_agent_contacts") {
             const args = JSON.parse(toolCall.function.arguments || "{}") as { agentName: string; date?: string };
+
+            // Trigger a fresh sync for the relevant window so DB is up-to-date.
+            // Sync covers last 3 hours (catches the most recent calls).
+            const syncTo   = new Date();
+            const syncFrom = new Date(syncTo.getTime() - 3 * 3600 * 1000);
+            fetch(`${base}/api/quo/sync`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ from: syncFrom.toISOString(), to: syncTo.toISOString() }),
+            }).catch(() => { /* best-effort */ });
+
+            // Brief pause so the sync can write the most recent calls before we query.
+            await new Promise((r) => setTimeout(r, 3000));
+
             const params = new URLSearchParams({ agent: args.agentName });
             if (args.date) params.set("date", args.date);
             const contactsRes = await fetch(`${base}/api/attendance/agent-contacts?${params.toString()}`);

@@ -524,20 +524,25 @@ router.get("/attendance/agent-contacts", async (req, res) => {
       return res.status(400).json({ error: "agent param is required" });
     }
 
-    // Build UTC range for the requested Egypt day.
-    // Egypt = UTC+2, so YYYY-MM-DD Egypt → starts at 22:00 UTC prev day.
+    const now = new Date();
+    let dayStartUtc: Date;
+    let dayEndUtc: Date;
     let egyptDate: string;
-    if (dateParam) {
-      egyptDate = dateParam;
-    } else {
-      const now = new Date();
-      egyptDate = now.toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
-    }
 
-    const [yr, mo, dy] = egyptDate.split("-").map(Number);
-    // Day starts at 00:00 Egypt = 22:00 UTC of the previous calendar day
-    const dayStartUtc = new Date(Date.UTC(yr, mo - 1, dy, 0, 0, 0) - 2 * 3600 * 1000);
-    const dayEndUtc   = new Date(dayStartUtc.getTime() + 24 * 3600 * 1000 - 1);
+    if (dateParam) {
+      // Specific Egypt calendar day: 00:00 Egypt (UTC+2) = 22:00 UTC the day before.
+      const [yr, mo, dy] = dateParam.split("-").map(Number);
+      dayStartUtc = new Date(Date.UTC(yr, mo - 1, dy, 0, 0, 0) - 2 * 3600 * 1000);
+      dayEndUtc   = new Date(dayStartUtc.getTime() + 24 * 3600 * 1000 - 1);
+      egyptDate   = dateParam;
+    } else {
+      // "Today" = rolling 24h window ending now.
+      // This captures the full current shift regardless of when it started —
+      // night-shift calls that cross the Egypt calendar midnight are included.
+      dayEndUtc   = now;
+      dayStartUtc = new Date(now.getTime() - 24 * 3600 * 1000);
+      egyptDate   = now.toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
+    }
 
     // Fetch all matching rows from phone_calls
     const rows = await db
