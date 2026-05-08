@@ -345,6 +345,8 @@ let ringGroupNameCache = new Map<number, string>(); // rgId → name, updated ea
 const cumulativeRingGroupMissed: VosRingGroupMissed = {};
 const seenMissedCallIds = new Set<number>();
 let cumulativeDate = ""; // reset accumulators when date changes (midnight rollover)
+// Per-hour PBX missed breakdown (LA timezone), keyed by hour 0–23.
+const cumulativeMissedByHour: Record<number, { retention: number; cs: number; nsf: number }> = {};
 
 async function refreshCallHistory(log?: Logger): Promise<void> {
   if (callHistoryFetching) return;
@@ -598,6 +600,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     if (cumulativeDate !== today) {
       cumulativeDate = today;
       for (const k of Object.keys(cumulativeRingGroupMissed)) delete cumulativeRingGroupMissed[k as unknown as number];
+      for (const k of Object.keys(cumulativeMissedByHour)) delete cumulativeMissedByHour[k as unknown as number];
       seenMissedCallIds.clear();
     }
     // Merge new missed records into cumulative map, deduplicating by call ID.
@@ -606,6 +609,15 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       if (seenMissedCallIds.has(rec.id)) continue;
       seenMissedCallIds.add(rec.id);
       cumulativeRingGroupMissed[rec.ringGroupId] = (cumulativeRingGroupMissed[rec.ringGroupId] ?? 0) + 1;
+      // Also bucket by LA hour for the hourly breakdown table.
+      const team = teamFromRingGroupName(rec.ringGroupName);
+      if (team !== "other") {
+        const h = parseInt(
+          new Date(rec.createdAt).toLocaleString("en-US", { timeZone: "America/Los_Angeles", hour: "2-digit", hour12: false })
+        );
+        if (!cumulativeMissedByHour[h]) cumulativeMissedByHour[h] = { retention: 0, cs: 0, nsf: 0 };
+        cumulativeMissedByHour[h][team]++;
+      }
       newCount++;
     }
 
@@ -777,19 +789,32 @@ router.get("/vos/missed-hourly", async (req, res) => {
       ORDER BY hour
     `);
 
-    // Build hour map 0–23
-    type HourRow = { retention: number; cs: number; nsf: number };
+    // Build hour map 0–23 with separate quo/pbx buckets per team
+    type HourRow = { retention: { quo: number; pbx: number }; cs: { quo: number; pbx: number }; nsf: { quo: number; pbx: number } };
     const hourMap = new Map<number, HourRow>();
     const getHour = (h: number): HourRow => {
-      if (!hourMap.has(h)) hourMap.set(h, { retention: 0, cs: 0, nsf: 0 });
+      if (!hourMap.has(h)) hourMap.set(h, {
+        retention: { quo: 0, pbx: 0 },
+        cs: { quo: 0, pbx: 0 },
+        nsf: { quo: 0, pbx: 0 },
+      });
       return hourMap.get(h)!;
     };
 
+    // Populate Quo data from DB
     for (const r of rows.rows as { hour: number; line_team: string; cnt: number }[]) {
       const row = getHour(r.hour);
-      if (r.line_team === "retention") row.retention += r.cnt;
-      else if (r.line_team === "cs") row.cs += r.cnt;
-      else if (r.line_team === "nsf") row.nsf += r.cnt;
+      if (r.line_team === "retention") row.retention.quo += r.cnt;
+      else if (r.line_team === "cs") row.cs.quo += r.cnt;
+      else if (r.line_team === "nsf") row.nsf.quo += r.cnt;
+    }
+
+    // Merge PBX hourly data from in-memory accumulator
+    for (const [h, pbx] of Object.entries(cumulativeMissedByHour)) {
+      const row = getHour(Number(h));
+      row.retention.pbx += pbx.retention;
+      row.cs.pbx += pbx.cs;
+      row.nsf.pbx += pbx.nsf;
     }
 
     const hours = Array.from(hourMap.entries())

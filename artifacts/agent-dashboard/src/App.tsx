@@ -1355,7 +1355,12 @@ function useMissedDaily() {
   });
 }
 
-type HourlyMissedHour = { hour: number; retention: number; cs: number; nsf: number };
+type HourlyMissedHour = {
+  hour: number;
+  retention: { quo: number; pbx: number };
+  cs: { quo: number; pbx: number };
+  nsf: { quo: number; pbx: number };
+};
 
 function useMissedHourly() {
   return useQuery<{ hours: HourlyMissedHour[] }>({
@@ -3845,9 +3850,20 @@ function HourlyMissedRecord() {
     return `${display}${ampm}`;
   };
 
+  const cellVal = (quo: number, pbx: number) => {
+    const total = quo + pbx;
+    if (total === 0) return <span className="text-zinc-600">—</span>;
+    return (
+      <span>
+        {total}
+        {pbx > 0 && <span className="ml-1 text-[10px] text-zinc-500">(+{pbx} PBX)</span>}
+      </span>
+    );
+  };
+
   return (
     <div className="border-t border-zinc-800 pt-4">
-      <p className="text-xs font-medium text-zinc-400 mb-2">Today's Missed by Hour (Quo)</p>
+      <p className="text-xs font-medium text-zinc-400 mb-2">Today's Missed by Hour (Quo + PBX)</p>
       <div className="rounded-lg border border-zinc-800 overflow-hidden">
         <Table>
           <TableHeader>
@@ -3861,13 +3877,13 @@ function HourlyMissedRecord() {
           </TableHeader>
           <TableBody>
             {hours.map((h) => {
-              const total = h.retention + h.cs + h.nsf;
+              const total = h.retention.quo + h.retention.pbx + h.cs.quo + h.cs.pbx + h.nsf.quo + h.nsf.pbx;
               return (
                 <TableRow key={h.hour} className="border-zinc-800 hover:bg-zinc-800/20">
                   <TableCell className="text-xs text-zinc-400 tabular-nums">{fmt(h.hour)}</TableCell>
-                  <TableCell className="text-xs text-violet-300 font-medium">{h.retention || "—"}</TableCell>
-                  <TableCell className="text-xs text-emerald-300 font-medium">{h.cs || "—"}</TableCell>
-                  <TableCell className="text-xs text-sky-300 font-medium">{h.nsf || "—"}</TableCell>
+                  <TableCell className="text-xs text-violet-300 font-medium">{cellVal(h.retention.quo, h.retention.pbx)}</TableCell>
+                  <TableCell className="text-xs text-emerald-300 font-medium">{cellVal(h.cs.quo, h.cs.pbx)}</TableCell>
+                  <TableCell className="text-xs text-sky-300 font-medium">{cellVal(h.nsf.quo, h.nsf.pbx)}</TableCell>
                   <TableCell className="text-xs text-right font-semibold text-zinc-200">{total}</TableCell>
                 </TableRow>
               );
