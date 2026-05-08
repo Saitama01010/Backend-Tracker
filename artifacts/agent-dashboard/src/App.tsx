@@ -1211,8 +1211,20 @@ function ByFilesView({ data }: { data: Aggregated }) {
   );
 }
 
-function useLiveCalls(): Set<string> {
-  const q = useQuery<{ active: string[] }>({
+// PBX agent name (normalized) → canonical display name used in the phone/sheet tables.
+// Only needed for agents whose PBX name differs from their Quo display name.
+const PBX_TO_DISPLAY_NAME: Record<string, string> = {
+  "jacob ahmed": "ryan henderson",
+};
+
+interface LiveCallStatus {
+  quo: Set<string>; // normalized names on Quo right now
+  pbx: Set<string>; // normalized PBX agent names on PBX right now
+  any: Set<string>; // union — PBX names mapped to their display-name equivalent
+}
+
+function useLiveCalls(): LiveCallStatus {
+  const quoQ = useQuery<{ active: string[] }>({
     queryKey: ["liveCalls"],
     queryFn: async () => {
       const r = await fetch("/api/quo/live");
@@ -1223,7 +1235,42 @@ function useLiveCalls(): Set<string> {
     staleTime: 10 * 1000,
     refetchOnWindowFocus: true,
   });
-  return useMemo(() => new Set((q.data?.active ?? []).map(normalizeAgent)), [q.data]);
+
+  const vosQ = useQuery<{ liveCalls: { agentName: string | null }[]; agentStatuses: { name: string; status: string }[] }>({
+    queryKey: ["vosLive"],
+    queryFn: async () => {
+      const r = await fetch("/api/vos/live");
+      if (!r.ok) return { liveCalls: [], agentStatuses: [] };
+      return r.json();
+    },
+    refetchInterval: 15 * 1000,
+    staleTime: 10 * 1000,
+    refetchOnWindowFocus: true,
+  });
+
+  return useMemo(() => {
+    const quo = new Set<string>();
+    const pbx = new Set<string>();
+    const any = new Set<string>();
+
+    for (const name of quoQ.data?.active ?? []) {
+      const norm = normalizeAgent(name);
+      quo.add(norm);
+      any.add(norm);
+    }
+
+    const addPbx = (name: string) => {
+      const norm = name.trim().toLowerCase();
+      pbx.add(norm);
+      // Map to display name if PBX name differs from the table display name
+      any.add(PBX_TO_DISPLAY_NAME[norm] ?? norm);
+    };
+
+    for (const c of vosQ.data?.liveCalls ?? []) if (c.agentName) addPbx(c.agentName);
+    for (const a of vosQ.data?.agentStatuses ?? []) if (a.status === "on_call") addPbx(a.name);
+
+    return { quo, pbx, any };
+  }, [quoQ.data, vosQ.data]);
 }
 
 type PbxAgentEntry = {
@@ -1547,17 +1594,32 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                   ? (ph.lastCallAt > px.lastCallAt ? ph.lastCallAt : px.lastCallAt)
                   : (ph?.lastCallAt ?? px?.lastCallAt ?? null);
                 const phoneKey = directKeys ? normalizeAgent(agent) : sheetToPhoneKey(agent);
-                const isLive = liveAgents.has(phoneKey);
+                const onQuo = liveAgents.quo.has(phoneKey);
+                const onPbx = liveAgents.any.has(phoneKey) && !onQuo;
+                const onBoth = onQuo && liveAgents.pbx.has(normalizeAgent(agent));
+                const isLive = onQuo || onPbx || onBoth;
                 const dept = agentDept?.get(normalizeAgent(agent));
                 return (
                   <TableRow key={agent} className="hover-elevate">
                     <TableCell className="font-medium whitespace-nowrap">
                       <div className="flex items-center gap-2">
                         {isLive && (
-                          <span className="relative flex h-2.5 w-2.5 shrink-0" title="On a live call now">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
-                          </span>
+                          onBoth ? (
+                            <span className="relative flex h-2.5 w-2.5 shrink-0" title="On a live call — both Quo & PBX">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-violet-400 opacity-75" />
+                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-violet-500" />
+                            </span>
+                          ) : onPbx ? (
+                            <span className="relative flex h-2.5 w-2.5 shrink-0" title="On a live call — PBX">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
+                            </span>
+                          ) : (
+                            <span className="relative flex h-2.5 w-2.5 shrink-0" title="On a live call — Quo">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+                            </span>
+                          )
                         )}
                         {agent}
                         {dept && (
@@ -1567,11 +1629,14 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                         )}
                       </div>
                     </TableCell>
-                    <TableCell className="text-right">
-                      {isLive
-                        ? <span className="text-emerald-400 font-medium text-xs">On call</span>
-                        : <TimeSince isoStr={lastCall ?? undefined} />
-                      }
+                    <TableCell className="text-right whitespace-nowrap">
+                      {isLive ? (
+                        <span className={`font-medium text-xs ${onBoth ? "text-violet-400" : onPbx ? "text-blue-400" : "text-emerald-400"}`}>
+                          On call {onBoth ? "(Quo + PBX)" : onPbx ? "(PBX)" : "(Quo)"}
+                        </span>
+                      ) : (
+                        <TimeSince isoStr={lastCall ?? undefined} />
+                      )}
                     </TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!combinedCalls ? "text-muted-foreground/40" : ""}`}>{combinedCalls || "—"}</TableCell>
                     {pbxData && <TableCell className={`text-right tabular-nums font-mono ${px?.calls ? "text-blue-400" : "text-muted-foreground/40"}`}>{px?.calls || "—"}</TableCell>}
