@@ -37,6 +37,8 @@ const LINE_TEAM_MAP: Record<string, "retention" | "nsf" | "cs"> = {
   "nour-michael belfort-2900":       "cs",
   "levi ob":                         "cs",
   "jacob ob":                        "cs",
+  "levi cs ob":                      "retention", // Levi Miller → Retention (name has "cs" but is a retention line)
+  "jacob cs ob":                     "retention", // Jacob Xander → Retention
   "adam ob":                         "retention",
   "rick ob":                         "retention",
   "ryan ob":                         "retention",
