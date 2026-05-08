@@ -717,7 +717,8 @@ router.get("/vos/missed-daily", async (req, res) => {
   try {
     const window14d = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
 
-    // Quo: daily missed counts by team — ALL lines per team (personal + shared)
+    // Quo: daily missed counts — shared team lines only
+    const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
     const rows = await db.execute(sql`
       SELECT
         (created_at AT TIME ZONE 'America/Los_Angeles')::date AS day,
@@ -726,18 +727,22 @@ router.get("/vos/missed-daily", async (req, res) => {
       FROM phone_calls
       WHERE direction = 'incoming'
         AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
-        AND line_team IN ('retention', 'cs', 'nsf')
+        AND line_name IN (${teamLinesInList})
         AND created_at >= ${window14d}
       GROUP BY day, line_team
       ORDER BY day DESC, line_team
     `);
 
-    // PBX: today's totals from the live ringGroupMissedCache, bucketed by team
+    // PBX: today's totals — only "Retention" and "Customer Support" ring groups
+    const DAILY_PBX_RING_GROUPS: Record<string, "retention" | "cs"> = {
+      "retention": "retention",
+      "customer support": "cs",
+    };
     const pbxByTeam: Record<string, number> = {};
     for (const [rgId, count] of Object.entries(ringGroupMissedCache)) {
-      const name = ringGroupNameCache.get(Number(rgId)) ?? "";
-      const team = teamFromRingGroupName(name);
-      pbxByTeam[team] = (pbxByTeam[team] ?? 0) + count;
+      const name = (ringGroupNameCache.get(Number(rgId)) ?? "").toLowerCase().trim();
+      const team = DAILY_PBX_RING_GROUPS[name];
+      if (team) pbxByTeam[team] = (pbxByTeam[team] ?? 0) + count;
     }
     const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
 
