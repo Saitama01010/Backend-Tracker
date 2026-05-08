@@ -1355,6 +1355,22 @@ function useMissedDaily() {
   });
 }
 
+type HourlyMissedHour = { hour: number; retention: number; cs: number; nsf: number };
+
+function useMissedHourly() {
+  return useQuery<{ hours: HourlyMissedHour[] }>({
+    queryKey: ["missedHourly"],
+    queryFn: async () => {
+      const r = await fetch("/api/vos/missed-hourly");
+      if (!r.ok) return { hours: [] };
+      return r.json();
+    },
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
+    refetchOnWindowFocus: true,
+  });
+}
+
 function buildTeamPhoneData(teamMode: string, data: PhoneStatsResponse | null | undefined): Map<string, PhoneAgentMetrics> {
   const allowlist = TEAM_ALLOWLIST[teamMode];
   const map = new Map<string, PhoneAgentMetrics>();
@@ -3854,10 +3870,59 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
           </div>
         )}
 
+        {/* Hourly missed breakdown (today) */}
+        <HourlyMissedRecord />
+
         {/* Daily missed record */}
         <DailyMissedRecord />
       </CardContent>
     </Card>
+  );
+}
+
+function HourlyMissedRecord() {
+  const { data, isLoading } = useMissedHourly();
+  const hours = data?.hours ?? [];
+  if (isLoading) return <div className="space-y-1.5">{Array.from({length:3}).map((_,i)=><Skeleton key={i} className="h-7 w-full"/>)}</div>;
+  if (hours.length === 0) return null;
+
+  const fmt = (h: number) => {
+    const ampm = h < 12 ? "am" : "pm";
+    const display = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${display}${ampm}`;
+  };
+
+  return (
+    <div className="border-t border-zinc-800 pt-4">
+      <p className="text-xs font-medium text-zinc-400 mb-2">Today's Missed by Hour (Quo)</p>
+      <div className="rounded-lg border border-zinc-800 overflow-hidden">
+        <Table>
+          <TableHeader>
+            <TableRow className="border-zinc-800 bg-zinc-900/60">
+              <TableHead className="text-xs w-20">Hour</TableHead>
+              <TableHead className="text-xs text-violet-300">Retention</TableHead>
+              <TableHead className="text-xs text-emerald-300">CS</TableHead>
+              <TableHead className="text-xs text-sky-300">NSF</TableHead>
+              <TableHead className="text-xs text-right">Total</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {hours.map((h) => {
+              const total = h.retention + h.cs + h.nsf;
+              return (
+                <TableRow key={h.hour} className="border-zinc-800 hover:bg-zinc-800/20">
+                  <TableCell className="text-xs text-zinc-400 tabular-nums">{fmt(h.hour)}</TableCell>
+                  <TableCell className="text-xs text-violet-300 font-medium">{h.retention || "—"}</TableCell>
+                  <TableCell className="text-xs text-emerald-300 font-medium">{h.cs || "—"}</TableCell>
+                  <TableCell className="text-xs text-sky-300 font-medium">{h.nsf || "—"}</TableCell>
+                  <TableCell className="text-xs text-right font-semibold text-zinc-200">{total}</TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
   );
 }
 

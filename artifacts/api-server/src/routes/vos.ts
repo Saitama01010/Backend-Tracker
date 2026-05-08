@@ -713,6 +713,50 @@ router.get("/vos/missed-no-callback", async (req, res) => {
   }
 });
 
+router.get("/vos/missed-hourly", async (req, res) => {
+  try {
+    const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" }); // YYYY-MM-DD in LA
+    const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
+    const rows = await db.execute(sql`
+      SELECT
+        EXTRACT(HOUR FROM (created_at AT TIME ZONE 'America/Los_Angeles'))::int AS hour,
+        line_team,
+        COUNT(*)::int AS cnt
+      FROM phone_calls
+      WHERE direction = 'incoming'
+        AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
+        AND line_name IN (${teamLinesInList})
+        AND (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${todayLA}::date
+      GROUP BY hour, line_team
+      ORDER BY hour
+    `);
+
+    // Build hour map 0–23
+    type HourRow = { retention: number; cs: number; nsf: number };
+    const hourMap = new Map<number, HourRow>();
+    const getHour = (h: number): HourRow => {
+      if (!hourMap.has(h)) hourMap.set(h, { retention: 0, cs: 0, nsf: 0 });
+      return hourMap.get(h)!;
+    };
+
+    for (const r of rows.rows as { hour: number; line_team: string; cnt: number }[]) {
+      const row = getHour(r.hour);
+      if (r.line_team === "retention") row.retention += r.cnt;
+      else if (r.line_team === "cs") row.cs += r.cnt;
+      else if (r.line_team === "nsf") row.nsf += r.cnt;
+    }
+
+    const hours = Array.from(hourMap.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([hour, teams]) => ({ hour, ...teams }));
+
+    res.json({ hours });
+  } catch (err) {
+    req.log.error(err, "vos missed-hourly error");
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 router.get("/vos/missed-daily", async (req, res) => {
   try {
     const window14d = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
