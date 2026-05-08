@@ -717,8 +717,7 @@ router.get("/vos/missed-daily", async (req, res) => {
   try {
     const window14d = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
 
-    // Quo: daily missed counts by team from phone_calls DB (team lines only)
-    const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
+    // Quo: daily missed counts by team — ALL lines per team (personal + shared)
     const rows = await db.execute(sql`
       SELECT
         (created_at AT TIME ZONE 'America/Los_Angeles')::date AS day,
@@ -727,7 +726,7 @@ router.get("/vos/missed-daily", async (req, res) => {
       FROM phone_calls
       WHERE direction = 'incoming'
         AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
-        AND line_name IN (${teamLinesInList})
+        AND line_team IN ('retention', 'cs', 'nsf')
         AND created_at >= ${window14d}
       GROUP BY day, line_team
       ORDER BY day DESC, line_team

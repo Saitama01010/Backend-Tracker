@@ -252,44 +252,54 @@ const TEAM_PHONE_EXTRAS: Record<string, string[]> = {
 // Only agents whose phoneData key appears here will be shown in any view.
 const TEAM_ALLOWLIST: Record<string, Set<string>> = {
   retention: new Set([
-    // Jacob Stephenson / Abdulrhman Isawi
-    "jacob stephenson", "abdulrhman isawi",
-    // Ryan Henderson
-    "ryan henderson",
-    // Rick Miller / Zeiad Fouad
-    "rick miller", "zeiad fouad",
-    // Henry Hart
-    "henry hart",
-    // Chase Miller
-    "chase miller",
-    // Katherine Adams
-    "katherine adams",
-    // Leo Carter
-    "leo carter",
-    // Legacy extras kept for historical data
-    "max francis",
-    "youssef nasser",
-    "michael ross",
-  ]),
-  nsf: new Set([
-    "alex cruz", "austin white", "rika hart", "jenny morgan",
-    "estella cruz", "katie miller", "ellie moser",
-  ]),
-  cs: new Set([
     // Levi Miller / Ahmed Ayman
     "levi miller", "ahmed ayman",
+    // Henry Hart / Saif Aziz
+    "henry hart", "saif aziz",
+    // Ryan Henderson / Muhamed Walid
+    "ryan henderson", "muhamed walid",
+    // Michael Belfort / Nouralden
+    "michael belfort", "nouralden",
+    // Jacob Stephenson / Abdulrhman Isawi
+    "jacob stephenson", "abdulrhman isawi",
+    // Katherine Adams / Karma Farouk
+    "katherine adams", "karma farouk",
+    // Talia Morgan / Tuqa Hossam
+    "talia morgan", "tuqa hossam",
+    // Rick Miller / Zeiad Fouad
+    "rick miller", "zeiad fouad",
+    // Legacy extras kept for historical data
+    "max francis", "youssef nasser", "michael ross",
+  ]),
+  nsf: new Set([
+    // Austin White / Ahmed Gamal
+    "austin white", "ahmed gamal",
+    // Rika Hart / Riham Samir
+    "rika hart", "riham samir",
+    // Jenny Morgan / Ayaat
+    "jenny morgan", "ayaat",
+    // Ellie Moser / Engy Mahmoud
+    "ellie moser", "engy mahmoud",
+    // Estella Cruz / Eman Khamis
+    "estella cruz", "eman khamis",
+    // Katie Miller / Sama Farouk
+    "katie miller", "sama farouk",
+  ]),
+  cs: new Set([
     // Ella Monroe / Hiba Kamil
     "ella monroe", "hiba kamil",
-    // Michael Belfort
-    "michael belfort",
-    // Nora Adam
-    "nora adam",
+    // Chase Miller / Nour Eldin Atef
+    "chase miller", "nour eldin atef",
+    // Eli Adam / Rasha Emad
+    "eli adam", "rasha emad",
+    // Leo Carter / Fares
+    "leo carter", "fares",
+    // Nora Adam / Nourhan Ame
+    "nora adam", "nourhan ame",
     // Jacob Xander / Youssef Nady
     "jacob xander", "youssef nady",
-    // Talia Morgan
-    "talia morgan",
-    // Carla Bennet
-    "carla bennet",
+    // Carla Bennet / Bassant Emad
+    "carla bennet", "bassant emad",
   ]),
 };
 
@@ -301,10 +311,27 @@ const PHONE_ALIASES: Record<string, string> = {
   // Retention: Arabic OpenPhone name → English display name
   "abdulrhman isawi": "jacob stephenson",
   "zeiad fouad": "rick miller",
-  // CS: Arabic OpenPhone name → English display name
   "ahmed ayman": "levi miller",
+  "saif aziz": "henry hart",
+  "muhamed walid": "ryan henderson",
+  "nouralden": "michael belfort",
+  "karma farouk": "katherine adams",
+  "tuqa hossam": "talia morgan",
+  // Internal CS: Arabic OpenPhone name → English display name
   "hiba kamil": "ella monroe",
+  "nour eldin atef": "chase miller",
+  "rasha emad": "eli adam",
+  "fares": "leo carter",
+  "nourhan ame": "nora adam",
   "youssef nady": "jacob xander",
+  "bassant emad": "carla bennet",
+  // NSF: Arabic OpenPhone name → English display name
+  "ahmed gamal": "austin white",
+  "riham samir": "rika hart",
+  "ayaat": "jenny morgan",
+  "engy mahmoud": "ellie moser",
+  "eman khamis": "estella cruz",
+  "sama farouk": "katie miller",
 };
 
 // Maps normalized SHEET agent name → normalized PBX (VoSLogic) agent name
@@ -2209,7 +2236,7 @@ function CSPanel() {
     <Card>
       <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-4">
         <div>
-          <CardTitle className="text-xl">CS Team</CardTitle>
+          <CardTitle className="text-xl">Internal CS</CardTitle>
           <p className="text-sm text-muted-foreground mt-1">
             Call activity · live from OpenPhone + PBX
           </p>
@@ -2377,7 +2404,7 @@ function RetentionCSPanel() {
     <Card>
       <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-4">
         <div>
-          <CardTitle className="text-xl">Retention &amp; CS Team</CardTitle>
+          <CardTitle className="text-xl">Retention &amp; Internal CS</CardTitle>
           <p className="text-sm text-muted-foreground mt-1">
             Calls &amp; retention files · live from OpenPhone + PBX ·{" "}
             <span className="inline-flex items-center gap-1">
@@ -2868,7 +2895,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                 <option value="">All Teams</option>
                 <option value="retention">Retention</option>
                 <option value="nsf">NSF</option>
-                <option value="cs">CS</option>
+                <option value="cs">Internal CS</option>
               </select>
             </div>
             {newRole !== "admin" && (
@@ -2939,7 +2966,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                         <option value="">All Teams</option>
                         <option value="retention">Retention</option>
                         <option value="nsf">NSF</option>
-                        <option value="cs">CS</option>
+                        <option value="cs">Internal CS</option>
                       </select>
                     </div>
                     {editRole !== "admin" && (
@@ -2987,7 +3014,7 @@ const LINE_TEAM_COLORS: Record<string, string> = {
   nsf: "bg-amber-500/20 text-amber-300 border border-amber-500/30",
   cs: "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30",
 };
-const LINE_TEAM_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "CS" };
+const LINE_TEAM_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "Internal CS" };
 
 function QuoLinesPanel() {
   const todayIso = toIsoDate(new Date());
@@ -3601,7 +3628,7 @@ function formatCallTime(iso: string): string {
   return `${date}, ${time}`;
 }
 
-const TEAM_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "CS", backend: "Retention & CS", other: "Other" };
+const TEAM_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "Internal CS", backend: "Retention & Internal CS", other: "Other" };
 const TEAM_COLORS: Record<string, string> = {
   retention: "bg-violet-500/15 text-violet-300 border-violet-500/20",
   nsf: "bg-sky-500/15 text-sky-300 border-sky-500/20",
@@ -3875,28 +3902,16 @@ function DailyMissedRecord() {
                     {fmt(d.date)}
                   </TableCell>
                   <TableCell className="text-xs">
-                    <span className="text-violet-300 font-medium">{ret}</span>
-                    {(d.retention.pbx > 0 || d.retention.quo > 0) && (
-                      <span className="text-zinc-600 ml-1 text-[10px]">
-                        {d.retention.quo}q {d.retention.pbx}p
-                      </span>
-                    )}
+                    <span className="text-violet-300 font-medium">{ret || "—"}</span>
+                    {ret > 0 && <span className="text-zinc-600 ml-1 text-[10px]">{d.retention.quo}q {d.retention.pbx}p</span>}
                   </TableCell>
                   <TableCell className="text-xs">
-                    <span className="text-emerald-300 font-medium">{cs}</span>
-                    {(d.cs.pbx > 0 || d.cs.quo > 0) && (
-                      <span className="text-zinc-600 ml-1 text-[10px]">
-                        {d.cs.quo}q {d.cs.pbx}p
-                      </span>
-                    )}
+                    <span className="text-emerald-300 font-medium">{cs || "—"}</span>
+                    {cs > 0 && <span className="text-zinc-600 ml-1 text-[10px]">{d.cs.quo}q {d.cs.pbx}p</span>}
                   </TableCell>
                   <TableCell className="text-xs">
-                    <span className="text-sky-300 font-medium">{nsf}</span>
-                    {(d.nsf.pbx > 0 || d.nsf.quo > 0) && (
-                      <span className="text-zinc-600 ml-1 text-[10px]">
-                        {d.nsf.quo}q {d.nsf.pbx}p
-                      </span>
-                    )}
+                    <span className="text-sky-300 font-medium">{nsf || "—"}</span>
+                    {nsf > 0 && <span className="text-zinc-600 ml-1 text-[10px]">{d.nsf.quo}q {d.nsf.pbx}p</span>}
                   </TableCell>
                   <TableCell className="text-xs text-right font-semibold text-zinc-200">{total}</TableCell>
                 </TableRow>
