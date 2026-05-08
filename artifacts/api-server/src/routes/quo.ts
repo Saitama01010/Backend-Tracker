@@ -171,6 +171,7 @@ router.get("/quo/line-stats", async (req, res) => {
     const lineInbounds = { total: 0, answered: 0, missed: 0 };
 
     for (const row of rows) {
+      if (row.participant && PARTICIPANT_BLOCKLIST.has(row.participant)) continue;
       // Track ALL inbound calls at the line level regardless of attribution
       if (row.direction === "incoming") {
         lineInbounds.total++;
@@ -306,6 +307,7 @@ router.get("/quo/stats", async (req, res) => {
     > = {};
 
     for (const row of rows) {
+      if (row.participant && PARTICIPANT_BLOCKLIST.has(row.participant)) continue;
       const agentName = row.agentName ?? "Unknown";
       // Agent-based team takes priority over line-based; skip calls from unknown agents
       const team = agentTeam(agentName) ?? row.lineTeam;
