@@ -64,12 +64,13 @@ const queryClient = new QueryClient();
 
 // ─── Auth Context ────────────────────────────────────────────────────────────
 
-type Permission = "view_metrics" | "view_attendance" | "edit_attendance" | "manage_members";
+type Permission = "view_metrics" | "view_attendance" | "edit_attendance" | "manage_members" | "view_missed_tables";
 const ALL_PERMISSIONS: { key: Permission; label: string; desc: string }[] = [
-  { key: "view_metrics",     label: "View Metrics",       desc: "See Retention, NSF, CS & Quo Lines tabs" },
-  { key: "view_attendance",  label: "View Attendance",    desc: "See the Attendance grid" },
-  { key: "edit_attendance",  label: "Edit Attendance",    desc: "Click cells to mark status & add notes" },
-  { key: "manage_members",   label: "Manage Members",     desc: "Add, edit, or remove attendance members" },
+  { key: "view_metrics",      label: "View Metrics",        desc: "See Retention, NSF, CS & Quo Lines tabs" },
+  { key: "view_attendance",   label: "View Attendance",     desc: "See the Attendance grid" },
+  { key: "edit_attendance",   label: "Edit Attendance",     desc: "Click cells to mark status & add notes" },
+  { key: "manage_members",    label: "Manage Members",      desc: "Add, edit, or remove attendance members" },
+  { key: "view_missed_tables", label: "View Missed Tables", desc: "See Today's Missed by Hour and Daily Missed history (managers only)" },
 ];
 
 const ALL_TABS: { value: string; label: string }[] = [
@@ -3087,8 +3088,8 @@ function LoginGate({ children }: { children: React.ReactNode }) {
 interface PortalUser { id: number; username: string; role: string; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; active: boolean; }
 
 const DEFAULT_PERMS: Record<string, Permission[]> = {
-  admin: ["view_metrics", "view_attendance", "edit_attendance", "manage_members"],
-  edit:  ["view_metrics", "view_attendance", "edit_attendance", "manage_members"],
+  admin: ["view_metrics", "view_attendance", "edit_attendance", "manage_members", "view_missed_tables"],
+  edit:  ["view_metrics", "view_attendance", "edit_attendance", "manage_members", "view_missed_tables"],
   view:  ["view_metrics", "view_attendance"],
 };
 
@@ -4117,6 +4118,8 @@ const TEAM_COLORS: Record<string, string> = {
 function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
   const q = useMissedNoCB();
   const qc = useQueryClient();
+  const { user } = useUser();
+  const canViewMissedTables = user.role === "admin" || user.permissions.includes("view_missed_tables");
   const allItems = q.data?.items ?? [];
   // If the user has a team scope, only ever show their team's items
   const items = lockedTeam ? allItems.filter((it) => it.team === lockedTeam) : allItems;
@@ -4336,11 +4339,11 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
           </div>
         )}
 
-        {/* Hourly missed breakdown (today) */}
-        <HourlyMissedRecord />
+        {/* Hourly missed breakdown (today) — managers only */}
+        {canViewMissedTables && <HourlyMissedRecord />}
 
-        {/* Daily missed record */}
-        <DailyMissedRecord />
+        {/* Daily missed record — managers only */}
+        {canViewMissedTables && <DailyMissedRecord />}
       </CardContent>
     </Card>
   );

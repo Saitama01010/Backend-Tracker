@@ -2,7 +2,7 @@ import { pgTable, text, serial, boolean, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
-export const ALL_PERMISSIONS = ["view_metrics", "view_attendance", "edit_attendance", "manage_members"] as const;
+export const ALL_PERMISSIONS = ["view_metrics", "view_attendance", "edit_attendance", "manage_members", "view_missed_tables"] as const;
 export type Permission = typeof ALL_PERMISSIONS[number];
 
 export const ALL_TEAM_ACCESS = ["retention", "nsf", "cs"] as const;
