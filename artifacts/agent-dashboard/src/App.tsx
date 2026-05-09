@@ -153,6 +153,7 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     for (const r of oldSheet.rows) {
       const agentRaw = (r[oldAgentCol] ?? "").trim();
       if (RETENTION_SHEET_NSF_AGENTS.has(normalizeAgent(agentRaw))) continue;
+      if (RETENTION_SHEET_CS_AGENTS.has(normalizeAgent(agentRaw))) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
       const d = oldDateCol ? parseDate(dateStr) : null;
       rows.push({
@@ -174,6 +175,7 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     if (caDate < "2026-05-04") continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (RETENTION_SHEET_NSF_AGENTS.has(normalizeAgent(agentRaw))) continue;
+    if (RETENTION_SHEET_CS_AGENTS.has(normalizeAgent(agentRaw))) continue;
     rows.push({
       Agent: agentRaw,
       Status: deriveNewRetentionStatus(r["Cancel request update"] ?? ""),
@@ -226,6 +228,49 @@ async function fetchRetentionSheetNSFCrossoverRows(): Promise<Row[]> {
   return rows;
 }
 
+// Pulls Retention-sheet rows for CS cross-over agents (Youssef Nady, Nour Eldin, Hiba Kamil,
+// Nourhan Amr) and maps their *retained* submissions to "Fixed" for the CS panel.
+// Cancelled rows are intentionally dropped — they are not counted in any team.
+async function fetchRetentionSheetCSCrossoverRows(): Promise<Row[]> {
+  const [oldSheet, newSheet] = await Promise.all([
+    fetchHeaderCsv(RETENTION.status),
+    fetchHeaderCsv(NEW_RETENTION_URL),
+  ]);
+
+  const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
+  const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
+  const oldDateCol = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
+
+  const rows: Row[] = [];
+
+  if (oldAgentCol && oldStatusCol) {
+    for (const r of oldSheet.rows) {
+      const agentRaw = (r[oldAgentCol] ?? "").trim();
+      if (!RETENTION_SHEET_CS_AGENTS.has(normalizeAgent(agentRaw))) continue;
+      const rawStatus = (r[oldStatusCol] ?? "").trim();
+      if (!isRetainedStatus(rawStatus)) continue; // cancels are dropped
+      const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
+      const d = oldDateCol ? parseDate(dateStr) : null;
+      rows.push({ Agent: agentRaw, Status: "Fixed", Date: d ? toIsoDate(d) : dateStr });
+    }
+  }
+
+  for (const r of newSheet.rows) {
+    const tsRaw = (r["Timestamp"] ?? "").trim();
+    const d = parseEgyptTimestamp(tsRaw);
+    if (!d) continue;
+    const caDate = toCaliforniaDateStr(d);
+    if (caDate < "2026-05-04") continue;
+    const agentRaw = (r["Agent Name"] ?? "").trim();
+    if (!RETENTION_SHEET_CS_AGENTS.has(normalizeAgent(agentRaw))) continue;
+    const derived = deriveNewRetentionStatus(r["Cancel request update"] ?? "");
+    if (!isRetainedStatus(derived)) continue; // cancels are dropped
+    rows.push({ Agent: agentRaw, Status: "Fixed", Date: caDate });
+  }
+
+  return rows;
+}
+
 const NAME_ALIASES: Record<string, string> = {
   "kaite miller": "katie miller",
 };
@@ -233,6 +278,19 @@ const NAME_ALIASES: Record<string, string> = {
 // Agents who submit files in the Retention sheet but actually belong to the NSF team.
 // Their rows are EXCLUDED from Retention stats and counted as "Fixed" in NSF instead.
 const RETENTION_SHEET_NSF_AGENTS = new Set(["katie miller"]);
+
+// Agents who submit files in the Retention sheet but actually belong to the CS team.
+// Their RETAINED submissions are counted as "Fixed" in CS; CANCELLED rows are dropped entirely.
+const RETENTION_SHEET_CS_AGENTS = new Set([
+  // Youssef Nady / Jacob Xander — appears in old sheet as compound name, new sheet as simple
+  "youssef nady-jacob xander", "youssef nady",
+  // Nour Eldin / Chase Miller
+  "nour eldin-chase miller-2787", "nour eldin", "nour eldin atef",
+  // Hiba Kamil / Ella Monroe
+  "hiba kamil-ella monroe-2882", "hiba kamil",
+  // Nourhan Amr / Nora Adam
+  "nourhan amr-nora adam-2186", "nourhan amr", "nourhan ame",
+]);
 
 // NSF agent display names (normalized lowercase) — used to split the shared
 // Discord-bot sheet between NSF and CS.
@@ -312,11 +370,14 @@ async function fetchNSFCombinedSheet(): Promise<SheetData> {
   return { headers: ["Agent", "Status", "Date"], rows };
 }
 
-// Fetches CS submissions from the shared Discord-bot sheet.
-// Filters to CS agents only — separate from NSF.
+// Fetches CS submissions from the shared Discord-bot sheet,
+// plus any retained-only rows from the Retention sheet belonging to CS crossover agents.
 async function fetchCSCombinedSheet(): Promise<SheetData> {
-  const rows = await fetchNewSheetForTeam(CS_AGENT_NAMES);
-  return { headers: ["Agent", "Status", "Date"], rows };
+  const [rows, crossoverRows] = await Promise.all([
+    fetchNewSheetForTeam(CS_AGENT_NAMES),
+    fetchRetentionSheetCSCrossoverRows(),
+  ]);
+  return { headers: ["Agent", "Status", "Date"], rows: [...rows, ...crossoverRows] };
 }
 
 function findColumn(headers: string[], candidates: string[]): string | null {
