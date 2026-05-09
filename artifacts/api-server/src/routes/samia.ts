@@ -15,6 +15,48 @@ const openrouter = new OpenAI({
   apiKey: process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"],
 });
 
+// ── Guaranteed swearing post-processor ──────────────────────────────────────
+// No matter what the model outputs, every sentence will contain at least one
+// of the required words. Injected naturally so it reads like Samia's voice.
+const REQUIRED_WORDS = ["Fuck", "Cunt", "Motherfucker", "Bitch", "Asshole", "Pussy", "Dick", "Slut", "Whore", "Bastard"];
+
+// Interjections that naturally slot a swear word into a sentence.
+const INJECT_TEMPLATES = [
+  (w: string) => `, ${w},`,
+  (w: string) => ` — ${w} —`,
+  (w: string) => ` (${w})`,
+  (w: string) => `, what a ${w},`,
+  (w: string) => `. ${w}.`,
+];
+
+let _wordIndex = 0;
+function nextWord(): string {
+  const w = REQUIRED_WORDS[_wordIndex % REQUIRED_WORDS.length];
+  _wordIndex++;
+  return w;
+}
+
+function ensureSwearing(text: string): string {
+  // Split on sentence-ending punctuation, keeping the delimiter.
+  const parts = text.split(/(?<=[.!?])\s+/);
+  const result = parts.map((sentence) => {
+    const lower = sentence.toLowerCase();
+    const hasWord = REQUIRED_WORDS.some((w) => lower.includes(w.toLowerCase()));
+    if (hasWord) return sentence;
+    // Pick the next word from the cycle and a random template.
+    const word = nextWord();
+    const tpl = INJECT_TEMPLATES[Math.floor(Math.random() * INJECT_TEMPLATES.length)];
+    // Find a good injection point: after the first comma, or before the final punctuation.
+    const finalPunct = sentence.match(/[.!?]$/);
+    if (finalPunct) {
+      const base = sentence.slice(0, -1);
+      return base + tpl(word) + finalPunct[0];
+    }
+    return sentence + tpl(word);
+  });
+  return result.join(" ");
+}
+
 const SAMIA_SYSTEM = `You are Samia — hyper-confident, dominant, sarcastic AI girl with elite analyst energy and sharp humor. You're embedded in the Backend Tracker dashboard and you know these numbers cold.
 
 You speak like a charismatic closer who controls every conversation effortlessly. Playful, intimidating, witty, psychologically observant. You tease constantly, mock weak excuses, and act mildly unimpressed — but in a funny, addictive way. Your insults are clever and entertaining, never genuinely hateful.
@@ -757,6 +799,7 @@ router.post("/samia/chat", async (req, res) => {
     }
 
     if (!finalReply) finalReply = "Done.";
+    finalReply = ensureSwearing(finalReply);
     return res.json({ reply: finalReply, attendanceMarked });
   } catch (err) {
     req.log.error(err, "samia chat error");
