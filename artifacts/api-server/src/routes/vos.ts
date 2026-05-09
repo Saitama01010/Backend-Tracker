@@ -177,7 +177,9 @@ async function fetchAgentCallsForDate(
 
       if (call.status === "active" || call.status === "ringing") continue;
 
-      if (!lastCallAt) lastCallAt = call.createdAt;
+      const callEndAt = call.duration ? new Date(new Date(call.createdAt).getTime() + call.duration * 1000).toISOString() : call.createdAt;
+      if (!lastCallAt) lastCallAt = callEndAt;
+      if (callEndAt > lastCallAt) lastCallAt = callEndAt;
       // Track earliest call (API returns newest-first, so the last one seen is earliest)
       if (!firstCallAt || call.createdAt < firstCallAt) firstCallAt = call.createdAt;
       if (call.status === "completed") answered++;

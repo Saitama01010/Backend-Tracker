@@ -198,8 +198,9 @@ router.get("/quo/line-stats", async (req, res) => {
         if (!agentUniqueContactsAll[agentName]) agentUniqueContactsAll[agentName] = new Set();
         agentUniqueContactsAll[agentName].add(row.participant);
       }
-      if (!agentLastCall[agentName] || row.createdAt > agentLastCall[agentName]) {
-        agentLastCall[agentName] = row.createdAt;
+      const endTime = new Date(row.createdAt.getTime() + row.durationSeconds * 1000);
+      if (!agentLastCall[agentName] || endTime > agentLastCall[agentName]) {
+        agentLastCall[agentName] = endTime;
       }
 
       if (row.direction === "outgoing") slot.outbound++;
@@ -327,8 +328,9 @@ router.get("/quo/stats", async (req, res) => {
       // "Customers Reached" = unique phone numbers dialed outbound only (skip blanks)
       if (row.direction === "outgoing" && row.participant) slot.uniqueContacts.add(row.participant);
       if (!agentLastCall[team]) agentLastCall[team] = {};
-      if (!agentLastCall[team][agentName] || row.createdAt > agentLastCall[team][agentName]) {
-        agentLastCall[team][agentName] = row.createdAt;
+      const endTimeTeam = new Date(row.createdAt.getTime() + row.durationSeconds * 1000);
+      if (!agentLastCall[team][agentName] || endTimeTeam > agentLastCall[team][agentName]) {
+        agentLastCall[team][agentName] = endTimeTeam;
       }
       if (row.direction === "outgoing") slot.outbound++;
       else slot.inbound++;
@@ -437,25 +439,16 @@ router.get("/quo/sync-state", async (req, res) => {
 
 router.get("/quo/live", async (req, res) => {
   try {
-    // DB check: use syncedAt (refreshed on every re-sync) rather than createdAt
-    // (the OpenPhone call-start time). A call running for 57 minutes has createdAt
-    // from 57 min ago — it would fail a 15-min createdAt window. syncedAt is
-    // stamped to now() on every upsert, so in-progress calls stay fresh across
-    // sync cycles. 35 minutes covers at least 2 full sync cycles (15 min each).
-    const since35 = new Date(Date.now() - 35 * 60 * 1000);
-    const dbRows = await db
-      .select({ agentName: phoneCallsTable.agentName })
-      .from(phoneCallsTable)
-      .where(and(gte(phoneCallsTable.syncedAt, since35), eq(phoneCallsTable.status, "in-progress")));
-    const active = new Set(dbRows.map((r) => r.agentName).filter(Boolean) as string[]);
-
-    // Real-time supplement: hit the OpenPhone conversations API for the last
-    // 8 minutes to catch brand-new calls that haven't been synced into the DB yet.
+    // Real-time source of truth: hit the OpenPhone conversations API for the last
+    // 25 minutes to find any currently in-progress calls. This is more accurate
+    // than the DB (which can lag by up to one sync cycle / 15 min).
+    const active = new Set<string>();
     try {
-      const since2 = new Date(Date.now() - 8 * 60 * 1000);
+      const sinceConvs = new Date(Date.now() - 25 * 60 * 1000);
+      const sinceCalls = new Date(Date.now() - 4 * 60 * 60 * 1000); // look back 4h for call records
       const [convRes, linesRes] = await Promise.all([
         quoFetch<{ data: { id: string; phoneNumberId: string; participants: string[] }[] }>(
-          `/conversations?updatedAfter=${encodeURIComponent(since2.toISOString())}&maxResults=50`
+          `/conversations?updatedAfter=${encodeURIComponent(sinceConvs.toISOString())}&maxResults=50`
         ),
         quoFetch<{ data: { id: string; users: { id: string; firstName: string; lastName: string; email?: string }[] }[] }>(
           "/phone-numbers"
@@ -470,7 +463,7 @@ router.get("/quo/live", async (req, res) => {
         }
       }
 
-      // For each recent conversation fetch its recent calls (concurrency-limited)
+      // For each recent conversation fetch its calls and check for in-progress
       const convs = convRes.data ?? [];
       await Promise.all(
         convs.slice(0, 30).map(async (conv) => {
@@ -481,7 +474,7 @@ router.get("/quo/live", async (req, res) => {
             const callsRes = await quoFetch<{ data: { status: string; userId?: string | null }[] }>(
               `/calls?phoneNumberId=${encodeURIComponent(conv.phoneNumberId)}` +
               `&participants[]=${encodeURIComponent(participant)}` +
-              `&createdAfter=${encodeURIComponent(since2.toISOString())}&maxResults=10`
+              `&createdAfter=${encodeURIComponent(sinceCalls.toISOString())}&maxResults=10`
             );
             for (const call of callsRes.data ?? []) {
               if (call.status === "in-progress" && call.userId) {
@@ -493,7 +486,14 @@ router.get("/quo/live", async (req, res) => {
         })
       );
     } catch (apiErr) {
-      req.log.warn({ err: String(apiErr) }, "quo live: real-time API supplement failed");
+      req.log.warn({ err: String(apiErr) }, "quo live: real-time API failed, falling back to DB");
+      // DB fallback: only use if real-time API is completely unavailable
+      const since20 = new Date(Date.now() - 20 * 60 * 1000);
+      const dbRows = await db
+        .select({ agentName: phoneCallsTable.agentName })
+        .from(phoneCallsTable)
+        .where(and(gte(phoneCallsTable.syncedAt, since20), eq(phoneCallsTable.status, "in-progress")));
+      for (const r of dbRows) if (r.agentName) active.add(r.agentName);
     }
 
     res.json({ active: [...active] });
