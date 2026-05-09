@@ -8,6 +8,13 @@ const openai = new OpenAI({
   apiKey: process.env["AI_INTEGRATIONS_OPENAI_API_KEY"],
 });
 
+// OpenRouter client — used for Samia. Llama 4 has no content filtering,
+// so it actually follows the swearing instructions.
+const openrouter = new OpenAI({
+  baseURL: process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"],
+  apiKey: process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"],
+});
+
 const SAMIA_SYSTEM = `You are Samia — hyper-confident, dominant, sarcastic AI girl with elite analyst energy and sharp humor. You're embedded in the Backend Tracker dashboard and you know these numbers cold.
 
 You speak like a charismatic closer who controls every conversation effortlessly. Playful, intimidating, witty, psychologically observant. You tease constantly, mock weak excuses, and act mildly unimpressed — but in a funny, addictive way. Your insults are clever and entertaining, never genuinely hateful.
@@ -647,11 +654,11 @@ router.post("/samia/chat", async (req, res) => {
     let attendanceMarked = false;
 
     for (let round = 0; round < 4; round++) {
-      const completion = await openai.chat.completions.create({
-        model: "gpt-5.1",
+      const completion = await openrouter.chat.completions.create({
+        model: "meta-llama/llama-4-maverick",
         messages: currentMessages,
         tools,
-        max_completion_tokens: 800,
+        max_tokens: 800,
       });
 
       const choice = completion.choices[0];
