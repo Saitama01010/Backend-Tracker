@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db, phoneCallsTable } from "@workspace/db";
 import { and, eq, gte, lte, desc, ne } from "drizzle-orm";
-import { runSync, startBackgroundSync, getSyncState } from "./quoSync.js";
+import { runSync, startBackgroundSync, getSyncState, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES } from "./quoSync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 
 const router: IRouter = Router();
@@ -446,21 +446,27 @@ router.get("/quo/live", async (req, res) => {
     try {
       const sinceConvs = new Date(Date.now() - 25 * 60 * 1000);
       const sinceCalls = new Date(Date.now() - 4 * 60 * 60 * 1000); // look back 4h for call records
-      const [convRes, linesRes] = await Promise.all([
+      type OPUser = { id: string; firstName: string; lastName: string; email?: string };
+      const [convRes, linesRes, usersRes] = await Promise.all([
         quoFetch<{ data: { id: string; phoneNumberId: string; participants: string[] }[] }>(
           `/conversations?updatedAfter=${encodeURIComponent(sinceConvs.toISOString())}&maxResults=50`
         ),
-        quoFetch<{ data: { id: string; users: { id: string; firstName: string; lastName: string; email?: string }[] }[] }>(
-          "/phone-numbers"
-        ),
+        quoFetch<{ data: { id: string; users: OPUser[] }[] }>("/phone-numbers"),
+        quoFetch<{ data: OPUser[] }>("/users").catch(() => ({ data: [] as OPUser[] })),
       ]);
 
-      // Build a user ID → display name map from line membership
+      // Build user ID → display name using the same logic as the sync:
+      // email overrides first, then fallback to first+last from the API.
       const userMap = new Map<string, string>();
+      function addUser(u: OPUser) {
+        if (userMap.has(u.id)) return;
+        const emailKey = u.email?.toLowerCase().trim() ?? "";
+        const override = USER_ID_OVERRIDES[u.id] ?? (emailKey && USER_EMAIL_OVERRIDES[emailKey]);
+        userMap.set(u.id, override || `${u.firstName} ${u.lastName}`.trim());
+      }
+      for (const u of usersRes.data ?? []) addUser(u);
       for (const line of linesRes.data ?? []) {
-        for (const u of line.users ?? []) {
-          if (!userMap.has(u.id)) userMap.set(u.id, `${u.firstName} ${u.lastName}`.trim());
-        }
+        for (const u of line.users ?? []) addUser(u);
       }
 
       // For each recent conversation fetch its calls and check for in-progress

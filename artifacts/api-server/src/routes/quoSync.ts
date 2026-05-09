@@ -71,13 +71,13 @@ const LINE_AGENT_OVERRIDES: Record<string, string> = {
 };
 
 // Former employees no longer in the workspace — map by user ID directly
-const USER_ID_OVERRIDES: Record<string, string> = {
+export const USER_ID_OVERRIDES: Record<string, string> = {
   USahWqOQpm: "Unknown Agent",
   US3fJL9dBL: "Unknown Agent",
   USRAl7CoAq: "Unknown Agent",
 };
 
-const USER_EMAIL_OVERRIDES: Record<string, string> = {
+export const USER_EMAIL_OVERRIDES: Record<string, string> = {
   "noura.asahab@gmail.com": "Nora Adam",
   "basantemadeldin@yahoo.com": "Carla Bennet",
   "carla.bennet212@gmail.com": "Carla Bennet",
