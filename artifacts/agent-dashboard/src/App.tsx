@@ -291,15 +291,6 @@ function normalizeAgent(s: string): string {
 // compares against display names, not IDs).
 const PHONE_BLOCKLIST = new Set(["shahin ."]);
 
-// Normalized keys for everyone who IS on the retention team.
-// Any submission to the retention sheet from someone NOT in this set is
-// treated as a "Fixed" file (a resolved case) rather than Retained/Cancelled.
-const RETENTION_TEAM_KEYS = new Set([
-  "levi miller", "henry hart", "ryan henderson", "michael belfort",
-  "jacob stephenson", "katherine adams", "talia morgan", "rick miller",
-  "michael ross",
-]);
-
 // Extra phone-only agents per team (not in the Google Sheet, but on the team)
 // Keys must match OpenPhone agent names (normalized lowercase)
 const TEAM_PHONE_EXTRAS: Record<string, string[]> = {
@@ -720,8 +711,7 @@ function aggregate(
   for (const r of filteredStatus) {
     const agent = (r[agentColumn] ?? "").trim();
     const rawStatus = normalizeStatus((r[statusColumn] ?? "").trim() || "(blank)");
-    const isRetentionMember = mode !== "retention" || RETENTION_TEAM_KEYS.has(normalizeAgent(agent));
-    const status = (mode === "nsf" || !isRetentionMember) ? "Fixed" : rawStatus;
+    const status = mode === "nsf" ? "Fixed" : rawStatus;
     allStatuses.add(status);
     const ag = ensureAgent(agent);
     ag.byStatus.set(status, (ag.byStatus.get(status) ?? 0) + 1);
@@ -747,10 +737,9 @@ function aggregate(
   const byDay = Array.from(dayMap.values()).sort(
     (a, b) => a.date.getTime() - b.date.getTime(),
   );
-  const byAgent = Array.from(agentMap.entries())
-    .filter(([key]) => mode !== "retention" || RETENTION_TEAM_KEYS.has(key))
-    .map(([, v]) => v)
-    .sort((a, b) => a.agent.localeCompare(b.agent));
+  const byAgent = Array.from(agentMap.values()).sort((a, b) =>
+    a.agent.localeCompare(b.agent),
+  );
 
   const totalCalls = byAgent.reduce((s, a) => s + a.calls, 0);
   const totalSeconds = byAgent.reduce((s, a) => s + a.seconds, 0);
@@ -784,13 +773,11 @@ function aggregate(
       const inThisMonth = dateStr.startsWith(thisMonthStr);
       if (isToday) todayCount += 1;
       if (inThisMonth) monthCount += 1;
-      const agentKey = normalizeAgent((r[agentColumn] ?? "").trim());
-      const isRetentionMemberRow = mode !== "retention" || RETENTION_TEAM_KEYS.has(agentKey);
-      if (isRetentionMemberRow && isPureRetainedStatus(rawStatus)) {
+      if (isPureRetainedStatus(rawStatus)) {
         if (isToday) todayRetained += 1;
         if (inThisMonth) monthRetained += 1;
       }
-      if (isRetentionMemberRow && /cancel/i.test(rawStatus) && inThisMonth) monthCancelled += 1;
+      if (/cancel/i.test(rawStatus) && inThisMonth) monthCancelled += 1;
     }
   }
 
