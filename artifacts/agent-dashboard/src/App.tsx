@@ -55,6 +55,9 @@ import {
   Send,
   Sparkles,
   Paperclip,
+  Minimize2,
+  Maximize2,
+  ChevronDown,
 } from "lucide-react";
 
 const queryClient = new QueryClient();
@@ -4618,8 +4621,11 @@ function Dashboard() {
 
 interface SamiaMessage { role: "user" | "assistant"; content: string; images?: string[] }
 
+type ChatSize = "normal" | "minimized" | "maximized";
+
 function SamiaChat() {
   const [open, setOpen] = useState(false);
+  const [size, setSize] = useState<ChatSize>("normal");
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<SamiaMessage[]>([]);
   const [loading, setLoading] = useState(false);
@@ -4704,9 +4710,15 @@ function SamiaChat() {
 
       {/* Chat panel */}
       {open && (
-        <div className="fixed bottom-24 right-6 z-50 w-[360px] max-h-[560px] flex flex-col rounded-2xl border border-white/10 bg-zinc-900/95 backdrop-blur-xl shadow-2xl overflow-hidden">
+        <div className={`fixed z-50 flex flex-col rounded-2xl border border-white/10 bg-zinc-900/95 backdrop-blur-xl shadow-2xl overflow-hidden transition-all duration-200 ${
+          size === "maximized"
+            ? "bottom-4 right-4 left-4 top-4 w-auto max-h-none"
+            : size === "minimized"
+            ? "bottom-24 right-6 w-[360px] max-h-none"
+            : "bottom-24 right-6 w-[360px] max-h-[560px]"
+        }`}>
           {/* Header */}
-          <div className="flex items-center gap-3 px-4 py-3 border-b border-white/8 bg-gradient-to-r from-violet-600/20 to-fuchsia-600/20">
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-white/8 bg-gradient-to-r from-violet-600/20 to-fuchsia-600/20 flex-shrink-0">
             <div className="h-9 w-9 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white font-bold text-sm shadow-md flex-shrink-0">
               S
             </div>
@@ -4717,13 +4729,32 @@ function SamiaChat() {
                 AI Analyst · Live data
               </p>
             </div>
-            <button onClick={() => setOpen(false)} className="ml-auto text-zinc-500 hover:text-white transition-colors">
-              <X className="h-4 w-4" />
-            </button>
+            <div className="ml-auto flex items-center gap-1">
+              {/* Minimize — collapse to header only */}
+              <button
+                onClick={() => setSize((s) => s === "minimized" ? "normal" : "minimized")}
+                title={size === "minimized" ? "Restore" : "Minimize"}
+                className="text-zinc-500 hover:text-white transition-colors p-1"
+              >
+                <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${size === "minimized" ? "rotate-180" : ""}`} />
+              </button>
+              {/* Maximize — fill the screen */}
+              <button
+                onClick={() => setSize((s) => s === "maximized" ? "normal" : "maximized")}
+                title={size === "maximized" ? "Restore" : "Maximize"}
+                className="text-zinc-500 hover:text-white transition-colors p-1"
+              >
+                {size === "maximized" ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+              </button>
+              {/* Close */}
+              <button onClick={() => { setOpen(false); setSize("normal"); }} className="text-zinc-500 hover:text-white transition-colors p-1">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
           </div>
 
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
+          <div className={`flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0 ${size === "minimized" ? "hidden" : ""}`}>
             {messages.map((m, i) => (
               <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                 {m.role === "assistant" && (
@@ -4761,7 +4792,7 @@ function SamiaChat() {
           </div>
 
           {/* Input */}
-          <div className="px-3 pb-3 pt-2 border-t border-white/8 flex flex-col gap-2">
+          <div className={`px-3 pb-3 pt-2 border-t border-white/8 flex flex-col gap-2 ${size === "minimized" ? "hidden" : ""}`}>
             {/* Pending image thumbnails */}
             {pendingImages.length > 0 && (
               <div className="flex gap-2 flex-wrap">
