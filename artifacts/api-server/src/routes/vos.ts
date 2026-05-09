@@ -3,15 +3,9 @@ import { db, phoneCallsTable } from "@workspace/db";
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Logger } from "pino";
 import { logger as rootLogger } from "../lib/logger";
+import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 
 const router = Router();
-
-// Phone numbers to exclude from all missed call counts and records (blocked/spam callers).
-// Must be kept in sync with the same set in quo.ts.
-const PARTICIPANT_BLOCKLIST = new Set([
-  "+17035075710",
-  "17035075710",
-]);
 
 const VOS_BASE = "https://phonesystem.voslogic.com";
 
@@ -224,6 +218,7 @@ async function scanRingGroupCalls(
   missedRecords: Array<{ id: number; fromNumber: string; toNumber: string; createdAt: string; ringGroupId: number; ringGroupName: string }>;
   pbxOutboundCalls: Array<{ toNumber: string; createdAt: string }>;
 }> {
+  const blocklist = await getBlockedNumbers();
   const missedCounts: VosRingGroupMissed = {};
   const missedRecords: Array<{ id: number; fromNumber: string; toNumber: string; createdAt: string; ringGroupId: number; ringGroupName: string }> = [];
   const pbxOutboundCalls: Array<{ toNumber: string; createdAt: string }> = [];
@@ -300,7 +295,7 @@ async function scanRingGroupCalls(
       seenCallIds.add(call.id);
       const rgName = ringGroupIdToName.get(rgId) ?? String(rgId);
       missedCounts[rgId] = (missedCounts[rgId] ?? 0) + 1;
-      if (call.fromNumber && !EXCLUDED_RING_GROUPS.has(rgName) && !PARTICIPANT_BLOCKLIST.has(call.fromNumber)) {
+      if (call.fromNumber && !EXCLUDED_RING_GROUPS.has(rgName) && !blocklist.has(call.fromNumber)) {
         missedRecords.push({
           id: call.id,
           fromNumber: call.fromNumber,
@@ -316,7 +311,7 @@ async function scanRingGroupCalls(
   // Second pass: retry calls that were pending because their line wasn't known yet
   for (const call of pendingMissed) {
     if (!call.toNumber || !call.fromNumber) continue;
-    if (PARTICIPANT_BLOCKLIST.has(call.fromNumber)) continue;
+    if (blocklist.has(call.fromNumber)) continue;
     const rgId = lineMap.get(call.toNumber);
     if (rgId === undefined) continue;
     const rgName = ringGroupIdToName.get(rgId) ?? String(rgId);
@@ -589,8 +584,9 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
         )
       );
 
+    const blocklist = await getBlockedNumbers();
     for (const row of quoMissed) {
-      if (PARTICIPANT_BLOCKLIST.has(row.participant)) continue;
+      if (blocklist.has(row.participant)) continue;
       if (/[a-zA-Z]/.test(row.participant)) continue; // skip internal line-name participants
       const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);
@@ -760,9 +756,10 @@ router.get("/vos/missed-no-callback", async (req, res) => {
       callbackTimes.get(norm)!.push(new Date(row.createdAt));
     }
 
+    const blocklist = await getBlockedNumbers();
     const items: MissedNoCallbackItem[] = [];
     for (const row of quoMissed) {
-      if (PARTICIPANT_BLOCKLIST.has(row.participant)) continue;
+      if (blocklist.has(row.participant)) continue;
       if (/[a-zA-Z]/.test(row.participant)) continue; // skip internal line-name participants
       const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);

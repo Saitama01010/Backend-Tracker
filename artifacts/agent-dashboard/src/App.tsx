@@ -3316,6 +3316,92 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
+function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
+  const { token } = useUser();
+  const [items, setItems] = useState<{ number: string; note: string | null; createdAt: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [newNumber, setNewNumber] = useState("");
+  const [newNote, setNewNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await fetch("/api/blocked-numbers", { headers: { Authorization: `Bearer ${token}` } });
+      if (r.ok) setItems((await r.json() as { data: { number: string; note: string | null; createdAt: string }[] }).data);
+    } finally { setLoading(false); }
+  }, [token]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function addNumber() {
+    const num = newNumber.trim();
+    if (!num) return;
+    setSaving(true); setError("");
+    const r = await fetch("/api/blocked-numbers", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ number: num, note: newNote.trim() || null }),
+    });
+    if (r.ok) { setNewNumber(""); setNewNote(""); await load(); }
+    else { const d = await r.json() as { error?: string }; setError(d.error ?? "Failed to add"); }
+    setSaving(false);
+  }
+
+  async function removeNumber(num: string) {
+    await fetch(`/api/blocked-numbers/${encodeURIComponent(num)}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    await load();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="relative w-full max-w-md mx-4 rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-white/10">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="h-5 w-5 text-rose-400" />
+            <h2 className="text-lg font-semibold text-white">Blocked Numbers</h2>
+          </div>
+          <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors"><X className="h-5 w-5" /></button>
+        </div>
+        <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
+          <p className="text-xs text-zinc-500">Numbers added here are excluded from all missed-call lists and stats.</p>
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Add Number</p>
+            <div className="flex gap-2">
+              <Input placeholder="+1XXXXXXXXXX" value={newNumber} onChange={(e) => setNewNumber(e.target.value)} className="h-8 text-sm flex-1" />
+              <Input placeholder="Note (optional)" value={newNote} onChange={(e) => setNewNote(e.target.value)} className="h-8 text-sm flex-1" />
+            </div>
+            <Button size="sm" className="bg-rose-600 hover:bg-rose-700 text-white w-full" onClick={addNumber} disabled={saving || !newNumber.trim()}>
+              <Plus className="h-3.5 w-3.5 mr-1" />Block Number
+            </Button>
+            {error && <p className="text-xs text-rose-400">{error}</p>}
+          </div>
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Blocked ({items.length})</p>
+            {loading ? <Skeleton className="h-16 w-full" /> : items.length === 0 ? (
+              <p className="text-xs text-zinc-600 py-3 text-center">No numbers blocked yet.</p>
+            ) : items.map((item) => (
+              <div key={item.number} className="flex items-center justify-between gap-2 rounded-lg border border-white/8 bg-zinc-900/60 px-3 py-2">
+                <div>
+                  <p className="text-sm font-mono text-white">{item.number}</p>
+                  {item.note && <p className="text-xs text-zinc-500">{item.note}</p>}
+                </div>
+                <button onClick={() => removeNumber(item.number)} className="p-1 rounded text-zinc-600 hover:text-rose-400 transition-colors flex-shrink-0">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface QuoLine {
   id: string;
   name: string;
@@ -4317,6 +4403,7 @@ type DashView = "metrics" | "attendance";
 function Dashboard() {
   const { user, logout, can, canSeeTab } = useUser();
   const [showUsers, setShowUsers] = useState(false);
+  const [showBlocked, setShowBlocked] = useState(false);
   const defaultView: DashView = can("view_metrics") ? "metrics" : "attendance";
   const [view, setView] = useState<DashView>(defaultView);
 
@@ -4333,6 +4420,7 @@ function Dashboard() {
   return (
     <div className="min-h-screen bg-background relative overflow-hidden">
       {showUsers && <UserManagementPanel onClose={() => setShowUsers(false)} />}
+      {showBlocked && <BlockedNumbersPanel onClose={() => setShowBlocked(false)} />}
 
       <div className="pointer-events-none absolute inset-0 -z-0">
         <div className="absolute -top-32 -left-32 h-[500px] w-[500px] rounded-full bg-violet-600/20 blur-[120px]" />
@@ -4376,14 +4464,24 @@ function Dashboard() {
               </Badge>
             </div>
             {user.role === "admin" && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button onClick={() => setShowUsers(true)} className="p-2 rounded-lg text-zinc-400 hover:text-fuchsia-300 hover:bg-fuchsia-500/10 transition-colors">
-                    <UserCog className="h-4 w-4" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>Manage users</TooltipContent>
-              </Tooltip>
+              <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button onClick={() => setShowBlocked(true)} className="p-2 rounded-lg text-zinc-400 hover:text-rose-300 hover:bg-rose-500/10 transition-colors">
+                      <ShieldCheck className="h-4 w-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>Blocked numbers</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button onClick={() => setShowUsers(true)} className="p-2 rounded-lg text-zinc-400 hover:text-fuchsia-300 hover:bg-fuchsia-500/10 transition-colors">
+                      <UserCog className="h-4 w-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>Manage users</TooltipContent>
+                </Tooltip>
+              </>
             )}
             <Tooltip>
               <TooltipTrigger asChild>

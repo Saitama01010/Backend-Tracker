@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { db, phoneCallsTable } from "@workspace/db";
 import { and, eq, gte, lte, desc, ne } from "drizzle-orm";
 import { runSync, startBackgroundSync, getSyncState } from "./quoSync.js";
+import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 
 const router: IRouter = Router();
 
@@ -57,12 +58,6 @@ function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   if (/nsf|national settlement|ellie|alex|katie|jenny|estella|rika|austin/.test(n)) return "nsf";
   return null;
 }
-
-// Participant numbers to exclude from all stats (blocked/spam callers)
-const PARTICIPANT_BLOCKLIST = new Set([
-  "+17035075710",
-  "17035075710",
-]);
 
 // Agent-name → team override. Calls are bucketed by who made them, not which line
 // they used. This ensures agents who call from shared/unclassified lines still
@@ -170,10 +165,11 @@ router.get("/quo/line-stats", async (req, res) => {
     // Track unique contacts across the FULL date range per agent (not per day)
     // so the total "CX Reached" is truly deduplicated.
     const agentUniqueContactsAll: Record<string, Set<string>> = {};
+    const blocklist = await getBlockedNumbers();
     const lineInbounds = { total: 0, answered: 0, missed: 0 };
 
     for (const row of rows) {
-      if (row.participant && PARTICIPANT_BLOCKLIST.has(row.participant)) continue;
+      if (row.participant && blocklist.has(row.participant)) continue;
       // Track ALL inbound calls at the line level regardless of attribution
       if (row.direction === "incoming") {
         lineInbounds.total++;
@@ -308,8 +304,9 @@ router.get("/quo/stats", async (req, res) => {
       Record<string, { lineId: string; lineName: string; received: number; answered: number; missed: number; voicemail: number }>
     > = {};
 
+    const blocklist = await getBlockedNumbers();
     for (const row of rows) {
-      if (row.participant && PARTICIPANT_BLOCKLIST.has(row.participant)) continue;
+      if (row.participant && blocklist.has(row.participant)) continue;
       const agentName = row.agentName ?? "Unknown";
       // Agent-based team takes priority over line-based; skip calls from unknown agents
       const team = agentTeam(agentName) ?? row.lineTeam;
