@@ -120,6 +120,27 @@ function normalizePhone(num: string): string {
 // Ring groups whose missed calls should never appear in the missed-no-callback panel.
 const EXCLUDED_RING_GROUPS = new Set(["MX Retention"]);
 
+// ─── Fetch our own OpenPhone line numbers ─────────────────────────────────────
+
+async function fetchQuoLineNumbers(): Promise<Set<string>> {
+  const key = process.env["QUO_API_KEY"];
+  if (!key) return new Set();
+  try {
+    const res = await fetch("https://api.openphone.com/v1/phone-numbers", {
+      headers: { Authorization: key, Accept: "application/json" },
+    });
+    if (!res.ok) return new Set();
+    const data = (await res.json()) as { data: { number?: string }[] };
+    const nums = new Set<string>();
+    for (const line of data.data ?? []) {
+      if (line.number) nums.add(normalizePhone(line.number));
+    }
+    return nums;
+  } catch {
+    return new Set();
+  }
+}
+
 // Only these Quo/OpenPhone line names are team-shared lines.
 // Personal agent lines (e.g. "Rick Miller RT OB", "Jenny NSF") are excluded.
 const TEAM_QUO_LINES = ["Retention", "CS Team", "Main NSF"];
@@ -214,7 +235,8 @@ async function scanRingGroupCalls(
   lineToRingGroupId: Map<string, number>,
   ringGroupIdToName: Map<number, string>,
   totalCallsToday: number,
-  agentToRingGroups: Map<number, number[]>
+  agentToRingGroups: Map<number, number[]>,
+  internalNumbers: Set<string>
 ): Promise<{
   missedCounts: VosRingGroupMissed;
   missedRecords: Array<{ id: number; fromNumber: string; toNumber: string; createdAt: string; ringGroupId: number; ringGroupName: string }>;
@@ -297,7 +319,7 @@ async function scanRingGroupCalls(
       seenCallIds.add(call.id);
       const rgName = ringGroupIdToName.get(rgId) ?? String(rgId);
       missedCounts[rgId] = (missedCounts[rgId] ?? 0) + 1;
-      if (call.fromNumber && !EXCLUDED_RING_GROUPS.has(rgName) && !blocklist.has(call.fromNumber)) {
+      if (call.fromNumber && !EXCLUDED_RING_GROUPS.has(rgName) && !blocklist.has(call.fromNumber) && !internalNumbers.has(normalizePhone(call.fromNumber))) {
         missedRecords.push({
           id: call.id,
           fromNumber: call.fromNumber,
@@ -314,6 +336,7 @@ async function scanRingGroupCalls(
   for (const call of pendingMissed) {
     if (!call.toNumber || !call.fromNumber) continue;
     if (blocklist.has(call.fromNumber)) continue;
+    if (internalNumbers.has(normalizePhone(call.fromNumber))) continue;
     const rgId = lineMap.get(call.toNumber);
     if (rgId === undefined) continue;
     const rgName = ringGroupIdToName.get(rgId) ?? String(rgId);
@@ -511,7 +534,15 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     }
     if (probeTasks.length > 0) await Promise.all(probeTasks);
 
-    const scanResult = await scanRingGroupCalls(lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600, agentToRingGroups);
+    // Build a set of all our own internal numbers (PBX lines + OpenPhone lines).
+    // Any missed call FROM one of these numbers is an internal call and should be excluded.
+    const quoLineNumbers = await fetchQuoLineNumbers();
+    const internalNumbers = new Set<string>([
+      ...[...lineToRingGroupId.keys()].map(normalizePhone),
+      ...quoLineNumbers,
+    ]);
+
+    const scanResult = await scanRingGroupCalls(lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600, agentToRingGroups, internalNumbers);
 
     // ── Cross-reference missed records against callbacks ──────────────────────
     // Build callback lookup: normalized phone → all times an outbound call was made today
@@ -590,6 +621,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     for (const row of quoMissed) {
       if (blocklist.has(row.participant)) continue;
       if (/[a-zA-Z]/.test(row.participant)) continue; // skip internal line-name participants
+      if (internalNumbers.has(normalizePhone(row.participant))) continue; // skip our own line numbers
       const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);
       const times = callbackTimes.get(norm);
