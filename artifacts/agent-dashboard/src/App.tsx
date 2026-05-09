@@ -1637,6 +1637,32 @@ function buildTeamPhoneData(teamMode: string, data: PhoneStatsResponse | null | 
 
 function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMissed, agentDept, hideTeamRow }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics>; directKeys?: boolean; pbxData?: PbxCalls; extraMissed?: number; agentDept?: Map<string, "Retention" | "CS">; hideTeamRow?: boolean }) {
   const liveAgents = useLiveCalls();
+
+  // Share the ["vosLive"] query key so React Query deduplicates the request.
+  const pbxLiveQ = useQuery<{ liveCalls: VosLiveCall[]; agentStatuses: VosAgentStatus[] }>({
+    queryKey: ["vosLive"],
+    queryFn: async () => {
+      const r = await fetch("/api/vos/live");
+      if (!r.ok) return { liveCalls: [], agentStatuses: [] };
+      return r.json();
+    },
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+  });
+
+  // normalizedPbxName → live call detail (for direction + duration in pills)
+  const pbxLiveByName = useMemo(() => {
+    const m = new Map<string, VosLiveCall>();
+    for (const c of pbxLiveQ.data?.liveCalls ?? []) {
+      if (!c.agentName) continue;
+      const norm = c.agentName.trim().toLowerCase();
+      m.set(norm, c);
+      const displayNorm = PBX_TO_DISPLAY_NAME[norm] ?? norm;
+      if (displayNorm !== norm) m.set(displayNorm, c);
+    }
+    return m;
+  }, [pbxLiveQ.data]);
+
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "__calls__", dir: "desc" });
 
@@ -1719,8 +1745,36 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
   const totUniq = visible.reduce((s, a) => s + (getPhone(a)?.uniqueContacts ?? 0), 0);
   const totSecs = visible.reduce((s, a) => s + (getPhone(a)?.seconds ?? 0) + (getPbx(a)?.durationSeconds ?? 0), 0);
 
+  const liveInView = agentList.filter((a) => liveAgents.any.has(normalizeAgent(a)));
+
   return (
     <div className="space-y-4">
+      {liveInView.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Live calls right now</p>
+          <div className="flex flex-wrap gap-2">
+            {liveInView.map((agent) => {
+              const norm = normalizeAgent(agent);
+              const pbxCall = pbxLiveByName.get(norm);
+              return (
+                <div key={agent} className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-xs">
+                  <span className="relative flex h-2 w-2 shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                  </span>
+                  <span className="text-emerald-300 font-medium">{agent}</span>
+                  {pbxCall && (
+                    <>
+                      <span className="text-zinc-500">·</span>
+                      <span className="text-zinc-400">{pbxCall.direction === "outbound" ? "↑" : "↓"} {formatDuration(pbxCall.duration)}</span>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       <div className="flex items-center gap-3">
         <div className="relative w-full sm:max-w-xs">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
