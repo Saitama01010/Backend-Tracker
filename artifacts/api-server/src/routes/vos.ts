@@ -169,12 +169,14 @@ async function fetchAgentCallsForDate(
   firstCallAt: string | null;
   inboundToNumbers: string[];
   outboundCallbacks: Array<{ toNumber: string; createdAt: string }>;
+  inboundAnsweredFrom: Array<{ fromNumber: string; createdAt: string }>;
 }> {
   let answered = 0, missed = 0, voicemail = 0, durationSeconds = 0;
   let lastCallAt: string | null = null;
   let firstCallAt: string | null = null;
   const inboundToNumbers: string[] = [];
   const outboundCallbacks: Array<{ toNumber: string; createdAt: string }> = [];
+  const inboundAnsweredFrom: Array<{ fromNumber: string; createdAt: string }> = [];
   let totalSeen = 0;
   const cap = expectedCount;
   let page = 1;
@@ -217,13 +219,19 @@ async function fetchAgentCallsForDate(
       if (call.direction !== "inbound" && call.toNumber) {
         outboundCallbacks.push({ toNumber: call.toNumber, createdAt: call.createdAt });
       }
+
+      // Also collect inbound answered calls — if the customer called back and was answered
+      // that counts as resolved too (fromNumber = customer's number).
+      if (call.direction === "inbound" && call.fromNumber && call.status === "completed") {
+        inboundAnsweredFrom.push({ fromNumber: call.fromNumber, createdAt: call.createdAt });
+      }
     }
 
     if (done) break;
     page++;
   }
 
-  return { answered, missed, voicemail, durationSeconds, lastCallAt, firstCallAt, inboundToNumbers, outboundCallbacks };
+  return { answered, missed, voicemail, durationSeconds, lastCallAt, firstCallAt, inboundToNumbers, outboundCallbacks, inboundAnsweredFrom };
 }
 
 /**
@@ -420,6 +428,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     // Outbound call records collected from per-agent scans — the most complete
     // source of PBX callbacks because per-agent scans cover the full agent call list.
     const agentOutboundCallbacks: Array<{ toNumber: string; createdAt: string }> = [];
+    const agentInboundAnswered: Array<{ fromNumber: string; createdAt: string }> = [];
 
     const CONCURRENCY = 5;
     for (let i = 0; i < agents.length; i += CONCURRENCY) {
@@ -465,15 +474,18 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
             firstCallAt: detail.firstCallAt,
             inboundToNumbers: detail.inboundToNumbers,
             outboundCallbacks: detail.outboundCallbacks,
+            inboundAnsweredFrom: detail.inboundAnsweredFrom,
           };
         })
       );
       for (const r of batchResults) {
-        const { inboundToNumbers: _, outboundCallbacks: __, ...stat } = r;
+        const { inboundToNumbers: _, outboundCallbacks: __, inboundAnsweredFrom: _ia, ...stat } = r;
         results.push(stat satisfies VosCallHistoryStat);
         // Feed every per-agent outbound call into the callback map immediately
         // so it's available for cross-referencing after all agents are scanned.
         for (const cb of __) agentOutboundCallbacks.push(cb);
+        // Inbound answered calls also resolve a missed call (customer called back in).
+        for (const ia of _ia) agentInboundAnswered.push(ia);
       }
     }
 
@@ -560,6 +572,12 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       addCallback(c.toNumber, new Date(c.createdAt));
     }
 
+    // Per-agent inbound answered calls — customer called back in and was handled.
+    // fromNumber is the customer's number, so it resolves the missed call for that number.
+    for (const c of agentInboundAnswered) {
+      addCallback(c.fromNumber, new Date(c.createdAt));
+    }
+
     // Global scan outbound calls — supplementary, catches any agents not in dashboard.callsByAgent
     for (const c of scanResult.pbxOutboundCalls) {
       addCallback(c.toNumber, new Date(c.createdAt));
@@ -568,12 +586,22 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     // Quo DB outbound calls — use a 36-hour window to cover any timezone offset between
     // the server (UTC) and the business's local time, ensuring no callbacks are missed.
     const window36h = new Date(Date.now() - 36 * 60 * 60 * 1000);
-    const quoOutbound = await db
-      .select({ participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
-      .from(phoneCallsTable)
-      .where(and(eq(phoneCallsTable.direction, "outgoing"), gte(phoneCallsTable.createdAt, window36h)));
+    const [quoOutbound, quoInboundAnswered] = await Promise.all([
+      db
+        .select({ participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
+        .from(phoneCallsTable)
+        .where(and(eq(phoneCallsTable.direction, "outgoing"), gte(phoneCallsTable.createdAt, window36h))),
+      // Inbound answered Quo calls: customer called us on OpenPhone and was handled.
+      db
+        .select({ participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
+        .from(phoneCallsTable)
+        .where(and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed"), gte(phoneCallsTable.createdAt, window36h))),
+    ]);
 
     for (const row of quoOutbound) {
+      addCallback(row.participant, new Date(row.createdAt));
+    }
+    for (const row of quoInboundAnswered) {
       addCallback(row.participant, new Date(row.createdAt));
     }
 
