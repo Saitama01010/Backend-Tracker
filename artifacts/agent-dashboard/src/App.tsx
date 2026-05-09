@@ -4633,7 +4633,9 @@ function SamiaChat() {
     if (open) {
       setTimeout(() => inputRef.current?.focus(), 80);
       if (messages.length === 0) {
-        setMessages([{ role: "assistant", content: "Oh, you opened the chat. Bold. I'm Samia — I know every number in this dashboard better than you do. Ask me something. Try not to disappoint me." }]);
+        const hr = new Date().getHours();
+        const timeGreet = hr < 12 ? "Good Fucking Morning" : hr < 18 ? "Good Fucking Afternoon" : "Good Fucking Evening";
+        setMessages([{ role: "assistant", content: `${timeGreet}. I'm Samia — I know every number in this dashboard better than you do. Ask me something. Try not to disappoint me.` }]);
       }
     }
   }, [open]);
