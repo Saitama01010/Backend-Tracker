@@ -16,6 +16,10 @@ export const portalUsersTable = pgTable("portal_users", {
   permissions: text("permissions").notNull().default("[]"),
   // null = unrestricted (sees all teams); "retention"|"nsf"|"cs" = scoped to that team only
   teamAccess: text("team_access"),
+  // null = all tabs; JSON string[] = explicit allowlist of tab values
+  allowedTabs: text("allowed_tabs"),
+  // null = all agents; JSON string[] = explicit allowlist of agent display names
+  allowedAgents: text("allowed_agents"),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

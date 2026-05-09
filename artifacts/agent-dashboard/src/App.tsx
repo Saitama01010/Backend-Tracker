@@ -69,9 +69,18 @@ const ALL_PERMISSIONS: { key: Permission; label: string; desc: string }[] = [
   { key: "manage_members",   label: "Manage Members",     desc: "Add, edit, or remove attendance members" },
 ];
 
+const ALL_TABS: { value: string; label: string }[] = [
+  { value: "retention",    label: "Retention" },
+  { value: "cs",           label: "Internal CS" },
+  { value: "nsf",          label: "NSF" },
+  { value: "missed-no-cb", label: "Missed / No CB" },
+  { value: "quo-lines",    label: "Quo Lines" },
+  { value: "vos",          label: "PBX" },
+];
+
 type TeamAccess = "retention" | "nsf" | "cs";
-interface AuthUser { id: number; username: string; role: "admin" | "edit" | "view"; permissions: Permission[]; teamAccess?: TeamAccess | null; }
-interface AuthCtx { user: AuthUser; token: string; logout: () => void; can: (p: Permission) => boolean; }
+interface AuthUser { id: number; username: string; role: "admin" | "edit" | "view"; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; }
+interface AuthCtx { user: AuthUser; token: string; logout: () => void; can: (p: Permission) => boolean; canSeeTab: (tab: string) => boolean; }
 const UserContext = createContext<AuthCtx | null>(null);
 function useUser() {
   const ctx = useContext(UserContext);
@@ -2344,6 +2353,7 @@ function CSPanel() {
     return map;
   }, [phoneQ.data]);
 
+  const { user: csUser } = useUser();
   const allAgents = useMemo(() => {
     const result: string[] = [];
     const addedKeys = new Set<string>();
@@ -2362,8 +2372,10 @@ function CSPanel() {
         }
       }
     }
-    return result;
-  }, [phoneData, pbxData]);
+    const aa = csUser.allowedAgents;
+    if (!aa || aa.length === 0) return result;
+    return result.filter((a) => aa.some((x) => normalizeAgent(x) === normalizeAgent(a)));
+  }, [phoneData, pbxData, csUser.allowedAgents]);
 
   const totals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0, missed = 0, uniqueContacts = 0;
@@ -2477,6 +2489,7 @@ function CSPanel() {
 }
 
 function RetentionPanel() {
+  const { user: retUser } = useUser();
   const pbxData = useVosCalls();
   const ringGroupMissed = useVosRingGroupMissed();
   // Retention ring group ID = 2 in VoSLogic
@@ -2544,8 +2557,10 @@ function RetentionPanel() {
     for (const k of phoneData.keys()) {
       if (!addedKeys.has(k)) { result.push(k.replace(/\b\w/g, (c) => c.toUpperCase())); addedKeys.add(k); }
     }
-    return result;
-  }, [phoneData]);
+    const aa = retUser.allowedAgents;
+    if (!aa || aa.length === 0) return result;
+    return result.filter((a) => aa.some((x) => normalizeAgent(x) === normalizeAgent(a)));
+  }, [phoneData, retUser.allowedAgents]);
 
   const totals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0, missed = 0;
@@ -2871,8 +2886,22 @@ function LoginGate({ children }: { children: React.ReactNode }) {
 
   if (auth) {
     const can = (p: Permission) => auth.user.role === "admin" || auth.user.permissions.includes(p);
+    const canSeeTab = (tab: string) => {
+      if (auth.user.role === "admin") return true;
+      const at = auth.user.allowedTabs;
+      if (at && at.length > 0) return at.includes(tab);
+      // Fallback: teamAccess-based visibility
+      const ta = auth.user.teamAccess ?? null;
+      const allTeams = ta === null;
+      if (tab === "quo-lines" || tab === "vos") return allTeams;
+      if (tab === "missed-no-cb") return true;
+      if (tab === "retention") return allTeams || ta === "retention";
+      if (tab === "cs") return allTeams || ta === "cs";
+      if (tab === "nsf") return allTeams || ta === "nsf";
+      return false;
+    };
     return (
-      <UserContext.Provider value={{ user: auth.user, token: auth.token, logout, can }}>
+      <UserContext.Provider value={{ user: auth.user, token: auth.token, logout, can, canSeeTab }}>
         {children}
       </UserContext.Provider>
     );
@@ -2933,7 +2962,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
 
 // ─── User Management Panel (Admin only) ──────────────────────────────────────
 
-interface PortalUser { id: number; username: string; role: string; permissions: Permission[]; teamAccess?: TeamAccess | null; active: boolean; }
+interface PortalUser { id: number; username: string; role: string; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; active: boolean; }
 
 const DEFAULT_PERMS: Record<string, Permission[]> = {
   admin: ["view_metrics", "view_attendance", "edit_attendance", "manage_members"],
@@ -2970,6 +2999,25 @@ const TEAM_ACCESS_COLORS: Record<string, string> = {
   cs:        "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
 };
 
+function TabCheckboxes({ tabs, onChange }: { tabs: string[]; onChange: (t: string[]) => void }) {
+  return (
+    <div className="grid grid-cols-2 gap-1.5 mt-1">
+      {ALL_TABS.map(({ value, label }) => {
+        const checked = tabs.includes(value);
+        return (
+          <label key={value} className={`flex items-center gap-2 rounded-md px-2.5 py-1.5 cursor-pointer transition-colors ${checked ? "bg-sky-500/10 border border-sky-500/20" : "bg-zinc-900/60 border border-white/5 hover:border-white/10"}`}
+            onClick={() => onChange(checked ? tabs.filter((t) => t !== value) : [...tabs, value])}>
+            <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${checked ? "bg-sky-500 border-sky-500" : "border-zinc-600"}`}>
+              {checked && <span className="text-white text-[9px] font-bold leading-none">✓</span>}
+            </div>
+            <span className={`text-xs font-medium ${checked ? "text-sky-200" : "text-zinc-400"}`}>{label}</span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
 function UserManagementPanel({ onClose }: { onClose: () => void }) {
   const { token } = useUser();
   const [users, setUsers] = useState<PortalUser[]>([]);
@@ -2979,12 +3027,16 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   const [newRole, setNewRole] = useState<"admin" | "edit" | "view">("view");
   const [newPerms, setNewPerms] = useState<Permission[]>(DEFAULT_PERMS["view"]);
   const [newTeamAccess, setNewTeamAccess] = useState<TeamAccess | "">("");
+  const [newAllowedTabs, setNewAllowedTabs] = useState<string[]>([]);
+  const [newAllowedAgents, setNewAllowedAgents] = useState("");
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editPw, setEditPw] = useState("");
   const [editRole, setEditRole] = useState<"admin" | "edit" | "view">("view");
   const [editPerms, setEditPerms] = useState<Permission[]>([]);
   const [editTeamAccess, setEditTeamAccess] = useState<TeamAccess | "">("");
+  const [editAllowedTabs, setEditAllowedTabs] = useState<string[]>([]);
+  const [editAllowedAgents, setEditAllowedAgents] = useState("");
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -2997,13 +3049,31 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
 
   useEffect(() => { void load(); }, [load]);
 
+  function parseAgentInput(raw: string): string[] | null {
+    const arr = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    return arr.length > 0 ? arr : null;
+  }
+
   async function addUser() {
     if (!newUsername.trim() || !newPassword.trim()) return;
     setSaving(true); setError("");
     const perms = newRole === "admin" ? DEFAULT_PERMS["admin"] : newPerms;
-    const r = await fetch("/api/users", { method: "POST", headers: authHeaders(token), body: JSON.stringify({ username: newUsername.trim(), password: newPassword.trim(), role: newRole, permissions: perms, teamAccess: newTeamAccess || null }) });
-    if (r.ok) { setNewUsername(""); setNewPassword(""); setNewRole("view"); setNewPerms(DEFAULT_PERMS["view"]); setNewTeamAccess(""); await load(); }
-    else { const d = await r.json() as { error?: string }; setError(d.error ?? "Failed to add user"); }
+    const body = {
+      username: newUsername.trim(),
+      password: newPassword.trim(),
+      role: newRole,
+      permissions: perms,
+      teamAccess: newTeamAccess || null,
+      allowedTabs: newAllowedTabs.length > 0 ? newAllowedTabs : null,
+      allowedAgents: parseAgentInput(newAllowedAgents),
+    };
+    const r = await fetch("/api/users", { method: "POST", headers: authHeaders(token), body: JSON.stringify(body) });
+    if (r.ok) {
+      setNewUsername(""); setNewPassword(""); setNewRole("view");
+      setNewPerms(DEFAULT_PERMS["view"]); setNewTeamAccess("");
+      setNewAllowedTabs([]); setNewAllowedAgents("");
+      await load();
+    } else { const d = await r.json() as { error?: string }; setError(d.error ?? "Failed to add user"); }
     setSaving(false);
   }
 
@@ -3019,6 +3089,8 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
     setEditRole(u.role as "admin" | "edit" | "view");
     setEditPerms(u.permissions);
     setEditTeamAccess((u.teamAccess ?? "") as TeamAccess | "");
+    setEditAllowedTabs(u.allowedTabs ?? []);
+    setEditAllowedAgents((u.allowedAgents ?? []).join(", "));
   }
 
   const roleBadge = (role: string) =>
@@ -3062,9 +3134,23 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
               </select>
             </div>
             {newRole !== "admin" && (
-              <div>
-                <p className="text-[11px] font-medium text-zinc-400 mb-1.5">What this user can access:</p>
-                <PermCheckboxes perms={newPerms} onChange={setNewPerms} />
+              <div className="space-y-3">
+                <div>
+                  <p className="text-[11px] font-medium text-zinc-400 mb-1.5">What this user can access:</p>
+                  <PermCheckboxes perms={newPerms} onChange={setNewPerms} />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-[11px] font-medium text-zinc-400">Tab visibility <span className="text-zinc-600 font-normal">(leave all unchecked = follow team access rules)</span></p>
+                    {newAllowedTabs.length > 0 && <button onClick={() => setNewAllowedTabs([])} className="text-[10px] text-zinc-500 hover:text-zinc-300 underline">Clear all</button>}
+                  </div>
+                  <TabCheckboxes tabs={newAllowedTabs} onChange={setNewAllowedTabs} />
+                </div>
+                <div>
+                  <p className="text-[11px] font-medium text-zinc-400 mb-1">Agent allowlist <span className="text-zinc-600 font-normal">(blank = all agents)</span></p>
+                  <Input placeholder="e.g. Levi Miller, Henry Hart, Ryan Henderson" value={newAllowedAgents} onChange={(e) => setNewAllowedAgents(e.target.value)} className="h-8 text-xs" />
+                  <p className="text-[10px] text-zinc-600 mt-1">Comma-separated agent names. Only these agents' stats will be visible.</p>
+                </div>
               </div>
             )}
             {newRole === "admin" && (
@@ -3133,15 +3219,35 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                       </select>
                     </div>
                     {editRole !== "admin" && (
-                      <div>
-                        <p className="text-[11px] font-medium text-zinc-400 mb-1">Permissions:</p>
-                        <PermCheckboxes perms={editPerms} onChange={setEditPerms} />
+                      <div className="space-y-3">
+                        <div>
+                          <p className="text-[11px] font-medium text-zinc-400 mb-1">Permissions:</p>
+                          <PermCheckboxes perms={editPerms} onChange={setEditPerms} />
+                        </div>
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <p className="text-[11px] font-medium text-zinc-400">Tab visibility <span className="text-zinc-600 font-normal">(unchecked all = follow team access)</span></p>
+                            {editAllowedTabs.length > 0 && <button onClick={() => setEditAllowedTabs([])} className="text-[10px] text-zinc-500 hover:text-zinc-300 underline">Clear all</button>}
+                          </div>
+                          <TabCheckboxes tabs={editAllowedTabs} onChange={setEditAllowedTabs} />
+                        </div>
+                        <div>
+                          <p className="text-[11px] font-medium text-zinc-400 mb-1">Agent allowlist <span className="text-zinc-600 font-normal">(blank = all agents)</span></p>
+                          <Input placeholder="e.g. Levi Miller, Henry Hart" value={editAllowedAgents} onChange={(e) => setEditAllowedAgents(e.target.value)} className="h-7 text-xs" />
+                        </div>
                       </div>
                     )}
                     {editRole === "admin" && <p className="text-[11px] text-zinc-500">Admins always have full access.</p>}
                     <div className="flex gap-2 justify-end">
                       <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditingId(null)}>Cancel</Button>
-                      <Button size="sm" className="h-7 text-xs bg-violet-600 hover:bg-violet-700 text-white px-3" onClick={() => patchUser(u.id, { role: editRole, permissions: editRole === "admin" ? DEFAULT_PERMS["admin"] : editPerms, teamAccess: editTeamAccess || null, ...(editPw ? { password: editPw } : {}) })}>
+                      <Button size="sm" className="h-7 text-xs bg-violet-600 hover:bg-violet-700 text-white px-3" onClick={() => patchUser(u.id, {
+                        role: editRole,
+                        permissions: editRole === "admin" ? DEFAULT_PERMS["admin"] : editPerms,
+                        teamAccess: editTeamAccess || null,
+                        allowedTabs: editRole === "admin" ? null : (editAllowedTabs.length > 0 ? editAllowedTabs : null),
+                        allowedAgents: editRole === "admin" ? null : parseAgentInput(editAllowedAgents),
+                        ...(editPw ? { password: editPw } : {}),
+                      })}>
                         <KeyRound className="h-3 w-3 mr-1" />Save
                       </Button>
                     </div>
@@ -4155,20 +4261,14 @@ function DailyMissedRecord() {
 type DashView = "metrics" | "attendance";
 
 function Dashboard() {
-  const { user, logout, can } = useUser();
+  const { user, logout, can, canSeeTab } = useUser();
   const [showUsers, setShowUsers] = useState(false);
   const defaultView: DashView = can("view_metrics") ? "metrics" : "attendance";
   const [view, setView] = useState<DashView>(defaultView);
 
   const ta = user.teamAccess ?? null;
-  const allTeams = ta === null;
-  const metricsTabs = [
-    ...((allTeams || ta === "retention") ? [{ value: "retention", label: "Retention" }] : []),
-    ...((allTeams || ta === "cs")        ? [{ value: "cs",        label: "Internal CS" }] : []),
-    ...((allTeams || ta === "nsf")       ? [{ value: "nsf",       label: "NSF" }] : []),
-    { value: "missed-no-cb", label: "Missed / No CB" },
-    ...(allTeams ? [{ value: "quo-lines", label: "Quo Lines" }, { value: "vos", label: "PBX" }] : []),
-  ];
+  const metricsTabs = ALL_TABS.filter((t) => canSeeTab(t.value));
+  const defaultTab = ta ?? "retention";
 
   const roleBadgeCls =
     user.role === "admin" ? "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30" :
@@ -4245,36 +4345,38 @@ function Dashboard() {
 
       <main className="max-w-[1400px] mx-auto px-6 py-8">
         {view === "metrics" && can("view_metrics") ? (
-          <Tabs defaultValue={ta ?? "retention"} className="space-y-6">
+          <Tabs defaultValue={metricsTabs[0]?.value ?? defaultTab} className="space-y-6">
             <TabsList className="grid w-full max-w-3xl" style={{ gridTemplateColumns: `repeat(${metricsTabs.length}, minmax(0, 1fr))` }}>
               {metricsTabs.map((t) => (
                 <TabsTrigger key={t.value} value={t.value} data-testid={`tab-${t.value}`}>{t.label}</TabsTrigger>
               ))}
             </TabsList>
-            {(allTeams || ta === "retention") && (
+            {canSeeTab("retention") && (
               <TabsContent value="retention">
                 <RetentionPanel />
               </TabsContent>
             )}
-            {(allTeams || ta === "cs") && (
+            {canSeeTab("cs") && (
               <TabsContent value="cs">
                 <CSPanel />
               </TabsContent>
             )}
-            {(allTeams || ta === "nsf") && (
+            {canSeeTab("nsf") && (
               <TabsContent value="nsf">
                 <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" statusQueryFn={fetchNSFCombinedSheet} />
               </TabsContent>
             )}
-            <TabsContent value="missed-no-cb">
-              <MissedNoCBPanel lockedTeam={ta} />
-            </TabsContent>
-            {allTeams && (
+            {canSeeTab("missed-no-cb") && (
+              <TabsContent value="missed-no-cb">
+                <MissedNoCBPanel lockedTeam={ta} />
+              </TabsContent>
+            )}
+            {canSeeTab("quo-lines") && (
               <TabsContent value="quo-lines">
                 <QuoLinesPanel />
               </TabsContent>
             )}
-            {allTeams && (
+            {canSeeTab("vos") && (
               <TabsContent value="vos">
                 <VoSPanel />
               </TabsContent>

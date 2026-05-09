@@ -8,6 +8,8 @@ export interface AuthPayload {
   role: "admin" | "edit" | "view";
   permissions: Permission[];
   teamAccess?: "retention" | "nsf" | "cs" | null;
+  allowedTabs?: string[] | null;
+  allowedAgents?: string[] | null;
 }
 
 declare global {

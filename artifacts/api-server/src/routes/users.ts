@@ -23,13 +23,23 @@ const SELECTABLE = {
   role: portalUsersTable.role,
   permissions: portalUsersTable.permissions,
   teamAccess: portalUsersTable.teamAccess,
+  allowedTabs: portalUsersTable.allowedTabs,
+  allowedAgents: portalUsersTable.allowedAgents,
   active: portalUsersTable.active,
   createdAt: portalUsersTable.createdAt,
 };
 
+function parseJsonArray(raw: string | null | undefined): string[] | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed as string[] : null;
+  } catch { return null; }
+}
+
 router.get("/users", requireAuth, requireRole("admin"), async (_req, res) => {
   const users = await db.select(SELECTABLE).from(portalUsersTable).orderBy(portalUsersTable.createdAt);
-  res.json(users.map((u) => ({ ...u, permissions: parsePermissions(u.permissions, u.role) })));
+  res.json(users.map((u) => ({ ...u, permissions: parsePermissions(u.permissions, u.role), allowedTabs: parseJsonArray(u.allowedTabs), allowedAgents: parseJsonArray(u.allowedAgents) })));
 });
 
 const VALID_TEAM_ACCESS = ["retention", "nsf", "cs"] as const;
@@ -38,8 +48,13 @@ function parseTeamAccess(v: unknown): ValidTeamAccess | null {
   return typeof v === "string" && VALID_TEAM_ACCESS.includes(v as ValidTeamAccess) ? (v as ValidTeamAccess) : null;
 }
 
+function serializeJsonArray(v: unknown): string | null {
+  if (!Array.isArray(v) || v.length === 0) return null;
+  return JSON.stringify(v);
+}
+
 router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
-  const { username, password, role, permissions, teamAccess } = req.body ?? {};
+  const { username, password, role, permissions, teamAccess, allowedTabs, allowedAgents } = req.body ?? {};
   if (!username || !password || !["admin", "edit", "view"].includes(role)) {
     res.status(400).json({ error: "username, password and role required" });
     return;
@@ -48,14 +63,22 @@ router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
   const passwordHash = await bcrypt.hash(password, 10);
   const [user] = await db
     .insert(portalUsersTable)
-    .values({ username: username.trim().toLowerCase(), passwordHash, role, permissions: JSON.stringify(perms), teamAccess: parseTeamAccess(teamAccess) })
+    .values({
+      username: username.trim().toLowerCase(),
+      passwordHash,
+      role,
+      permissions: JSON.stringify(perms),
+      teamAccess: parseTeamAccess(teamAccess),
+      allowedTabs: serializeJsonArray(allowedTabs),
+      allowedAgents: serializeJsonArray(allowedAgents),
+    })
     .returning(SELECTABLE);
-  res.json({ ...user, permissions: parsePermissions(user.permissions, user.role) });
+  res.json({ ...user, permissions: parsePermissions(user.permissions, user.role), allowedTabs: parseJsonArray(user.allowedTabs), allowedAgents: parseJsonArray(user.allowedAgents) });
 });
 
 router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) => {
   const id = Number(req.params.id);
-  const { username, password, role, active, permissions, teamAccess } = req.body ?? {};
+  const { username, password, role, active, permissions, teamAccess, allowedTabs, allowedAgents } = req.body ?? {};
   const updates: Record<string, unknown> = {};
   if (username) updates["username"] = username.trim().toLowerCase();
   if (password) updates["passwordHash"] = await bcrypt.hash(password, 10);
@@ -63,6 +86,8 @@ router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) =
   if (typeof active === "boolean") updates["active"] = active;
   if (Array.isArray(permissions)) updates["permissions"] = JSON.stringify(permissions);
   if ("teamAccess" in (req.body ?? {})) updates["teamAccess"] = parseTeamAccess(teamAccess);
+  if ("allowedTabs" in (req.body ?? {})) updates["allowedTabs"] = serializeJsonArray(allowedTabs);
+  if ("allowedAgents" in (req.body ?? {})) updates["allowedAgents"] = serializeJsonArray(allowedAgents);
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: "Nothing to update" });
     return;
@@ -72,7 +97,7 @@ router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) =
     .set(updates)
     .where(eq(portalUsersTable.id, id))
     .returning(SELECTABLE);
-  res.json({ ...user, permissions: parsePermissions(user.permissions, user.role) });
+  res.json({ ...user, permissions: parsePermissions(user.permissions, user.role), allowedTabs: parseJsonArray(user.allowedTabs), allowedAgents: parseJsonArray(user.allowedAgents) });
 });
 
 export default router;

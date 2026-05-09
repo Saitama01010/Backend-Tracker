@@ -17,6 +17,14 @@ function parsePermissions(raw: string | null | undefined, role: string): Permiss
   } catch { return []; }
 }
 
+function parseJsonArray(raw: string | null | undefined): string[] | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed as string[] : null;
+  } catch { return null; }
+}
+
 router.post("/auth/login", async (req, res) => {
   const { username, password } = req.body ?? {};
   if (typeof username !== "string" || typeof password !== "string") {
@@ -40,8 +48,10 @@ router.post("/auth/login", async (req, res) => {
   }
   const permissions = parsePermissions(user.permissions, user.role);
   const teamAccess = (user.teamAccess ?? null) as "retention" | "nsf" | "cs" | null;
-  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess });
-  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess } });
+  const allowedTabs = parseJsonArray(user.allowedTabs);
+  const allowedAgents = parseJsonArray(user.allowedAgents);
+  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess, allowedTabs, allowedAgents });
+  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess, allowedTabs, allowedAgents } });
 });
 
 router.get("/auth/me", requireAuth, async (req, res) => {
@@ -56,8 +66,10 @@ router.get("/auth/me", requireAuth, async (req, res) => {
   }
   const permissions = parsePermissions(user.permissions, user.role);
   const teamAccess = (user.teamAccess ?? null) as "retention" | "nsf" | "cs" | null;
-  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess });
-  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess } });
+  const allowedTabs = parseJsonArray(user.allowedTabs);
+  const allowedAgents = parseJsonArray(user.allowedAgents);
+  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess, allowedTabs, allowedAgents });
+  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess, allowedTabs, allowedAgents } });
 });
 
 export default router;
