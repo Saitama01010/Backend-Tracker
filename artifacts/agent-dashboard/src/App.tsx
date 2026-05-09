@@ -1167,7 +1167,7 @@ function avgDuration(seconds: number, calls: number): string {
   return formatDuration(Math.round(seconds / calls));
 }
 
-function ByFilesView({ data }: { data: Aggregated }) {
+function ByFilesView({ data, hideTeamRow }: { data: Aggregated; hideTeamRow?: boolean }) {
   const showRate = data.mode === "retention";
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>({ column: "__total__", dir: "desc" });
@@ -1295,7 +1295,7 @@ function ByFilesView({ data }: { data: Aggregated }) {
                 </TableRow>
               ))}
             </TableBody>
-            {visible.length > 0 && (
+            {visible.length > 0 && !hideTeamRow && (
               <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
                 <TableRow>
                   <TableCell className="font-bold whitespace-nowrap">Whole team</TableCell>
@@ -1570,7 +1570,7 @@ function buildTeamPhoneData(teamMode: string, data: PhoneStatsResponse | null | 
   return map;
 }
 
-function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMissed, agentDept }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics>; directKeys?: boolean; pbxData?: PbxCalls; extraMissed?: number; agentDept?: Map<string, "Retention" | "CS"> }) {
+function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMissed, agentDept, hideTeamRow }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics>; directKeys?: boolean; pbxData?: PbxCalls; extraMissed?: number; agentDept?: Map<string, "Retention" | "CS">; hideTeamRow?: boolean }) {
   const liveAgents = useLiveCalls();
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "__calls__", dir: "desc" });
@@ -1762,7 +1762,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                 );
               })}
             </TableBody>
-            {visible.length > 0 && (
+            {visible.length > 0 && !hideTeamRow && (
               <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
                 <TableRow>
                   <TableCell className="font-bold">Whole team</TableCell>
@@ -2022,6 +2022,8 @@ function TeamPanel({
   mode: TeamMode;
   statusQueryFn?: () => Promise<SheetData>;
 }) {
+  const { user: panelUser } = useUser();
+  const isRestricted = !!(panelUser.allowedAgents?.length);
   const pbxData = useVosCalls();
   const ringGroupMissed = useVosRingGroupMissed();
   // Retention ring group = 2, Back-end (NSF) ring group = 3 in VoSLogic
@@ -2218,7 +2220,7 @@ function TeamPanel({
 
         {(aggregated && !("error" in aggregated)) || callAgentList.length > 0 ? (
           <>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {!isRestricted && <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {aggregated && !("error" in aggregated) && (
                 <StatTile label="Agents" value={aggregated.totals.agents} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
               )}
@@ -2258,7 +2260,7 @@ function TeamPanel({
                   <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />
                 </>
               ))}
-            </div>
+            </div>}
 
             <Tabs defaultValue="call" className="space-y-4">
               <TabsList>
@@ -2271,12 +2273,12 @@ function TeamPanel({
                 )}
               </TabsList>
               <TabsContent value="call">
-                <ByCallStatsView agentList={callAgentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} />
+                <ByCallStatsView agentList={callAgentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={isRestricted} />
               </TabsContent>
               {aggregated && !("error" in aggregated) && (
                 <>
                   <TabsContent value="files">
-                    <ByFilesView data={aggregated} />
+                    <ByFilesView data={aggregated} hideTeamRow={isRestricted} />
                   </TabsContent>
                   <TabsContent value="day">
                     <div className="space-y-3">
@@ -2658,22 +2660,24 @@ function RetentionPanel() {
           </div>
         )}
         <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <StatTile label="Agents" value={agentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
-          <StatTile label="Total calls" value={(totals.calls + pbxTotals.calls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
-          <StatTile label="Answered" value={(totals.answered + pbxTotals.answered).toLocaleString()} tone="emerald" />
-          <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
-          <StatTile label="Time on calls" value={formatHours(totals.seconds + pbxTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
-          <StatTile label="Response rate" value={responseRate(totals.answered + pbxTotals.answered, totals.calls + pbxTotals.calls)} tone="amber" />
-          {aggregated && !("error" in aggregated) && (
-            <>
-              <StatTile label="Today's retains" value={aggregated.todayRetained.toLocaleString()} tone="emerald" />
-              <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />
-              <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />
-              <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />
-            </>
-          )}
-        </div>
+        {!retUser.allowedAgents?.length && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <StatTile label="Agents" value={agentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+            <StatTile label="Total calls" value={(totals.calls + pbxTotals.calls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
+            <StatTile label="Answered" value={(totals.answered + pbxTotals.answered).toLocaleString()} tone="emerald" />
+            <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
+            <StatTile label="Time on calls" value={formatHours(totals.seconds + pbxTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
+            <StatTile label="Response rate" value={responseRate(totals.answered + pbxTotals.answered, totals.calls + pbxTotals.calls)} tone="amber" />
+            {aggregated && !("error" in aggregated) && (
+              <>
+                <StatTile label="Today's retains" value={aggregated.todayRetained.toLocaleString()} tone="emerald" />
+                <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />
+                <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />
+                <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />
+              </>
+            )}
+          </div>
+        )}
 
         <Tabs defaultValue="call" className="space-y-4">
           <TabsList>
@@ -2686,12 +2690,12 @@ function RetentionPanel() {
             )}
           </TabsList>
           <TabsContent value="call">
-            <ByCallStatsView agentList={agentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} />
+            <ByCallStatsView agentList={agentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={!!(retUser.allowedAgents?.length)} />
           </TabsContent>
           {aggregated && !("error" in aggregated) && (
             <>
               <TabsContent value="files">
-                <ByFilesView data={aggregated} />
+                <ByFilesView data={aggregated} hideTeamRow={!!(retUser.allowedAgents?.length)} />
               </TabsContent>
               <TabsContent value="day">
                 <div className="space-y-3">
