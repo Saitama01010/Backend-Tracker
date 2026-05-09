@@ -747,9 +747,10 @@ function aggregate(
   const byDay = Array.from(dayMap.values()).sort(
     (a, b) => a.date.getTime() - b.date.getTime(),
   );
-  const byAgent = Array.from(agentMap.values()).sort((a, b) =>
-    a.agent.localeCompare(b.agent),
-  );
+  const byAgent = Array.from(agentMap.entries())
+    .filter(([key]) => mode !== "retention" || RETENTION_TEAM_KEYS.has(key))
+    .map(([, v]) => v)
+    .sort((a, b) => a.agent.localeCompare(b.agent));
 
   const totalCalls = byAgent.reduce((s, a) => s + a.calls, 0);
   const totalSeconds = byAgent.reduce((s, a) => s + a.seconds, 0);
