@@ -696,11 +696,11 @@ router.post("/samia/chat", async (req, res) => {
     let attendanceMarked = false;
 
     for (let round = 0; round < 4; round++) {
-      const completion = await openrouter.chat.completions.create({
-        model: "meta-llama/llama-4-maverick",
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4.1",
         messages: currentMessages,
         tools,
-        max_tokens: 800,
+        max_completion_tokens: 800,
       });
 
       const choice = completion.choices[0];
