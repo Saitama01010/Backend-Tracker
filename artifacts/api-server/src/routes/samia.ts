@@ -18,20 +18,14 @@ const openrouter = new OpenAI({
 // ── One-swear-per-message post-processor ─────────────────────────────────────
 // If the model output contains no heavy word at all, slip one in naturally
 // at the end of the first sentence. Exactly one per message — never more.
-const HEAVY_WORDS = ["fuck", "shit", "bitch", "damn", "bastard", "asshole", "crap", "hell"];
-let _wordIndex = 0;
-function nextHeavyWord(): string {
-  const w = HEAVY_WORDS[_wordIndex % HEAVY_WORDS.length];
-  _wordIndex++;
-  return w;
-}
+const HEAVY_WORDS = ["fuck", "shit", "bitch", "damn", "bastard", "asshole", "hell"];
 
 function ensureSwearing(text: string): string {
   const lower = text.toLowerCase();
   const hasAny = HEAVY_WORDS.some((w) => lower.includes(w));
   if (hasAny) return text;
-  // Inject one word naturally before the first sentence ends.
-  const word = nextHeavyWord();
+  // Pick randomly so the fallback doesn't feel mechanical.
+  const word = HEAVY_WORDS[Math.floor(Math.random() * HEAVY_WORDS.length)];
   return text.replace(/([.!?])/, ` — ${word}$1`);
 }
 
