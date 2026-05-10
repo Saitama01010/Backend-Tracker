@@ -244,7 +244,8 @@ async function scanRingGroupCalls(
   ringGroupIdToName: Map<number, string>,
   totalCallsToday: number,
   agentToRingGroups: Map<number, number[]>,
-  internalNumbers: Set<string>
+  internalNumbers: Set<string>,
+  maxPages?: number
 ): Promise<{
   missedCounts: VosRingGroupMissed;
   missedRecords: Array<{ id: number; fromNumber: string; toNumber: string; createdAt: string; ringGroupId: number; ringGroupName: string }>;
@@ -256,7 +257,7 @@ async function scanRingGroupCalls(
   const pbxOutboundCalls: Array<{ toNumber: string; createdAt: string }> = [];
   const seenCallIds = new Set<number>();
 
-  const pagesToScan = Math.max(10, Math.min(20, Math.ceil((totalCallsToday * 1.5) / 100) + 2));
+  const pagesToScan = maxPages ?? Math.max(10, Math.min(20, Math.ceil((totalCallsToday * 1.5) / 100) + 2));
 
   // Layer 1: start with per-agent-derived map
   // Layer 2: merge persistent cache so previously-learned mappings survive days with no answered calls
@@ -389,6 +390,9 @@ const seenMissedCallIds = new Set<number>();
 let cumulativeDate = ""; // reset accumulators when date changes (midnight rollover)
 // Per-hour PBX missed breakdown (LA timezone), keyed by hour 0–23.
 const cumulativeMissedByHour: Record<number, { retention: number; cs: number; nsf: number }> = {};
+
+// One-time deep backfill: on first server run, scan 100 pages to populate 14 days of PBX history.
+let pbxBackfillDone = false;
 
 async function refreshCallHistory(log?: Logger): Promise<void> {
   if (callHistoryFetching) return;
@@ -683,6 +687,17 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     let newCount = 0;
     const toUpsert: typeof pbxMissedCallsTable.$inferInsert[] = [];
     for (const rec of scanResult.missedRecords) {
+      // Always queue for DB upsert — onConflictDoNothing handles dedup.
+      toUpsert.push({
+        id: rec.id,
+        fromNumber: rec.fromNumber,
+        toNumber: rec.toNumber,
+        ringGroupId: rec.ringGroupId,
+        ringGroupName: rec.ringGroupName,
+        team: teamFromRingGroupName(rec.ringGroupName),
+        createdAt: new Date(rec.createdAt),
+      });
+      // Only update the in-memory cumulative counter for calls not yet seen today.
       if (seenMissedCallIds.has(rec.id)) continue;
       seenMissedCallIds.add(rec.id);
       cumulativeRingGroupMissed[rec.ringGroupId] = (cumulativeRingGroupMissed[rec.ringGroupId] ?? 0) + 1;
@@ -695,18 +710,9 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
         if (!cumulativeMissedByHour[h]) cumulativeMissedByHour[h] = { retention: 0, cs: 0, nsf: 0 };
         cumulativeMissedByHour[h][team]++;
       }
-      toUpsert.push({
-        id: rec.id,
-        fromNumber: rec.fromNumber,
-        toNumber: rec.toNumber,
-        ringGroupId: rec.ringGroupId,
-        ringGroupName: rec.ringGroupName,
-        team: teamFromRingGroupName(rec.ringGroupName),
-        createdAt: new Date(rec.createdAt),
-      });
       newCount++;
     }
-    // Persist new PBX missed calls so historical dates show correct PBX counts.
+    // Persist PBX missed calls so historical dates show correct PBX counts.
     if (toUpsert.length > 0) {
       await db.insert(pbxMissedCallsTable)
         .values(toUpsert)
@@ -731,6 +737,36 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       },
       "vos: call history refreshed"
     );
+
+    // One-time startup deep backfill: scan 100 pages to populate 14+ days of PBX missed history.
+    // Runs in background after the first successful refresh so ring group mappings are available.
+    if (!pbxBackfillDone) {
+      pbxBackfillDone = true;
+      void (async () => {
+        try {
+          log?.info("vos: pbx backfill starting (100 pages)");
+          const deep = await scanRingGroupCalls(
+            lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600,
+            agentToRingGroups, internalNumbers, 100
+          );
+          if (deep.missedRecords.length > 0) {
+            const rows = deep.missedRecords.map((rec) => ({
+              id: rec.id,
+              fromNumber: rec.fromNumber,
+              toNumber: rec.toNumber,
+              ringGroupId: rec.ringGroupId,
+              ringGroupName: rec.ringGroupName,
+              team: teamFromRingGroupName(rec.ringGroupName),
+              createdAt: new Date(rec.createdAt),
+            }));
+            await db.insert(pbxMissedCallsTable).values(rows).onConflictDoNothing();
+          }
+          log?.info({ scanned: deep.missedRecords.length }, "vos: pbx backfill complete");
+        } catch (err) {
+          log?.error(err, "vos: pbx backfill failed");
+        }
+      })();
+    }
   } catch (err) {
     log?.error(err, "vos: call history refresh failed");
   } finally {
@@ -985,16 +1021,11 @@ router.get("/vos/missed-daily", async (req, res) => {
     `);
 
     // PBX today: supplement DB with the live in-memory cache (catches calls not yet persisted)
-    const DAILY_PBX_RING_GROUPS: Record<string, "retention" | "cs" | "nsf"> = {
-      "retention": "retention",
-      "customer support": "cs",
-      "nsf": "nsf",
-    };
     const pbxTodayByTeam: Record<string, number> = {};
     for (const [rgId, count] of Object.entries(ringGroupMissedCache)) {
-      const name = (ringGroupNameCache.get(Number(rgId)) ?? "").toLowerCase().trim();
-      const team = DAILY_PBX_RING_GROUPS[name];
-      if (team) pbxTodayByTeam[team] = (pbxTodayByTeam[team] ?? 0) + count;
+      const name = ringGroupNameCache.get(Number(rgId)) ?? "";
+      const team = teamFromRingGroupName(name);
+      if (team !== "other") pbxTodayByTeam[team] = (pbxTodayByTeam[team] ?? 0) + count;
     }
 
     // Merge Quo rows into a map keyed by date
@@ -1057,15 +1088,24 @@ router.get("/vos/live", async (req, res) => {
 
 router.get("/vos/debug/calls", async (req, res) => {
   try {
-    const agentId = req.query["agentId"] ? `&agentId=${req.query["agentId"]}` : "";
-    const limit = req.query["limit"] ?? 5;
-    const page = req.query["page"] ?? 1;
+    const qs = new URLSearchParams(req.query as Record<string, string>).toString();
     const data = await vosFetch<{ calls: VosCallRaw[]; total: number }>(
-      `/api/calls?limit=${limit}&page=${page}${agentId}`
+      `/api/calls${qs ? `?${qs}` : ""}`
     );
     res.json({ total: data.total, calls: data.calls });
   } catch (err) {
     req.log.error(err, "vos debug error");
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/vos/debug/proxy", async (req, res) => {
+  try {
+    const path = String(req.query["path"] ?? "/api/calls?limit=1");
+    const data = await vosFetch<unknown>(path);
+    res.json(data);
+  } catch (err) {
+    req.log.error(err, "vos debug proxy error");
     res.status(500).json({ error: String(err) });
   }
 });

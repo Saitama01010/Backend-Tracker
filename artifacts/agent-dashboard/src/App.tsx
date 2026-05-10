@@ -4548,15 +4548,27 @@ function DailyMissedRecord() {
                   </TableCell>
                   <TableCell className="text-xs">
                     <span className="text-violet-300 font-medium">{ret || "—"}</span>
-                    {ret > 0 && <span className="text-zinc-600 ml-1 text-[10px]">{d.retention.quo}q {d.retention.pbx}p</span>}
+                    {ret > 0 && (d.retention.quo > 0 || d.retention.pbx > 0) && (
+                      <span className="text-zinc-600 ml-1 text-[10px]">
+                        {d.retention.quo}q{d.retention.pbx > 0 && ` ${d.retention.pbx}p`}
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="text-xs">
                     <span className="text-emerald-300 font-medium">{cs || "—"}</span>
-                    {cs > 0 && <span className="text-zinc-600 ml-1 text-[10px]">{d.cs.quo}q {d.cs.pbx}p</span>}
+                    {cs > 0 && (d.cs.quo > 0 || d.cs.pbx > 0) && (
+                      <span className="text-zinc-600 ml-1 text-[10px]">
+                        {d.cs.quo}q{d.cs.pbx > 0 && ` ${d.cs.pbx}p`}
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="text-xs">
                     <span className="text-sky-300 font-medium">{nsf || "—"}</span>
-                    {nsf > 0 && <span className="text-zinc-600 ml-1 text-[10px]">{d.nsf.quo}q {d.nsf.pbx}p</span>}
+                    {nsf > 0 && (d.nsf.quo > 0 || d.nsf.pbx > 0) && (
+                      <span className="text-zinc-600 ml-1 text-[10px]">
+                        {d.nsf.quo}q{d.nsf.pbx > 0 && ` ${d.nsf.pbx}p`}
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="text-xs text-right font-semibold text-zinc-200">{total}</TableCell>
                 </TableRow>
