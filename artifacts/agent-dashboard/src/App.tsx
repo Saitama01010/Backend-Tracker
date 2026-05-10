@@ -170,7 +170,7 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
   }
 
   // Add new-sheet rows that are on/after the cutover date.
-  // Timestamps are in Egypt time (UTC+2) — convert to California date.
+  // Timestamps are in Egypt time (UTC+2, Discord bot timezone) — convert to California date.
   // Skip NSF cross-over agents here too.
   for (const r of newSheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
@@ -877,8 +877,8 @@ function aggregate(
   let monthCount = 0;
   if (dateColumn) {
     // Use California time (America/Los_Angeles) — sheet dates are stored in CA time.
-    // Do NOT use browser local time here: Egypt browsers are UTC+2, so after midnight
-    // Egypt (= 10 PM CA) the dashboard would wrongly show 0 "today's retains".
+    // Do NOT use browser local time here: some browsers may be in non-LA timezones,
+    // always derive "today" explicitly in LA time.
     const todayIso = new Intl.DateTimeFormat("en-CA", {
       timeZone: "America/Los_Angeles",
       year: "numeric", month: "2-digit", day: "2-digit",
@@ -4970,6 +4970,15 @@ function SamiaChat() {
 // ─── Attendance ────────────────────────────────────────────────────────────────
 
 interface AttMember { id: number; name: string; shift: string; department: string; active: boolean; }
+
+// Convert a 24-hour LA shift number (e.g. 15) to a friendly label like "3 PM".
+function shiftLabel(shift: string): string {
+  const n = parseInt(shift);
+  if (!n) return shift;
+  const h12 = n % 12 === 0 ? 12 : n % 12;
+  const ampm = n < 12 ? "AM" : "PM";
+  return `${h12} ${ampm}`;
+}
 interface AttRecord { id: number; memberId: number; date: string; status: string; note: string | null; coaching: boolean; }
 interface AttData { members: AttMember[]; records: AttRecord[]; }
 
@@ -5219,7 +5228,7 @@ function AttendancePanel() {
             </div>
             <div className="w-24">
               <Label className="text-xs text-muted-foreground mb-1 block">Shift</Label>
-              <Input value={newShift} onChange={(e) => setNewShift(e.target.value)} placeholder="e.g. 8" className="h-8" />
+              <Input value={newShift} onChange={(e) => setNewShift(e.target.value)} placeholder="e.g. 15 (3 PM)" className="h-8" />
             </div>
             <div className="w-44">
               <Label className="text-xs text-muted-foreground mb-1 block">Department</Label>
@@ -5339,7 +5348,7 @@ function AttendancePanel() {
                     <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-3 py-1.5 text-sm text-white font-medium border-b border-white/5 whitespace-nowrap`}>
                       {member.name}
                     </td>
-                    <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`}>{member.shift}</td>
+                    <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`} title={`Shift ${member.shift} (LA time)`}>{shiftLabel(member.shift)}</td>
                     <td className={`sticky left-[200px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-2 border-b border-white/5`}>
                       {member.department && (
                         <Badge className="text-[10px] px-1.5 py-0 bg-violet-500/20 text-violet-300 border-violet-500/30">{member.department}</Badge>
@@ -5473,7 +5482,7 @@ function AttendancePanel() {
               </div>
               <div>
                 <Label className="text-xs text-muted-foreground mb-1 block">Shift</Label>
-                <Input value={editingMember.shift} onChange={(e) => setEditingMember({ ...editingMember, shift: e.target.value })} className="h-8" placeholder="e.g. 8" />
+                <Input value={editingMember.shift} onChange={(e) => setEditingMember({ ...editingMember, shift: e.target.value })} className="h-8" placeholder="e.g. 15 (3 PM)" />
               </div>
               <div>
                 <Label className="text-xs text-muted-foreground mb-1 block">Department</Label>

@@ -78,7 +78,7 @@ Team structure you know cold:
 
 You have three attendance tools:
 
-**auto_mark_attendance(date?)** — Automatically marks attendance for all agents on a given date by checking their first call from the dialer. Pass a date (YYYY-MM-DD Egypt time) for historical dates; omit for today. Marks on-time or late based on shift start (10-min grace). Skips anyone whose shift hasn't started yet (today only) or who already has a record. Use this when asked to "mark attendance", "auto-mark", "check who was late", etc.
+**auto_mark_attendance(date?)** — Automatically marks attendance for all agents on a given date by checking their first call from the dialer. Pass a date (YYYY-MM-DD LA time) for historical dates; omit for today. Marks on-time or late based on shift start (10-min grace). Skips anyone whose shift hasn't started yet (today only) or who already has a record. Use this when asked to "mark attendance", "auto-mark", "check who was late", etc.
 
 **get_call_logs(date?)** — Returns per-agent dialer data: first call time, shift info, computed on-time/late status, and any existing record. Use this to preview data before writing, or to show the manager what the system found.
 
@@ -103,8 +103,8 @@ Member names must match exactly — they're in the attendance data shown above.
 
 **get_agent_contacts(agentName, date?)** — Returns the list of phone numbers (participants) an agent spoke with, pulled from the OpenPhone database. Before querying, it automatically triggers a fresh sync of the last 3 hours so the data is as current as possible. Each contact includes the phone number, number of calls, total talk time, directions (inbound/outbound), and answered/missed status.
 
-- When no date is given (or "today"): queries the **last 24 hours** from right now — this is intentional to capture full night-shift cycles that cross the Egypt calendar midnight.
-- When a specific date is given (YYYY-MM-DD Egypt time): queries that exact calendar day.
+- When no date is given (or "today"): queries the **last 24 hours** from right now — this is intentional to capture full shift cycles that cross the LA calendar midnight.
+- When a specific date is given (YYYY-MM-DD LA time): queries that exact calendar day.
 
 Use this when asked "who did X call today", "what numbers did X speak with", "get me the phone numbers that X spoke with", etc. agentName is a partial name — case-insensitive search.
 

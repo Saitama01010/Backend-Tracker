@@ -50,6 +50,29 @@ function normalizeStatus(raw: string): string {
   return "";
 }
 
+// ─── Timezone helpers ─────────────────────────────────────────────────────────
+//
+// All attendance dates and shift times are in America/Los_Angeles (PDT/PST).
+// Shift N = N:00 LA time (24-hour). E.g. shift 15 = 3:00 PM PDT.
+//
+// Quo DB timestamps are UTC (TIMESTAMPTZ). VoS/PBX timestamps are PDT (no TZ
+// indicator, parsePdt appends -07:00). Both are compared against UTC windows.
+
+// Returns the UTC instant corresponding to midnight (00:00:00) in LA time
+// for the given YYYY-MM-DD date string. Handles PDT (UTC-7) and PST (UTC-8).
+function laStartOfDay(dateStr: string): Date {
+  // Try PDT first: midnight LA PDT = 07:00 UTC
+  const pdt = new Date(`${dateStr}T07:00:00Z`);
+  if (pdt.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" }) === dateStr) return pdt;
+  // Fall back to PST: midnight LA PST = 08:00 UTC
+  return new Date(`${dateStr}T08:00:00Z`);
+}
+
+// Today's date string in LA time.
+function todayLA(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+}
+
 router.get("/attendance", async (req, res) => {
   try {
     const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
@@ -209,8 +232,8 @@ router.post("/attendance/import", async (req, res) => {
 
 // ─── Helpers shared by auto-mark and call-logs ───────────────────────────────
 //
-// Shift N = N PM Egypt time (UTC+2) → UTC hour = N + 10
-// (e.g. shift 4 = 4 PM Egypt = 14:00 UTC, shift 8 = 8 PM Egypt = 18:00 UTC)
+// Shift N = N:00 LA time (24-hour). E.g. shift 15 = 3:00 PM PDT, shift 19 = 7:00 PM PDT.
+// shiftStartUtc = laStartOfDay(date) + shiftNum * 3600 * 1000
 //
 // Mapping from attendance member name → VoS/PBX agent display names used in
 // call history. Only needed where the name doesn't match directly.
@@ -234,7 +257,6 @@ function lateNote(minsLate: number): string {
 
 // VoS/PBX timestamps have no timezone indicator and are in PDT (UTC-7).
 // Quo DB timestamps are stored as UTC (TIMESTAMPTZ from OpenPhone API).
-// Egypt is UTC+2. Attendance sheet dates are Egypt time.
 function parsePdt(s: string): Date {
   // If the string already has a timezone (+, -, or Z) treat it as-is.
   if (/[Z+]/.test(s) || (s.includes('-') && s.lastIndexOf('-') > 7)) return new Date(s);
@@ -271,9 +293,9 @@ async function buildQuoCallsMap(dayStartUtc: Date, dayEndUtc: Date): Promise<Map
   return map;
 }
 
-// Find the earliest call for a member within the Egypt calendar day.
+// Find the earliest call for a member within the LA calendar day.
 // Uses dayStartUtc as the floor so agents who log in before their scheduled
-// shift (very common on night shifts) are still detected as present.
+// shift are still detected as present.
 // shiftStartUtc=null means no shift — return null.
 function resolveFirstCall(
   member: { name: string },
@@ -283,7 +305,6 @@ function resolveFirstCall(
   quoCalls: Map<string, Date[]>,
 ): Date | null {
   if (!shiftStartUtc) return null;
-  // Any call on or after midnight Egypt counts as an attendance signal.
   const floor = dayStartUtc;
 
   const agentNames: string[] = MEMBER_TO_AGENT_NAMES[member.name]
@@ -309,16 +330,15 @@ function resolveFirstCall(
 
 // ─── GET /attendance/call-logs?date=YYYY-MM-DD ───────────────────────────────
 // Returns per-agent call data (first call time, shift info, existing record) for
-// any date. Used by Samia to preview before writing historical attendance.
+// any date. date is YYYY-MM-DD in LA time. Defaults to today LA.
 router.get("/attendance/call-logs", async (req, res) => {
   try {
     const nowUtc = new Date();
-    const egyptOffsetMs = 2 * 60 * 60 * 1000;
-    const defaultDate = new Date(nowUtc.getTime() + egyptOffsetMs).toISOString().slice(0, 10);
+    const defaultDate = todayLA();
     const date = ((req.query["date"] as string) || defaultDate).trim().slice(0, 10);
 
-    const dayStartUtc = new Date(`${date}T00:00:00+02:00`);
-    const dayEndUtc   = new Date(`${date}T23:59:59+02:00`);
+    const dayStartUtc = laStartOfDay(date);
+    const dayEndUtc   = new Date(dayStartUtc.getTime() + 24 * 3600 * 1000 - 1);
     const isToday = date === defaultDate;
 
     // VoS only has today's data; skip for historical dates.
@@ -352,12 +372,12 @@ router.get("/attendance/call-logs", async (req, res) => {
 
     const agents = members.map((member) => {
       const shiftNum = parseInt(member.shift || "0");
-      // Shift N = midnight Egypt + (N-4) hours.
-      // Shift 4 = midnight Egypt = dayStartUtc, shift 5 = 01:00 Egypt, etc.
+      // Shift N = N:00 LA time. shiftStartUtc = midnight LA + N hours.
       const shiftStartUtc = shiftNum
-        ? new Date(dayStartUtc.getTime() + (shiftNum - 4) * 3600 * 1000)
+        ? new Date(dayStartUtc.getTime() + shiftNum * 3600 * 1000)
         : null;
-      const shiftStartEgypt = shiftNum ? `${date}T${String(shiftNum - 4).padStart(2, "0")}:00:00+02:00` : null;
+      // ISO string of shift start (for AI/display use)
+      const shiftStartLA = shiftStartUtc ? shiftStartUtc.toISOString() : null;
 
       const firstCallAt = resolveFirstCall(member, dayStartUtc, shiftStartUtc, vosFirstCall, quoCalls);
       const minsLate = firstCallAt && shiftStartUtc
@@ -375,7 +395,7 @@ router.get("/attendance/call-logs", async (req, res) => {
         memberName: member.name,
         department: member.department,
         shift: member.shift,
-        shiftStartEgypt,
+        shiftStartLA,
         firstCallAt: firstCallAt?.toISOString() ?? null,
         minsLate,
         autoStatus,
@@ -445,18 +465,17 @@ router.post("/attendance/set", async (req, res) => {
 });
 
 // ─── POST /attendance/auto-mark ──────────────────────────────────────────────
-// Accepts optional { date: "YYYY-MM-DD" } body (Egypt date).
-// Defaults to today in Egypt. For past dates, VoS is skipped (only Quo DB).
+// Accepts optional { date: "YYYY-MM-DD" } body (LA date).
+// Defaults to today in LA time. For past dates, VoS is skipped (only Quo DB).
 router.post("/attendance/auto-mark", async (req, res) => {
   try {
     const nowUtc = new Date();
-    const egyptOffsetMs = 2 * 60 * 60 * 1000;
-    const defaultEgyptDate = new Date(nowUtc.getTime() + egyptOffsetMs).toISOString().slice(0, 10);
-    const targetDate: string = ((req.body as { date?: string })?.date ?? defaultEgyptDate).trim().slice(0, 10);
-    const isToday = targetDate === defaultEgyptDate;
+    const defaultLADate = todayLA();
+    const targetDate: string = ((req.body as { date?: string })?.date ?? defaultLADate).trim().slice(0, 10);
+    const isToday = targetDate === defaultLADate;
 
-    const dayStartUtc = new Date(`${targetDate}T00:00:00+02:00`);
-    const dayEndUtc   = new Date(`${targetDate}T23:59:59+02:00`);
+    const dayStartUtc = laStartOfDay(targetDate);
+    const dayEndUtc   = new Date(dayStartUtc.getTime() + 24 * 3600 * 1000 - 1);
 
     // VoS only has today's live data; use it only for today.
     const vosFirstCall = new Map<string, Date>();
@@ -488,8 +507,8 @@ router.post("/attendance/auto-mark", async (req, res) => {
       const shiftNum = parseInt(member.shift || "0");
       if (!shiftNum) { results.push({ name: member.name, status: "", note: "", skipped: "no shift" }); continue; }
 
-      // Shift N = midnight Egypt + (N-4) hours
-      const shiftStartUtc = new Date(dayStartUtc.getTime() + (shiftNum - 4) * 3600 * 1000);
+      // Shift N = N:00 LA time
+      const shiftStartUtc = new Date(dayStartUtc.getTime() + shiftNum * 3600 * 1000);
 
       // For today: skip if shift hasn't started. For past dates: always process.
       if (isToday && nowUtc < shiftStartUtc) {
@@ -530,7 +549,7 @@ router.post("/attendance/auto-mark", async (req, res) => {
 
 // GET /api/attendance/agent-contacts?agent=&date=
 // Returns unique phone numbers (participants) an agent spoke with on a given date.
-// date is YYYY-MM-DD in Egypt time (UTC+2). agent is a partial, case-insensitive name.
+// date is YYYY-MM-DD in LA time. agent is a partial, case-insensitive name.
 router.get("/attendance/agent-contacts", async (req, res) => {
   try {
     const agentParam = ((req.query["agent"] as string) ?? "").trim();
@@ -542,21 +561,20 @@ router.get("/attendance/agent-contacts", async (req, res) => {
     const now = new Date();
     let dayStartUtc: Date;
     let dayEndUtc: Date;
-    let egyptDate: string;
+    let laDate: string;
 
     if (dateParam) {
-      // Specific Egypt calendar day: 00:00 Egypt (UTC+2) = 22:00 UTC the day before.
-      const [yr, mo, dy] = dateParam.split("-").map(Number);
-      dayStartUtc = new Date(Date.UTC(yr, mo - 1, dy, 0, 0, 0) - 2 * 3600 * 1000);
+      // Specific LA calendar day
+      dayStartUtc = laStartOfDay(dateParam);
       dayEndUtc   = new Date(dayStartUtc.getTime() + 24 * 3600 * 1000 - 1);
-      egyptDate   = dateParam;
+      laDate      = dateParam;
     } else {
       // "Today" = rolling 24h window ending now.
       // This captures the full current shift regardless of when it started —
-      // night-shift calls that cross the Egypt calendar midnight are included.
+      // night-shift calls that cross the LA calendar midnight are included.
       dayEndUtc   = now;
       dayStartUtc = new Date(now.getTime() - 24 * 3600 * 1000);
-      egyptDate   = now.toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
+      laDate      = now.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
     }
 
     // Fetch all matching rows from phone_calls
@@ -615,13 +633,19 @@ router.get("/attendance/agent-contacts", async (req, res) => {
       if (r.createdAt > new Date(entry.lastCallAt))  entry.lastCallAt  = r.createdAt.toISOString();
     }
 
-    const toCaliforniaTime = (iso: string) =>
-      new Date(iso).toLocaleString("en-US", {
+    const toLocalTime = (iso: string) => {
+      const d = new Date(iso);
+      const str = d.toLocaleString("en-US", {
         timeZone: "America/Los_Angeles",
         month: "numeric", day: "numeric",
         hour: "numeric", minute: "2-digit",
         hour12: true,
-      }) + " PDT";
+      });
+      // Append PDT or PST based on UTC offset at that instant
+      const offset = d.toLocaleString("en-US", { timeZone: "America/Los_Angeles", timeZoneName: "short" });
+      const tz = offset.match(/P[SD]T/)?.[0] ?? "PT";
+      return `${str} ${tz}`;
+    };
 
     // Resolve distinct agents matched (for transparency)
     const agentNames = [...new Set(rows.map((r) => r.agentName).filter(Boolean))];
@@ -629,16 +653,16 @@ router.get("/attendance/agent-contacts", async (req, res) => {
       .sort((a, b) => b.calls - a.calls)
       .map((c) => ({
         ...c,
-        firstCallAt: toCaliforniaTime(c.firstCallAt),
-        lastCallAt:  toCaliforniaTime(c.lastCallAt),
+        firstCallAt: toLocalTime(c.firstCallAt),
+        lastCallAt:  toLocalTime(c.lastCallAt),
       }));
 
     return res.json({
       agentQuery: agentParam,
       agentsMatched: agentNames,
-      date: egyptDate,
-      windowStart: toCaliforniaTime(dayStartUtc.toISOString()),
-      windowEnd:   toCaliforniaTime(dayEndUtc.toISOString()),
+      date: laDate,
+      windowStart: toLocalTime(dayStartUtc.toISOString()),
+      windowEnd:   toLocalTime(dayEndUtc.toISOString()),
       totalCalls: rows.length,
       uniqueContacts: contacts.length,
       contacts,
