@@ -151,7 +151,7 @@ function AgentTable({ rows }: { rows: AgentRow[] }) {
             <TableHead className="text-right text-emerald-400">Answered</TableHead>
             <TableHead className="text-right text-rose-400">Missed</TableHead>
             <TableHead className="text-right text-amber-400">Voicemail</TableHead>
-            <TableHead className="text-right">Unique Files</TableHead>
+            <TableHead className="text-right">CX Reached</TableHead>
             <TableHead className="text-right">Talk Time</TableHead>
             <TableHead className="text-right">Answer Rate</TableHead>
           </TableRow>
@@ -253,7 +253,7 @@ function TeamPhonePanel({
     <div className="space-y-6">
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         <StatPill label="Total Calls" value={totals.calls} icon={Phone} tone="violet" />
-        <StatPill label="Unique Files" value={totals.unique} icon={Users} tone="sky" />
+        <StatPill label="CX Reached" value={totals.unique} icon={Users} tone="sky" />
         <StatPill label="Talk Time" value={formatDur(totals.secs)} icon={Clock} tone="amber" />
         <StatPill label="Inbound Recv" value={inbTotals.recv} icon={PhoneIncoming} tone="emerald" />
         <StatPill label="Inbound Ans" value={inbTotals.ans} icon={PhoneIncoming} tone="emerald" />

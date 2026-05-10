@@ -325,8 +325,8 @@ router.get("/quo/stats", async (req, res) => {
       const slot = teamStats[team][agentName][date];
       slot.totalCalls++;
       slot.talkSeconds += row.durationSeconds;
-      // "Customers Reached" = unique phone numbers dialed outbound only (skip blanks)
-      if (row.direction === "outgoing" && row.participant) slot.uniqueContacts.add(row.participant);
+      // "CX Reached" = unique phone numbers spoken with, inbound OR outbound (skip blanks)
+      if (row.participant) slot.uniqueContacts.add(row.participant);
       if (!agentLastCall[team]) agentLastCall[team] = {};
       const endTimeTeam = new Date(row.createdAt.getTime() + row.durationSeconds * 1000);
       if (!agentLastCall[team][agentName] || endTimeTeam > agentLastCall[team][agentName]) {
