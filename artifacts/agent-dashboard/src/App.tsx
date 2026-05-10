@@ -37,6 +37,7 @@ import {
   PhoneMissed,
   Info,
   ChevronLeft,
+  ChevronRight,
   PhoneCall,
   LogOut,
   ShieldCheck,
