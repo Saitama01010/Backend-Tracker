@@ -18,6 +18,7 @@
 //   export type Post = typeof postsTable.$inferSelect;
 
 export * from "./phoneCalls";
+export * from "./pbxMissedCalls";
 export * from "./attendance";
 export * from "./users";
 export * from "./blockedNumbers";

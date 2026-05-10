@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, phoneCallsTable } from "@workspace/db";
+import { db, phoneCallsTable, pbxMissedCallsTable } from "@workspace/db";
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Logger } from "pino";
 import { logger as rootLogger } from "../lib/logger";
@@ -681,6 +681,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     }
     // Merge new missed records into cumulative map, deduplicating by call ID.
     let newCount = 0;
+    const toUpsert: typeof pbxMissedCallsTable.$inferInsert[] = [];
     for (const rec of scanResult.missedRecords) {
       if (seenMissedCallIds.has(rec.id)) continue;
       seenMissedCallIds.add(rec.id);
@@ -694,7 +695,22 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
         if (!cumulativeMissedByHour[h]) cumulativeMissedByHour[h] = { retention: 0, cs: 0, nsf: 0 };
         cumulativeMissedByHour[h][team]++;
       }
+      toUpsert.push({
+        id: rec.id,
+        fromNumber: rec.fromNumber,
+        toNumber: rec.toNumber,
+        ringGroupId: rec.ringGroupId,
+        ringGroupName: rec.ringGroupName,
+        team: teamFromRingGroupName(rec.ringGroupName),
+        createdAt: new Date(rec.createdAt),
+      });
       newCount++;
+    }
+    // Persist new PBX missed calls so historical dates show correct PBX counts.
+    if (toUpsert.length > 0) {
+      await db.insert(pbxMissedCallsTable)
+        .values(toUpsert)
+        .onConflictDoNothing();
     }
 
     callHistoryCache = results;
@@ -928,18 +944,33 @@ router.get("/vos/missed-daily", async (req, res) => {
       ORDER BY day DESC, line_team
     `);
 
-    // PBX: today's totals — only "Retention" and "Customer Support" ring groups
-    const DAILY_PBX_RING_GROUPS: Record<string, "retention" | "cs"> = {
+    const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+
+    // PBX historical: query persisted missed calls grouped by LA date + team
+    const pbxRows = await db.execute(sql`
+      SELECT
+        (created_at AT TIME ZONE 'America/Los_Angeles')::date AS day,
+        team,
+        COUNT(*)::int AS cnt
+      FROM pbx_missed_calls
+      WHERE created_at >= ${window14d}
+        AND team IN ('retention', 'cs', 'nsf')
+      GROUP BY day, team
+      ORDER BY day DESC, team
+    `);
+
+    // PBX today: supplement DB with the live in-memory cache (catches calls not yet persisted)
+    const DAILY_PBX_RING_GROUPS: Record<string, "retention" | "cs" | "nsf"> = {
       "retention": "retention",
       "customer support": "cs",
+      "nsf": "nsf",
     };
-    const pbxByTeam: Record<string, number> = {};
+    const pbxTodayByTeam: Record<string, number> = {};
     for (const [rgId, count] of Object.entries(ringGroupMissedCache)) {
       const name = (ringGroupNameCache.get(Number(rgId)) ?? "").toLowerCase().trim();
       const team = DAILY_PBX_RING_GROUPS[name];
-      if (team) pbxByTeam[team] = (pbxByTeam[team] ?? 0) + count;
+      if (team) pbxTodayByTeam[team] = (pbxTodayByTeam[team] ?? 0) + count;
     }
-    const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
 
     // Merge Quo rows into a map keyed by date
     type TeamDay = { retention: { quo: number; pbx: number }; cs: { quo: number; pbx: number }; nsf: { quo: number; pbx: number } };
@@ -961,12 +992,21 @@ router.get("/vos/missed-daily", async (req, res) => {
       if (team === "retention" || team === "cs" || team === "nsf") d[team].quo += r.cnt;
     }
 
-    // Stamp today's PBX onto today's entry
-    if (pbxByTeam["retention"] || pbxByTeam["cs"] || pbxByTeam["nsf"]) {
+    // Merge PBX historical rows from DB
+    for (const r of pbxRows.rows as { day: unknown; team: string; cnt: number }[]) {
+      const dateStr = r.day instanceof Date ? r.day.toISOString().split("T")[0] : String(r.day);
+      const d = getDay(dateStr);
+      const team = r.team as "retention" | "cs" | "nsf";
+      if (team === "retention" || team === "cs" || team === "nsf") d[team].pbx += r.cnt;
+    }
+
+    // For today, use the max of DB count and live cache (live cache is more current)
+    if (Object.keys(pbxTodayByTeam).length > 0) {
       const d = getDay(todayStr);
-      d.retention.pbx = pbxByTeam["retention"] ?? 0;
-      d.cs.pbx = pbxByTeam["cs"] ?? 0;
-      d.nsf.pbx = pbxByTeam["nsf"] ?? 0;
+      for (const team of ["retention", "cs", "nsf"] as const) {
+        const live = pbxTodayByTeam[team] ?? 0;
+        if (live > d[team].pbx) d[team].pbx = live;
+      }
     }
 
     const days = Array.from(dayMap.entries())
