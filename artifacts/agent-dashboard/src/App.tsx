@@ -4612,15 +4612,15 @@ function Dashboard() {
       </div>
 
       <header className="relative border-b border-white/5 bg-card/60 backdrop-blur-xl">
-        <div className="max-w-[1400px] mx-auto px-6 py-4 flex items-center gap-4">
-          <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white flex items-center justify-center shadow-[0_0_24px_-6px_rgba(168,85,247,0.7)]">
-            <Rocket className="h-5 w-5" />
+        <div className="max-w-[1400px] mx-auto px-3 py-3 sm:px-6 sm:py-4 flex items-center gap-3">
+          <div className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white flex items-center justify-center shadow-[0_0_24px_-6px_rgba(168,85,247,0.7)]">
+            <Rocket className="h-4 w-4 sm:h-5 sm:w-5" />
           </div>
-          <div className="flex-1">
-            <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-violet-300 via-fuchsia-300 to-sky-300 bg-clip-text text-transparent">
+          <div className="flex-1 min-w-0">
+            <h1 className="text-base sm:text-xl font-bold tracking-tight bg-gradient-to-r from-violet-300 via-fuchsia-300 to-sky-300 bg-clip-text text-transparent truncate">
               Backend Tracker
             </h1>
-            <p className="text-sm text-muted-foreground">Retention, NSF &amp; CS team metrics at a glance</p>
+            <p className="text-xs text-muted-foreground hidden sm:block">Retention, NSF &amp; CS team metrics at a glance</p>
           </div>
 
           {/* View switcher — only show tabs user has access to */}
@@ -4678,14 +4678,16 @@ function Dashboard() {
         </div>
       </header>
 
-      <main className="max-w-[1400px] mx-auto px-6 py-8">
+      <main className="max-w-[1400px] mx-auto px-3 py-4 sm:px-6 sm:py-8">
         {view === "metrics" && can("view_metrics") ? (
           <Tabs defaultValue={metricsTabs[0]?.value ?? defaultTab} className="space-y-6">
-            <TabsList className="grid w-full max-w-3xl" style={{ gridTemplateColumns: `repeat(${metricsTabs.length}, minmax(0, 1fr))` }}>
-              {metricsTabs.map((t) => (
-                <TabsTrigger key={t.value} value={t.value} data-testid={`tab-${t.value}`}>{t.label}</TabsTrigger>
-              ))}
-            </TabsList>
+            <div className="overflow-x-auto pb-1 -mx-1 px-1">
+              <TabsList className="flex w-max sm:w-full sm:max-w-3xl">
+                {metricsTabs.map((t) => (
+                  <TabsTrigger key={t.value} value={t.value} data-testid={`tab-${t.value}`} className="whitespace-nowrap px-3 sm:px-4">{t.label}</TabsTrigger>
+                ))}
+              </TabsList>
+            </div>
             {canSeeTab("retention") && (
               <TabsContent value="retention">
                 <RetentionPanel />
@@ -4829,8 +4831,8 @@ function SamiaChat() {
           size === "maximized"
             ? "bottom-4 right-4 left-4 top-4 w-auto max-h-none"
             : size === "minimized"
-            ? "bottom-24 right-6 w-[360px] max-h-none"
-            : "bottom-24 right-6 w-[360px] max-h-[560px]"
+            ? "bottom-24 right-4 sm:right-6 w-[calc(100vw-32px)] sm:w-[360px] max-h-none"
+            : "bottom-24 right-4 sm:right-6 w-[calc(100vw-32px)] sm:w-[360px] max-h-[560px]"
         }`}>
           {/* Header */}
           <div className="flex items-center gap-3 px-4 py-3 border-b border-white/8 bg-gradient-to-r from-violet-600/20 to-fuchsia-600/20 flex-shrink-0">
@@ -5244,7 +5246,7 @@ function AttendancePanel() {
       {showTodaySummary && (
         <div className="space-y-3">
           {/* Overall breakdown */}
-          <div className="grid grid-cols-6 gap-3">
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 sm:gap-3">
             {[
               { label: "Present", value: todaySummary.in,     color: "text-emerald-400" },
               { label: "Off",     value: todaySummary.off,    color: "text-amber-400" },
