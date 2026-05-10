@@ -191,8 +191,8 @@ router.get("/quo/line-stats", async (req, res) => {
       slot.totalCalls++;
       slot.talkSeconds += row.durationSeconds;
 
-      if (row.direction === "outgoing" && row.participant) {
-        // Per-day unique (for "by day" sub-tab)
+      if (row.participant) {
+        // Per-day unique contacts — both inbound and outbound (for "by day" sub-tab)
         slot.uniqueContacts.add(row.participant);
         // Cross-range unique (for totals column)
         if (!agentUniqueContactsAll[agentName]) agentUniqueContactsAll[agentName] = new Set();
