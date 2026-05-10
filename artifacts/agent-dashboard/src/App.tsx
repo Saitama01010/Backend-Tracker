@@ -1586,17 +1586,19 @@ type HourlyMissedHour = {
   nsf: { quo: number; pbx: number };
 };
 
-function useMissedHourly() {
+function useMissedHourly(date: string) {
+  const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  const isToday = date === todayStr;
   return useQuery<{ hours: HourlyMissedHour[] }>({
-    queryKey: ["missedHourly"],
+    queryKey: ["missedHourly", date],
     queryFn: async () => {
-      const r = await fetch("/api/vos/missed-hourly");
+      const r = await fetch(`/api/vos/missed-hourly?date=${date}`);
       if (!r.ok) return { hours: [] };
       return r.json();
     },
-    staleTime: 60_000,
-    refetchInterval: 5 * 60_000,
-    refetchOnWindowFocus: true,
+    staleTime: isToday ? 60_000 : Infinity,
+    refetchInterval: isToday ? 5 * 60_000 : false,
+    refetchOnWindowFocus: isToday,
   });
 }
 
@@ -4404,10 +4406,25 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
 }
 
 function HourlyMissedRecord() {
-  const { data, isLoading } = useMissedHourly();
+  const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  const [date, setDate] = useState(todayStr);
+  const isToday = date === todayStr;
+
+  const { data, isLoading } = useMissedHourly(date);
   const hours = data?.hours ?? [];
-  if (isLoading) return <div className="space-y-1.5">{Array.from({length:3}).map((_,i)=><Skeleton key={i} className="h-7 w-full"/>)}</div>;
-  if (hours.length === 0) return null;
+
+  const shift = (days: number) => {
+    const d = new Date(date + "T12:00:00");
+    d.setDate(d.getDate() + days);
+    const next = d.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+    if (next <= todayStr) setDate(next);
+  };
+
+  const fmtDate = (d: string) => {
+    if (d === todayStr) return "Today";
+    const dt = new Date(d + "T12:00:00");
+    return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  };
 
   const fmt = (h: number) => {
     const ampm = h < 12 ? "am" : "pm";
@@ -4428,34 +4445,62 @@ function HourlyMissedRecord() {
 
   return (
     <div className="border-t border-zinc-800 pt-4">
-      <p className="text-xs font-medium text-zinc-400 mb-2">Today's Missed by Hour (Quo + PBX)</p>
-      <div className="rounded-lg border border-zinc-800 overflow-hidden">
-        <Table>
-          <TableHeader>
-            <TableRow className="border-zinc-800 bg-zinc-900/60">
-              <TableHead className="text-xs w-20">Hour</TableHead>
-              <TableHead className="text-xs text-violet-300">Retention</TableHead>
-              <TableHead className="text-xs text-emerald-300">CS</TableHead>
-              <TableHead className="text-xs text-sky-300">NSF</TableHead>
-              <TableHead className="text-xs text-right">Total</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {hours.map((h) => {
-              const total = h.retention.quo + h.retention.pbx + h.cs.quo + h.cs.pbx + h.nsf.quo + h.nsf.pbx;
-              return (
-                <TableRow key={h.hour} className="border-zinc-800 hover:bg-zinc-800/20">
-                  <TableCell className="text-xs text-zinc-400 tabular-nums">{fmt(h.hour)}</TableCell>
-                  <TableCell className="text-xs text-violet-300 font-medium">{cellVal(h.retention.quo, h.retention.pbx)}</TableCell>
-                  <TableCell className="text-xs text-emerald-300 font-medium">{cellVal(h.cs.quo, h.cs.pbx)}</TableCell>
-                  <TableCell className="text-xs text-sky-300 font-medium">{cellVal(h.nsf.quo, h.nsf.pbx)}</TableCell>
-                  <TableCell className="text-xs text-right font-semibold text-zinc-200">{total}</TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs font-medium text-zinc-400">Missed by Hour (Quo + PBX)</p>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => shift(-1)}
+            className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors"
+            title="Previous day"
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+          </button>
+          <span className="text-xs font-medium text-zinc-300 min-w-[90px] text-center">{fmtDate(date)}</span>
+          <button
+            type="button"
+            onClick={() => shift(1)}
+            disabled={isToday}
+            className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            title="Next day"
+          >
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
+      {isLoading ? (
+        <div className="space-y-1.5">{Array.from({length:3}).map((_,i)=><Skeleton key={i} className="h-7 w-full"/>)}</div>
+      ) : hours.length === 0 ? (
+        <p className="text-xs text-zinc-600 py-2">No missed calls recorded for this day.</p>
+      ) : (
+        <div className="rounded-lg border border-zinc-800 overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow className="border-zinc-800 bg-zinc-900/60">
+                <TableHead className="text-xs w-20">Hour</TableHead>
+                <TableHead className="text-xs text-violet-300">Retention</TableHead>
+                <TableHead className="text-xs text-emerald-300">CS</TableHead>
+                <TableHead className="text-xs text-sky-300">NSF</TableHead>
+                <TableHead className="text-xs text-right">Total</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {hours.map((h) => {
+                const total = h.retention.quo + h.retention.pbx + h.cs.quo + h.cs.pbx + h.nsf.quo + h.nsf.pbx;
+                return (
+                  <TableRow key={h.hour} className="border-zinc-800 hover:bg-zinc-800/20">
+                    <TableCell className="text-xs text-zinc-400 tabular-nums">{fmt(h.hour)}</TableCell>
+                    <TableCell className="text-xs text-violet-300 font-medium">{cellVal(h.retention.quo, h.retention.pbx)}</TableCell>
+                    <TableCell className="text-xs text-emerald-300 font-medium">{cellVal(h.cs.quo, h.cs.pbx)}</TableCell>
+                    <TableCell className="text-xs text-sky-300 font-medium">{cellVal(h.nsf.quo, h.nsf.pbx)}</TableCell>
+                    <TableCell className="text-xs text-right font-semibold text-zinc-200">{total}</TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+      )}
     </div>
   );
 }

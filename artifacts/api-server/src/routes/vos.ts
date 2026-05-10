@@ -869,7 +869,11 @@ router.get("/vos/missed-no-callback", async (req, res) => {
 
 router.get("/vos/missed-hourly", async (req, res) => {
   try {
-    const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" }); // YYYY-MM-DD in LA
+    const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+    // Accept optional ?date=YYYY-MM-DD; fall back to today.
+    const dateParam = typeof req.query["date"] === "string" ? req.query["date"] : todayLA;
+    const isToday = dateParam === todayLA;
+
     const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
     const rows = await db.execute(sql`
       SELECT
@@ -880,7 +884,7 @@ router.get("/vos/missed-hourly", async (req, res) => {
       WHERE direction = 'incoming'
         AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
         AND line_name IN (${teamLinesInList})
-        AND (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${todayLA}::date
+        AND (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${dateParam}::date
       GROUP BY hour, line_team
       ORDER BY hour
     `);
@@ -905,19 +909,40 @@ router.get("/vos/missed-hourly", async (req, res) => {
       else if (r.line_team === "nsf") row.nsf.quo += r.cnt;
     }
 
-    // Merge PBX hourly data from in-memory accumulator
-    for (const [h, pbx] of Object.entries(cumulativeMissedByHour)) {
-      const row = getHour(Number(h));
-      row.retention.pbx += pbx.retention;
-      row.cs.pbx += pbx.cs;
-      row.nsf.pbx += pbx.nsf;
+    if (isToday) {
+      // Today: use fast in-memory accumulator
+      for (const [h, pbx] of Object.entries(cumulativeMissedByHour)) {
+        const row = getHour(Number(h));
+        row.retention.pbx += pbx.retention;
+        row.cs.pbx += pbx.cs;
+        row.nsf.pbx += pbx.nsf;
+      }
+    } else {
+      // Historical date: query pbx_missed_calls table
+      const pbxRows = await db.execute(sql`
+        SELECT
+          EXTRACT(HOUR FROM (created_at AT TIME ZONE 'America/Los_Angeles'))::int AS hour,
+          team,
+          COUNT(*)::int AS cnt
+        FROM pbx_missed_calls
+        WHERE (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${dateParam}::date
+          AND team IN ('retention', 'cs', 'nsf')
+        GROUP BY hour, team
+        ORDER BY hour
+      `);
+      for (const r of pbxRows.rows as { hour: number; team: string; cnt: number }[]) {
+        const row = getHour(r.hour);
+        if (r.team === "retention") row.retention.pbx += r.cnt;
+        else if (r.team === "cs") row.cs.pbx += r.cnt;
+        else if (r.team === "nsf") row.nsf.pbx += r.cnt;
+      }
     }
 
     const hours = Array.from(hourMap.entries())
       .sort(([a], [b]) => a - b)
       .map(([hour, teams]) => ({ hour, ...teams }));
 
-    res.json({ hours });
+    res.json({ hours, date: dateParam });
   } catch (err) {
     req.log.error(err, "vos missed-hourly error");
     res.status(500).json({ error: String(err) });
