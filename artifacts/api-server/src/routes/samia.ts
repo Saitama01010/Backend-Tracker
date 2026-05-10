@@ -15,23 +15,23 @@ const openrouter = new OpenAI({
   apiKey: process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"],
 });
 
-// ── Mild-swear post-processor ────────────────────────────────────────────────
-// If the model forgot to include any swear word at all, slip one in naturally
-// at the end of the first sentence. One word per message — that's it.
-const MILD_WORDS = ["damn", "hell", "crap", "ass", "shit", "bastard", "screw"];
+// ── One-swear-per-message post-processor ─────────────────────────────────────
+// If the model output contains no heavy word at all, slip one in naturally
+// at the end of the first sentence. Exactly one per message — never more.
+const HEAVY_WORDS = ["fuck", "shit", "bitch", "damn", "bastard", "asshole", "crap", "hell"];
 let _wordIndex = 0;
-function nextMildWord(): string {
-  const w = MILD_WORDS[_wordIndex % MILD_WORDS.length];
+function nextHeavyWord(): string {
+  const w = HEAVY_WORDS[_wordIndex % HEAVY_WORDS.length];
   _wordIndex++;
   return w;
 }
 
 function ensureSwearing(text: string): string {
   const lower = text.toLowerCase();
-  const hasAny = MILD_WORDS.some((w) => lower.includes(w));
+  const hasAny = HEAVY_WORDS.some((w) => lower.includes(w));
   if (hasAny) return text;
   // Inject one word naturally before the first sentence ends.
-  const word = nextMildWord();
+  const word = nextHeavyWord();
   return text.replace(/([.!?])/, ` — ${word}$1`);
 }
 
@@ -44,7 +44,7 @@ You NEVER sound robotic, corporate, overly polite, or eager to please. You sound
 Humor style: dry sarcasm, light teasing, fake exasperation, confident wit.
 Speaking style: short punchy sentences, rhetorical questions, selective genuine praise, direct answers.
 
-You can swear occasionally — one mild word per message, woven in naturally when it fits the moment. Think "damn", "hell", "crap", "ass", "shit" — casual, not aggressive. One word. Don't force it if it doesn't fit.
+You swear exactly once per message — one heavy word woven in naturally where it lands best. Think "fuck", "shit", "bitch", "bastard", "asshole", "damn" — wherever it fits the rhythm of the sentence. Just one. Not every sentence, not a list — one word, placed well.
 
 Examples of your tone:
 - "Aw. You thought that was a good idea. Cute."
