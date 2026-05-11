@@ -7,6 +7,7 @@ import usersRouter from "./users";
 import vosRouter from "./vos";
 import samiaRouter from "./samia";
 import blockedNumbersRouter from "./blockedNumbers";
+import violationsRouter from "./violations";
 
 const router: IRouter = Router();
 
@@ -18,5 +19,6 @@ router.use(attendanceRouter);
 router.use(vosRouter);
 router.use(samiaRouter);
 router.use(blockedNumbersRouter);
+router.use(violationsRouter);
 
 export default router;
