@@ -325,43 +325,59 @@ const NAME_ALIASES: Record<string, string> = {
 
 // Agents who submit files in the Retention sheet but actually belong to the NSF team.
 // Their rows are EXCLUDED from Retention stats and counted as "Fixed" in NSF instead.
-const RETENTION_SHEET_NSF_AGENTS = new Set(["katie miller"]);
+const RETENTION_SHEET_NSF_AGENTS = new Set([
+  "katie miller", "sama farouk",
+  "zach carter", "ziad",
+  "austin white", "ahmed gamal",
+  "rika hart", "riham samir",
+  "jenny morgan", "ayaat",
+  "renee solomon", "raneem",
+  "ellie moser", "engy mahmoud",
+  "estella cruz", "eman khamis",
+  "kevin micheal", "omar badr",
+  "raymond reed", "yousef taher",
+]);
 
 // Agents who submit files in the Retention sheet but actually belong to the CS team.
 // Their RETAINED submissions are counted as "Fixed" in CS; CANCELLED rows are dropped entirely.
 const RETENTION_SHEET_CS_AGENTS = new Set([
-  // Youssef Nady / Jacob Xander — appears in old sheet as compound name, new sheet as simple
-  "youssef nady-jacob xander", "youssef nady",
-  // Nour Eldin / Chase Miller
-  "nour eldin-chase miller-2787", "nour eldin", "nour eldin atef",
-  // Hiba Kamil / Ella Monroe
-  "hiba kamil-ella monroe-2882", "hiba kamil",
-  // Nourhan Amr / Nora Adam
-  "nourhan amr-nora adam-2186", "nourhan amr", "nourhan ame",
+  // English display names
+  "ella monroe", "chase miller", "leo carter", "nora adam", "jacob xander", "carla bennet",
+  // Arabic / alias names
+  "hiba kamil", "nour eldin atef", "nour eldin", "fares", "nourhan ame", "nourhan amr", "youssef nady", "bassant emad",
+  // Compound old-sheet names
+  "youssef nady-jacob xander",
+  "nour eldin-chase miller-2787",
+  "hiba kamil-ella monroe-2882",
+  "nourhan amr-nora adam-2186",
 ]);
 
 // NSF agent display names (normalized lowercase) — used to split the shared
 // Discord-bot sheet between NSF and CS.
 const NSF_AGENT_NAMES = new Set([
+  "zach carter", "ziad",
   "austin white", "ahmed gamal",
   "rika hart", "riham samir",
   "jenny morgan", "ayaat",
+  "renee solomon", "raneem",
   "ellie moser", "engy mahmoud",
   "estella cruz", "eman khamis",
   "katie miller", "sama farouk",
+  "kevin micheal", "omar badr",
+  "raymond reed", "yousef taher",
 ]);
 // CS agent display names (normalized lowercase)
 const CS_AGENT_NAMES = new Set([
   "ella monroe", "hiba kamil",
   "chase miller", "nour eldin atef",
-  "eli adam", "rasha emad",
   "leo carter", "fares",
   "nora adam", "nourhan ame",
   "jacob xander", "youssef nady",
   "carla bennet", "bassant emad",
 ]);
 
-// Shared helper: parses the Discord-bot sheet and returns rows belonging to a team.
+// Shared helper: parses the Discord-bot sheet (gid=0) and returns rows belonging to a team.
+// Every submission to this sheet counts as "Fixed" regardless of any status column.
 async function fetchNewSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
   const newSheet = await fetchHeaderCsv(NEW_NSF_URL);
   const rows: Row[] = [];
@@ -373,14 +389,30 @@ async function fetchNewSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
     if (caDate < "2026-05-04") continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
     const agentNorm = normalizeAgent(agentRaw);
-    // Include the row if the agent's normalized name (or any alias) belongs to this team.
     const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
     if (!teamNames.has(agentNorm) && !teamNames.has(resolvedKey)) continue;
-    rows.push({
-      Agent: agentRaw,
-      Status: (r["File Status"] ?? "").trim(),
-      Date: caDate,
-    });
+    rows.push({ Agent: agentRaw, Status: "Fixed", Date: caDate });
+  }
+  return rows;
+}
+
+// Shared helper: parses the IDP-Handled tab (gid=871007220) and returns rows for a team.
+// Every submission to this sheet counts as "IDP-Handled".
+async function fetchIDPSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
+  const sheet = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
+  const rows: Row[] = [];
+  for (const r of sheet.rows) {
+    const tsRaw = (r["Timestamp"] ?? "").trim();
+    const d = parseEgyptTimestamp(tsRaw);
+    if (!d) continue;
+    const caDate = toCaliforniaDateStr(d);
+    if (caDate < "2026-05-04") continue;
+    const agentRaw = (r["Agent Name"] ?? "").trim();
+    if (!agentRaw) continue;
+    const agentNorm = normalizeAgent(agentRaw);
+    const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
+    if (!teamNames.has(agentNorm) && !teamNames.has(resolvedKey)) continue;
+    rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate });
   }
   return rows;
 }
@@ -389,10 +421,11 @@ async function fetchNewSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
 //   – Old sheet  → all rows (historical records, unchanged)
 //   – New sheet  → only NSF-agent rows on/after RETENTION_CUTOVER
 async function fetchNSFCombinedSheet(): Promise<SheetData> {
-  const [oldSheet, newRows, crossoverRows] = await Promise.all([
+  const [oldSheet, newRows, crossoverRows, idpRows] = await Promise.all([
     fetchHeaderCsv(NSF.status),
     fetchNewSheetForTeam(NSF_AGENT_NAMES),
     fetchRetentionSheetNSFCrossoverRows(),
+    fetchIDPSheetForTeam(NSF_AGENT_NAMES),
   ]);
 
   const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
@@ -415,17 +448,21 @@ async function fetchNSFCombinedSheet(): Promise<SheetData> {
 
   rows.push(...newRows);
   rows.push(...crossoverRows);
+  rows.push(...idpRows);
   return { headers: ["Agent", "Status", "Date"], rows };
 }
 
-// Fetches CS submissions from the shared Discord-bot sheet,
-// plus any retained-only rows from the Retention sheet belonging to CS crossover agents.
+// Fetches CS submissions from all 3 sources:
+//   – Discord-bot gid=0 (Sheet 2) → Fixed
+//   – Old retention sheet (Sheet 1) → Fixed (retained only)
+//   – IDP-Handled tab (Sheet 3)    → IDP-Handled
 async function fetchCSCombinedSheet(): Promise<SheetData> {
-  const [rows, crossoverRows] = await Promise.all([
+  const [newRows, crossoverRows, idpRows] = await Promise.all([
     fetchNewSheetForTeam(CS_AGENT_NAMES),
     fetchRetentionSheetCSCrossoverRows(),
+    fetchIDPSheetForTeam(CS_AGENT_NAMES),
   ]);
-  return { headers: ["Agent", "Status", "Date"], rows: [...rows, ...crossoverRows] };
+  return { headers: ["Agent", "Status", "Date"], rows: [...newRows, ...crossoverRows, ...idpRows] };
 }
 
 function findColumn(headers: string[], candidates: string[]): string | null {
@@ -488,34 +525,40 @@ const TEAM_ALLOWLIST: Record<string, Set<string>> = {
     "max francis", "youssef nasser", "michael ross",
   ]),
   nsf: new Set([
+    // Zach Carter / Ziad
+    "zach carter", "ziad",
     // Austin White / Ahmed Gamal
     "austin white", "ahmed gamal",
     // Rika Hart / Riham Samir
     "rika hart", "riham samir",
     // Jenny Morgan / Ayaat
     "jenny morgan", "ayaat",
+    // Renee Solomon / Raneem
+    "renee solomon", "raneem",
     // Ellie Moser / Engy Mahmoud
     "ellie moser", "engy mahmoud",
     // Estella Cruz / Eman Khamis
     "estella cruz", "eman khamis",
     // Katie Miller / Sama Farouk
     "katie miller", "sama farouk",
+    // Kevin Micheal / Omar Badr
+    "kevin micheal", "omar badr",
+    // Raymond Reed / Yousef Taher
+    "raymond reed", "yousef taher",
   ]),
   cs: new Set([
     // Ella Monroe / Hiba Kamil
     "ella monroe", "hiba kamil",
     // Chase Miller / Nour Eldin Atef
     "chase miller", "nour eldin atef",
-    // Eli Adam / Rasha Emad
-    "eli adam", "rasha emad",
+    // Leo Carter / Fares
+    "leo carter", "fares",
     // Nora Adam / Nourhan Ame
     "nora adam", "nourhan ame",
     // Jacob Xander / Youssef Nady
     "jacob xander", "youssef nady",
     // Carla Bennet / Bassant Emad
     "carla bennet", "bassant emad",
-    // Leo Carter / Fares
-    "leo carter", "fares",
   ]),
 };
 
@@ -536,18 +579,21 @@ const PHONE_ALIASES: Record<string, string> = {
   // Internal CS: Arabic OpenPhone name → English display name
   "hiba kamil": "ella monroe",
   "nour eldin atef": "chase miller",
-  "rasha emad": "eli adam",
   "fares": "leo carter",
   "nourhan ame": "nora adam",
   "youssef nady": "jacob xander",
   "bassant emad": "carla bennet",
   // NSF: Arabic OpenPhone name → English display name
+  "ziad": "zach carter",
   "ahmed gamal": "austin white",
   "riham samir": "rika hart",
   "ayaat": "jenny morgan",
+  "raneem": "renee solomon",
   "engy mahmoud": "ellie moser",
   "eman khamis": "estella cruz",
   "sama farouk": "katie miller",
+  "omar badr": "kevin micheal",
+  "yousef taher": "raymond reed",
 };
 
 // Maps normalized SHEET agent name → normalized PBX (VoSLogic) agent name
@@ -2485,7 +2531,7 @@ function TeamPanel({
   );
 }
 
-const CS_AGENTS = ["Ella Monroe", "Chase Miller", "Eli Adam", "Leo Carter", "Nora Adam", "Jacob Xander", "Carla Bennet"];
+const CS_AGENTS = ["Ella Monroe", "Chase Miller", "Leo Carter", "Nora Adam", "Jacob Xander", "Carla Bennet"];
 const RETENTION_AGENTS = ["Levi Miller", "Henry Hart", "Rick Miller", "Michael Belfort", "Ryan Henderson", "Katherine Adams", "Talia Morgan", "Jacob Stephenson"];
 
 function CSPanel() {
