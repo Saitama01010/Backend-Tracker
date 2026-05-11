@@ -4585,15 +4585,27 @@ function DailyMissedRecord() {
 // ─── Violations Panel ─────────────────────────────────────────────────────────
 
 type LateLoginRow = {
-  member: string; department: string; date: string;
+  key: string; member: string; department: string; date: string;
   shiftStart: string; firstCallAt: string; minutesLate: number;
 };
 type GapEntry = { start: string; end: string; minutes: number };
 type AvailGapRow = {
-  member: string; department: string; date: string;
+  key: string; member: string; department: string; date: string;
   gapCount: number; gaps: GapEntry[];
 };
-type ViolationsData = { lateLogin: LateLoginRow[]; availabilityGaps: AvailGapRow[] };
+type MissedCallEntry = {
+  key: string; pbxCallId: number; date: string; missedAt: string;
+  team: string; fromNumber: string; ringGroupName: string;
+  availableAgents: string[]; busyAgents: string[];
+};
+type VerifiedItem = {
+  id: number; key: string; type: string; member: string; department: string;
+  date: string; details: string; verifiedBy: string; verifiedAt: string;
+};
+type ViolationsData = {
+  lateLogin: LateLoginRow[]; availabilityGaps: AvailGapRow[];
+  missedWhileAvail: MissedCallEntry[]; verifiedKeys: string[];
+};
 
 function deptBadge(dept: string): string {
   const d = dept.toLowerCase();
@@ -4618,16 +4630,20 @@ function fmtMins(m: number): string {
 }
 
 function ViolationsPanel() {
-  const { token } = useUser();
+  const { token, user } = useUser();
   const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
   const sevenAgo = new Date(Date.now() - 6 * 86400000).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
 
   const [from, setFrom] = useState(sevenAgo);
   const [to, setTo]     = useState(todayLA);
-  const [sub, setSub]   = useState<"late" | "gaps">("late");
+  const [sub, setSub]   = useState<"late" | "gaps" | "missed" | "verified">("late");
   const [deptFilter, setDeptFilter] = useState<string>("all");
-  const [sortLate, setSortLate] = useState<"date" | "mins">("date");
-  const [sortGaps, setSortGaps] = useState<"date" | "count">("count");
+  const [sortLate, setSortLate]     = useState<"date" | "mins">("date");
+  const [sortGaps, setSortGaps]     = useState<"date" | "count">("count");
+  const [sortMissed, setSortMissed] = useState<"date" | "avail">("date");
+  const [localVerified, setLocalVerified] = useState<Set<string>>(new Set());
+  const [pending, setPending] = useState<Set<string>>(new Set());
+  const [copied, setCopied] = useState(false);
 
   const { data, isLoading, isError, refetch } = useQuery<ViolationsData>({
     queryKey: ["violations", from, to, token],
@@ -4641,10 +4657,50 @@ function ViolationsPanel() {
     staleTime: 2 * 60 * 1000,
   });
 
+  const { data: verifiedData, refetch: refetchVerified } = useQuery<{ items: VerifiedItem[] }>({
+    queryKey: ["violations-verified", token],
+    queryFn: async () => {
+      const r = await fetch("/api/violations/verified", { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json() as Promise<{ items: VerifiedItem[] }>;
+    },
+    staleTime: 30 * 1000,
+  });
+
+  useEffect(() => {
+    if (data?.verifiedKeys) setLocalVerified(new Set(data.verifiedKeys));
+  }, [data?.verifiedKeys]);
+
+  const toggleVerify = useCallback(async (
+    key: string, type: string, member: string, department: string, date: string, details: object,
+  ) => {
+    const isNowVerified = !localVerified.has(key);
+    setLocalVerified(prev => { const s = new Set(prev); isNowVerified ? s.add(key) : s.delete(key); return s; });
+    setPending(prev => new Set(prev).add(key));
+    try {
+      if (isNowVerified) {
+        await fetch("/api/violations/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ key, type, member, department, date, details: JSON.stringify(details), verifiedBy: user.username }),
+        });
+      } else {
+        await fetch("/api/violations/verify", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ key }),
+        });
+      }
+      void refetchVerified();
+    } catch { /* optimistic — keep local state */ }
+    finally { setPending(prev => { const s = new Set(prev); s.delete(key); return s; }); }
+  }, [localVerified, token, user.username, refetchVerified]);
+
   const depts = useMemo(() => {
     const s = new Set<string>();
     for (const r of data?.lateLogin ?? []) s.add(r.department);
     for (const r of data?.availabilityGaps ?? []) s.add(r.department);
+    for (const r of data?.missedWhileAvail ?? []) s.add(r.team.charAt(0).toUpperCase() + r.team.slice(1));
     return ["all", ...Array.from(s).sort()];
   }, [data]);
 
@@ -4663,12 +4719,100 @@ function ViolationsPanel() {
     return rows;
   }, [data, deptFilter, sortGaps]);
 
+  const missedRows = useMemo(() => {
+    let rows = (data?.missedWhileAvail ?? []).filter(r =>
+      deptFilter === "all" || r.team === deptFilter.toLowerCase() ||
+      (r.team.charAt(0).toUpperCase() + r.team.slice(1)) === deptFilter,
+    );
+    if (sortMissed === "avail") rows = [...rows].sort((a, b) => b.availableAgents.length - a.availableAgents.length);
+    else rows = [...rows].sort((a, b) => b.missedAt.localeCompare(a.missedAt));
+    return rows;
+  }, [data, deptFilter, sortMissed]);
+
   const lateMinsColor = (m: number) =>
     m > 60 ? "text-rose-400 font-bold" : m > 30 ? "text-orange-400 font-semibold" : "text-amber-400";
 
+  const verifiedCount = localVerified.size;
+
+  const handleSend = useCallback(() => {
+    const items = verifiedData?.items ?? [];
+    if (items.length === 0) return;
+    const lines: string[] = [
+      `VIOLATION REPORT — ${from} to ${to}`,
+      `Generated by Backend Tracker | ${new Date().toLocaleDateString("en-US", { timeZone: "America/Los_Angeles", month: "long", day: "numeric", year: "numeric" })}`,
+      "",
+    ];
+    const lateItems   = items.filter(i => i.type === "late_login");
+    const gapItems    = items.filter(i => i.type === "availability_gap");
+    const missItems   = items.filter(i => i.type === "missed_call");
+    if (lateItems.length > 0) {
+      lines.push(`LATE LOGIN (${lateItems.length})`);
+      lines.push("─".repeat(30));
+      for (const it of lateItems) {
+        try {
+          const d = JSON.parse(it.details) as LateLoginRow;
+          lines.push(`• ${it.member} (${it.department}) — ${fmtDate(it.date)}: ${fmtMins(d.minutesLate)} late (shift ${fmtTime(d.shiftStart)}, first call ${fmtTime(d.firstCallAt)})`);
+        } catch { lines.push(`• ${it.member} (${it.department}) — ${fmtDate(it.date)}`); }
+      }
+      lines.push("");
+    }
+    if (gapItems.length > 0) {
+      lines.push(`AVAILABILITY GAPS (${gapItems.length})`);
+      lines.push("─".repeat(30));
+      for (const it of gapItems) {
+        try {
+          const d = JSON.parse(it.details) as AvailGapRow;
+          const longest = Math.max(...d.gaps.map(g => g.minutes));
+          lines.push(`• ${it.member} (${it.department}) — ${fmtDate(it.date)}: ${d.gapCount} gaps, longest ${fmtMins(longest)}`);
+        } catch { lines.push(`• ${it.member} (${it.department}) — ${fmtDate(it.date)}`); }
+      }
+      lines.push("");
+    }
+    if (missItems.length > 0) {
+      lines.push(`MISSED CALLS (${missItems.length})`);
+      lines.push("─".repeat(30));
+      for (const it of missItems) {
+        try {
+          const d = JSON.parse(it.details) as MissedCallEntry;
+          lines.push(`• ${fmtDate(it.date)} ${fmtTime(d.missedAt)} — ${d.ringGroupName}: ${d.fromNumber} | Available: ${d.availableAgents.join(", ")}`);
+        } catch { lines.push(`• ${it.member} — ${fmtDate(it.date)}`); }
+      }
+      lines.push("");
+    }
+    void navigator.clipboard.writeText(lines.join("\n"));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  }, [verifiedData, from, to]);
+
+  const SUB_TABS = [
+    { id: "late"     as const, label: "Late Login",    count: data?.lateLogin.length },
+    { id: "gaps"     as const, label: "Availability",  count: data?.availabilityGaps.length },
+    { id: "missed"   as const, label: "Missed Calls",  count: data?.missedWhileAvail.length },
+    { id: "verified" as const, label: "Verified",      count: verifiedCount, accent: true },
+  ];
+
+  const Checkbox = ({ vkey, type, member, department, date, details }: {
+    vkey: string; type: string; member: string; department: string; date: string; details: object;
+  }) => {
+    const checked = localVerified.has(vkey);
+    const busy    = pending.has(vkey);
+    return (
+      <button
+        onClick={() => void toggleVerify(vkey, type, member, department, date, details)}
+        disabled={busy}
+        className={`flex-shrink-0 h-4 w-4 rounded border transition-all ${busy ? "opacity-40 cursor-wait" : "cursor-pointer"} ${
+          checked ? "bg-emerald-500 border-emerald-500" : "bg-transparent border-zinc-600 hover:border-zinc-400"
+        }`}
+        title={checked ? "Unmark verified" : "Mark as verified"}
+      >
+        {checked && <svg viewBox="0 0 10 8" className="w-full h-full p-0.5 text-white fill-none stroke-current stroke-2"><polyline points="1,4 4,7 9,1"/></svg>}
+      </button>
+    );
+  };
+
   return (
     <div className="space-y-5">
-      {/* Header row */}
+      {/* Header */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2 text-sm text-zinc-400">
           <Calendar className="h-4 w-4" />
@@ -4685,64 +4829,63 @@ function ViolationsPanel() {
         </button>
       </div>
 
-      {/* Summary badges */}
+      {/* Summary cards */}
       {data && (
         <div className="flex flex-wrap gap-3">
           <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5">
             <Clock className="h-4 w-4 text-amber-400" />
-            <div>
-              <p className="text-xs text-zinc-400">Late Logins</p>
-              <p className="text-xl font-bold text-amber-300">{data.lateLogin.length}</p>
-            </div>
+            <div><p className="text-xs text-zinc-400">Late Logins</p><p className="text-xl font-bold text-amber-300">{data.lateLogin.length}</p></div>
           </div>
           <div className="flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5">
             <ShieldAlert className="h-4 w-4 text-rose-400" />
-            <div>
-              <p className="text-xs text-zinc-400">Availability Violations</p>
-              <p className="text-xl font-bold text-rose-300">{data.availabilityGaps.reduce((s, r) => s + r.gapCount, 0)}</p>
-            </div>
+            <div><p className="text-xs text-zinc-400">Availability Violations</p><p className="text-xl font-bold text-rose-300">{data.availabilityGaps.reduce((s, r) => s + r.gapCount, 0)}</p></div>
           </div>
-          <div className="flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-800/40 px-4 py-2.5">
-            <Users className="h-4 w-4 text-zinc-400" />
-            <div>
-              <p className="text-xs text-zinc-400">Agents Flagged</p>
-              <p className="text-xl font-bold text-zinc-200">
-                {new Set([...data.lateLogin.map(r => r.member), ...data.availabilityGaps.map(r => r.member)]).size}
-              </p>
-            </div>
+          <div className="flex items-center gap-2 rounded-xl border border-orange-500/30 bg-orange-500/10 px-4 py-2.5">
+            <PhoneMissed className="h-4 w-4 text-orange-400" />
+            <div><p className="text-xs text-zinc-400">Missed While Available</p><p className="text-xl font-bold text-orange-300">{data.missedWhileAvail.length}</p></div>
+          </div>
+          <div className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5">
+            <UserCheck className="h-4 w-4 text-emerald-400" />
+            <div><p className="text-xs text-zinc-400">Verified</p><p className="text-xl font-bold text-emerald-300">{verifiedCount}</p></div>
           </div>
         </div>
       )}
 
-      {/* Filter bar */}
+      {/* Sub-tab + dept filter */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex rounded-lg border border-white/10 overflow-hidden">
-          {(["late", "gaps"] as const).map((s) => (
-            <button key={s} onClick={() => setSub(s)}
-              className={`px-4 py-1.5 text-xs font-medium transition-colors ${sub === s ? "bg-violet-600 text-white" : "bg-zinc-900/60 text-zinc-400 hover:text-white"}`}>
-              {s === "late" ? "Late Login" : "Availability"}
+          {SUB_TABS.map(t => (
+            <button key={t.id} onClick={() => setSub(t.id)}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors flex items-center gap-1.5 ${
+                sub === t.id
+                  ? t.accent ? "bg-emerald-600 text-white" : "bg-violet-600 text-white"
+                  : "bg-zinc-900/60 text-zinc-400 hover:text-white"
+              }`}>
+              {t.label}
+              {t.count !== undefined && (
+                <span className={`rounded-full px-1.5 py-0 text-[10px] font-bold ${sub === t.id ? "bg-white/20 text-white" : "bg-zinc-700 text-zinc-300"}`}>
+                  {t.count}
+                </span>
+              )}
             </button>
           ))}
         </div>
-        <div className="flex rounded-lg border border-white/10 overflow-hidden text-xs">
-          {depts.map((d) => (
-            <button key={d} onClick={() => setDeptFilter(d)}
-              className={`px-3 py-1.5 capitalize transition-colors ${deptFilter === d ? "bg-zinc-700 text-white" : "bg-zinc-900/60 text-zinc-400 hover:text-white"}`}>
-              {d}
-            </button>
-          ))}
-        </div>
+        {sub !== "verified" && (
+          <div className="flex rounded-lg border border-white/10 overflow-hidden text-xs">
+            {depts.map((d) => (
+              <button key={d} onClick={() => setDeptFilter(d)}
+                className={`px-3 py-1.5 capitalize transition-colors ${deptFilter === d ? "bg-zinc-700 text-white" : "bg-zinc-900/60 text-zinc-400 hover:text-white"}`}>
+                {d}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* Content */}
-      {isLoading && (
-        <div className="space-y-2">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}</div>
-      )}
-      {isError && (
-        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-rose-300 text-sm">Failed to load violations.</div>
-      )}
+      {isLoading && <div className="space-y-2">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}</div>}
+      {isError  && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-rose-300 text-sm">Failed to load violations.</div>}
 
-      {/* Late Login Table */}
+      {/* ── Late Login ─────────────────────────────────────────────────── */}
       {!isLoading && !isError && sub === "late" && (
         <div className="rounded-xl border border-white/8 overflow-hidden">
           <div className="px-4 py-2.5 bg-zinc-900/60 border-b border-white/8 flex items-center justify-between">
@@ -4750,50 +4893,49 @@ function ViolationsPanel() {
               <Clock className="h-3.5 w-3.5" />Late Login — first call {">"} 10 min after shift start
             </p>
             <div className="flex gap-1">
-              {(["date", "mins"] as const).map(s => (
+              {(["date","mins"] as const).map(s => (
                 <button key={s} onClick={() => setSortLate(s)}
-                  className={`text-[10px] px-2 py-0.5 rounded transition-colors ${sortLate === s ? "bg-zinc-700 text-white" : "text-zinc-500 hover:text-zinc-300"}`}>
+                  className={`text-[10px] px-2 py-0.5 rounded ${sortLate === s ? "bg-zinc-700 text-white" : "text-zinc-500 hover:text-zinc-300"}`}>
                   {s === "date" ? "By Date" : "By Delay"}
                 </button>
               ))}
             </div>
           </div>
-          {lateRows.length === 0 ? (
-            <div className="py-10 text-center text-sm text-zinc-500">No late login violations for this range.</div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="border-white/8 bg-zinc-900/40">
-                  <TableHead className="text-xs w-28">Date</TableHead>
-                  <TableHead className="text-xs">Agent</TableHead>
-                  <TableHead className="text-xs">Dept</TableHead>
-                  <TableHead className="text-xs">Shift Start</TableHead>
-                  <TableHead className="text-xs">First Call</TableHead>
-                  <TableHead className="text-xs text-right">Late By</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {lateRows.map((r, i) => (
-                  <TableRow key={i} className="border-white/5 hover:bg-zinc-800/20">
-                    <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(r.date)}</TableCell>
-                    <TableCell className="text-xs font-medium text-white">{r.member}</TableCell>
-                    <TableCell className="text-xs">
-                      <Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.department)}`}>{r.department}</Badge>
-                    </TableCell>
-                    <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtTime(r.shiftStart)}</TableCell>
-                    <TableCell className="text-xs text-zinc-300 tabular-nums">{fmtTime(r.firstCallAt)}</TableCell>
-                    <TableCell className={`text-xs tabular-nums text-right ${lateMinsColor(r.minutesLate)}`}>
-                      {fmtMins(r.minutesLate)}
-                    </TableCell>
+          {lateRows.length === 0
+            ? <div className="py-10 text-center text-sm text-zinc-500">No late login violations for this range.</div>
+            : <Table>
+                <TableHeader>
+                  <TableRow className="border-white/8 bg-zinc-900/40">
+                    <TableHead className="w-8" />
+                    <TableHead className="text-xs w-28">Date</TableHead>
+                    <TableHead className="text-xs">Agent</TableHead>
+                    <TableHead className="text-xs">Dept</TableHead>
+                    <TableHead className="text-xs">Shift Start</TableHead>
+                    <TableHead className="text-xs">First Call</TableHead>
+                    <TableHead className="text-xs text-right">Late By</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
+                </TableHeader>
+                <TableBody>
+                  {lateRows.map((r, i) => (
+                    <TableRow key={i} className={`border-white/5 transition-colors ${localVerified.has(r.key) ? "bg-emerald-950/20" : "hover:bg-zinc-800/20"}`}>
+                      <TableCell className="pl-3 pr-1">
+                        <Checkbox vkey={r.key} type="late_login" member={r.member} department={r.department} date={r.date} details={r} />
+                      </TableCell>
+                      <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(r.date)}</TableCell>
+                      <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "text-emerald-300 line-through decoration-emerald-600/50" : "text-white"}`}>{r.member}</TableCell>
+                      <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.department)}`}>{r.department}</Badge></TableCell>
+                      <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtTime(r.shiftStart)}</TableCell>
+                      <TableCell className="text-xs text-zinc-300 tabular-nums">{fmtTime(r.firstCallAt)}</TableCell>
+                      <TableCell className={`text-xs tabular-nums text-right ${lateMinsColor(r.minutesLate)}`}>{fmtMins(r.minutesLate)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+          }
         </div>
       )}
 
-      {/* Availability Gaps Table */}
+      {/* ── Availability Gaps ──────────────────────────────────────────── */}
       {!isLoading && !isError && sub === "gaps" && (
         <div className="rounded-xl border border-white/8 overflow-hidden">
           <div className="px-4 py-2.5 bg-zinc-900/60 border-b border-white/8 flex items-center justify-between">
@@ -4801,61 +4943,204 @@ function ViolationsPanel() {
               <ShieldAlert className="h-3.5 w-3.5" />Availability — gaps {">"} 5 min between consecutive calls
             </p>
             <div className="flex gap-1">
-              {(["count", "date"] as const).map(s => (
+              {(["count","date"] as const).map(s => (
                 <button key={s} onClick={() => setSortGaps(s)}
-                  className={`text-[10px] px-2 py-0.5 rounded transition-colors ${sortGaps === s ? "bg-zinc-700 text-white" : "text-zinc-500 hover:text-zinc-300"}`}>
+                  className={`text-[10px] px-2 py-0.5 rounded ${sortGaps === s ? "bg-zinc-700 text-white" : "text-zinc-500 hover:text-zinc-300"}`}>
                   {s === "count" ? "By Count" : "By Date"}
                 </button>
               ))}
             </div>
           </div>
-          {gapRows.length === 0 ? (
-            <div className="py-10 text-center text-sm text-zinc-500">No availability violations for this range.</div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="border-white/8 bg-zinc-900/40">
-                  <TableHead className="text-xs w-28">Date</TableHead>
-                  <TableHead className="text-xs">Agent</TableHead>
-                  <TableHead className="text-xs">Dept</TableHead>
-                  <TableHead className="text-xs text-center">Gaps</TableHead>
-                  <TableHead className="text-xs">Gap Durations (LA time)</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {gapRows.map((r, i) => (
-                  <TableRow key={i} className="border-white/5 hover:bg-zinc-800/20">
-                    <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(r.date)}</TableCell>
-                    <TableCell className="text-xs font-medium text-white">{r.member}</TableCell>
-                    <TableCell className="text-xs">
-                      <Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.department)}`}>{r.department}</Badge>
-                    </TableCell>
-                    <TableCell className="text-xs text-center">
-                      <span className={`font-bold ${r.gapCount >= 5 ? "text-rose-400" : r.gapCount >= 3 ? "text-orange-400" : "text-amber-400"}`}>
-                        {r.gapCount}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-xs">
-                      <div className="flex flex-wrap gap-1">
-                        {r.gaps.map((g, j) => (
-                          <Tooltip key={j}>
-                            <TooltipTrigger asChild>
-                              <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium cursor-default
-                                ${g.minutes > 30 ? "bg-rose-500/20 text-rose-300" : g.minutes > 15 ? "bg-orange-500/20 text-orange-300" : "bg-amber-500/20 text-amber-300"}`}>
-                                {fmtMins(g.minutes)}
-                              </span>
-                            </TooltipTrigger>
-                            <TooltipContent className="text-xs">
-                              {fmtTime(g.start)} → {fmtTime(g.end)}
-                            </TooltipContent>
-                          </Tooltip>
-                        ))}
-                      </div>
-                    </TableCell>
+          {gapRows.length === 0
+            ? <div className="py-10 text-center text-sm text-zinc-500">No availability violations for this range.</div>
+            : <Table>
+                <TableHeader>
+                  <TableRow className="border-white/8 bg-zinc-900/40">
+                    <TableHead className="w-8" />
+                    <TableHead className="text-xs w-28">Date</TableHead>
+                    <TableHead className="text-xs">Agent</TableHead>
+                    <TableHead className="text-xs">Dept</TableHead>
+                    <TableHead className="text-xs text-center">Gaps</TableHead>
+                    <TableHead className="text-xs">Gap Durations (LA time)</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {gapRows.map((r, i) => (
+                    <TableRow key={i} className={`border-white/5 transition-colors ${localVerified.has(r.key) ? "bg-emerald-950/20" : "hover:bg-zinc-800/20"}`}>
+                      <TableCell className="pl-3 pr-1">
+                        <Checkbox vkey={r.key} type="availability_gap" member={r.member} department={r.department} date={r.date} details={r} />
+                      </TableCell>
+                      <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(r.date)}</TableCell>
+                      <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "text-emerald-300 line-through decoration-emerald-600/50" : "text-white"}`}>{r.member}</TableCell>
+                      <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.department)}`}>{r.department}</Badge></TableCell>
+                      <TableCell className="text-xs text-center">
+                        <span className={`font-bold ${r.gapCount >= 5 ? "text-rose-400" : r.gapCount >= 3 ? "text-orange-400" : "text-amber-400"}`}>{r.gapCount}</span>
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        <div className="flex flex-wrap gap-1">
+                          {r.gaps.map((g, j) => (
+                            <Tooltip key={j}>
+                              <TooltipTrigger asChild>
+                                <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium cursor-default
+                                  ${g.minutes > 30 ? "bg-rose-500/20 text-rose-300" : g.minutes > 15 ? "bg-orange-500/20 text-orange-300" : "bg-amber-500/20 text-amber-300"}`}>
+                                  {fmtMins(g.minutes)}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent className="text-xs">{fmtTime(g.start)} → {fmtTime(g.end)}</TooltipContent>
+                            </Tooltip>
+                          ))}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+          }
+        </div>
+      )}
+
+      {/* ── Missed While Available ─────────────────────────────────────── */}
+      {!isLoading && !isError && sub === "missed" && (
+        <div className="rounded-xl border border-white/8 overflow-hidden">
+          <div className="px-4 py-2.5 bg-zinc-900/60 border-b border-white/8 flex items-center justify-between">
+            <p className="text-xs font-semibold text-orange-300 flex items-center gap-1.5">
+              <PhoneMissed className="h-3.5 w-3.5" />Missed calls — agent was on shift and not on another call
+            </p>
+            <div className="flex gap-1">
+              {(["date","avail"] as const).map(s => (
+                <button key={s} onClick={() => setSortMissed(s)}
+                  className={`text-[10px] px-2 py-0.5 rounded ${sortMissed === s ? "bg-zinc-700 text-white" : "text-zinc-500 hover:text-zinc-300"}`}>
+                  {s === "date" ? "By Date" : "By Available"}
+                </button>
+              ))}
+            </div>
+          </div>
+          {missedRows.length === 0
+            ? <div className="py-10 text-center text-sm text-zinc-500">No missed-while-available violations for this range.</div>
+            : <Table>
+                <TableHeader>
+                  <TableRow className="border-white/8 bg-zinc-900/40">
+                    <TableHead className="w-8" />
+                    <TableHead className="text-xs w-32">Date / Time</TableHead>
+                    <TableHead className="text-xs">Ring Group</TableHead>
+                    <TableHead className="text-xs">Caller</TableHead>
+                    <TableHead className="text-xs">Available (on shift)</TableHead>
+                    <TableHead className="text-xs text-zinc-600">Busy</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {missedRows.map((r, i) => (
+                    <TableRow key={i} className={`border-white/5 transition-colors ${localVerified.has(r.key) ? "bg-emerald-950/20" : "hover:bg-zinc-800/20"}`}>
+                      <TableCell className="pl-3 pr-1">
+                        <Checkbox vkey={r.key} type="missed_call" member={r.availableAgents[0] ?? ""} department={r.team} date={r.date} details={r} />
+                      </TableCell>
+                      <TableCell className="text-xs text-zinc-400 tabular-nums whitespace-nowrap">
+                        <div>{fmtDate(r.date)}</div>
+                        <div className="text-[10px] text-zinc-500">{fmtTime(r.missedAt)}</div>
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        <div className="text-zinc-200 font-medium">{r.ringGroupName}</div>
+                        <Badge className={`text-[10px] px-1.5 py-0 mt-0.5 border ${deptBadge(r.team.charAt(0).toUpperCase() + r.team.slice(1))}`}>
+                          {r.team}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-xs text-zinc-400 tabular-nums font-mono">
+                        {r.fromNumber.replace(/(\+1)(\d{3})(\d{3})(\d{4})/, "$1 ($2) $3-$4")}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        <div className="flex flex-wrap gap-1">
+                          {r.availableAgents.map((a, j) => (
+                            <span key={j} className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-orange-500/15 text-orange-300 border border-orange-500/25">
+                              {a}
+                            </span>
+                          ))}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        <div className="flex flex-wrap gap-1">
+                          {r.busyAgents.map((a, j) => (
+                            <span key={j} className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] text-zinc-600 bg-zinc-800/40">
+                              {a}
+                            </span>
+                          ))}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+          }
+        </div>
+      )}
+
+      {/* ── Verified Tab ───────────────────────────────────────────────── */}
+      {sub === "verified" && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-zinc-400">
+              {verifiedData?.items.length ?? 0} verified violation{verifiedData?.items.length !== 1 ? "s" : ""} ready to send
+            </p>
+            <button
+              onClick={handleSend}
+              disabled={!verifiedData?.items.length}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all
+                ${verifiedData?.items.length
+                  ? copied ? "bg-emerald-600 text-white" : "bg-violet-600 hover:bg-violet-500 text-white"
+                  : "bg-zinc-800 text-zinc-600 cursor-not-allowed"
+                }`}
+            >
+              {copied ? <><UserCheck className="h-4 w-4" />Copied!</> : <><Send className="h-4 w-4" />Copy Report</>}
+            </button>
+          </div>
+          {!verifiedData?.items.length ? (
+            <div className="rounded-xl border border-white/8 bg-zinc-900/40 py-12 text-center">
+              <UserCheck className="h-8 w-8 mx-auto text-zinc-600 mb-2" />
+              <p className="text-sm text-zinc-500">No verified violations yet.</p>
+              <p className="text-xs text-zinc-600 mt-1">Check the box next to any violation to verify it.</p>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-white/8 overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-white/8 bg-zinc-900/40">
+                    <TableHead className="text-xs">Type</TableHead>
+                    <TableHead className="text-xs">Agent / Info</TableHead>
+                    <TableHead className="text-xs">Dept</TableHead>
+                    <TableHead className="text-xs w-28">Date</TableHead>
+                    <TableHead className="text-xs text-right">Verified By</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {verifiedData.items.map((it, i) => {
+                    let detail = "";
+                    try {
+                      const d = JSON.parse(it.details);
+                      if (it.type === "late_login")       detail = `${fmtMins((d as LateLoginRow).minutesLate)} late`;
+                      if (it.type === "availability_gap") detail = `${(d as AvailGapRow).gapCount} gaps`;
+                      if (it.type === "missed_call")      detail = `${(d as MissedCallEntry).availableAgents.length} available`;
+                    } catch { /* ignore */ }
+                    const typeBadge =
+                      it.type === "late_login"       ? "bg-amber-500/15 text-amber-300 border-amber-500/30" :
+                      it.type === "availability_gap" ? "bg-rose-500/15 text-rose-300 border-rose-500/30" :
+                                                       "bg-orange-500/15 text-orange-300 border-orange-500/30";
+                    const typeLabel =
+                      it.type === "late_login" ? "Late Login" : it.type === "availability_gap" ? "Avail Gap" : "Missed Call";
+                    return (
+                      <TableRow key={i} className="border-white/5 hover:bg-zinc-800/20">
+                        <TableCell className="text-xs">
+                          <Badge className={`text-[10px] px-1.5 py-0 border ${typeBadge}`}>{typeLabel}</Badge>
+                          {detail && <span className="ml-1.5 text-zinc-500 text-[10px]">{detail}</span>}
+                        </TableCell>
+                        <TableCell className="text-xs font-medium text-white">{it.member}</TableCell>
+                        <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(it.department)}`}>{it.department}</Badge></TableCell>
+                        <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(it.date)}</TableCell>
+                        <TableCell className="text-xs text-right text-zinc-500">{it.verifiedBy}</TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
           )}
         </div>
       )}
