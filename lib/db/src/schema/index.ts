@@ -22,3 +22,4 @@ export * from "./pbxMissedCalls";
 export * from "./attendance";
 export * from "./users";
 export * from "./blockedNumbers";
+export * from "./violationVerifications";

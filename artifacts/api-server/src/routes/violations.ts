@@ -1,6 +1,9 @@
 import { Router } from "express";
-import { db, phoneCallsTable, attendanceMembersTable } from "@workspace/db";
-import { and, gte, lte, or, eq } from "drizzle-orm";
+import {
+  db, phoneCallsTable, attendanceMembersTable,
+  violationVerificationsTable, pbxMissedCallsTable,
+} from "@workspace/db";
+import { and, gte, lte, or, eq, inArray } from "drizzle-orm";
 
 const router = Router();
 
@@ -35,13 +38,7 @@ function agentNamesForMember(name: string): string[] {
   return MEMBER_TO_AGENT_NAMES[name] ?? [name];
 }
 
-/**
- * GET /api/violations?from=YYYY-MM-DD&to=YYYY-MM-DD
- *
- * Returns two violation types for all active attendance members:
- *  - lateLogin:        first call > shift_start + 10 min
- *  - availabilityGaps: gaps > 5 min between consecutive calls within a shift window
- */
+/** GET /api/violations?from=YYYY-MM-DD&to=YYYY-MM-DD */
 router.get("/violations", async (req, res) => {
   try {
     const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
@@ -50,63 +47,90 @@ router.get("/violations", async (req, res) => {
 
     const dates = dateRangeLA(from, to).filter((d) => d <= todayLA);
     if (dates.length === 0) {
-      return res.json({ lateLogin: [], availabilityGaps: [] });
+      return res.json({ lateLogin: [], availabilityGaps: [], missedWhileAvail: [], verifiedKeys: [] });
     }
 
     const rangeStart = laStartOfDay(dates[0]);
     const rangeEnd   = new Date(laStartOfDay(dates[dates.length - 1]).getTime() + 24 * 3600 * 1000 - 1);
 
-    const members = await db
-      .select()
-      .from(attendanceMembersTable)
-      .where(eq(attendanceMembersTable.active, true));
-
-    const allAgentLower = new Set<string>();
-    for (const m of members) {
-      for (const n of agentNamesForMember(m.name)) allAgentLower.add(n.toLowerCase());
-    }
-
-    const rows = await db
-      .select({
+    // Parallel fetch: members, verified keys, phone calls, missed PBX calls
+    const [members, verifications, callRows, missedRows] = await Promise.all([
+      db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true)),
+      db.select({ key: violationVerificationsTable.key }).from(violationVerificationsTable),
+      db.select({
         agentName:       phoneCallsTable.agentName,
         direction:       phoneCallsTable.direction,
         status:          phoneCallsTable.status,
         createdAt:       phoneCallsTable.createdAt,
         durationSeconds: phoneCallsTable.durationSeconds,
-      })
-      .from(phoneCallsTable)
-      .where(and(
+      }).from(phoneCallsTable).where(and(
         gte(phoneCallsTable.createdAt, rangeStart),
         lte(phoneCallsTable.createdAt, rangeEnd),
         or(
           eq(phoneCallsTable.direction, "outgoing"),
           and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed")),
         ),
-      ));
+      )),
+      db.select().from(pbxMissedCallsTable).where(and(
+        gte(pbxMissedCallsTable.createdAt, rangeStart),
+        lte(pbxMissedCallsTable.createdAt, rangeEnd),
+        inArray(pbxMissedCallsTable.team, ["retention", "cs", "nsf"]),
+      )),
+    ]);
 
+    const verifiedKeys = new Set(verifications.map((v) => v.key));
+
+    const allAgentLower = new Set<string>();
+    for (const m of members) {
+      for (const n of agentNamesForMember(m.name)) allAgentLower.add(n.toLowerCase());
+    }
+
+    // ── Build per-agent call maps ─────────────────────────────────────────────
+    // callsByAgentDate: for first-call and gap detection
     const callsByAgentDate = new Map<string, Date[]>();
-    for (const row of rows) {
+    // agentCallSpans: for "was busy at time T" detection
+    const agentCallSpans = new Map<string, { start: number; end: number }[]>();
+
+    for (const row of callRows) {
       if (!row.agentName || !row.createdAt) continue;
       const lower = row.agentName.trim().toLowerCase();
       if (!allAgentLower.has(lower)) continue;
       const t = new Date(row.createdAt);
+
+      // by-date map
       const dateLA = t.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-      const key = `${lower}|${dateLA}`;
-      const arr = callsByAgentDate.get(key) ?? [];
-      arr.push(t);
-      callsByAgentDate.set(key, arr);
+      const dateKey = `${lower}|${dateLA}`;
+      const dateArr = callsByAgentDate.get(dateKey) ?? [];
+      dateArr.push(t);
+      callsByAgentDate.set(dateKey, dateArr);
+
+      // spans map for busy check
+      const spanStart = t.getTime();
+      const spanEnd   = spanStart + (row.durationSeconds || 0) * 1000;
+      const spanArr   = agentCallSpans.get(lower) ?? [];
+      spanArr.push({ start: spanStart, end: spanEnd });
+      agentCallSpans.set(lower, spanArr);
     }
     for (const arr of callsByAgentDate.values()) arr.sort((a, b) => a.getTime() - b.getTime());
+
+    function isAgentBusy(agentLower: string, atMs: number): boolean {
+      return (agentCallSpans.get(agentLower) ?? []).some((s) => s.start <= atMs && s.end >= atMs);
+    }
 
     const nowUtc = new Date();
 
     type LateLoginRow = {
-      member: string; department: string; date: string;
+      key: string; member: string; department: string; date: string;
       shiftStart: string; firstCallAt: string; minutesLate: number;
     };
     type GapRow = {
-      member: string; department: string; date: string;
+      key: string; member: string; department: string; date: string;
       gapCount: number; gaps: { start: string; end: string; minutes: number }[];
+    };
+    type MissedCallEntry = {
+      key: string; pbxCallId: number; date: string; missedAt: string;
+      team: string; fromNumber: string; ringGroupName: string;
+      availableAgents: string[]; busyAgents: string[];
     };
 
     const lateLogin: LateLoginRow[] = [];
@@ -123,60 +147,127 @@ router.get("/violations", async (req, res) => {
         const memberNames = agentNamesForMember(member.name);
         const allCalls: Date[] = [];
         for (const n of memberNames) {
-          const key = `${n.toLowerCase()}|${date}`;
-          for (const t of callsByAgentDate.get(key) ?? []) allCalls.push(t);
+          for (const t of callsByAgentDate.get(`${n.toLowerCase()}|${date}`) ?? []) allCalls.push(t);
         }
         allCalls.sort((a, b) => a.getTime() - b.getTime());
 
-        const callsFromDayStart = allCalls.filter((t) => t >= dayStart);
-
-        // ── Late Login ─────────────────────────────────────────────
-        const firstCall = callsFromDayStart[0] ?? null;
+        // ── Late Login ──────────────────────────────────────────────
+        const firstCall = allCalls.find((t) => t >= dayStart) ?? null;
         if (firstCall) {
           const minsLate = Math.round((firstCall.getTime() - shiftStartUtc.getTime()) / 60000);
           if (minsLate > 10) {
             lateLogin.push({
-              member: member.name,
-              department: member.department,
-              date,
-              shiftStart: shiftStartUtc.toISOString(),
-              firstCallAt: firstCall.toISOString(),
-              minutesLate: minsLate,
+              key: `late:${member.name}:${date}`,
+              member: member.name, department: member.department, date,
+              shiftStart: shiftStartUtc.toISOString(), firstCallAt: firstCall.toISOString(), minutesLate: minsLate,
             });
           }
         }
 
-        // ── Availability Gaps (> 5 min between consecutive calls) ──
+        // ── Availability Gaps ───────────────────────────────────────
         const shiftEndUtc = new Date(shiftStartUtc.getTime() + 10 * 3600 * 1000);
         const shiftCalls  = allCalls.filter((t) => t >= shiftStartUtc && t <= shiftEndUtc);
-        if (shiftCalls.length < 2) continue;
-
-        const gaps: { start: string; end: string; minutes: number }[] = [];
-        for (let i = 0; i < shiftCalls.length - 1; i++) {
-          const gapMins = Math.round((shiftCalls[i + 1].getTime() - shiftCalls[i].getTime()) / 60000);
-          if (gapMins > 5) {
-            gaps.push({
-              start:   shiftCalls[i].toISOString(),
-              end:     shiftCalls[i + 1].toISOString(),
-              minutes: gapMins,
+        if (shiftCalls.length >= 2) {
+          const gaps: { start: string; end: string; minutes: number }[] = [];
+          for (let i = 0; i < shiftCalls.length - 1; i++) {
+            const gapMins = Math.round((shiftCalls[i + 1].getTime() - shiftCalls[i].getTime()) / 60000);
+            if (gapMins > 5) gaps.push({ start: shiftCalls[i].toISOString(), end: shiftCalls[i + 1].toISOString(), minutes: gapMins });
+          }
+          if (gaps.length > 0) {
+            availabilityGaps.push({
+              key: `gap:${member.name}:${date}`,
+              member: member.name, department: member.department, date,
+              gapCount: gaps.length, gaps,
             });
           }
-        }
-        if (gaps.length > 0) {
-          availabilityGaps.push({
-            member: member.name,
-            department: member.department,
-            date,
-            gapCount: gaps.length,
-            gaps,
-          });
         }
       }
     }
 
-    return res.json({ lateLogin, availabilityGaps });
+    // ── Missed While Available ──────────────────────────────────────────────────
+    const missedWhileAvail: MissedCallEntry[] = [];
+
+    for (const missed of missedRows) {
+      const missedMs   = new Date(missed.createdAt).getTime();
+      const missedDate = new Date(missed.createdAt).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+      const dayStart   = laStartOfDay(missedDate);
+
+      const availableAgents: string[] = [];
+      const busyAgents:      string[] = [];
+
+      const teamMembers = members.filter((m) => m.department.toLowerCase() === missed.team);
+      for (const member of teamMembers) {
+        const shiftNum = parseInt(member.shift || "0");
+        if (!shiftNum) continue;
+        const shiftStart = dayStart.getTime() + shiftNum * 3600 * 1000;
+        const shiftEnd   = shiftStart + 10 * 3600 * 1000;
+        if (missedMs < shiftStart || missedMs > shiftEnd) continue;
+
+        const agentNames = agentNamesForMember(member.name);
+        const busy = agentNames.some((n) => isAgentBusy(n.toLowerCase(), missedMs));
+        (busy ? busyAgents : availableAgents).push(member.name);
+      }
+
+      if (availableAgents.length > 0) {
+        missedWhileAvail.push({
+          key: `missed:${missed.id}`,
+          pbxCallId: missed.id, date: missedDate,
+          missedAt: missed.createdAt.toISOString(),
+          team: missed.team, fromNumber: missed.fromNumber,
+          ringGroupName: missed.ringGroupName,
+          availableAgents, busyAgents,
+        });
+      }
+    }
+
+    missedWhileAvail.sort((a, b) => b.missedAt.localeCompare(a.missedAt));
+
+    return res.json({ lateLogin, availabilityGaps, missedWhileAvail, verifiedKeys: Array.from(verifiedKeys) });
   } catch (err) {
     req.log.error(err, "violations error");
+    return res.status(500).json({ error: String(err) });
+  }
+});
+
+/** POST /api/violations/verify — mark a violation verified (idempotent) */
+router.post("/violations/verify", async (req, res) => {
+  try {
+    const { key, type, member, department, date, details, verifiedBy = "admin" } = req.body as {
+      key: string; type: string; member: string; department: string;
+      date: string; details: string; verifiedBy?: string;
+    };
+    if (!key || !type || !member || !date) return res.status(400).json({ error: "key, type, member, date required" });
+    await db.insert(violationVerificationsTable)
+      .values({ key, type, member, department, date, details: details ?? "{}", verifiedBy })
+      .onConflictDoNothing();
+    return res.json({ ok: true });
+  } catch (err) {
+    req.log.error(err, "violations/verify POST error");
+    return res.status(500).json({ error: String(err) });
+  }
+});
+
+/** DELETE /api/violations/verify — unverify */
+router.delete("/violations/verify", async (req, res) => {
+  try {
+    const { key } = req.body as { key: string };
+    if (!key) return res.status(400).json({ error: "key required" });
+    await db.delete(violationVerificationsTable).where(eq(violationVerificationsTable.key, key));
+    return res.json({ ok: true });
+  } catch (err) {
+    req.log.error(err, "violations/verify DELETE error");
+    return res.status(500).json({ error: String(err) });
+  }
+});
+
+/** GET /api/violations/verified — all persisted verified violations */
+router.get("/violations/verified", async (req, res) => {
+  try {
+    const rows = await db.select().from(violationVerificationsTable)
+      .orderBy(violationVerificationsTable.verifiedAt);
+    return res.json({ items: rows });
+  } catch (err) {
+    req.log.error(err, "violations/verified GET error");
     return res.status(500).json({ error: String(err) });
   }
 });
