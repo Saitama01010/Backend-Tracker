@@ -6,6 +6,7 @@ export const attendanceMembersTable = pgTable("attendance_members", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   shift: text("shift").notNull().default(""),
+  shiftHours: text("shift_hours").notNull().default("8"),
   department: text("department").notNull().default(""),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

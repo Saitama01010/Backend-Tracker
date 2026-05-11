@@ -107,11 +107,11 @@ router.get("/attendance", async (req, res) => {
 
 router.post("/attendance/members", async (req, res) => {
   try {
-    const { name, shift, department } = req.body as { name: string; shift?: string; department?: string };
+    const { name, shift, shiftHours, department } = req.body as { name: string; shift?: string; shiftHours?: string; department?: string };
     if (!name?.trim()) return res.status(400).json({ error: "name required" });
     const [member] = await db
       .insert(attendanceMembersTable)
-      .values({ name: name.trim(), shift: shift?.trim() ?? "", department: department?.trim() ?? "" })
+      .values({ name: name.trim(), shift: shift?.trim() ?? "", shiftHours: shiftHours?.trim() ?? "8", department: department?.trim() ?? "" })
       .returning();
     res.json(member);
   } catch (err) {
@@ -123,10 +123,11 @@ router.post("/attendance/members", async (req, res) => {
 router.patch("/attendance/members/:id", async (req, res) => {
   try {
     const id = Number(req.params["id"]);
-    const body = req.body as Partial<{ name: string; shift: string; department: string; active: boolean }>;
-    const upd: Partial<{ name: string; shift: string; department: string; active: boolean }> = {};
+    const body = req.body as Partial<{ name: string; shift: string; shiftHours: string; department: string; active: boolean }>;
+    const upd: Partial<{ name: string; shift: string; shiftHours: string; department: string; active: boolean }> = {};
     if (body.name !== undefined) upd.name = body.name.trim();
     if (body.shift !== undefined) upd.shift = body.shift.trim();
+    if (body.shiftHours !== undefined) upd.shiftHours = body.shiftHours.trim();
     if (body.department !== undefined) upd.department = body.department.trim();
     if (body.active !== undefined) upd.active = body.active;
     const [member] = await db.update(attendanceMembersTable).set(upd).where(eq(attendanceMembersTable.id, id)).returning();

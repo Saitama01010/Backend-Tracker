@@ -104,6 +104,9 @@ const NEW_RETENTION_URL =
   "https://docs.google.com/spreadsheets/d/1Eje6BABFbmRGHa6D1ET2sMvlE8o61iJ71yOvydD-R3o/export?format=csv&gid=837339339";
 const NEW_NSF_URL =
   "https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=0";
+// IDP-Handled submissions tab in the same Discord-bot spreadsheet — all rows count as IDP-Handled.
+const IDP_RETENTION_URL =
+  "https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=871007220";
 // Records on/after this date come from the new Discord-bot sheets; older records from the old sheets.
 const RETENTION_CUTOVER = new Date("2026-05-04T00:00:00");
 const NSF = {
@@ -138,13 +141,21 @@ function deriveNewRetentionStatus(val: string): string {
   return "Cancelled";
 }
 
-// Fetches both the old and new retention sheets and merges them:
-//   – Old sheet  → all rows (historical records, unchanged)
-//   – New sheet  → only rows on/after RETENTION_CUTOVER (Discord-bot submissions)
+// Normalized set of Retention agent names for fast membership checks.
+// Defined here (before fetchRetentionCombinedSheet) but after normalizeAgent.
+const RETENTION_AGENTS_NORM_EARLY = new Set([
+  "levi miller", "henry hart", "ryan henderson", "michael belfort",
+  "jacob stephenson", "katherine adams", "talia morgan", "rick miller",
+]);
+
+// Fetches old + new retention sheets AND the Discord-bot sheet (which Retention agents
+// can now also submit to) AND the IDP-Handled tab, merging them all together.
 async function fetchRetentionCombinedSheet(): Promise<SheetData> {
-  const [oldSheet, newSheet] = await Promise.all([
+  const [oldSheet, newSheet, discordSheet, idpSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status),
     fetchHeaderCsv(NEW_RETENTION_URL),
+    fetchHeaderCsv(NEW_NSF_URL),
+    fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
   ]);
 
   const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
@@ -170,9 +181,8 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     }
   }
 
-  // Add new-sheet rows that are on/after the cutover date.
-  // Timestamps are in Egypt time (UTC+2, Discord bot timezone) — convert to California date.
-  // Skip NSF cross-over agents here too.
+  // Add new retention-specific sheet rows on/after the cutover date.
+  // Skip NSF/CS cross-over agents here too.
   for (const r of newSheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
     const d = parseEgyptTimestamp(tsRaw);
@@ -187,6 +197,38 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
       Status: deriveNewRetentionStatus(r["Cancel request update"] ?? ""),
       Date: caDate,
     });
+  }
+
+  // Add Discord-bot sheet (same spreadsheet NSF uses, gid=0) rows for Retention agents.
+  // Retention agents can now also submit there.
+  for (const r of discordSheet.rows) {
+    const tsRaw = (r["Timestamp"] ?? "").trim();
+    const d = parseEgyptTimestamp(tsRaw);
+    if (!d) continue;
+    const caDate = toCaliforniaDateStr(d);
+    if (caDate < "2026-05-04") continue;
+    const agentRaw = (r["Agent Name"] ?? "").trim();
+    const agentNorm = normalizeAgent(agentRaw);
+    if (!RETENTION_AGENTS_NORM_EARLY.has(agentNorm)) continue;
+    rows.push({
+      Agent: agentRaw,
+      Status: deriveNewRetentionStatus(r["Cancel request update"] ?? ""),
+      Date: caDate,
+    });
+  }
+
+  // Add IDP-Handled tab rows (gid=871007220) — every row from Retention agents = IDP-Handled.
+  for (const r of idpSheet.rows) {
+    const tsRaw = (r["Timestamp"] ?? "").trim();
+    const d = parseEgyptTimestamp(tsRaw);
+    if (!d) continue;
+    const caDate = toCaliforniaDateStr(d);
+    if (caDate < "2026-05-04") continue;
+    const agentRaw = (r["Agent Name"] ?? "").trim();
+    if (!agentRaw) continue;
+    const agentNorm = normalizeAgent(agentRaw);
+    if (!RETENTION_AGENTS_NORM_EARLY.has(agentNorm)) continue;
+    rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate });
   }
 
   return { headers: ["Agent", "Status", "Date"], rows };
@@ -2444,7 +2486,7 @@ function TeamPanel({
 }
 
 const CS_AGENTS = ["Ella Monroe", "Chase Miller", "Eli Adam", "Leo Carter", "Nora Adam", "Jacob Xander", "Carla Bennet"];
-const RETENTION_AGENTS = ["Levi Miller", "Henry Hart", "Ryan Henderson", "Michael Belfort", "Jacob Stephenson", "Katherine Adams", "Talia Morgan", "Rick Miller"];
+const RETENTION_AGENTS = ["Levi Miller", "Henry Hart", "Rick Miller", "Michael Belfort", "Ryan Henderson", "Katherine Adams", "Talia Morgan", "Jacob Stephenson"];
 
 function CSPanel() {
   const pbxData = useVosCalls();
@@ -5543,7 +5585,7 @@ function SamiaChat() {
 
 // ─── Attendance ────────────────────────────────────────────────────────────────
 
-interface AttMember { id: number; name: string; shift: string; department: string; active: boolean; }
+interface AttMember { id: number; name: string; shift: string; shiftHours: string; department: string; active: boolean; }
 
 // Convert a 24-hour LA shift number (e.g. 15) to a friendly label like "3 PM".
 function shiftLabel(shift: string): string {
@@ -5599,6 +5641,7 @@ function AttendancePanel() {
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState("");
   const [newShift, setNewShift] = useState("");
+  const [newShiftHours, setNewShiftHours] = useState("8");
   const [newDept, setNewDept] = useState("");
   const [importing, setImporting] = useState(false);
   const [autoMarking, setAutoMarking] = useState(false);
@@ -5705,9 +5748,9 @@ function AttendancePanel() {
     if (!newName.trim()) return;
     await fetch("/api/attendance/members", {
       method: "POST", headers: authHeaders(token),
-      body: JSON.stringify({ name: newName.trim(), shift: newShift.trim(), department: newDept.trim() }),
+      body: JSON.stringify({ name: newName.trim(), shift: newShift.trim(), shiftHours: newShiftHours.trim() || "8", department: newDept.trim() }),
     });
-    setNewName(""); setNewShift(""); setNewDept(""); setShowAdd(false);
+    setNewName(""); setNewShift(""); setNewShiftHours("8"); setNewDept(""); setShowAdd(false);
     qc.invalidateQueries({ queryKey: ["attendance"] });
   }
 
@@ -5715,7 +5758,7 @@ function AttendancePanel() {
     if (!editingMember) return;
     await fetch(`/api/attendance/members/${editingMember.id}`, {
       method: "PATCH", headers: authHeaders(token),
-      body: JSON.stringify({ name: editingMember.name, shift: editingMember.shift, department: editingMember.department }),
+      body: JSON.stringify({ name: editingMember.name, shift: editingMember.shift, shiftHours: editingMember.shiftHours, department: editingMember.department }),
     });
     setEditingMember(null);
     qc.invalidateQueries({ queryKey: ["attendance"] });
@@ -5801,8 +5844,12 @@ function AttendancePanel() {
               <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Full name" className="h-8" onKeyDown={(e) => e.key === "Enter" && addMember()} />
             </div>
             <div className="w-24">
-              <Label className="text-xs text-muted-foreground mb-1 block">Shift</Label>
-              <Input value={newShift} onChange={(e) => setNewShift(e.target.value)} placeholder="e.g. 15 (3 PM)" className="h-8" />
+              <Label className="text-xs text-muted-foreground mb-1 block">Shift start</Label>
+              <Input value={newShift} onChange={(e) => setNewShift(e.target.value)} placeholder="e.g. 8 (8 AM)" className="h-8" />
+            </div>
+            <div className="w-20">
+              <Label className="text-xs text-muted-foreground mb-1 block">Hours</Label>
+              <Input value={newShiftHours} onChange={(e) => setNewShiftHours(e.target.value)} placeholder="8" className="h-8" />
             </div>
             <div className="w-44">
               <Label className="text-xs text-muted-foreground mb-1 block">Department</Label>
@@ -5881,8 +5928,8 @@ function AttendancePanel() {
             <thead>
               <tr className="bg-zinc-950">
                 <th className="sticky left-0 z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-3 py-2 border-b border-white/10 min-w-[160px]">Member</th>
-                <th className="sticky left-[160px] z-20 bg-zinc-950 text-center text-xs text-muted-foreground font-medium px-1 py-2 border-b border-white/10 w-10">Shift</th>
-                <th className="sticky left-[200px] z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-2 py-2 border-b border-white/10 w-24">Dept</th>
+                <th className="sticky left-[160px] z-20 bg-zinc-950 text-center text-xs text-muted-foreground font-medium px-1 py-2 border-b border-white/10 w-[90px]">Shift / Hrs</th>
+                <th className="sticky left-[250px] z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-2 py-2 border-b border-white/10 w-24">Dept</th>
                 {dateCols.map((d) => {
                   const dt = new Date(d + "T12:00:00");
                   const isToday = d === todayStr;
@@ -5922,8 +5969,13 @@ function AttendancePanel() {
                     <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-3 py-1.5 text-sm text-white font-medium border-b border-white/5 whitespace-nowrap`}>
                       {member.name}
                     </td>
-                    <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`} title={`Shift ${member.shift} (LA time)`}>{shiftLabel(member.shift)}</td>
-                    <td className={`sticky left-[200px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-2 border-b border-white/5`}>
+                    <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`} title={`Shift ${member.shift} (LA time) · ${member.shiftHours || "8"}h shift`}>
+                      <div>{shiftLabel(member.shift)}</div>
+                      {member.shiftHours && member.shiftHours !== "8" && (
+                        <span className="text-[9px] font-semibold text-amber-400 bg-amber-400/10 rounded px-1">{member.shiftHours}h</span>
+                      )}
+                    </td>
+                    <td className={`sticky left-[250px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-2 border-b border-white/5`}>
                       {member.department && (
                         <Badge className="text-[10px] px-1.5 py-0 bg-violet-500/20 text-violet-300 border-violet-500/30">{member.department}</Badge>
                       )}
@@ -6054,9 +6106,15 @@ function AttendancePanel() {
                 <Label className="text-xs text-muted-foreground mb-1 block">Name</Label>
                 <Input value={editingMember.name} onChange={(e) => setEditingMember({ ...editingMember, name: e.target.value })} className="h-8" />
               </div>
-              <div>
-                <Label className="text-xs text-muted-foreground mb-1 block">Shift</Label>
-                <Input value={editingMember.shift} onChange={(e) => setEditingMember({ ...editingMember, shift: e.target.value })} className="h-8" placeholder="e.g. 15 (3 PM)" />
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <Label className="text-xs text-muted-foreground mb-1 block">Shift start</Label>
+                  <Input value={editingMember.shift} onChange={(e) => setEditingMember({ ...editingMember, shift: e.target.value })} className="h-8" placeholder="e.g. 8 (8 AM)" />
+                </div>
+                <div className="w-20">
+                  <Label className="text-xs text-muted-foreground mb-1 block">Hours</Label>
+                  <Input value={editingMember.shiftHours ?? "8"} onChange={(e) => setEditingMember({ ...editingMember, shiftHours: e.target.value })} className="h-8" placeholder="8" />
+                </div>
               </div>
               <div>
                 <Label className="text-xs text-muted-foreground mb-1 block">Department</Label>

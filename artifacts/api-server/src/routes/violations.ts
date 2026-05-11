@@ -165,7 +165,8 @@ router.get("/violations", async (req, res) => {
         }
 
         // ── Availability Gaps ───────────────────────────────────────
-        const shiftEndUtc = new Date(shiftStartUtc.getTime() + 10 * 3600 * 1000);
+        const shiftDurHours = Math.max(1, parseInt(member.shiftHours || "8"));
+        const shiftEndUtc = new Date(shiftStartUtc.getTime() + shiftDurHours * 3600 * 1000);
         const shiftCalls  = allCalls.filter((t) => t >= shiftStartUtc && t <= shiftEndUtc);
         if (shiftCalls.length >= 2) {
           const gaps: { start: string; end: string; minutes: number }[] = [];
@@ -200,7 +201,8 @@ router.get("/violations", async (req, res) => {
         const shiftNum = parseInt(member.shift || "0");
         if (!shiftNum) continue;
         const shiftStart = dayStart.getTime() + shiftNum * 3600 * 1000;
-        const shiftEnd   = shiftStart + 10 * 3600 * 1000;
+        const shiftDurH  = Math.max(1, parseInt(member.shiftHours || "8"));
+        const shiftEnd   = shiftStart + shiftDurH * 3600 * 1000;
         if (missedMs < shiftStart || missedMs > shiftEnd) continue;
 
         const agentNames = agentNamesForMember(member.name);
