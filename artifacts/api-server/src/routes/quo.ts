@@ -439,24 +439,21 @@ router.get("/quo/sync-state", async (req, res) => {
 
 router.get("/quo/live", async (req, res) => {
   try {
-    // Real-time source of truth: hit the OpenPhone conversations API for the last
-    // 25 minutes to find any currently in-progress calls. This is more accurate
-    // than the DB (which can lag by up to one sync cycle / 15 min).
+    // Real-time source of truth: query calls directly per phone line without
+    // the participants[] filter. This catches ALL in-progress calls regardless
+    // of when they started — the old conversation-based approach missed calls
+    // longer than 25 minutes because conversation.updatedAt is only set at
+    // call-start time, not refreshed while the call is ongoing.
     const active = new Set<string>();
     try {
-      const sinceConvs = new Date(Date.now() - 25 * 60 * 1000);
-      const sinceCalls = new Date(Date.now() - 4 * 60 * 60 * 1000); // look back 4h for call records
+      const since4h = new Date(Date.now() - 4 * 60 * 60 * 1000);
       type OPUser = { id: string; firstName: string; lastName: string; email?: string };
-      const [convRes, linesRes, usersRes] = await Promise.all([
-        quoFetch<{ data: { id: string; phoneNumberId: string; participants: string[] }[] }>(
-          `/conversations?updatedAfter=${encodeURIComponent(sinceConvs.toISOString())}&maxResults=50`
-        ),
+      const [linesRes, usersRes] = await Promise.all([
         quoFetch<{ data: { id: string; users: OPUser[] }[] }>("/phone-numbers"),
         quoFetch<{ data: OPUser[] }>("/users").catch(() => ({ data: [] as OPUser[] })),
       ]);
 
-      // Build user ID → display name using the same logic as the sync:
-      // email overrides first, then fallback to first+last from the API.
+      // Build user ID → display name (same logic as sync)
       const userMap = new Map<string, string>();
       function addUser(u: OPUser) {
         if (userMap.has(u.id)) return;
@@ -469,31 +466,31 @@ router.get("/quo/live", async (req, res) => {
         for (const u of line.users ?? []) addUser(u);
       }
 
-      // For each recent conversation fetch its calls and check for in-progress
-      const convs = convRes.data ?? [];
-      await Promise.all(
-        convs.slice(0, 30).map(async (conv) => {
-          if (!conv.phoneNumberId) return;
-          const participant = conv.participants?.[0];
-          if (!participant) return;
-          try {
-            const callsRes = await quoFetch<{ data: { status: string; userId?: string | null }[] }>(
-              `/calls?phoneNumberId=${encodeURIComponent(conv.phoneNumberId)}` +
-              `&participants[]=${encodeURIComponent(participant)}` +
-              `&createdAfter=${encodeURIComponent(sinceCalls.toISOString())}&maxResults=10`
-            );
-            for (const call of callsRes.data ?? []) {
-              if (call.status === "in-progress" && call.userId) {
-                const name = userMap.get(call.userId);
-                if (name) active.add(name);
+      // Query calls per line directly — no participants filter needed since we
+      // want ANY in-progress call on any of our lines.
+      const lines = linesRes.data ?? [];
+      const CONCURRENCY = 8;
+      for (let i = 0; i < lines.length; i += CONCURRENCY) {
+        await Promise.all(
+          lines.slice(i, i + CONCURRENCY).map(async (line) => {
+            try {
+              const callsRes = await quoFetch<{ data: { status: string; userId?: string | null }[] }>(
+                `/calls?phoneNumberId=${encodeURIComponent(line.id)}` +
+                `&createdAfter=${encodeURIComponent(since4h.toISOString())}&maxResults=50`
+              );
+              for (const call of callsRes.data ?? []) {
+                if (call.status === "in-progress" && call.userId) {
+                  const name = userMap.get(call.userId);
+                  if (name) active.add(name);
+                }
               }
-            }
-          } catch { /* best-effort per conversation */ }
-        })
-      );
+            } catch { /* best-effort per line */ }
+          })
+        );
+      }
     } catch (apiErr) {
       req.log.warn({ err: String(apiErr) }, "quo live: real-time API failed, falling back to DB");
-      // DB fallback: only use if real-time API is completely unavailable
+      // DB fallback: only if the whole API is down
       const since20 = new Date(Date.now() - 20 * 60 * 1000);
       const dbRows = await db
         .select({ agentName: phoneCallsTable.agentName })
