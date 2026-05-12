@@ -377,11 +377,11 @@ const CS_AGENT_NAMES = new Set([
 ]);
 
 type CancelViolation = {
-  key: string; agent: string; team: "CS" | "NSF"; date: string; rawStatus: string;
+  key: string; agent: string; team: "CS" | "NSF"; date: string; rawStatus: string; fileId: string;
 };
 
 // Scans the retention sheets (Sheet 1 old + Sheet 1 new) for CS/NSF agents who submitted
-// a Cancelled row. Returns one entry per unique agent+date+status combination.
+// a Cancelled row. Returns one entry per unique agent+date+fileId combination.
 async function fetchCancelViolations(): Promise<CancelViolation[]> {
   const [oldSheet, newSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
@@ -390,9 +390,10 @@ async function fetchCancelViolations(): Promise<CancelViolation[]> {
   const violations: CancelViolation[] = [];
   const seen = new Set<string>();
 
-  const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
+  const oldAgentCol  = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
   const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
-  const oldDateCol = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
+  const oldDateCol   = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
+  const oldFileCol   = findColumn(oldSheet.headers, ["File ID", "File Id", "FileID", "file id"]);
   if (oldAgentCol && oldStatusCol) {
     for (const r of oldSheet.rows) {
       const agentRaw = (r[oldAgentCol] ?? "").trim();
@@ -406,17 +407,18 @@ async function fetchCancelViolations(): Promise<CancelViolation[]> {
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
       const d = oldDateCol ? parseDate(dateStr) : null;
       const date = d ? toIsoDate(d) : dateStr;
-      const key = `cancel:old:${agentNorm}:${date}`;
-      if (!seen.has(key)) { seen.add(key); violations.push({ key, agent: agentRaw, team, date, rawStatus }); }
+      const fileId = (oldFileCol ? (r[oldFileCol] ?? "") : "").trim();
+      const key = `cancel:old:${agentNorm}:${date}:${fileId}`;
+      if (!seen.has(key)) { seen.add(key); violations.push({ key, agent: agentRaw, team, date, rawStatus, fileId }); }
     }
   }
 
+  const newFileCol = findColumn(newSheet.headers, ["File ID", "File Id", "FileID", "file id"]);
   for (const r of newSheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
     const d = parseEgyptTimestamp(tsRaw);
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
-    if (caDate < "2026-05-04") continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
     const agentNorm = normalizeAgent(agentRaw);
@@ -426,8 +428,9 @@ async function fetchCancelViolations(): Promise<CancelViolation[]> {
     if (!team) continue;
     const derived = deriveNewRetentionStatus(r["Cancel request update"] ?? "");
     if (isRetainedStatus(derived)) continue;
-    const key = `cancel:new:${agentNorm}:${caDate}`;
-    if (!seen.has(key)) { seen.add(key); violations.push({ key, agent: agentRaw, team, date: caDate, rawStatus: "Cancelled" }); }
+    const fileId = (newFileCol ? (r[newFileCol] ?? "") : "").trim();
+    const key = `cancel:new:${agentNorm}:${caDate}:${fileId}`;
+    if (!seen.has(key)) { seen.add(key); violations.push({ key, agent: agentRaw, team, date: caDate, rawStatus: "Cancelled", fileId }); }
   }
 
   return violations.sort((a, b) => b.date.localeCompare(a.date));
@@ -4914,7 +4917,8 @@ function ViolationsPanel() {
       for (const it of cancelItems) {
         try {
           const d = JSON.parse(it.details) as CancelViolation;
-          lines.push(`• ${d.agent} (${d.team}) — ${fmtDate(d.date)}: ${d.rawStatus}`);
+          const fid = d.fileId ? ` [${d.fileId}]` : "";
+          lines.push(`• ${d.agent} (${d.team}) — ${fmtDate(d.date)}${fid}: ${d.rawStatus}`);
         } catch { lines.push(`• ${it.member} (${it.department}) — ${fmtDate(it.date)}`); }
       }
       lines.push("");
@@ -5241,6 +5245,7 @@ function ViolationsPanel() {
                       <TableHead className="text-xs w-28">Date</TableHead>
                       <TableHead className="text-xs">Agent</TableHead>
                       <TableHead className="text-xs">Team</TableHead>
+                      <TableHead className="text-xs">File ID</TableHead>
                       <TableHead className="text-xs">Status</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -5253,6 +5258,7 @@ function ViolationsPanel() {
                         <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(r.date)}</TableCell>
                         <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "text-emerald-300 line-through decoration-emerald-600/50" : "text-red-200"}`}>{r.agent}</TableCell>
                         <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.team)}`}>{r.team}</Badge></TableCell>
+                        <TableCell className="text-xs font-mono text-zinc-300">{r.fileId || <span className="text-zinc-600">—</span>}</TableCell>
                         <TableCell className="text-xs text-red-400 font-medium">{r.rawStatus}</TableCell>
                       </TableRow>
                     ))}
@@ -5297,6 +5303,7 @@ function ViolationsPanel() {
                     <TableHead className="text-xs">Dept</TableHead>
                     <TableHead className="text-xs w-28">Date</TableHead>
                     <TableHead className="text-xs text-right">Verified By</TableHead>
+                    <TableHead className="w-8" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -5304,18 +5311,22 @@ function ViolationsPanel() {
                     let detail = "";
                     try {
                       const d = JSON.parse(it.details);
-                      if (it.type === "late_login")       detail = `${fmtMins((d as LateLoginRow).minutesLate)} late`;
-                      if (it.type === "availability_gap") detail = `${(d as AvailGapRow).gapCount} gaps`;
-                      if (it.type === "missed_call")      detail = `${(d as MissedCallEntry).availableAgents.length} available`;
+                      if (it.type === "late_login")          detail = `${fmtMins((d as LateLoginRow).minutesLate)} late`;
+                      if (it.type === "availability_gap")    detail = `${(d as AvailGapRow).gapCount} gaps`;
+                      if (it.type === "missed_call")         detail = `${(d as MissedCallEntry).availableAgents.length} available`;
+                      if (it.type === "unauthorized_cancel") { const cd = d as CancelViolation; detail = cd.fileId ? `File ${cd.fileId}` : ""; }
                     } catch { /* ignore */ }
                     const typeBadge =
-                      it.type === "late_login"       ? "bg-amber-500/15 text-amber-300 border-amber-500/30" :
-                      it.type === "availability_gap" ? "bg-rose-500/15 text-rose-300 border-rose-500/30" :
-                                                       "bg-orange-500/15 text-orange-300 border-orange-500/30";
+                      it.type === "late_login"          ? "bg-amber-500/15 text-amber-300 border-amber-500/30" :
+                      it.type === "availability_gap"    ? "bg-rose-500/15 text-rose-300 border-rose-500/30" :
+                      it.type === "unauthorized_cancel" ? "bg-red-500/15 text-red-300 border-red-500/30" :
+                                                          "bg-orange-500/15 text-orange-300 border-orange-500/30";
                     const typeLabel =
-                      it.type === "late_login" ? "Late Login" : it.type === "availability_gap" ? "Avail Gap" : "Missed Call";
+                      it.type === "late_login"          ? "Late Login" :
+                      it.type === "availability_gap"    ? "Avail Gap" :
+                      it.type === "unauthorized_cancel" ? "Cancel" : "Missed Call";
                     return (
-                      <TableRow key={i} className="border-white/5 hover:bg-zinc-800/20">
+                      <TableRow key={i} className="border-white/5 hover:bg-zinc-800/20 group">
                         <TableCell className="text-xs">
                           <Badge className={`text-[10px] px-1.5 py-0 border ${typeBadge}`}>{typeLabel}</Badge>
                           {detail && <span className="ml-1.5 text-zinc-500 text-[10px]">{detail}</span>}
@@ -5324,6 +5335,16 @@ function ViolationsPanel() {
                         <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(it.department)}`}>{it.department}</Badge></TableCell>
                         <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(it.date)}</TableCell>
                         <TableCell className="text-xs text-right text-zinc-500">{it.verifiedBy}</TableCell>
+                        <TableCell className="pr-3">
+                          <button
+                            onClick={() => void toggleVerify(it.key, it.type, it.member, it.department, it.date, {})}
+                            disabled={pending.has(it.key)}
+                            title="Remove flag"
+                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-zinc-600 hover:text-red-400 hover:bg-red-500/10 disabled:cursor-wait"
+                          >
+                            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-current"><path d="M6.5 1h3a.5.5 0 0 1 .5.5v1H6v-1a.5.5 0 0 1 .5-.5M11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3A1.5 1.5 0 0 0 5 1.5v1H1.5a.5.5 0 0 0 0 1h.538l.853 10.66A2 2 0 0 0 4.885 16h6.23a2 2 0 0 0 1.994-1.84l.853-10.66h.538a.5.5 0 0 0 0-1zm1.958 1-.846 10.58a1 1 0 0 1-.997.92h-6.23a1 1 0 0 1-.997-.92L3.042 3.5zm-7.487 1a.5.5 0 0 1 .528.47l.5 8.5a.5.5 0 0 1-1 .06L5 5.03a.5.5 0 0 1 .47-.53Zm5.058 0a.5.5 0 0 1 .47.53l-.5 8.5a.5.5 0 1 1-1-.06l.5-8.5a.5.5 0 0 1 .53-.47M8 4.5a.5.5 0 0 1 .5.5v8.5a.5.5 0 0 1-1 0V5a.5.5 0 0 1 .5-.5"/></svg>
+                          </button>
+                        </TableCell>
                       </TableRow>
                     );
                   })}
