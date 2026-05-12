@@ -4655,9 +4655,71 @@ function HourlyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) 
   );
 }
 
+type NumberBreakdown = {
+  fromNumber: string; team: string; source: "quo" | "pbx" | "both";
+  missedCount: number; firstMissedAt: string; hasCallback: boolean;
+  callbackAt: string | null; responseMinutes: number | null;
+};
+
+function DailyMissedBreakdown({ date }: { date: string }) {
+  const q = useQuery<{ date: string; numbers: NumberBreakdown[]; stats: { total: number; withCallback: number; rate: number } }>({
+    queryKey: ["missedBreakdown", date],
+    queryFn: async () => {
+      const r = await fetch(`/api/vos/missed-breakdown?date=${date}`);
+      if (!r.ok) return { date, numbers: [], stats: { total: 0, withCallback: 0, rate: 0 } };
+      return r.json();
+    },
+    staleTime: 5 * 60_000,
+  });
+
+  if (q.isLoading) return (
+    <div className="px-3 py-2 space-y-1">
+      {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-6 w-full" />)}
+    </div>
+  );
+
+  const numbers = q.data?.numbers ?? [];
+  if (numbers.length === 0) return <p className="px-3 py-2 text-xs text-zinc-600">No breakdown available.</p>;
+
+  const withCB = numbers.filter(n => n.hasCallback).length;
+  const notCalled = numbers.length - withCB;
+
+  return (
+    <div className="bg-zinc-950/60 border-t border-zinc-800/60 px-3 py-2">
+      <div className="flex items-center gap-3 mb-2 text-[10px]">
+        <span className="text-zinc-500">{numbers.length} unique callers</span>
+        <span className="text-emerald-400 font-medium">{withCB} called back ({Math.round(withCB / numbers.length * 100)}%)</span>
+        <span className="text-rose-400">{notCalled} not called</span>
+      </div>
+      <div className="space-y-px max-h-64 overflow-y-auto pr-1">
+        {numbers.map((n) => (
+          <div key={n.fromNumber + n.firstMissedAt} className="flex items-center justify-between text-xs py-1 px-2 rounded hover:bg-zinc-800/40">
+            <span className="font-mono text-zinc-300 tabular-nums">{n.fromNumber}</span>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className={`text-[10px] ${n.team === "retention" ? "text-violet-400" : n.team === "cs" ? "text-emerald-400" : "text-sky-400"}`}>
+                {TEAM_LABELS[n.team] ?? n.team}
+              </span>
+              <span className={`text-[10px] px-1 py-0.5 rounded ${n.source === "quo" ? "bg-violet-500/20 text-violet-300" : n.source === "pbx" ? "bg-sky-500/20 text-sky-300" : "bg-zinc-500/20 text-zinc-300"}`}>
+                {n.source === "both" ? "Quo+PBX" : n.source === "quo" ? "Quo" : "PBX"}
+              </span>
+              {n.missedCount > 1 && <span className="text-zinc-600 text-[10px]">×{n.missedCount}</span>}
+              {n.hasCallback
+                ? <span className="flex items-center gap-0.5 text-emerald-400 font-medium"><PhoneCall className="h-3 w-3" />{n.responseMinutes !== null ? fmtResponseTime(n.responseMinutes) : ""}</span>
+                : <span className="flex items-center gap-0.5 text-rose-400"><PhoneOff className="h-3 w-3" />—</span>
+              }
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function DailyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) {
   const { data, isLoading } = useMissedDaily(mode);
+  const [expandedDate, setExpandedDate] = useState<string | null>(null);
   const days = data?.days ?? [];
+
   if (isLoading) return <div className="space-y-1.5">{Array.from({length:3}).map((_,i)=><Skeleton key={i} className="h-8 w-full"/>)}</div>;
   if (days.length === 0) return null;
 
@@ -4692,37 +4754,56 @@ function DailyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) {
               const nsf = d.nsf.quo + d.nsf.pbx;
               const total = ret + cs + nsf;
               const isToday = d.date === todayStr;
+              const isExpanded = expandedDate === d.date;
               return (
-                <TableRow key={d.date} className={`border-zinc-800 ${isToday ? "bg-zinc-800/30" : "hover:bg-zinc-800/20"}`}>
-                  <TableCell className={`text-xs tabular-nums ${isToday ? "text-white font-medium" : "text-zinc-400"}`}>
-                    {fmt(d.date)}
-                  </TableCell>
-                  <TableCell className="text-xs">
-                    <span className="text-violet-300 font-medium">{ret || "—"}</span>
-                    {ret > 0 && (d.retention.quo > 0 || d.retention.pbx > 0) && (
-                      <span className="text-zinc-600 ml-1 text-[10px]">
-                        {d.retention.quo}q{d.retention.pbx > 0 && ` ${d.retention.pbx}p`}
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-xs">
-                    <span className="text-emerald-300 font-medium">{cs || "—"}</span>
-                    {cs > 0 && (d.cs.quo > 0 || d.cs.pbx > 0) && (
-                      <span className="text-zinc-600 ml-1 text-[10px]">
-                        {d.cs.quo}q{d.cs.pbx > 0 && ` ${d.cs.pbx}p`}
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-xs">
-                    <span className="text-sky-300 font-medium">{nsf || "—"}</span>
-                    {nsf > 0 && (d.nsf.quo > 0 || d.nsf.pbx > 0) && (
-                      <span className="text-zinc-600 ml-1 text-[10px]">
-                        {d.nsf.quo}q{d.nsf.pbx > 0 && ` ${d.nsf.pbx}p`}
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-xs text-right font-semibold text-zinc-200">{total}</TableCell>
-                </TableRow>
+                <Fragment key={d.date}>
+                  <TableRow className={`border-zinc-800 ${isToday ? "bg-zinc-800/30" : "hover:bg-zinc-800/20"}`}>
+                    <TableCell className={`text-xs tabular-nums ${isToday ? "text-white font-medium" : "text-zinc-400"}`}>
+                      {fmt(d.date)}
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      <span className="text-violet-300 font-medium">{ret || "—"}</span>
+                      {ret > 0 && (d.retention.quo > 0 || d.retention.pbx > 0) && (
+                        <span className="text-zinc-600 ml-1 text-[10px]">
+                          {d.retention.quo}q{d.retention.pbx > 0 && ` ${d.retention.pbx}p`}
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      <span className="text-emerald-300 font-medium">{cs || "—"}</span>
+                      {cs > 0 && (d.cs.quo > 0 || d.cs.pbx > 0) && (
+                        <span className="text-zinc-600 ml-1 text-[10px]">
+                          {d.cs.quo}q{d.cs.pbx > 0 && ` ${d.cs.pbx}p`}
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      <span className="text-sky-300 font-medium">{nsf || "—"}</span>
+                      {nsf > 0 && (d.nsf.quo > 0 || d.nsf.pbx > 0) && (
+                        <span className="text-zinc-600 ml-1 text-[10px]">
+                          {d.nsf.quo}q{d.nsf.pbx > 0 && ` ${d.nsf.pbx}p`}
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-xs text-right font-semibold text-zinc-200">
+                      <button
+                        onClick={() => setExpandedDate(isExpanded ? null : d.date)}
+                        className="inline-flex items-center gap-1 hover:text-white transition-colors"
+                        title={isExpanded ? "Collapse" : "Show per-number breakdown"}
+                      >
+                        {total}
+                        <ChevronRight className={`h-3 w-3 text-zinc-500 transition-transform duration-150 ${isExpanded ? "rotate-90" : ""}`} />
+                      </button>
+                    </TableCell>
+                  </TableRow>
+                  {isExpanded && (
+                    <TableRow className="border-zinc-800">
+                      <TableCell colSpan={5} className="p-0">
+                        <DailyMissedBreakdown date={d.date} />
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </Fragment>
               );
             })}
           </TableBody>

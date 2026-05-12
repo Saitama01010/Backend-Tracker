@@ -1102,6 +1102,124 @@ router.get("/vos/missed-daily", async (req, res) => {
   }
 });
 
+router.get("/vos/missed-breakdown", async (req, res) => {
+  try {
+    const dateParam = typeof req.query["date"] === "string" ? req.query["date"] : null;
+    if (!dateParam) return res.status(400).json({ error: "date required (YYYY-MM-DD)" });
+
+    const blocklist = await getBlockedNumbers();
+    const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
+    const internalExclude = cachedInternalNumbers.length > 0
+      ? sql`AND participant NOT IN (${sql.join(cachedInternalNumbers.map(n => sql`${n}`), sql`, `)})`
+      : sql``;
+
+    const [quoRaw, pbxRaw] = await Promise.all([
+      db.execute(sql`
+        SELECT participant, line_team, created_at
+        FROM phone_calls
+        WHERE direction = 'incoming'
+          AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
+          AND line_name IN (${teamLinesInList})
+          AND (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${dateParam}::date
+          AND participant ~ '^[^a-zA-Z]+$'
+          ${internalExclude}
+        ORDER BY created_at ASC
+      `),
+      db.execute(sql`
+        SELECT from_number, team, created_at
+        FROM pbx_missed_calls
+        WHERE (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${dateParam}::date
+          AND team IN ('retention', 'cs', 'nsf')
+        ORDER BY created_at ASC
+      `),
+    ]);
+
+    type QuoRow = { participant: string; line_team: string; created_at: Date };
+    type PbxRow = { from_number: string; team: string; created_at: Date };
+
+    type NumEntry = { fromNumber: string; team: string; sources: Set<"quo" | "pbx">; missedTimes: Date[] };
+    const numMap = new Map<string, NumEntry>();
+
+    for (const r of quoRaw.rows as QuoRow[]) {
+      if (blocklist.has(r.participant)) continue;
+      const norm = normalizePhone(r.participant);
+      if (!norm) continue;
+      if (!numMap.has(norm)) numMap.set(norm, { fromNumber: r.participant, team: r.line_team, sources: new Set(), missedTimes: [] });
+      const e = numMap.get(norm)!;
+      e.sources.add("quo");
+      e.missedTimes.push(new Date(r.created_at));
+    }
+    for (const r of pbxRaw.rows as PbxRow[]) {
+      if (blocklist.has(r.from_number)) continue;
+      const norm = normalizePhone(r.from_number);
+      if (!norm) continue;
+      if (!numMap.has(norm)) numMap.set(norm, { fromNumber: r.from_number, team: r.team, sources: new Set(), missedTimes: [] });
+      const e = numMap.get(norm)!;
+      e.sources.add("pbx");
+      e.missedTimes.push(new Date(r.created_at));
+    }
+
+    if (numMap.size === 0) return res.json({ date: dateParam, numbers: [], stats: { total: 0, withCallback: 0, rate: 0 } });
+
+    // Fetch callbacks for those numbers (same day + following day)
+    const numList = sql.join(Array.from(numMap.keys()).map(n => sql`${n}`), sql`, `);
+    const outboundRaw = await db.execute(sql`
+      SELECT participant, created_at
+      FROM phone_calls
+      WHERE direction = 'outgoing'
+        AND (created_at AT TIME ZONE 'America/Los_Angeles')::date >= ${dateParam}::date
+        AND (created_at AT TIME ZONE 'America/Los_Angeles')::date <= (${dateParam}::date + interval '1 day')
+        AND participant IN (${numList})
+      ORDER BY created_at ASC
+    `);
+
+    const callbackMap = new Map<string, Date[]>();
+    for (const r of outboundRaw.rows as { participant: string; created_at: Date }[]) {
+      const norm = normalizePhone(r.participant);
+      if (!norm) continue;
+      if (!callbackMap.has(norm)) callbackMap.set(norm, []);
+      callbackMap.get(norm)!.push(new Date(r.created_at));
+    }
+
+    type NumberBreakdown = {
+      fromNumber: string; team: string; source: "quo" | "pbx" | "both";
+      missedCount: number; firstMissedAt: string; hasCallback: boolean;
+      callbackAt: string | null; responseMinutes: number | null;
+    };
+    const numbers: NumberBreakdown[] = [];
+
+    for (const [norm, entry] of numMap) {
+      entry.missedTimes.sort((a, b) => a.getTime() - b.getTime());
+      const firstMissed = entry.missedTimes[0];
+      const callbacks = callbackMap.get(norm);
+      const callbackAt = callbacks?.find(t => t >= firstMissed) ?? null;
+      const srcArr = Array.from(entry.sources);
+      numbers.push({
+        fromNumber: entry.fromNumber,
+        team: entry.team,
+        source: srcArr.length === 2 ? "both" : srcArr[0]!,
+        missedCount: entry.missedTimes.length,
+        firstMissedAt: firstMissed.toISOString(),
+        hasCallback: !!callbackAt,
+        callbackAt: callbackAt?.toISOString() ?? null,
+        responseMinutes: callbackAt ? Math.round((callbackAt.getTime() - firstMissed.getTime()) / 60000) : null,
+      });
+    }
+
+    // Not-called-back first, then by first missed time
+    numbers.sort((a, b) => {
+      if (a.hasCallback !== b.hasCallback) return a.hasCallback ? 1 : -1;
+      return new Date(a.firstMissedAt).getTime() - new Date(b.firstMissedAt).getTime();
+    });
+
+    const withCallback = numbers.filter(n => n.hasCallback).length;
+    res.json({ date: dateParam, numbers, stats: { total: numbers.length, withCallback, rate: Math.round(withCallback / numbers.length * 100) / 100 } });
+  } catch (err) {
+    req.log.error(err, "vos missed-breakdown error");
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 router.get("/vos/callback-review", async (req, res) => {
   try {
     const days = Math.min(Math.max(Number(req.query["days"] ?? 14), 1), 30);
