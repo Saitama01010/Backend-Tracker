@@ -439,12 +439,25 @@ router.get("/quo/sync-state", async (req, res) => {
 
 router.get("/quo/live", async (req, res) => {
   try {
-    // Real-time source of truth: query calls directly per phone line without
-    // the participants[] filter. This catches ALL in-progress calls regardless
-    // of when they started — the old conversation-based approach missed calls
-    // longer than 25 minutes because conversation.updatedAt is only set at
-    // call-start time, not refreshed while the call is ongoing.
     const active = new Set<string>();
+
+    // Primary source: DB in-progress calls synced in the last 30 minutes.
+    // The background sync runs every 15 minutes and picks up in-progress calls,
+    // so the DB is always a reliable near-real-time source. OpenPhone's /calls
+    // REST endpoint does NOT expose in-progress calls while they are still live,
+    // making the DB the only dependable source for this status.
+    // Use a 2-hour window so calls synced in earlier cycles are still captured.
+    // in-progress status is specific enough that false positives (stale rows) are rare.
+    const since2h = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const dbRows = await db
+      .select({ agentName: phoneCallsTable.agentName })
+      .from(phoneCallsTable)
+      .where(and(gte(phoneCallsTable.syncedAt, since2h), eq(phoneCallsTable.status, "in-progress")));
+    for (const r of dbRows) if (r.agentName) active.add(r.agentName);
+
+    req.log.info({ fromDb: active.size }, "quo live: DB in-progress");
+
+    // Secondary source: attempt OpenPhone live API for any calls not yet synced.
     try {
       const since4h = new Date(Date.now() - 4 * 60 * 60 * 1000);
       type OPUser = { id: string; firstName: string; lastName: string; email?: string };
@@ -453,7 +466,6 @@ router.get("/quo/live", async (req, res) => {
         quoFetch<{ data: OPUser[] }>("/users").catch(() => ({ data: [] as OPUser[] })),
       ]);
 
-      // Build user ID → display name (same logic as sync)
       const userMap = new Map<string, string>();
       function addUser(u: OPUser) {
         if (userMap.has(u.id)) return;
@@ -462,12 +474,8 @@ router.get("/quo/live", async (req, res) => {
         userMap.set(u.id, override || `${u.firstName} ${u.lastName}`.trim());
       }
       for (const u of usersRes.data ?? []) addUser(u);
-      for (const line of linesRes.data ?? []) {
-        for (const u of line.users ?? []) addUser(u);
-      }
+      for (const line of linesRes.data ?? []) for (const u of line.users ?? []) addUser(u);
 
-      // Query calls per line directly — no participants filter needed since we
-      // want ANY in-progress call on any of our lines.
       const lines = linesRes.data ?? [];
       const CONCURRENCY = 8;
       for (let i = 0; i < lines.length; i += CONCURRENCY) {
@@ -489,14 +497,7 @@ router.get("/quo/live", async (req, res) => {
         );
       }
     } catch (apiErr) {
-      req.log.warn({ err: String(apiErr) }, "quo live: real-time API failed, falling back to DB");
-      // DB fallback: only if the whole API is down
-      const since20 = new Date(Date.now() - 20 * 60 * 1000);
-      const dbRows = await db
-        .select({ agentName: phoneCallsTable.agentName })
-        .from(phoneCallsTable)
-        .where(and(gte(phoneCallsTable.syncedAt, since20), eq(phoneCallsTable.status, "in-progress")));
-      for (const r of dbRows) if (r.agentName) active.add(r.agentName);
+      req.log.warn({ err: String(apiErr) }, "quo live: real-time API failed, using DB only");
     }
 
     res.json({ active: [...active] });
