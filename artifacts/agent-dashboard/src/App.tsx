@@ -4845,12 +4845,12 @@ type CallbackReviewStats = {
   days: number;
 };
 
-function useCallbackReview(days: number) {
+function useCallbackReview(from: string, to: string) {
   return useQuery<{ items: CallbackReviewItem[]; stats: CallbackReviewStats }>({
-    queryKey: ["callbackReview", days],
+    queryKey: ["callbackReview", from, to],
     queryFn: async () => {
-      const r = await fetch(`/api/vos/callback-review?days=${days}`);
-      if (!r.ok) return { items: [], stats: { total: 0, withCallback: 0, rate: 0, avgResponseMinutes: 0, days } };
+      const r = await fetch(`/api/vos/callback-review?from=${from}&to=${to}`);
+      if (!r.ok) return { items: [], stats: { total: 0, withCallback: 0, connected: 0, rate: 0, connectRate: 0, avgResponseMinutes: 0, days: 0 } };
       return r.json();
     },
     staleTime: 5 * 60_000,
@@ -4859,41 +4859,44 @@ function useCallbackReview(days: number) {
   });
 }
 
-function fmtResponseTime(minutes: number): string {
-  if (minutes < 1) return "< 1 min";
-  if (minutes < 60) return `${minutes}m`;
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return m > 0 ? `${h}h ${m}m` : `${h}h`;
-}
-
 function CallbackReviewPanel() {
-  const [days, setDays] = useState(14);
+  const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  const [preset, setPreset] = useState<"today" | "week" | "month" | "custom">("today");
+  const [customFrom, setCustomFrom] = useState(todayStr);
+  const [customTo, setCustomTo] = useState(todayStr);
   const [teamFilter, setTeamFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | "talked" | "no-answer" | "not-called">("all");
-  const [search, setSearch] = useState("");
 
-  const { data, isLoading } = useCallbackReview(days);
-  const items = data?.items ?? [];
-  const stats = data?.stats;
-
-  const visible = useMemo(() => {
-    let list = items;
-    if (teamFilter !== "all") list = list.filter((i) => i.team === teamFilter);
-    if (statusFilter === "talked") list = list.filter((i) => i.callbackConnected);
-    if (statusFilter === "no-answer") list = list.filter((i) => i.hasCallback && !i.callbackConnected);
-    if (statusFilter === "not-called") list = list.filter((i) => !i.hasCallback);
-    if (search) {
-      const s = search.replace(/\D/g, "");
-      if (s) list = list.filter((i) => i.fromNumber.replace(/\D/g, "").includes(s));
+  const { from, to } = useMemo((): { from: string; to: string } => {
+    if (preset === "today") return { from: todayStr, to: todayStr };
+    if (preset === "week") {
+      const laDate = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
+      const dow = laDate.getDay();
+      const daysToMon = dow === 0 ? 6 : dow - 1;
+      laDate.setDate(laDate.getDate() - daysToMon);
+      return { from: laDate.toLocaleDateString("en-CA"), to: todayStr };
     }
-    return list;
-  }, [items, teamFilter, statusFilter, search]);
+    if (preset === "month") return { from: todayStr.slice(0, 7) + "-01", to: todayStr };
+    return { from: customFrom || todayStr, to: customTo || todayStr };
+  }, [preset, customFrom, customTo, todayStr]);
+
+  const { data, isLoading } = useCallbackReview(from, to);
+  const items = data?.items ?? [];
+
+  const teamItems = useMemo(
+    () => teamFilter === "all" ? items : items.filter(i => i.team === teamFilter),
+    [items, teamFilter]
+  );
+
+  const stats = useMemo(() => {
+    const total = teamItems.length;
+    const withCB = teamItems.filter(i => i.hasCallback).length;
+    const connected = teamItems.filter(i => i.callbackConnected).length;
+    return { total, withCB, connected };
+  }, [teamItems]);
 
   const dailyStats = useMemo(() => {
-    const base = teamFilter === "all" ? items : items.filter(i => i.team === teamFilter);
     const map = new Map<string, { missed: number; withCB: number; connected: number }>();
-    for (const item of base) {
+    for (const item of teamItems) {
       const date = new Date(item.missedAt).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
       if (!map.has(date)) map.set(date, { missed: 0, withCB: 0, connected: 0 });
       const d = map.get(date)!;
@@ -4904,19 +4907,18 @@ function CallbackReviewPanel() {
     return Array.from(map.entries())
       .sort(([a], [b]) => b.localeCompare(a))
       .map(([date, s]) => ({ date, ...s }));
-  }, [items, teamFilter]);
+  }, [teamItems]);
 
-  const fmtTime = (iso: string) => {
-    const d = new Date(iso);
-    const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-    const dayStr = d.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-    const timeStr = d.toLocaleTimeString("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit", hour12: true });
-    if (dayStr === todayStr) return `Today ${timeStr}`;
-    return d.toLocaleDateString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric" }) + ` ${timeStr}`;
+  const pct = (n: number, of: number) => of === 0 ? "—" : `${Math.round(n / of * 100)}%`;
+
+  const fmtDay = (d: string) => {
+    if (d === todayStr) return "Today";
+    const dt = new Date(d + "T12:00:00");
+    return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
   };
 
-  const teamColor = (t: string) =>
-    t === "retention" ? "text-violet-300" : t === "cs" ? "text-emerald-300" : t === "nsf" ? "text-sky-300" : "text-zinc-400";
+  const btnCls = (active: boolean, activeColor = "bg-violet-500/25 text-violet-200 border-violet-500/40") =>
+    `text-xs px-3 py-1.5 rounded-md border transition-colors ${active ? activeColor : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"}`;
 
   return (
     <Card className="border-white/5 bg-card/40 backdrop-blur-sm">
@@ -4927,173 +4929,88 @@ function CallbackReviewPanel() {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Stats */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-          <StatTile label="Total Missed" value={isLoading ? "…" : (stats?.total ?? 0).toLocaleString()} tone="rose" icon={<PhoneOff className="h-3.5 w-3.5" />} />
-          <StatTile label="Called Back" value={isLoading ? "…" : (stats?.withCallback ?? 0).toLocaleString()} tone="emerald" icon={<PhoneCall className="h-3.5 w-3.5" />} />
-          <StatTile label="CB Rate" value={isLoading ? "…" : `${Math.round((stats?.rate ?? 0) * 100)}%`} tone="violet" />
-          <StatTile label="Talked" value={isLoading ? "…" : (stats?.connected ?? 0).toLocaleString()} tone="sky" icon={<PhoneCall className="h-3.5 w-3.5" />} />
-          <StatTile label="Connect Rate" value={isLoading ? "…" : `${Math.round((stats?.connectRate ?? 0) * 100)}%`} tone="amber" />
-        </div>
 
-        {/* Daily Breakdown */}
-        {!isLoading && dailyStats.length > 0 && (() => {
-          const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-          const fmtDate = (d: string) => {
-            if (d === todayStr) return "Today";
-            const dt = new Date(d + "T12:00:00");
-            return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
-          };
-          const pct = (n: number, of: number) => of === 0 ? "—" : `${Math.round(n / of * 100)}%`;
-          return (
-            <div className="rounded-lg border border-zinc-800 overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-zinc-800 bg-zinc-900/60">
-                    <TableHead className="text-xs w-28">Date</TableHead>
-                    <TableHead className="text-xs text-right text-rose-400">Missed</TableHead>
-                    <TableHead className="text-xs text-right text-emerald-400">Called Back</TableHead>
-                    <TableHead className="text-xs text-right text-violet-400">CB Rate</TableHead>
-                    <TableHead className="text-xs text-right text-sky-400">Talked</TableHead>
-                    <TableHead className="text-xs text-right text-amber-400">Connect Rate</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {dailyStats.map((d) => (
-                    <TableRow key={d.date} className={`border-zinc-800 hover:bg-zinc-800/20 ${d.date === todayStr ? "bg-zinc-800/30" : ""}`}>
-                      <TableCell className={`text-xs tabular-nums ${d.date === todayStr ? "text-white font-medium" : "text-zinc-400"}`}>
-                        {fmtDate(d.date)}
-                      </TableCell>
-                      <TableCell className="text-xs text-right font-medium text-zinc-200 tabular-nums">{d.missed}</TableCell>
-                      <TableCell className="text-xs text-right tabular-nums">
-                        <span className="text-emerald-300 font-medium">{d.withCB}</span>
-                        <span className="text-zinc-600 ml-1 text-[10px]">{pct(d.withCB, d.missed)}</span>
-                      </TableCell>
-                      <TableCell className="text-xs text-right tabular-nums">
-                        <span className={`font-medium ${d.withCB / d.missed >= 0.8 ? "text-emerald-300" : d.withCB / d.missed >= 0.6 ? "text-amber-300" : "text-rose-300"}`}>
-                          {pct(d.withCB, d.missed)}
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-xs text-right tabular-nums">
-                        <span className="text-sky-300 font-medium">{d.connected}</span>
-                        <span className="text-zinc-600 ml-1 text-[10px]">{pct(d.connected, d.withCB)}</span>
-                      </TableCell>
-                      <TableCell className="text-xs text-right tabular-nums">
-                        <span className={`font-medium ${d.withCB === 0 ? "text-zinc-600" : d.connected / d.withCB >= 0.5 ? "text-emerald-300" : d.connected / d.withCB >= 0.3 ? "text-amber-300" : "text-rose-300"}`}>
-                          {pct(d.connected, d.withCB)}
-                        </span>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          );
-        })()}
-
-        {/* Filters */}
+        {/* Date range + team filters */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* Window */}
-          <div className="flex gap-1">
-            {[7, 14, 30].map((d) => (
-              <button key={d} onClick={() => setDays(d)}
-                className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${days === d ? "bg-violet-500/25 text-violet-200 border-violet-500/40" : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"}`}>
-                {d}d
-              </button>
-            ))}
-          </div>
-          <div className="w-px h-4 bg-zinc-700" />
-          {/* Team */}
+          <button onClick={() => setPreset("today")} className={btnCls(preset === "today")}>Today</button>
+          <button onClick={() => setPreset("week")} className={btnCls(preset === "week")}>This Week</button>
+          <button onClick={() => setPreset("month")} className={btnCls(preset === "month")}>This Month</button>
+          <div className="w-px h-5 bg-zinc-700" />
+          <input
+            type="date" value={customFrom} max={todayStr}
+            onChange={e => { setCustomFrom(e.target.value); setPreset("custom"); }}
+            className="text-xs bg-zinc-800/50 border border-zinc-700/50 rounded-md px-2 py-1 text-zinc-300 focus:outline-none focus:border-zinc-500"
+          />
+          <span className="text-zinc-600 text-xs">—</span>
+          <input
+            type="date" value={customTo} max={todayStr}
+            onChange={e => { setCustomTo(e.target.value); setPreset("custom"); }}
+            className="text-xs bg-zinc-800/50 border border-zinc-700/50 rounded-md px-2 py-1 text-zinc-300 focus:outline-none focus:border-zinc-500"
+          />
+          <div className="w-px h-5 bg-zinc-700" />
           {(["all", "retention", "cs", "nsf"] as const).map((t) => (
             <button key={t} onClick={() => setTeamFilter(t)}
-              className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
-                teamFilter === t
-                  ? t === "retention" ? "bg-violet-500/25 text-violet-200 border-violet-500/40"
-                  : t === "cs" ? "bg-emerald-500/25 text-emerald-200 border-emerald-500/40"
-                  : t === "nsf" ? "bg-sky-500/25 text-sky-200 border-sky-500/40"
-                  : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
-                  : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"
-              }`}>
-              {t === "all" ? "All teams" : TEAM_LABELS[t] ?? t}
+              className={btnCls(teamFilter === t,
+                t === "retention" ? "bg-violet-500/25 text-violet-200 border-violet-500/40"
+                : t === "cs" ? "bg-emerald-500/25 text-emerald-200 border-emerald-500/40"
+                : t === "nsf" ? "bg-sky-500/25 text-sky-200 border-sky-500/40"
+                : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
+              )}>
+              {t === "all" ? "All Teams" : TEAM_LABELS[t] ?? t}
             </button>
           ))}
-          <div className="w-px h-4 bg-zinc-700" />
-          {/* Status */}
-          {(["all", "talked", "no-answer", "not-called"] as const).map((s) => (
-            <button key={s} onClick={() => setStatusFilter(s)}
-              className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
-                statusFilter === s
-                  ? s === "talked" ? "bg-emerald-500/25 text-emerald-200 border-emerald-500/40"
-                  : s === "no-answer" ? "bg-amber-500/25 text-amber-200 border-amber-500/40"
-                  : s === "not-called" ? "bg-rose-500/25 text-rose-200 border-rose-500/40"
-                  : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
-                  : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"
-              }`}>
-              {s === "all" ? "All" : s === "talked" ? "Talked" : s === "no-answer" ? "No Answer" : "Not Called"}
-            </button>
-          ))}
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search number…"
-            className="ml-auto text-xs bg-zinc-800/50 border border-zinc-700/50 rounded-md px-3 py-1 text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 w-36"
-          />
         </div>
 
-        {/* Table */}
+        {/* Stat tiles */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <StatTile label="Total Missed" value={isLoading ? "…" : stats.total.toLocaleString()} tone="rose" icon={<PhoneOff className="h-3.5 w-3.5" />} />
+          <StatTile label="Called Back" value={isLoading ? "…" : stats.withCB.toLocaleString()} tone="emerald" icon={<PhoneCall className="h-3.5 w-3.5" />} />
+          <StatTile label="Talked" value={isLoading ? "…" : stats.connected.toLocaleString()} tone="sky" />
+          <StatTile label="Connect Rate" value={isLoading ? "…" : pct(stats.connected, stats.withCB)} tone="amber" />
+        </div>
+
+        {/* Daily breakdown table */}
         {isLoading ? (
-          <div className="space-y-1.5">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-9 w-full" />)}</div>
-        ) : visible.length === 0 ? (
-          <p className="text-sm text-zinc-600 py-8 text-center">No missed calls found for this period.</p>
+          <div className="space-y-1.5">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-9 w-full" />)}</div>
+        ) : dailyStats.length === 0 ? (
+          <p className="text-sm text-zinc-600 py-8 text-center">No missed calls for this period.</p>
         ) : (
-          <>
-            <div className="rounded-lg border border-zinc-800 overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-zinc-800 bg-zinc-900/60">
-                    <TableHead className="text-xs">Missed At</TableHead>
-                    <TableHead className="text-xs">Number</TableHead>
-                    <TableHead className="text-xs">Team</TableHead>
-                    <TableHead className="text-xs">Src</TableHead>
-                    <TableHead className="text-xs">Status</TableHead>
-                    <TableHead className="text-xs">Callback At</TableHead>
-                    <TableHead className="text-xs text-right">Response</TableHead>
+          <div className="rounded-lg border border-zinc-800 overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow className="border-zinc-800 bg-zinc-900/60">
+                  <TableHead className="text-xs">Date</TableHead>
+                  <TableHead className="text-xs text-right text-rose-400">Missed</TableHead>
+                  <TableHead className="text-xs text-right text-emerald-400">Called Back</TableHead>
+                  <TableHead className="text-xs text-right text-violet-400">CB%</TableHead>
+                  <TableHead className="text-xs text-right text-sky-400">Talked</TableHead>
+                  <TableHead className="text-xs text-right text-amber-400">Connect%</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {dailyStats.map((d) => (
+                  <TableRow key={d.date} className={`border-zinc-800 hover:bg-zinc-800/20 ${d.date === todayStr ? "bg-zinc-800/30" : ""}`}>
+                    <TableCell className={`text-xs font-medium ${d.date === todayStr ? "text-white" : "text-zinc-400"}`}>
+                      {fmtDay(d.date)}
+                    </TableCell>
+                    <TableCell className="text-xs text-right text-zinc-200 tabular-nums font-medium">{d.missed}</TableCell>
+                    <TableCell className="text-xs text-right text-emerald-300 tabular-nums font-medium">{d.withCB}</TableCell>
+                    <TableCell className="text-xs text-right tabular-nums">
+                      <span className={`font-medium ${d.missed === 0 ? "text-zinc-600" : d.withCB / d.missed >= 0.8 ? "text-emerald-300" : d.withCB / d.missed >= 0.6 ? "text-amber-300" : "text-rose-300"}`}>
+                        {pct(d.withCB, d.missed)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-xs text-right text-sky-300 tabular-nums font-medium">{d.connected}</TableCell>
+                    <TableCell className="text-xs text-right tabular-nums">
+                      <span className={`font-medium ${d.withCB === 0 ? "text-zinc-600" : d.connected / d.withCB >= 0.5 ? "text-emerald-300" : d.connected / d.withCB >= 0.3 ? "text-amber-300" : "text-rose-300"}`}>
+                        {pct(d.connected, d.withCB)}
+                      </span>
+                    </TableCell>
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {visible.map((item) => (
-                    <TableRow key={item.id} className="border-zinc-800 hover:bg-zinc-800/20">
-                      <TableCell className="text-xs text-zinc-400 tabular-nums whitespace-nowrap">{fmtTime(item.missedAt)}</TableCell>
-                      <TableCell className="text-xs font-mono text-zinc-300 tabular-nums">{item.fromNumber}</TableCell>
-                      <TableCell className={`text-xs font-medium ${teamColor(item.team)}`}>
-                        {TEAM_LABELS[item.team] ?? item.team}
-                      </TableCell>
-                      <TableCell className="text-xs">
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${item.source === "quo" ? "bg-violet-500/20 text-violet-300" : "bg-sky-500/20 text-sky-300"}`}>
-                          {item.source === "quo" ? "Quo" : "PBX"}
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-xs">
-                        {!item.hasCallback
-                          ? <span className="flex items-center gap-1 text-rose-400"><PhoneOff className="h-3 w-3" />Not Called</span>
-                          : item.callbackConnected
-                            ? <span className="flex items-center gap-1 text-emerald-400 font-medium"><PhoneCall className="h-3 w-3" />Talked</span>
-                            : <span className="flex items-center gap-1 text-amber-400"><PhoneCall className="h-3 w-3" />No Answer</span>
-                        }
-                      </TableCell>
-                      <TableCell className="text-xs text-zinc-400 tabular-nums whitespace-nowrap">
-                        {item.callbackAt ? fmtTime(item.callbackAt) : <span className="text-zinc-600">—</span>}
-                      </TableCell>
-                      <TableCell className="text-xs text-right tabular-nums text-zinc-300">
-                        {item.responseMinutes !== null ? fmtResponseTime(item.responseMinutes) : <span className="text-zinc-600">—</span>}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-            <p className="text-xs text-zinc-600 text-right">Showing {visible.length.toLocaleString()} of {items.length.toLocaleString()} calls</p>
-          </>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         )}
       </CardContent>
     </Card>

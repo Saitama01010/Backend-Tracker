@@ -1244,8 +1244,28 @@ router.get("/vos/missed-breakdown", async (req, res) => {
 
 router.get("/vos/callback-review", async (req, res) => {
   try {
-    const days = Math.min(Math.max(Number(req.query["days"] ?? 14), 1), 30);
-    const windowStart = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const fromParam = typeof req.query["from"] === "string" ? req.query["from"] : null;
+    const toParam = typeof req.query["to"] === "string" ? req.query["to"] : null;
+
+    let missedWhereTime: ReturnType<typeof sql>;
+    let cbWindowStart: Date;
+    let cbWindowEnd: Date;
+
+    if (fromParam && toParam) {
+      missedWhereTime = sql`AND (created_at AT TIME ZONE 'America/Los_Angeles')::date BETWEEN ${fromParam}::date AND ${toParam}::date`;
+      cbWindowStart = new Date(fromParam + "T00:00:00Z");
+      cbWindowStart.setDate(cbWindowStart.getDate() - 1);
+      cbWindowEnd = new Date(toParam + "T23:59:59Z");
+      cbWindowEnd.setDate(cbWindowEnd.getDate() + 3);
+    } else {
+      const days = Math.min(Math.max(Number(req.query["days"] ?? 14), 1), 90);
+      const windowStart = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+      missedWhereTime = sql`AND created_at >= ${windowStart}`;
+      cbWindowStart = windowStart;
+      cbWindowEnd = new Date();
+      cbWindowEnd.setDate(cbWindowEnd.getDate() + 3);
+    }
+
     const blocklist = await getBlockedNumbers();
 
     const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
@@ -1260,7 +1280,7 @@ router.get("/vos/callback-review", async (req, res) => {
       WHERE direction = 'incoming'
         AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
         AND line_name IN (${teamLinesInList})
-        AND created_at >= ${windowStart}
+        ${missedWhereTime}
         AND participant ~ '^[^a-zA-Z]+$'
         ${internalExclude}
       ORDER BY created_at DESC
@@ -1271,7 +1291,8 @@ router.get("/vos/callback-review", async (req, res) => {
     const pbxMissedRaw = await db.execute(sql`
       SELECT id, from_number, team, ring_group_name, created_at
       FROM pbx_missed_calls
-      WHERE created_at >= ${windowStart}
+      WHERE 1=1
+        ${missedWhereTime}
         AND team IN ('retention', 'cs', 'nsf')
       ORDER BY created_at DESC
       LIMIT 2000
@@ -1308,7 +1329,8 @@ router.get("/vos/callback-review", async (req, res) => {
         SELECT participant, created_at, duration_seconds, post_answer_seconds
         FROM phone_calls
         WHERE direction = 'outgoing'
-          AND created_at >= ${windowStart}
+          AND created_at >= ${cbWindowStart}
+          AND created_at <= ${cbWindowEnd}
           AND participant IN (${rawList})
         ORDER BY created_at ASC
       `);
