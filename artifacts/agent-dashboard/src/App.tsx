@@ -4774,6 +4774,10 @@ function ViolationsPanel() {
   const [sortMissed, setSortMissed] = useState<"date" | "avail">("date");
   const [localVerified, setLocalVerified] = useState<Set<string>>(new Set());
   const [pending, setPending] = useState<Set<string>>(new Set());
+  const [localDismissed, setLocalDismissed] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("dismissed_violations") ?? "[]") as string[]); }
+    catch { return new Set<string>(); }
+  });
   const [copied, setCopied] = useState(false);
 
   const { data, isLoading, isError, refetch } = useQuery<ViolationsData>({
@@ -4833,43 +4837,61 @@ function ViolationsPanel() {
     finally { setPending(prev => { const s = new Set(prev); s.delete(key); return s; }); }
   }, [localVerified, token, user.username, refetchVerified]);
 
+  const dismissViolation = useCallback((key: string) => {
+    setLocalDismissed(prev => {
+      const s = new Set(prev);
+      s.add(key);
+      try { localStorage.setItem("dismissed_violations", JSON.stringify(Array.from(s))); } catch { /* ignore */ }
+      return s;
+    });
+  }, []);
+
   const depts = useMemo(() => {
     const s = new Set<string>();
-    for (const r of data?.lateLogin ?? []) s.add(r.department);
-    for (const r of data?.availabilityGaps ?? []) s.add(r.department);
-    for (const r of data?.missedWhileAvail ?? []) s.add(r.team.charAt(0).toUpperCase() + r.team.slice(1));
-    for (const r of cancelData ?? []) s.add(r.team);
+    for (const r of data?.lateLogin ?? []) s.add(r.department.toUpperCase());
+    for (const r of data?.availabilityGaps ?? []) s.add(r.department.toUpperCase());
+    for (const r of data?.missedWhileAvail ?? []) s.add(r.team.toUpperCase());
+    for (const r of cancelData ?? []) s.add(r.team.toUpperCase());
     return ["all", ...Array.from(s).sort()];
   }, [data, cancelData]);
 
   const cancelRows = useMemo(() => {
-    return (cancelData ?? []).filter(r => deptFilter === "all" || r.team === deptFilter);
-  }, [cancelData, deptFilter]);
+    return (cancelData ?? []).filter(r =>
+      !localDismissed.has(r.key) &&
+      (deptFilter === "all" || r.team.toUpperCase() === deptFilter)
+    );
+  }, [cancelData, deptFilter, localDismissed]);
 
   const lateRows = useMemo(() => {
-    let rows = (data?.lateLogin ?? []).filter(r => deptFilter === "all" || r.department === deptFilter);
+    let rows = (data?.lateLogin ?? []).filter(r =>
+      !localDismissed.has(r.key) &&
+      (deptFilter === "all" || r.department.toUpperCase() === deptFilter)
+    );
     if (sortLate === "mins") rows = [...rows].sort((a, b) => b.minutesLate - a.minutesLate);
     else rows = [...rows].sort((a, b) => b.date.localeCompare(a.date) || b.minutesLate - a.minutesLate);
     return rows;
-  }, [data, deptFilter, sortLate]);
+  }, [data, deptFilter, sortLate, localDismissed]);
 
   const gapRows = useMemo(() => {
-    let rows = (data?.availabilityGaps ?? []).filter(r => deptFilter === "all" || r.department === deptFilter);
+    let rows = (data?.availabilityGaps ?? []).filter(r =>
+      !localDismissed.has(r.key) &&
+      (deptFilter === "all" || r.department.toUpperCase() === deptFilter)
+    );
     const longest = (r: AvailGapRow) => Math.max(...r.gaps.map(g => g.minutes));
     if (sortGaps === "count") rows = [...rows].sort((a, b) => b.gapCount - a.gapCount || longest(b) - longest(a));
     else rows = [...rows].sort((a, b) => b.date.localeCompare(a.date) || b.gapCount - a.gapCount);
     return rows;
-  }, [data, deptFilter, sortGaps]);
+  }, [data, deptFilter, sortGaps, localDismissed]);
 
   const missedRows = useMemo(() => {
     let rows = (data?.missedWhileAvail ?? []).filter(r =>
-      deptFilter === "all" || r.team === deptFilter.toLowerCase() ||
-      (r.team.charAt(0).toUpperCase() + r.team.slice(1)) === deptFilter,
+      !localDismissed.has(r.key) &&
+      (deptFilter === "all" || r.team.toUpperCase() === deptFilter)
     );
     if (sortMissed === "avail") rows = [...rows].sort((a, b) => b.availableAgents.length - a.availableAgents.length);
     else rows = [...rows].sort((a, b) => b.missedAt.localeCompare(a.missedAt));
     return rows;
-  }, [data, deptFilter, sortMissed]);
+  }, [data, deptFilter, sortMissed, localDismissed]);
 
   const lateMinsColor = (m: number) =>
     m > 60 ? "text-rose-400 font-bold" : m > 30 ? "text-orange-400 font-semibold" : "text-amber-400";
@@ -5077,11 +5099,12 @@ function ViolationsPanel() {
                     <TableHead className="text-xs">Shift Start</TableHead>
                     <TableHead className="text-xs">First Call</TableHead>
                     <TableHead className="text-xs text-right">Late By</TableHead>
+                    <TableHead className="w-8" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {lateRows.map((r, i) => (
-                    <TableRow key={i} className={`border-white/5 transition-colors ${localVerified.has(r.key) ? "bg-emerald-950/20" : "hover:bg-zinc-800/20"}`}>
+                    <TableRow key={i} className={`border-white/5 transition-colors group ${localVerified.has(r.key) ? "bg-emerald-950/20" : "hover:bg-zinc-800/20"}`}>
                       <TableCell className="pl-3 pr-1">
                         <Checkbox vkey={r.key} type="late_login" member={r.member} department={r.department} date={r.date} details={r} />
                       </TableCell>
@@ -5091,6 +5114,11 @@ function ViolationsPanel() {
                       <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtTime(r.shiftStart)}</TableCell>
                       <TableCell className="text-xs text-zinc-300 tabular-nums">{fmtTime(r.firstCallAt)}</TableCell>
                       <TableCell className={`text-xs tabular-nums text-right ${lateMinsColor(r.minutesLate)}`}>{fmtMins(r.minutesLate)}</TableCell>
+                      <TableCell className="pr-3">
+                        <button onClick={() => dismissViolation(r.key)} title="Dismiss" className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-zinc-600 hover:text-zinc-400 hover:bg-zinc-700/40">
+                          <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-current"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
+                        </button>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -5126,11 +5154,12 @@ function ViolationsPanel() {
                     <TableHead className="text-xs">Dept</TableHead>
                     <TableHead className="text-xs text-center">Gaps</TableHead>
                     <TableHead className="text-xs">Gap Durations (LA time)</TableHead>
+                    <TableHead className="w-8" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {gapRows.map((r, i) => (
-                    <TableRow key={i} className={`border-white/5 transition-colors ${localVerified.has(r.key) ? "bg-emerald-950/20" : "hover:bg-zinc-800/20"}`}>
+                    <TableRow key={i} className={`border-white/5 transition-colors group ${localVerified.has(r.key) ? "bg-emerald-950/20" : "hover:bg-zinc-800/20"}`}>
                       <TableCell className="pl-3 pr-1">
                         <Checkbox vkey={r.key} type="availability_gap" member={r.member} department={r.department} date={r.date} details={r} />
                       </TableCell>
@@ -5154,6 +5183,11 @@ function ViolationsPanel() {
                             </Tooltip>
                           ))}
                         </div>
+                      </TableCell>
+                      <TableCell className="pr-3">
+                        <button onClick={() => dismissViolation(r.key)} title="Dismiss" className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-zinc-600 hover:text-zinc-400 hover:bg-zinc-700/40">
+                          <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-current"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
+                        </button>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -5190,11 +5224,12 @@ function ViolationsPanel() {
                     <TableHead className="text-xs">Caller</TableHead>
                     <TableHead className="text-xs">Available (on shift)</TableHead>
                     <TableHead className="text-xs text-zinc-600">Busy</TableHead>
+                    <TableHead className="w-8" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {missedRows.map((r, i) => (
-                    <TableRow key={i} className={`border-white/5 transition-colors ${localVerified.has(r.key) ? "bg-emerald-950/20" : "hover:bg-zinc-800/20"}`}>
+                    <TableRow key={i} className={`border-white/5 transition-colors group ${localVerified.has(r.key) ? "bg-emerald-950/20" : "hover:bg-zinc-800/20"}`}>
                       <TableCell className="pl-3 pr-1">
                         <Checkbox vkey={r.key} type="missed_call" member={r.availableAgents[0] ?? ""} department={r.team} date={r.date} details={r} />
                       </TableCell>
@@ -5229,6 +5264,11 @@ function ViolationsPanel() {
                           ))}
                         </div>
                       </TableCell>
+                      <TableCell className="pr-3">
+                        <button onClick={() => dismissViolation(r.key)} title="Dismiss" className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-zinc-600 hover:text-zinc-400 hover:bg-zinc-700/40">
+                          <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-current"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
+                        </button>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -5258,11 +5298,12 @@ function ViolationsPanel() {
                       <TableHead className="text-xs">Team</TableHead>
                       <TableHead className="text-xs">File ID</TableHead>
                       <TableHead className="text-xs">Status</TableHead>
+                      <TableHead className="w-8" />
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {cancelRows.map((r, i) => (
-                      <TableRow key={i} className={`border-white/5 transition-colors ${localVerified.has(r.key) ? "bg-emerald-950/20" : "bg-red-950/10 hover:bg-red-950/20"}`}>
+                      <TableRow key={i} className={`border-white/5 transition-colors group ${localVerified.has(r.key) ? "bg-emerald-950/20" : "bg-red-950/10 hover:bg-red-950/20"}`}>
                         <TableCell className="pl-3 pr-1">
                           <Checkbox vkey={r.key} type="unauthorized_cancel" member={r.agent} department={r.team} date={r.date} details={r} />
                         </TableCell>
@@ -5271,6 +5312,11 @@ function ViolationsPanel() {
                         <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.team)}`}>{r.team}</Badge></TableCell>
                         <TableCell className="text-xs font-mono text-zinc-300">{r.fileId || <span className="text-zinc-600">—</span>}</TableCell>
                         <TableCell className="text-xs text-red-400 font-medium">{r.rawStatus}</TableCell>
+                        <TableCell className="pr-3">
+                          <button onClick={() => dismissViolation(r.key)} title="Dismiss" className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-zinc-600 hover:text-zinc-400 hover:bg-zinc-700/40">
+                            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-current"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
+                          </button>
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
