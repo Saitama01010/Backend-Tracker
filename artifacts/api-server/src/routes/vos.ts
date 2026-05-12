@@ -1412,7 +1412,6 @@ router.get("/vos/callback-review", async (req, res) => {
         rate: Math.round(rate * 100) / 100,
         connectRate: Math.round(connectRate * 100) / 100,
         avgResponseMinutes,
-        days,
       },
     });
   } catch (err) {
