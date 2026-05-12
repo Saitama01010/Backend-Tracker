@@ -265,7 +265,6 @@ async function fetchRetentionSheetNSFCrossoverRows(): Promise<Row[]> {
     const d = parseEgyptTimestamp(tsRaw);
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
-    if (caDate < "2026-05-04") continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!RETENTION_SHEET_NSF_AGENTS.has(normalizeAgent(agentRaw))) continue;
     const derived = deriveNewRetentionStatus(r["Cancel request update"] ?? "");
@@ -307,7 +306,6 @@ async function fetchRetentionSheetCSCrossoverRows(): Promise<Row[]> {
     const d = parseEgyptTimestamp(tsRaw);
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
-    if (caDate < "2026-05-04") continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!RETENTION_SHEET_CS_AGENTS.has(normalizeAgent(agentRaw))) continue;
     const derived = deriveNewRetentionStatus(r["Cancel request update"] ?? "");
