@@ -394,6 +394,10 @@ const cumulativeMissedByHour: Record<number, { retention: number; cs: number; ns
 // One-time deep backfill: on first server run, scan 100 pages to populate 14 days of PBX history.
 let pbxBackfillDone = false;
 
+// Cached set of our own phone numbers (PBX lines + OpenPhone lines), updated each refresh cycle.
+// Used to exclude internal callers from the daily/hourly missed-call SQL queries.
+let cachedInternalNumbers: string[] = [];
+
 async function refreshCallHistory(log?: Logger): Promise<void> {
   if (callHistoryFetching) return;
   callHistoryFetching = true;
@@ -557,6 +561,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       ...[...lineToRingGroupId.keys()].map(normalizePhone),
       ...quoLineNumbers,
     ]);
+    cachedInternalNumbers = Array.from(internalNumbers).filter(Boolean);
 
     const scanResult = await scanRingGroupCalls(lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600, agentToRingGroups, internalNumbers);
 
@@ -911,6 +916,9 @@ router.get("/vos/missed-hourly", async (req, res) => {
     const isToday = dateParam === todayLA;
 
     const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
+    const internalExclude = cachedInternalNumbers.length > 0
+      ? sql`AND participant NOT IN (${sql.join(cachedInternalNumbers.map(n => sql`${n}`), sql`, `)})`
+      : sql``;
     const rows = await db.execute(sql`
       SELECT
         EXTRACT(HOUR FROM (created_at AT TIME ZONE 'America/Los_Angeles'))::int AS hour,
@@ -921,6 +929,8 @@ router.get("/vos/missed-hourly", async (req, res) => {
         AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
         AND line_name IN (${teamLinesInList})
         AND (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${dateParam}::date
+        AND participant ~ '^[^a-zA-Z]+$'
+        ${internalExclude}
       GROUP BY hour, line_team
       ORDER BY hour
     `);
@@ -989,8 +999,11 @@ router.get("/vos/missed-daily", async (req, res) => {
   try {
     const window14d = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
 
-    // Quo: daily missed counts — shared team lines only
+    // Quo: daily missed counts — shared team lines only, excluding internal callers
     const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
+    const internalExclude = cachedInternalNumbers.length > 0
+      ? sql`AND participant NOT IN (${sql.join(cachedInternalNumbers.map(n => sql`${n}`), sql`, `)})`
+      : sql``;
     const rows = await db.execute(sql`
       SELECT
         (created_at AT TIME ZONE 'America/Los_Angeles')::date AS day,
@@ -1001,6 +1014,8 @@ router.get("/vos/missed-daily", async (req, res) => {
         AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
         AND line_name IN (${teamLinesInList})
         AND created_at >= ${window14d}
+        AND participant ~ '^[^a-zA-Z]+$'
+        ${internalExclude}
       GROUP BY day, line_team
       ORDER BY day DESC, line_team
     `);
