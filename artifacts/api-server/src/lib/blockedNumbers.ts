@@ -1,9 +1,16 @@
 import { db, blockedNumbersTable } from "@workspace/db";
 
-// Hard-coded numbers always blocked regardless of DB (legacy / known spam)
+// Hard-coded numbers always blocked regardless of DB (legacy / known spam + known internal numbers)
 const HARDCODED_BLOCKLIST = new Set([
   "+17035075710",
   "17035075710",
+  // Internal employee / agent numbers
+  "+18723768788",
+  "18723768788",
+  "+19494401100",
+  "19494401100",
+  "+201098581818",
+  "201098581818",
 ]);
 
 let cachedSet: Set<string> = new Set(HARDCODED_BLOCKLIST);

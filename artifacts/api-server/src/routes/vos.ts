@@ -877,9 +877,11 @@ router.get("/vos/missed-no-callback", async (req, res) => {
 
     const blocklist = await getBlockedNumbers();
     const items: MissedNoCallbackItem[] = [];
+    const internalSet = new Set(cachedInternalNumbers);
     for (const row of quoMissed) {
       if (blocklist.has(row.participant)) continue;
       if (/[a-zA-Z]/.test(row.participant)) continue; // skip internal line-name participants
+      if (internalSet.has(normalizePhone(row.participant))) continue; // skip internal numbers
       const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);
       const times = callbackTimes.get(norm);
