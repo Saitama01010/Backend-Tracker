@@ -1137,42 +1137,49 @@ router.get("/vos/missed-breakdown", async (req, res) => {
     type QuoRow = { participant: string; line_team: string; created_at: Date };
     type PbxRow = { from_number: string; team: string; created_at: Date };
 
-    type NumEntry = { fromNumber: string; team: string; sources: Set<"quo" | "pbx">; missedTimes: Date[] };
+    // numMap keyed by normalized number; also track raw participant strings for SQL lookup
+    type NumEntry = { fromNumber: string; team: string; sources: Set<"quo" | "pbx">; missedTimes: Date[]; rawParticipants: Set<string> };
     const numMap = new Map<string, NumEntry>();
 
     for (const r of quoRaw.rows as QuoRow[]) {
       if (blocklist.has(r.participant)) continue;
       const norm = normalizePhone(r.participant);
       if (!norm) continue;
-      if (!numMap.has(norm)) numMap.set(norm, { fromNumber: r.participant, team: r.line_team, sources: new Set(), missedTimes: [] });
+      if (!numMap.has(norm)) numMap.set(norm, { fromNumber: r.participant, team: r.line_team, sources: new Set(), missedTimes: [], rawParticipants: new Set() });
       const e = numMap.get(norm)!;
       e.sources.add("quo");
       e.missedTimes.push(new Date(r.created_at));
+      e.rawParticipants.add(r.participant);
     }
     for (const r of pbxRaw.rows as PbxRow[]) {
       if (blocklist.has(r.from_number)) continue;
       const norm = normalizePhone(r.from_number);
       if (!norm) continue;
-      if (!numMap.has(norm)) numMap.set(norm, { fromNumber: r.from_number, team: r.team, sources: new Set(), missedTimes: [] });
+      if (!numMap.has(norm)) numMap.set(norm, { fromNumber: r.from_number, team: r.team, sources: new Set(), missedTimes: [], rawParticipants: new Set() });
       const e = numMap.get(norm)!;
       e.sources.add("pbx");
       e.missedTimes.push(new Date(r.created_at));
+      e.rawParticipants.add(r.from_number);
     }
 
     if (numMap.size === 0) return res.json({ date: dateParam, numbers: [], stats: { total: 0, withCallback: 0, rate: 0 } });
 
-    // Fetch callbacks for those numbers (same day + following day)
-    const numList = sql.join(Array.from(numMap.keys()).map(n => sql`${n}`), sql`, `);
+    // Use raw participant values (as stored in phone_calls) for the IN clause
+    const allRaw = new Set<string>();
+    for (const [, e] of numMap) for (const r of e.rawParticipants) allRaw.add(r);
+    const rawList = sql.join(Array.from(allRaw).map(n => sql`${n}`), sql`, `);
+
     const outboundRaw = await db.execute(sql`
       SELECT participant, created_at
       FROM phone_calls
       WHERE direction = 'outgoing'
         AND (created_at AT TIME ZONE 'America/Los_Angeles')::date >= ${dateParam}::date
         AND (created_at AT TIME ZONE 'America/Los_Angeles')::date <= (${dateParam}::date + interval '1 day')
-        AND participant IN (${numList})
+        AND participant IN (${rawList})
       ORDER BY created_at ASC
     `);
 
+    // Normalize outbound results back to the same key as numMap
     const callbackMap = new Map<string, Date[]>();
     for (const r of outboundRaw.rows as { participant: string; created_at: Date }[]) {
       const norm = normalizePhone(r.participant);
@@ -1261,33 +1268,35 @@ router.get("/vos/callback-review", async (req, res) => {
     const quoMissed = quoMissedRaw.rows as QuoRow[];
     const pbxMissed = pbxMissedRaw.rows as PbxRow[];
 
-    // Collect all unique caller numbers for callback lookup
-    const allNumbers = new Set<string>();
+    // Collect unique normalized numbers (for callbackMap key) and raw values (for SQL IN clause)
+    const allNumbers = new Set<string>();   // normalized — used as callbackMap key
+    const allRawNumbers = new Set<string>(); // raw stored values — used in SQL IN clause
     for (const r of quoMissed) {
       if (!blocklist.has(r.participant)) {
         const n = normalizePhone(r.participant);
-        if (n) allNumbers.add(n);
+        if (n) { allNumbers.add(n); allRawNumbers.add(r.participant); }
       }
     }
     for (const r of pbxMissed) {
       if (!blocklist.has(r.from_number)) {
         const n = normalizePhone(r.from_number);
-        if (n) allNumbers.add(n);
+        if (n) { allNumbers.add(n); allRawNumbers.add(r.from_number); }
       }
     }
 
-    // Build callback lookup from Quo outbound calls
+    // Build callback lookup from Quo outbound calls (query by raw participant values)
     const callbackMap = new Map<string, Date[]>();
-    if (allNumbers.size > 0) {
-      const numList = sql.join(Array.from(allNumbers).map(n => sql`${n}`), sql`, `);
+    if (allRawNumbers.size > 0) {
+      const rawList = sql.join(Array.from(allRawNumbers).map(n => sql`${n}`), sql`, `);
       const outboundRaw = await db.execute(sql`
         SELECT participant, created_at
         FROM phone_calls
         WHERE direction = 'outgoing'
           AND created_at >= ${windowStart}
-          AND participant IN (${numList})
+          AND participant IN (${rawList})
         ORDER BY created_at ASC
       `);
+      // Normalize outbound results to match allNumbers keys
       for (const r of outboundRaw.rows as { participant: string; created_at: Date }[]) {
         const norm = normalizePhone(r.participant);
         if (!norm) continue;
