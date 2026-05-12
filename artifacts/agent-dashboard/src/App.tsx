@@ -505,12 +505,37 @@ async function fetchIDPSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
 //   – Discord-bot gid=0 (Sheet 2)                  → Fixed
 //   – IDP-Handled tab (Sheet 3, gid=871007220)      → IDP-Handled
 async function fetchNSFCombinedSheet(): Promise<SheetData> {
-  const [newRows, crossoverRows, idpRows] = await Promise.all([
+  const [newRows, crossoverRows, idpRows, oldNsfSheet] = await Promise.all([
     fetchNewSheetForTeam(NSF_AGENT_NAMES),
     fetchRetentionSheetNSFCrossoverRows(),
     fetchIDPSheetForTeam(NSF_AGENT_NAMES),
+    fetchHeaderCsv(NSF.status).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
   ]);
-  return { headers: ["Agent", "Status", "Date"], rows: [...newRows, ...crossoverRows, ...idpRows] };
+
+  // Pull pre-cutover rows from the old NSF sheet (where agents tracked files before the Discord-bot sheet).
+  // All rows map to "Fixed" since every row represents a file the agent submitted/handled.
+  const oldNsfRows: Row[] = [];
+  const oldAgentCol = findColumn(oldNsfSheet.headers, ["Agent", "Agent Name", "Rep"]);
+  const oldDateCol = findColumn(oldNsfSheet.headers, ["Date", "Day", "Call Date"]);
+  if (oldAgentCol) {
+    for (const r of oldNsfSheet.rows) {
+      const agentRaw = (r[oldAgentCol] ?? "").trim();
+      if (!agentRaw || /total$/i.test(agentRaw)) continue;
+      const agentNorm = normalizeAgent(agentRaw);
+      const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
+      const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
+      const matches = NSF_AGENT_NAMES.has(agentNorm) || NSF_AGENT_NAMES.has(resolvedKey)
+        || segments.some(seg => NSF_AGENT_NAMES.has(seg));
+      if (!matches) continue;
+      const dateStr = oldDateCol ? (r[oldDateCol] ?? "").trim() : "";
+      const d = parseDate(dateStr);
+      // Skip rows on/after the Discord-bot cutover to avoid double-counting with the new sheet.
+      if (d && d >= RETENTION_CUTOVER) continue;
+      oldNsfRows.push({ Agent: agentRaw, Status: "Fixed", Date: d ? toIsoDate(d) : dateStr });
+    }
+  }
+
+  return { headers: ["Agent", "Status", "Date"], rows: [...newRows, ...crossoverRows, ...idpRows, ...oldNsfRows] };
 }
 
 // Fetches CS submissions from all 3 sources:
