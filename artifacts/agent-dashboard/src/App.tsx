@@ -331,7 +331,7 @@ const RETENTION_SHEET_NSF_AGENTS = new Set([
   "austin white", "ahmed gamal",
   "rika hart", "riham samir",
   "jenny morgan", "ayaat",
-  "renee solomon", "raneem",
+  "renee solomon", "raneem", "raneem-renee solomon-3209",
   "ellie moser", "engy mahmoud",
   "estella cruz", "eman khamis",
   "kevin micheal", "omar badr",
@@ -375,6 +375,63 @@ const CS_AGENT_NAMES = new Set([
   "jacob xander", "youssef nady",
   "carla bennet", "bassant emad",
 ]);
+
+type CancelViolation = {
+  key: string; agent: string; team: "CS" | "NSF"; date: string; rawStatus: string;
+};
+
+// Scans the retention sheets (Sheet 1 old + Sheet 1 new) for CS/NSF agents who submitted
+// a Cancelled row. Returns one entry per unique agent+date+status combination.
+async function fetchCancelViolations(): Promise<CancelViolation[]> {
+  const [oldSheet, newSheet] = await Promise.all([
+    fetchHeaderCsv(RETENTION.status).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
+    fetchHeaderCsv(NEW_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
+  ]);
+  const violations: CancelViolation[] = [];
+  const seen = new Set<string>();
+
+  const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
+  const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
+  const oldDateCol = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
+  if (oldAgentCol && oldStatusCol) {
+    for (const r of oldSheet.rows) {
+      const agentRaw = (r[oldAgentCol] ?? "").trim();
+      const agentNorm = normalizeAgent(agentRaw);
+      let team: "CS" | "NSF" | null = null;
+      if (RETENTION_SHEET_CS_AGENTS.has(agentNorm)) team = "CS";
+      else if (RETENTION_SHEET_NSF_AGENTS.has(agentNorm)) team = "NSF";
+      if (!team) continue;
+      const rawStatus = (r[oldStatusCol] ?? "").trim();
+      if (!rawStatus || isRetainedStatus(rawStatus)) continue;
+      const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
+      const d = oldDateCol ? parseDate(dateStr) : null;
+      const date = d ? toIsoDate(d) : dateStr;
+      const key = `cancel:old:${agentNorm}:${date}`;
+      if (!seen.has(key)) { seen.add(key); violations.push({ key, agent: agentRaw, team, date, rawStatus }); }
+    }
+  }
+
+  for (const r of newSheet.rows) {
+    const tsRaw = (r["Timestamp"] ?? "").trim();
+    const d = parseEgyptTimestamp(tsRaw);
+    if (!d) continue;
+    const caDate = toCaliforniaDateStr(d);
+    if (caDate < "2026-05-04") continue;
+    const agentRaw = (r["Agent Name"] ?? "").trim();
+    if (!agentRaw) continue;
+    const agentNorm = normalizeAgent(agentRaw);
+    let team: "CS" | "NSF" | null = null;
+    if (RETENTION_SHEET_CS_AGENTS.has(agentNorm)) team = "CS";
+    else if (RETENTION_SHEET_NSF_AGENTS.has(agentNorm)) team = "NSF";
+    if (!team) continue;
+    const derived = deriveNewRetentionStatus(r["Cancel request update"] ?? "");
+    if (isRetainedStatus(derived)) continue;
+    const key = `cancel:new:${agentNorm}:${caDate}`;
+    if (!seen.has(key)) { seen.add(key); violations.push({ key, agent: agentRaw, team, date: caDate, rawStatus: "Cancelled" }); }
+  }
+
+  return violations.sort((a, b) => b.date.localeCompare(a.date));
+}
 
 // Shared helper: parses the Discord-bot sheet (gid=0) and returns rows belonging to a team.
 // Every submission to this sheet counts as "Fixed" regardless of any status column.
@@ -4721,7 +4778,7 @@ function ViolationsPanel() {
 
   const [from, setFrom] = useState(sevenAgo);
   const [to, setTo]     = useState(todayLA);
-  const [sub, setSub]   = useState<"late" | "gaps" | "missed" | "verified">("late");
+  const [sub, setSub]   = useState<"late" | "gaps" | "missed" | "cancels" | "verified">("late");
   const [deptFilter, setDeptFilter] = useState<string>("all");
   const [sortLate, setSortLate]     = useState<"date" | "mins">("date");
   const [sortGaps, setSortGaps]     = useState<"date" | "count">("count");
@@ -4750,6 +4807,12 @@ function ViolationsPanel() {
       return r.json() as Promise<{ items: VerifiedItem[] }>;
     },
     staleTime: 30 * 1000,
+  });
+
+  const { data: cancelData, isLoading: cancelLoading } = useQuery<CancelViolation[]>({
+    queryKey: ["cancel-violations"],
+    queryFn: fetchCancelViolations,
+    staleTime: 5 * 60 * 1000,
   });
 
   useEffect(() => {
@@ -4786,8 +4849,13 @@ function ViolationsPanel() {
     for (const r of data?.lateLogin ?? []) s.add(r.department);
     for (const r of data?.availabilityGaps ?? []) s.add(r.department);
     for (const r of data?.missedWhileAvail ?? []) s.add(r.team.charAt(0).toUpperCase() + r.team.slice(1));
+    for (const r of cancelData ?? []) s.add(r.team);
     return ["all", ...Array.from(s).sort()];
-  }, [data]);
+  }, [data, cancelData]);
+
+  const cancelRows = useMemo(() => {
+    return (cancelData ?? []).filter(r => deptFilter === "all" || r.team === deptFilter);
+  }, [cancelData, deptFilter]);
 
   const lateRows = useMemo(() => {
     let rows = (data?.lateLogin ?? []).filter(r => deptFilter === "all" || r.department === deptFilter);
@@ -4830,6 +4898,7 @@ function ViolationsPanel() {
     const lateItems   = items.filter(i => i.type === "late_login");
     const gapItems    = items.filter(i => i.type === "availability_gap");
     const missItems   = items.filter(i => i.type === "missed_call");
+    const cancelItems = items.filter(i => i.type === "unauthorized_cancel");
     if (lateItems.length > 0) {
       lines.push(`LATE LOGIN (${lateItems.length})`);
       lines.push("─".repeat(30));
@@ -4864,6 +4933,17 @@ function ViolationsPanel() {
       }
       lines.push("");
     }
+    if (cancelItems.length > 0) {
+      lines.push(`UNAUTHORIZED CANCELLATIONS (${cancelItems.length})`);
+      lines.push("─".repeat(30));
+      for (const it of cancelItems) {
+        try {
+          const d = JSON.parse(it.details) as CancelViolation;
+          lines.push(`• ${d.agent} (${d.team}) — ${fmtDate(d.date)}: ${d.rawStatus}`);
+        } catch { lines.push(`• ${it.member} (${it.department}) — ${fmtDate(it.date)}`); }
+      }
+      lines.push("");
+    }
     void navigator.clipboard.writeText(lines.join("\n"));
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
@@ -4873,6 +4953,7 @@ function ViolationsPanel() {
     { id: "late"     as const, label: "Late Login",    count: data?.lateLogin.length },
     { id: "gaps"     as const, label: "Availability",  count: data?.availabilityGaps.length },
     { id: "missed"   as const, label: "Missed Calls",  count: data?.missedWhileAvail.length },
+    { id: "cancels"  as const, label: "Cancels",       count: cancelData?.length, urgent: (cancelData?.length ?? 0) > 0 },
     { id: "verified" as const, label: "Verified",      count: verifiedCount, accent: true },
   ];
 
@@ -4929,6 +5010,10 @@ function ViolationsPanel() {
             <PhoneMissed className="h-4 w-4 text-orange-400" />
             <div><p className="text-xs text-zinc-400">Missed While Available</p><p className="text-xl font-bold text-orange-300">{data.missedWhileAvail.length}</p></div>
           </div>
+          <div className="flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5">
+            <ShieldAlert className="h-4 w-4 text-red-400" />
+            <div><p className="text-xs text-zinc-400">Unauthorized Cancels</p><p className="text-xl font-bold text-red-300">{cancelData?.length ?? 0}</p></div>
+          </div>
           <div className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5">
             <UserCheck className="h-4 w-4 text-emerald-400" />
             <div><p className="text-xs text-zinc-400">Verified</p><p className="text-xl font-bold text-emerald-300">{verifiedCount}</p></div>
@@ -4943,12 +5028,16 @@ function ViolationsPanel() {
             <button key={t.id} onClick={() => setSub(t.id)}
               className={`px-3 py-1.5 text-xs font-medium transition-colors flex items-center gap-1.5 ${
                 sub === t.id
-                  ? t.accent ? "bg-emerald-600 text-white" : "bg-violet-600 text-white"
+                  ? t.accent ? "bg-emerald-600 text-white" : t.urgent ? "bg-red-600 text-white" : "bg-violet-600 text-white"
                   : "bg-zinc-900/60 text-zinc-400 hover:text-white"
               }`}>
               {t.label}
               {t.count !== undefined && (
-                <span className={`rounded-full px-1.5 py-0 text-[10px] font-bold ${sub === t.id ? "bg-white/20 text-white" : "bg-zinc-700 text-zinc-300"}`}>
+                <span className={`rounded-full px-1.5 py-0 text-[10px] font-bold ${
+                  sub === t.id ? "bg-white/20 text-white"
+                  : t.urgent && (t.count ?? 0) > 0 ? "bg-red-500 text-white"
+                  : "bg-zinc-700 text-zinc-300"
+                }`}>
                   {t.count}
                 </span>
               )}
@@ -5154,6 +5243,46 @@ function ViolationsPanel() {
                   ))}
                 </TableBody>
               </Table>
+          }
+        </div>
+      )}
+
+      {/* ── Unauthorized Cancels ───────────────────────────────────────── */}
+      {sub === "cancels" && (
+        <div className="rounded-xl border border-red-500/30 overflow-hidden">
+          <div className="px-4 py-2.5 bg-zinc-900/60 border-b border-red-500/20 flex items-center justify-between">
+            <p className="text-xs font-semibold text-red-300 flex items-center gap-1.5">
+              <ShieldAlert className="h-3.5 w-3.5" />Unauthorized cancellations — CS/NSF agents are not allowed to cancel files
+            </p>
+          </div>
+          {cancelLoading
+            ? <div className="py-10 text-center text-sm text-zinc-500">Scanning sheets…</div>
+            : cancelRows.length === 0
+              ? <div className="py-10 text-center text-sm text-zinc-500">No unauthorized cancellations found.</div>
+              : <Table>
+                  <TableHeader>
+                    <TableRow className="border-white/8 bg-zinc-900/40">
+                      <TableHead className="w-8" />
+                      <TableHead className="text-xs w-28">Date</TableHead>
+                      <TableHead className="text-xs">Agent</TableHead>
+                      <TableHead className="text-xs">Team</TableHead>
+                      <TableHead className="text-xs">Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {cancelRows.map((r, i) => (
+                      <TableRow key={i} className={`border-white/5 transition-colors ${localVerified.has(r.key) ? "bg-emerald-950/20" : "bg-red-950/10 hover:bg-red-950/20"}`}>
+                        <TableCell className="pl-3 pr-1">
+                          <Checkbox vkey={r.key} type="unauthorized_cancel" member={r.agent} department={r.team} date={r.date} details={r} />
+                        </TableCell>
+                        <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(r.date)}</TableCell>
+                        <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "text-emerald-300 line-through decoration-emerald-600/50" : "text-red-200"}`}>{r.agent}</TableCell>
+                        <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.team)}`}>{r.team}</Badge></TableCell>
+                        <TableCell className="text-xs text-red-400 font-medium">{r.rawStatus}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
           }
         </div>
       )}
