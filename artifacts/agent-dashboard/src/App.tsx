@@ -81,9 +81,6 @@ const ALL_TABS: { value: string; label: string }[] = [
   { value: "nsf",             label: "NSF" },
   { value: "missed-no-cb",    label: "Missed / No CB" },
   { value: "callback-review", label: "CB Review" },
-  { value: "quo-lines",       label: "Quo Lines" },
-  { value: "vos",             label: "PBX" },
-  { value: "readymode",       label: "ReadyMode" },
   { value: "violations",      label: "Violations" },
 ];
 
@@ -3208,7 +3205,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
       // Fallback: teamAccess-based visibility
       const ta = auth.user.teamAccess ?? null;
       const allTeams = ta === null;
-      if (tab === "quo-lines" || tab === "vos" || tab === "readymode" || tab === "violations" || tab === "callback-review") return allTeams;
+      if (tab === "violations" || tab === "callback-review") return allTeams;
       if (tab === "missed-no-cb") return true;
       if (tab === "retention") return allTeams || ta === "retention";
       if (tab === "cs") return allTeams || ta === "cs";
@@ -4496,6 +4493,40 @@ function ReadyModePanel() {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// ─── Phones Panel (sub-tabs: Quo Lines, PBX, ReadyMode) ───────────────────────
+
+function PhonesPanel() {
+  const PHONE_SUB_TABS = [
+    { value: "quo-lines", label: "Quo Lines" },
+    { value: "pbx",       label: "PBX" },
+    { value: "readymode", label: "ReadyMode" },
+  ];
+  const [sub, setSub] = useState("quo-lines");
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2 border-b border-white/10 pb-0">
+        {PHONE_SUB_TABS.map((t) => (
+          <button
+            key={t.value}
+            type="button"
+            onClick={() => setSub(t.value)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
+              sub === t.value
+                ? "border-violet-500 text-violet-300"
+                : "border-transparent text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {sub === "quo-lines"  && <QuoLinesPanel />}
+      {sub === "pbx"        && <VoSPanel />}
+      {sub === "readymode"  && <ReadyModePanel />}
+    </div>
   );
 }
 
@@ -5938,7 +5969,7 @@ function ViolationsPanel() {
   );
 }
 
-type DashView = "metrics" | "attendance";
+type DashView = "metrics" | "attendance" | "phones";
 
 function Dashboard() {
   const { user, logout, can, canSeeTab } = useUser();
@@ -5989,6 +6020,7 @@ function Dashboard() {
                 className="appearance-none pl-4 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500/50"
               >
                 {can("view_metrics") && <option value="metrics">📊 Metrics</option>}
+                {can("view_metrics") && user.role === "admin" && <option value="phones">📞 Phones</option>}
                 {can("view_attendance") && <option value="attendance">🗓 Attendance</option>}
               </select>
               <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs">▾</span>
@@ -6036,7 +6068,9 @@ function Dashboard() {
       </header>
 
       <main className="max-w-[1400px] mx-auto px-3 py-4 sm:px-6 sm:py-8">
-        {view === "metrics" && can("view_metrics") ? (
+        {view === "phones" && user.role === "admin" ? (
+          <PhonesPanel />
+        ) : view === "metrics" && can("view_metrics") ? (
           <Tabs defaultValue={metricsTabs[0]?.value ?? defaultTab} className="space-y-6">
             <div className="overflow-x-auto pb-1 -mx-1 px-1">
               <TabsList className="flex w-max sm:w-full sm:max-w-3xl">
@@ -6068,21 +6102,6 @@ function Dashboard() {
             {canSeeTab("callback-review") && (
               <TabsContent value="callback-review">
                 <CallbackReviewPanel />
-              </TabsContent>
-            )}
-            {canSeeTab("quo-lines") && (
-              <TabsContent value="quo-lines">
-                <QuoLinesPanel />
-              </TabsContent>
-            )}
-            {canSeeTab("vos") && (
-              <TabsContent value="vos">
-                <VoSPanel />
-              </TabsContent>
-            )}
-            {canSeeTab("readymode") && (
-              <TabsContent value="readymode">
-                <ReadyModePanel />
               </TabsContent>
             )}
             {canSeeTab("violations") && (

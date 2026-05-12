@@ -37,9 +37,8 @@ async function getSession(): Promise<string> {
   params.set("login_account", username);
   params.set("login_password", password);
   params.set("then", "");
-  params.set("use_phone_module", "no-phone");
+  params.set("use_phone_module", "auto");
   params.set("user_tz", "America/Los_Angeles");
-  params.set("autoequals", "WebRTC");
 
   const postRes = await fetch(`${RM_BASE}/login_new/`, {
     method: "POST",
