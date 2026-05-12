@@ -352,25 +352,28 @@ const RETENTION_SHEET_CS_AGENTS = new Set([
 // NSF agent display names (normalized lowercase) — used to split the shared
 // Discord-bot sheet between NSF and CS.
 const NSF_AGENT_NAMES = new Set([
-  "zach carter", "ziad",
-  "austin white", "ahmed gamal",
-  "rika hart", "riham samir",
-  "jenny morgan", "ayaat",
-  "renee solomon", "raneem",
-  "ellie moser", "engy mahmoud",
-  "estella cruz", "eman khamis",
-  "katie miller", "sama farouk",
-  "kevin micheal", "omar badr",
-  "raymond reed", "yousef taher",
+  // English display names
+  "zach carter", "austin white", "rika hart", "jenny morgan",
+  "renee solomon", "ellie moser", "estella cruz", "katie miller",
+  "kevin micheal", "raymond reed",
+  // Arabic / alias names
+  "ziad", "ahmed gamal", "riham samir", "ayaat",
+  "raneem", "engy mahmoud", "eman khamis", "sama farouk",
+  "omar badr", "yousef taher",
+  // Compound old-sheet names (submitted in retention sheet)
+  "raneem-renee solomon-3209",
 ]);
 // CS agent display names (normalized lowercase)
 const CS_AGENT_NAMES = new Set([
-  "ella monroe", "hiba kamil",
-  "chase miller", "nour eldin atef",
-  "leo carter", "fares",
-  "nora adam", "nourhan ame",
-  "jacob xander", "youssef nady",
-  "carla bennet", "bassant emad",
+  // English display names
+  "ella monroe", "chase miller", "leo carter", "nora adam", "jacob xander", "carla bennet",
+  // Arabic / alias names
+  "hiba kamil", "nour eldin atef", "nour eldin", "fares", "nourhan amr", "nourhan ame", "youssef nady", "bassant emad",
+  // Compound old-sheet names (submitted in retention / IDP sheets)
+  "youssef nady-jacob xander",
+  "nour eldin-chase miller-2787",
+  "hiba kamil-ella monroe-2882",
+  "nourhan amr-nora adam-2186",
 ]);
 
 type CancelViolation = {
@@ -440,7 +443,6 @@ async function fetchNewSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
     const d = parseEgyptTimestamp(tsRaw);
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
-    if (caDate < "2026-05-04") continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
     const agentNorm = normalizeAgent(agentRaw);
     const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
@@ -460,7 +462,6 @@ async function fetchIDPSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
     const d = parseEgyptTimestamp(tsRaw);
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
-    if (caDate < "2026-05-04") continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
     const agentNorm = normalizeAgent(agentRaw);
@@ -471,39 +472,17 @@ async function fetchIDPSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
   return rows;
 }
 
-// Fetches both the old and new NSF sheets and merges them:
-//   – Old sheet  → all rows (historical records, unchanged)
-//   – New sheet  → only NSF-agent rows on/after RETENTION_CUTOVER
+// Fetches NSF submissions from the same 3 sources as CS:
+//   – Old retention sheet (Sheet 1, gid=837339339) → Retained (via crossover)
+//   – Discord-bot gid=0 (Sheet 2)                  → Fixed
+//   – IDP-Handled tab (Sheet 3, gid=871007220)      → IDP-Handled
 async function fetchNSFCombinedSheet(): Promise<SheetData> {
-  const [oldSheet, newRows, crossoverRows, idpRows] = await Promise.all([
-    fetchHeaderCsv(NSF.status),
+  const [newRows, crossoverRows, idpRows] = await Promise.all([
     fetchNewSheetForTeam(NSF_AGENT_NAMES),
     fetchRetentionSheetNSFCrossoverRows(),
     fetchIDPSheetForTeam(NSF_AGENT_NAMES),
   ]);
-
-  const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
-  const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
-  const oldDateCol = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
-
-  const rows: Row[] = [];
-
-  if (oldAgentCol && oldStatusCol) {
-    for (const r of oldSheet.rows) {
-      const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
-      const d = oldDateCol ? parseDate(dateStr) : null;
-      rows.push({
-        Agent: (r[oldAgentCol] ?? "").trim(),
-        Status: (r[oldStatusCol] ?? "").trim(),
-        Date: d ? toIsoDate(d) : dateStr,
-      });
-    }
-  }
-
-  rows.push(...newRows);
-  rows.push(...crossoverRows);
-  rows.push(...idpRows);
-  return { headers: ["Agent", "Status", "Date"], rows };
+  return { headers: ["Agent", "Status", "Date"], rows: [...newRows, ...crossoverRows, ...idpRows] };
 }
 
 // Fetches CS submissions from all 3 sources:
