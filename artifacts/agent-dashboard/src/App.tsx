@@ -426,7 +426,9 @@ async function fetchCancelViolations(): Promise<CancelViolation[]> {
     if (RETENTION_SHEET_CS_AGENTS.has(agentNorm)) team = "CS";
     else if (RETENTION_SHEET_NSF_AGENTS.has(agentNorm)) team = "NSF";
     if (!team) continue;
-    const derived = deriveNewRetentionStatus(r["Cancel request update"] ?? "");
+    const updateVal = (r["Cancel request update"] ?? "").trim();
+    if (!updateVal) continue; // blank = still pending, not yet confirmed cancelled
+    const derived = deriveNewRetentionStatus(updateVal);
     if (isRetainedStatus(derived)) continue;
     const fileId = (newFileCol ? (r[newFileCol] ?? "") : "").trim();
     const key = `cancel:new:${agentNorm}:${caDate}:${fileId}`;
