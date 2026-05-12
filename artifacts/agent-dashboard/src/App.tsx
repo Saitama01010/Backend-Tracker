@@ -75,13 +75,14 @@ const ALL_PERMISSIONS: { key: Permission; label: string; desc: string }[] = [
 ];
 
 const ALL_TABS: { value: string; label: string }[] = [
-  { value: "retention",    label: "Retention" },
-  { value: "cs",           label: "Internal CS" },
-  { value: "nsf",          label: "NSF" },
-  { value: "missed-no-cb", label: "Missed / No CB" },
-  { value: "quo-lines",    label: "Quo Lines" },
-  { value: "vos",          label: "PBX" },
-  { value: "violations",   label: "Violations" },
+  { value: "retention",       label: "Retention" },
+  { value: "cs",              label: "Internal CS" },
+  { value: "nsf",             label: "NSF" },
+  { value: "missed-no-cb",    label: "Missed / No CB" },
+  { value: "callback-review", label: "CB Review" },
+  { value: "quo-lines",       label: "Quo Lines" },
+  { value: "vos",             label: "PBX" },
+  { value: "violations",      label: "Violations" },
 ];
 
 type TeamAccess = "retention" | "nsf" | "cs";
@@ -3205,7 +3206,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
       // Fallback: teamAccess-based visibility
       const ta = auth.user.teamAccess ?? null;
       const allTeams = ta === null;
-      if (tab === "quo-lines" || tab === "vos" || tab === "violations") return allTeams;
+      if (tab === "quo-lines" || tab === "vos" || tab === "violations" || tab === "callback-review") return allTeams;
       if (tab === "missed-no-cb") return true;
       if (tab === "retention") return allTeams || ta === "retention";
       if (tab === "cs") return allTeams || ta === "cs";
@@ -4731,6 +4732,207 @@ function DailyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) {
   );
 }
 
+// ─── Callback Review Panel ────────────────────────────────────────────────────
+
+type CallbackReviewItem = {
+  id: string;
+  fromNumber: string;
+  team: string;
+  source: "quo" | "pbx";
+  ringGroupName: string;
+  missedAt: string;
+  hasCallback: boolean;
+  callbackAt: string | null;
+  responseMinutes: number | null;
+};
+
+type CallbackReviewStats = {
+  total: number;
+  withCallback: number;
+  rate: number;
+  avgResponseMinutes: number;
+  days: number;
+};
+
+function useCallbackReview(days: number) {
+  return useQuery<{ items: CallbackReviewItem[]; stats: CallbackReviewStats }>({
+    queryKey: ["callbackReview", days],
+    queryFn: async () => {
+      const r = await fetch(`/api/vos/callback-review?days=${days}`);
+      if (!r.ok) return { items: [], stats: { total: 0, withCallback: 0, rate: 0, avgResponseMinutes: 0, days } };
+      return r.json();
+    },
+    staleTime: 5 * 60_000,
+    refetchInterval: 10 * 60_000,
+    refetchOnWindowFocus: true,
+  });
+}
+
+function fmtResponseTime(minutes: number): string {
+  if (minutes < 1) return "< 1 min";
+  if (minutes < 60) return `${minutes}m`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+function CallbackReviewPanel() {
+  const [days, setDays] = useState(14);
+  const [teamFilter, setTeamFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "called" | "not-called">("all");
+  const [search, setSearch] = useState("");
+
+  const { data, isLoading } = useCallbackReview(days);
+  const items = data?.items ?? [];
+  const stats = data?.stats;
+
+  const visible = useMemo(() => {
+    let list = items;
+    if (teamFilter !== "all") list = list.filter((i) => i.team === teamFilter);
+    if (statusFilter === "called") list = list.filter((i) => i.hasCallback);
+    if (statusFilter === "not-called") list = list.filter((i) => !i.hasCallback);
+    if (search) {
+      const s = search.replace(/\D/g, "");
+      if (s) list = list.filter((i) => i.fromNumber.replace(/\D/g, "").includes(s));
+    }
+    return list;
+  }, [items, teamFilter, statusFilter, search]);
+
+  const fmtTime = (iso: string) => {
+    const d = new Date(iso);
+    const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+    const dayStr = d.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+    const timeStr = d.toLocaleTimeString("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit", hour12: true });
+    if (dayStr === todayStr) return `Today ${timeStr}`;
+    return d.toLocaleDateString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric" }) + ` ${timeStr}`;
+  };
+
+  const teamColor = (t: string) =>
+    t === "retention" ? "text-violet-300" : t === "cs" ? "text-emerald-300" : t === "nsf" ? "text-sky-300" : "text-zinc-400";
+
+  return (
+    <Card className="border-white/5 bg-card/40 backdrop-blur-sm">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base font-semibold flex items-center gap-2">
+          <PhoneCall className="h-4 w-4 text-violet-400" />
+          Callback Review
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Stats */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <StatTile label="Total Missed" value={isLoading ? "…" : (stats?.total ?? 0).toLocaleString()} tone="rose" icon={<PhoneOff className="h-3.5 w-3.5" />} />
+          <StatTile label="Called Back" value={isLoading ? "…" : (stats?.withCallback ?? 0).toLocaleString()} tone="emerald" icon={<PhoneCall className="h-3.5 w-3.5" />} />
+          <StatTile label="Callback Rate" value={isLoading ? "…" : `${Math.round((stats?.rate ?? 0) * 100)}%`} tone="violet" />
+          <StatTile label="Avg Response" value={isLoading ? "…" : (stats?.avgResponseMinutes ? fmtResponseTime(stats.avgResponseMinutes) : "—")} tone="sky" />
+        </div>
+
+        {/* Filters */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Window */}
+          <div className="flex gap-1">
+            {[7, 14, 30].map((d) => (
+              <button key={d} onClick={() => setDays(d)}
+                className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${days === d ? "bg-violet-500/25 text-violet-200 border-violet-500/40" : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"}`}>
+                {d}d
+              </button>
+            ))}
+          </div>
+          <div className="w-px h-4 bg-zinc-700" />
+          {/* Team */}
+          {(["all", "retention", "cs", "nsf"] as const).map((t) => (
+            <button key={t} onClick={() => setTeamFilter(t)}
+              className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
+                teamFilter === t
+                  ? t === "retention" ? "bg-violet-500/25 text-violet-200 border-violet-500/40"
+                  : t === "cs" ? "bg-emerald-500/25 text-emerald-200 border-emerald-500/40"
+                  : t === "nsf" ? "bg-sky-500/25 text-sky-200 border-sky-500/40"
+                  : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
+                  : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"
+              }`}>
+              {t === "all" ? "All teams" : TEAM_LABELS[t] ?? t}
+            </button>
+          ))}
+          <div className="w-px h-4 bg-zinc-700" />
+          {/* Status */}
+          {(["all", "called", "not-called"] as const).map((s) => (
+            <button key={s} onClick={() => setStatusFilter(s)}
+              className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
+                statusFilter === s
+                  ? s === "called" ? "bg-emerald-500/25 text-emerald-200 border-emerald-500/40"
+                  : s === "not-called" ? "bg-rose-500/25 text-rose-200 border-rose-500/40"
+                  : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
+                  : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"
+              }`}>
+              {s === "all" ? "All" : s === "called" ? "Called Back" : "Not Called"}
+            </button>
+          ))}
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search number…"
+            className="ml-auto text-xs bg-zinc-800/50 border border-zinc-700/50 rounded-md px-3 py-1 text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 w-36"
+          />
+        </div>
+
+        {/* Table */}
+        {isLoading ? (
+          <div className="space-y-1.5">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-9 w-full" />)}</div>
+        ) : visible.length === 0 ? (
+          <p className="text-sm text-zinc-600 py-8 text-center">No missed calls found for this period.</p>
+        ) : (
+          <>
+            <div className="rounded-lg border border-zinc-800 overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-zinc-800 bg-zinc-900/60">
+                    <TableHead className="text-xs">Missed At</TableHead>
+                    <TableHead className="text-xs">Number</TableHead>
+                    <TableHead className="text-xs">Team</TableHead>
+                    <TableHead className="text-xs">Src</TableHead>
+                    <TableHead className="text-xs">Status</TableHead>
+                    <TableHead className="text-xs">Callback At</TableHead>
+                    <TableHead className="text-xs text-right">Response</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {visible.map((item) => (
+                    <TableRow key={item.id} className="border-zinc-800 hover:bg-zinc-800/20">
+                      <TableCell className="text-xs text-zinc-400 tabular-nums whitespace-nowrap">{fmtTime(item.missedAt)}</TableCell>
+                      <TableCell className="text-xs font-mono text-zinc-300 tabular-nums">{item.fromNumber}</TableCell>
+                      <TableCell className={`text-xs font-medium ${teamColor(item.team)}`}>
+                        {TEAM_LABELS[item.team] ?? item.team}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${item.source === "quo" ? "bg-violet-500/20 text-violet-300" : "bg-sky-500/20 text-sky-300"}`}>
+                          {item.source === "quo" ? "Quo" : "PBX"}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {item.hasCallback
+                          ? <span className="flex items-center gap-1 text-emerald-400 font-medium"><PhoneCall className="h-3 w-3" />Called Back</span>
+                          : <span className="flex items-center gap-1 text-rose-400"><PhoneOff className="h-3 w-3" />Not Called</span>
+                        }
+                      </TableCell>
+                      <TableCell className="text-xs text-zinc-400 tabular-nums whitespace-nowrap">
+                        {item.callbackAt ? fmtTime(item.callbackAt) : <span className="text-zinc-600">—</span>}
+                      </TableCell>
+                      <TableCell className="text-xs text-right tabular-nums text-zinc-300">
+                        {item.responseMinutes !== null ? fmtResponseTime(item.responseMinutes) : <span className="text-zinc-600">—</span>}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <p className="text-xs text-zinc-600 text-right">Showing {visible.length.toLocaleString()} of {items.length.toLocaleString()} calls</p>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── Violations Panel ─────────────────────────────────────────────────────────
 
 type LateLoginRow = {
@@ -5558,6 +5760,11 @@ function Dashboard() {
             {canSeeTab("missed-no-cb") && (
               <TabsContent value="missed-no-cb">
                 <MissedNoCBPanel lockedTeam={ta} />
+              </TabsContent>
+            )}
+            {canSeeTab("callback-review") && (
+              <TabsContent value="callback-review">
+                <CallbackReviewPanel />
               </TabsContent>
             )}
             {canSeeTab("quo-lines") && (

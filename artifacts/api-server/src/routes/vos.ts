@@ -1102,6 +1102,145 @@ router.get("/vos/missed-daily", async (req, res) => {
   }
 });
 
+router.get("/vos/callback-review", async (req, res) => {
+  try {
+    const days = Math.min(Math.max(Number(req.query["days"] ?? 14), 1), 30);
+    const windowStart = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const blocklist = await getBlockedNumbers();
+
+    const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
+    const internalExclude = cachedInternalNumbers.length > 0
+      ? sql`AND participant NOT IN (${sql.join(cachedInternalNumbers.map(n => sql`${n}`), sql`, `)})`
+      : sql``;
+
+    // All Quo missed calls in window (excluding internal/blocked)
+    const quoMissedRaw = await db.execute(sql`
+      SELECT id, participant, line_team, line_name, created_at
+      FROM phone_calls
+      WHERE direction = 'incoming'
+        AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
+        AND line_name IN (${teamLinesInList})
+        AND created_at >= ${windowStart}
+        AND participant ~ '^[^a-zA-Z]+$'
+        ${internalExclude}
+      ORDER BY created_at DESC
+      LIMIT 2000
+    `);
+
+    // All PBX missed calls in window
+    const pbxMissedRaw = await db.execute(sql`
+      SELECT id, from_number, team, ring_group_name, created_at
+      FROM pbx_missed_calls
+      WHERE created_at >= ${windowStart}
+        AND team IN ('retention', 'cs', 'nsf')
+      ORDER BY created_at DESC
+      LIMIT 2000
+    `);
+
+    type QuoRow = { id: string; participant: string; line_team: string; line_name: string; created_at: Date };
+    type PbxRow = { id: number; from_number: string; team: string; ring_group_name: string; created_at: Date };
+
+    const quoMissed = quoMissedRaw.rows as QuoRow[];
+    const pbxMissed = pbxMissedRaw.rows as PbxRow[];
+
+    // Collect all unique caller numbers for callback lookup
+    const allNumbers = new Set<string>();
+    for (const r of quoMissed) {
+      if (!blocklist.has(r.participant)) {
+        const n = normalizePhone(r.participant);
+        if (n) allNumbers.add(n);
+      }
+    }
+    for (const r of pbxMissed) {
+      if (!blocklist.has(r.from_number)) {
+        const n = normalizePhone(r.from_number);
+        if (n) allNumbers.add(n);
+      }
+    }
+
+    // Build callback lookup from Quo outbound calls
+    const callbackMap = new Map<string, Date[]>();
+    if (allNumbers.size > 0) {
+      const numList = sql.join(Array.from(allNumbers).map(n => sql`${n}`), sql`, `);
+      const outboundRaw = await db.execute(sql`
+        SELECT participant, created_at
+        FROM phone_calls
+        WHERE direction = 'outgoing'
+          AND created_at >= ${windowStart}
+          AND participant IN (${numList})
+        ORDER BY created_at ASC
+      `);
+      for (const r of outboundRaw.rows as { participant: string; created_at: Date }[]) {
+        const norm = normalizePhone(r.participant);
+        if (!norm) continue;
+        if (!callbackMap.has(norm)) callbackMap.set(norm, []);
+        callbackMap.get(norm)!.push(new Date(r.created_at));
+      }
+    }
+
+    type ReviewItem = {
+      id: string; fromNumber: string; team: string; source: "quo" | "pbx";
+      ringGroupName: string; missedAt: string; hasCallback: boolean;
+      callbackAt: string | null; responseMinutes: number | null;
+    };
+    const items: ReviewItem[] = [];
+
+    for (const r of quoMissed) {
+      if (blocklist.has(r.participant)) continue;
+      const norm = normalizePhone(r.participant);
+      if (!norm) continue;
+      const missedAt = new Date(r.created_at);
+      const callbacks = callbackMap.get(norm);
+      const callbackAt = callbacks?.find(t => t >= missedAt) ?? null;
+      items.push({
+        id: `quo-${r.id}`,
+        fromNumber: r.participant,
+        team: r.line_team,
+        source: "quo",
+        ringGroupName: r.line_name,
+        missedAt: missedAt.toISOString(),
+        hasCallback: !!callbackAt,
+        callbackAt: callbackAt?.toISOString() ?? null,
+        responseMinutes: callbackAt ? Math.round((callbackAt.getTime() - missedAt.getTime()) / 60000) : null,
+      });
+    }
+
+    for (const r of pbxMissed) {
+      if (blocklist.has(r.from_number)) continue;
+      const norm = normalizePhone(r.from_number);
+      if (!norm) continue;
+      const missedAt = new Date(r.created_at);
+      const callbacks = callbackMap.get(norm);
+      const callbackAt = callbacks?.find(t => t >= missedAt) ?? null;
+      items.push({
+        id: `pbx-${r.id}`,
+        fromNumber: r.from_number,
+        team: r.team,
+        source: "pbx",
+        ringGroupName: r.ring_group_name,
+        missedAt: missedAt.toISOString(),
+        hasCallback: !!callbackAt,
+        callbackAt: callbackAt?.toISOString() ?? null,
+        responseMinutes: callbackAt ? Math.round((callbackAt.getTime() - missedAt.getTime()) / 60000) : null,
+      });
+    }
+
+    items.sort((a, b) => new Date(b.missedAt).getTime() - new Date(a.missedAt).getTime());
+
+    const withCallback = items.filter(i => i.hasCallback).length;
+    const rate = items.length > 0 ? withCallback / items.length : 0;
+    const responseTimes = items.filter(i => i.responseMinutes !== null).map(i => i.responseMinutes!);
+    const avgResponseMinutes = responseTimes.length > 0
+      ? Math.round(responseTimes.reduce((s, m) => s + m, 0) / responseTimes.length)
+      : 0;
+
+    res.json({ items, stats: { total: items.length, withCallback, rate: Math.round(rate * 100) / 100, avgResponseMinutes, days } });
+  } catch (err) {
+    req.log.error(err, "vos callback-review error");
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 router.get("/vos/live", async (req, res) => {
   try {
     const dashboard = await vosFetch<VosDashboard>("/api/dashboard");
