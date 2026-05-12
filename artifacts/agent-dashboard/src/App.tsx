@@ -59,6 +59,7 @@ import {
   Minimize2,
   Maximize2,
   ChevronDown,
+  Activity,
 } from "lucide-react";
 
 const queryClient = new QueryClient();
@@ -82,6 +83,7 @@ const ALL_TABS: { value: string; label: string }[] = [
   { value: "callback-review", label: "CB Review" },
   { value: "quo-lines",       label: "Quo Lines" },
   { value: "vos",             label: "PBX" },
+  { value: "readymode",       label: "ReadyMode" },
   { value: "violations",      label: "Violations" },
 ];
 
@@ -3206,7 +3208,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
       // Fallback: teamAccess-based visibility
       const ta = auth.user.teamAccess ?? null;
       const allTeams = ta === null;
-      if (tab === "quo-lines" || tab === "vos" || tab === "violations" || tab === "callback-review") return allTeams;
+      if (tab === "quo-lines" || tab === "vos" || tab === "readymode" || tab === "violations" || tab === "callback-review") return allTeams;
       if (tab === "missed-no-cb") return true;
       if (tab === "retention") return allTeams || ta === "retention";
       if (tab === "cs") return allTeams || ta === "cs";
@@ -4266,6 +4268,223 @@ function VoSPanel() {
                         <TableCell className="text-right tabular-nums font-mono font-bold">{totCalls || "—"}</TableCell>
                         <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{totIn || "—"}</TableCell>
                         <TableCell className="text-right tabular-nums font-mono font-bold text-fuchsia-400">{totOut || "—"}</TableCell>
+                        <TableCell />
+                      </TableRow>
+                    </TableHeader>
+                  )}
+                </Table>
+              </div>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── ReadyMode Panel ──────────────────────────────────────────────────────────
+
+interface RmAgentStat {
+  agentName: string;
+  dialed: number;
+  connected: number;
+  talkTimeSecs: number;
+  avgTalkSecs: number;
+  connectRate: number;
+}
+
+interface RmStatsResponse {
+  agents: RmAgentStat[];
+  totals: { dialed: number; connected: number; talkTimeSecs: number; connectRate: number };
+  updatedAt: string;
+  raw?: string;
+}
+
+function ReadyModePanel() {
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "dialed", dir: "desc" });
+  const [showRaw, setShowRaw] = useState(false);
+  const { token } = useUser();
+
+  const q = useQuery<RmStatsResponse>({
+    queryKey: ["readymodeStats"],
+    queryFn: async () => {
+      const r = await fetch("/api/readymode/stats", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? `HTTP ${r.status}`);
+      }
+      return r.json() as Promise<RmStatsResponse>;
+    },
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+    retry: 1,
+  });
+
+  function toggle(col: string) {
+    setSort((s) => s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: "desc" });
+  }
+
+  function SortTh({ col, label, tone = "" }: { col: string; label: string; tone?: string }) {
+    const active = sort.col === col;
+    return (
+      <TableHead className={`whitespace-nowrap text-right ${tone}`}>
+        <button type="button" onClick={() => toggle(col)}
+          className={`inline-flex items-center gap-1 flex-row-reverse font-semibold hover:text-foreground ${active ? "text-violet-300" : "text-muted-foreground"}`}>
+          {label}
+          {active ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
+        </button>
+      </TableHead>
+    );
+  }
+
+  const visible = useMemo(() => {
+    const agents = q.data?.agents ?? [];
+    const q2 = search.trim().toLowerCase();
+    let list = q2 ? agents.filter((a) => a.agentName.toLowerCase().includes(q2)) : agents;
+    return [...list].sort((a, b) => {
+      const dir = sort.dir === "asc" ? 1 : -1;
+      if (sort.col === "name") return dir * a.agentName.localeCompare(b.agentName);
+      if (sort.col === "dialed") return dir * (a.dialed - b.dialed);
+      if (sort.col === "connected") return dir * (a.connected - b.connected);
+      if (sort.col === "connectRate") return dir * (a.connectRate - b.connectRate);
+      if (sort.col === "talkTime") return dir * (a.talkTimeSecs - b.talkTimeSecs);
+      if (sort.col === "avgTalk") return dir * (a.avgTalkSecs - b.avgTalkSecs);
+      return 0;
+    });
+  }, [q.data, search, sort]);
+
+  const totals = q.data?.totals;
+  const isFetching = q.isFetching;
+  const hasData = (q.data?.agents ?? []).length > 0;
+  const hasRaw = !!q.data?.raw;
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-4">
+        <div>
+          <CardTitle className="text-xl flex items-center gap-2">
+            ReadyMode
+            <Badge className="text-[10px] px-1.5 py-0.5 bg-orange-500/20 text-orange-300 border-orange-500/30">Dialer</Badge>
+          </CardTitle>
+          <p className="text-sm text-muted-foreground mt-1">
+            {q.data?.updatedAt
+              ? `Per-agent dialer stats · updated ${new Date(q.data.updatedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true })}`
+              : "Per-agent call stats from ReadyMode dialer · refreshes every 60s"}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {hasRaw && (
+            <Button variant="outline" size="sm" onClick={() => setShowRaw((v) => !v)}>
+              {showRaw ? "Hide raw" : "Show raw"}
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={() => q.refetch()} disabled={isFetching}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`} />Refresh
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        {q.isLoading && <Skeleton className="h-40 w-full" />}
+
+        {q.error && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm space-y-2">
+            <p className="font-medium text-destructive">Could not load ReadyMode data</p>
+            <p className="text-muted-foreground">{String(q.error)}</p>
+            <p className="text-xs text-muted-foreground">
+              The ReadyMode portal uses session-based authentication. If the error persists, the login credentials may
+              have changed or the session probe path needs updating.
+            </p>
+          </div>
+        )}
+
+        {showRaw && q.data?.raw && (
+          <div className="rounded-lg border bg-muted/30 p-3">
+            <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wide">Raw page preview (first 3000 chars) — use to identify API paths</p>
+            <pre className="text-[10px] text-zinc-400 whitespace-pre-wrap break-all overflow-auto max-h-64">{q.data.raw}</pre>
+          </div>
+        )}
+
+        {totals && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <StatTile label="Total dialed" value={totals.dialed} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
+            <StatTile label="Connected" value={totals.connected} icon={<PhoneCall className="h-3.5 w-3.5" />} tone="emerald" />
+            <StatTile label="Connect rate" value={`${totals.connectRate}%`} icon={<Activity className="h-3.5 w-3.5" />} tone="violet" />
+            <StatTile label="Total talk time" value={formatDuration(totals.talkTimeSecs)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
+          </div>
+        )}
+
+        {!q.isLoading && !q.error && !hasData && q.data && (
+          <div className="rounded-lg border border-orange-500/20 bg-orange-500/5 p-5 text-sm space-y-3">
+            <p className="font-medium text-orange-300">Session active — no parseable agent table found yet</p>
+            <p className="text-muted-foreground text-xs">
+              ReadyMode returned a page but no agent call table could be parsed. This is normal during initial setup.
+              Use the "Show raw" button above to inspect the HTML and identify the correct report path.
+            </p>
+            <p className="text-muted-foreground text-xs">
+              You can also call <code className="bg-muted px-1 rounded">/api/readymode/probe?path=/supervisor/</code> from the browser to inspect other paths.
+            </p>
+          </div>
+        )}
+
+        {hasData && (
+          <>
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="relative w-full sm:max-w-xs">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input placeholder="Search agents…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+              </div>
+              <Badge variant="secondary" className="font-mono ml-auto">{visible.length} agents</Badge>
+            </div>
+
+            <div className="rounded-lg border bg-card overflow-hidden">
+              <div className="overflow-x-auto max-h-[60vh]">
+                <Table>
+                  <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+                    <TableRow>
+                      <TableHead className="text-left text-muted-foreground">
+                        <button type="button" onClick={() => toggle("name")}
+                          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${sort.col === "name" ? "text-violet-300" : "text-muted-foreground"}`}>
+                          Agent {sort.col === "name" ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
+                        </button>
+                      </TableHead>
+                      <SortTh col="dialed" label="Dialed" tone="text-sky-400" />
+                      <SortTh col="connected" label="Connected" tone="text-emerald-400" />
+                      <SortTh col="connectRate" label="Connect %" tone="text-violet-400" />
+                      <SortTh col="talkTime" label="Talk time" />
+                      <SortTh col="avgTalk" label="Avg talk" />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {visible.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center py-12 text-muted-foreground">No agents match the current filters.</TableCell>
+                      </TableRow>
+                    )}
+                    {visible.map((agent) => (
+                      <TableRow key={agent.agentName} className="hover-elevate">
+                        <TableCell className="font-medium whitespace-nowrap">{agent.agentName}</TableCell>
+                        <TableCell className={`text-right tabular-nums font-mono ${agent.dialed ? "text-sky-400" : "text-muted-foreground/40"}`}>{agent.dialed || "—"}</TableCell>
+                        <TableCell className={`text-right tabular-nums font-mono ${agent.connected ? "text-emerald-400" : "text-muted-foreground/40"}`}>{agent.connected || "—"}</TableCell>
+                        <TableCell className={`text-right tabular-nums font-mono ${agent.connectRate >= 20 ? "text-violet-400" : agent.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>
+                          {agent.connectRate > 0 ? `${agent.connectRate}%` : "—"}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{agent.talkTimeSecs ? formatDuration(agent.talkTimeSecs) : "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{agent.avgTalkSecs ? formatDuration(agent.avgTalkSecs) : "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                  {visible.length > 0 && (
+                    <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
+                      <TableRow>
+                        <TableCell className="font-bold">Whole team</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totals?.dialed || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totals?.connected || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono font-bold text-violet-400">{totals?.connectRate ? `${totals.connectRate}%` : "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono font-bold">{totals?.talkTimeSecs ? formatDuration(totals.talkTimeSecs) : "—"}</TableCell>
                         <TableCell />
                       </TableRow>
                     </TableHeader>
@@ -5859,6 +6078,11 @@ function Dashboard() {
             {canSeeTab("vos") && (
               <TabsContent value="vos">
                 <VoSPanel />
+              </TabsContent>
+            )}
+            {canSeeTab("readymode") && (
+              <TabsContent value="readymode">
+                <ReadyModePanel />
               </TabsContent>
             )}
             {canSeeTab("violations") && (

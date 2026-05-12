@@ -8,6 +8,7 @@ import vosRouter from "./vos";
 import samiaRouter from "./samia";
 import blockedNumbersRouter from "./blockedNumbers";
 import violationsRouter from "./violations";
+import readymodeRouter from "./readymode";
 
 const router: IRouter = Router();
 
@@ -20,5 +21,6 @@ router.use(vosRouter);
 router.use(samiaRouter);
 router.use(blockedNumbersRouter);
 router.use(violationsRouter);
+router.use(readymodeRouter);
 
 export default router;
