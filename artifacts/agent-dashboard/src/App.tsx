@@ -4890,6 +4890,22 @@ function CallbackReviewPanel() {
     return list;
   }, [items, teamFilter, statusFilter, search]);
 
+  const dailyStats = useMemo(() => {
+    const base = teamFilter === "all" ? items : items.filter(i => i.team === teamFilter);
+    const map = new Map<string, { missed: number; withCB: number; connected: number }>();
+    for (const item of base) {
+      const date = new Date(item.missedAt).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+      if (!map.has(date)) map.set(date, { missed: 0, withCB: 0, connected: 0 });
+      const d = map.get(date)!;
+      d.missed++;
+      if (item.hasCallback) d.withCB++;
+      if (item.callbackConnected) d.connected++;
+    }
+    return Array.from(map.entries())
+      .sort(([a], [b]) => b.localeCompare(a))
+      .map(([date, s]) => ({ date, ...s }));
+  }, [items, teamFilter]);
+
   const fmtTime = (iso: string) => {
     const d = new Date(iso);
     const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
@@ -4919,6 +4935,61 @@ function CallbackReviewPanel() {
           <StatTile label="Talked" value={isLoading ? "…" : (stats?.connected ?? 0).toLocaleString()} tone="sky" icon={<PhoneCall className="h-3.5 w-3.5" />} />
           <StatTile label="Connect Rate" value={isLoading ? "…" : `${Math.round((stats?.connectRate ?? 0) * 100)}%`} tone="amber" />
         </div>
+
+        {/* Daily Breakdown */}
+        {!isLoading && dailyStats.length > 0 && (() => {
+          const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+          const fmtDate = (d: string) => {
+            if (d === todayStr) return "Today";
+            const dt = new Date(d + "T12:00:00");
+            return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+          };
+          const pct = (n: number, of: number) => of === 0 ? "—" : `${Math.round(n / of * 100)}%`;
+          return (
+            <div className="rounded-lg border border-zinc-800 overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-zinc-800 bg-zinc-900/60">
+                    <TableHead className="text-xs w-28">Date</TableHead>
+                    <TableHead className="text-xs text-right text-rose-400">Missed</TableHead>
+                    <TableHead className="text-xs text-right text-emerald-400">Called Back</TableHead>
+                    <TableHead className="text-xs text-right text-violet-400">CB Rate</TableHead>
+                    <TableHead className="text-xs text-right text-sky-400">Talked</TableHead>
+                    <TableHead className="text-xs text-right text-amber-400">Connect Rate</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {dailyStats.map((d) => (
+                    <TableRow key={d.date} className={`border-zinc-800 hover:bg-zinc-800/20 ${d.date === todayStr ? "bg-zinc-800/30" : ""}`}>
+                      <TableCell className={`text-xs tabular-nums ${d.date === todayStr ? "text-white font-medium" : "text-zinc-400"}`}>
+                        {fmtDate(d.date)}
+                      </TableCell>
+                      <TableCell className="text-xs text-right font-medium text-zinc-200 tabular-nums">{d.missed}</TableCell>
+                      <TableCell className="text-xs text-right tabular-nums">
+                        <span className="text-emerald-300 font-medium">{d.withCB}</span>
+                        <span className="text-zinc-600 ml-1 text-[10px]">{pct(d.withCB, d.missed)}</span>
+                      </TableCell>
+                      <TableCell className="text-xs text-right tabular-nums">
+                        <span className={`font-medium ${d.withCB / d.missed >= 0.8 ? "text-emerald-300" : d.withCB / d.missed >= 0.6 ? "text-amber-300" : "text-rose-300"}`}>
+                          {pct(d.withCB, d.missed)}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-xs text-right tabular-nums">
+                        <span className="text-sky-300 font-medium">{d.connected}</span>
+                        <span className="text-zinc-600 ml-1 text-[10px]">{pct(d.connected, d.withCB)}</span>
+                      </TableCell>
+                      <TableCell className="text-xs text-right tabular-nums">
+                        <span className={`font-medium ${d.withCB === 0 ? "text-zinc-600" : d.connected / d.withCB >= 0.5 ? "text-emerald-300" : d.connected / d.withCB >= 0.3 ? "text-amber-300" : "text-rose-300"}`}>
+                          {pct(d.connected, d.withCB)}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          );
+        })()}
 
         {/* Filters */}
         <div className="flex flex-wrap items-center gap-2">
