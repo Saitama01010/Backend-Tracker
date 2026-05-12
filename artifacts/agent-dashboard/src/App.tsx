@@ -327,6 +327,7 @@ const NAME_ALIASES: Record<string, string> = {
   "raneem-renee solomon-3209":     "renee solomon",
   "omar badr-kevin micheal-3140":  "kevin micheal",
   "yousef taher-raymond reed-2977":"raymond reed",
+  "engy-ellie moser-2046":         "ellie moser",
 };
 
 // Agents who submit files in the Retention sheet but actually belong to the NSF team.
