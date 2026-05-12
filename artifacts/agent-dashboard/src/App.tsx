@@ -4658,15 +4658,15 @@ function HourlyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) 
 type NumberBreakdown = {
   fromNumber: string; team: string; source: "quo" | "pbx" | "both";
   missedCount: number; firstMissedAt: string; hasCallback: boolean;
-  callbackAt: string | null; responseMinutes: number | null;
+  callbackConnected: boolean; callbackAt: string | null; responseMinutes: number | null;
 };
 
 function DailyMissedBreakdown({ date }: { date: string }) {
-  const q = useQuery<{ date: string; numbers: NumberBreakdown[]; stats: { total: number; withCallback: number; rate: number } }>({
+  const q = useQuery<{ date: string; numbers: NumberBreakdown[]; stats: { total: number; withCallback: number; connected: number; callbackRate: number; connectRate: number } }>({
     queryKey: ["missedBreakdown", date],
     queryFn: async () => {
       const r = await fetch(`/api/vos/missed-breakdown?date=${date}`);
-      if (!r.ok) return { date, numbers: [], stats: { total: 0, withCallback: 0, rate: 0 } };
+      if (!r.ok) return { date, numbers: [], stats: { total: 0, withCallback: 0, connected: 0, callbackRate: 0, connectRate: 0 } };
       return r.json();
     },
     staleTime: 5 * 60_000,
@@ -4681,15 +4681,20 @@ function DailyMissedBreakdown({ date }: { date: string }) {
   const numbers = q.data?.numbers ?? [];
   if (numbers.length === 0) return <p className="px-3 py-2 text-xs text-zinc-600">No breakdown available.</p>;
 
-  const withCB = numbers.filter(n => n.hasCallback).length;
+  const s = q.data?.stats;
+  const withCB = s?.withCallback ?? numbers.filter(n => n.hasCallback).length;
+  const connected = s?.connected ?? numbers.filter(n => n.callbackConnected).length;
+  const noAnswer = withCB - connected;
   const notCalled = numbers.length - withCB;
 
   return (
     <div className="bg-zinc-950/60 border-t border-zinc-800/60 px-3 py-2">
-      <div className="flex items-center gap-3 mb-2 text-[10px]">
+      <div className="flex items-center gap-3 mb-2 text-[10px] flex-wrap">
         <span className="text-zinc-500">{numbers.length} unique callers</span>
-        <span className="text-emerald-400 font-medium">{withCB} called back ({Math.round(withCB / numbers.length * 100)}%)</span>
+        <span className="text-emerald-400 font-medium">{connected} talked ({Math.round(connected / numbers.length * 100)}%)</span>
+        {noAnswer > 0 && <span className="text-amber-400">{noAnswer} no answer</span>}
         <span className="text-rose-400">{notCalled} not called</span>
+        {withCB > 0 && <span className="text-zinc-600">· connect rate: {Math.round(connected / withCB * 100)}%</span>}
       </div>
       <div className="space-y-px max-h-64 overflow-y-auto pr-1">
         {numbers.map((n) => (
@@ -4703,9 +4708,11 @@ function DailyMissedBreakdown({ date }: { date: string }) {
                 {n.source === "both" ? "Quo+PBX" : n.source === "quo" ? "Quo" : "PBX"}
               </span>
               {n.missedCount > 1 && <span className="text-zinc-600 text-[10px]">×{n.missedCount}</span>}
-              {n.hasCallback
-                ? <span className="flex items-center gap-0.5 text-emerald-400 font-medium"><PhoneCall className="h-3 w-3" />{n.responseMinutes !== null ? fmtResponseTime(n.responseMinutes) : ""}</span>
-                : <span className="flex items-center gap-0.5 text-rose-400"><PhoneOff className="h-3 w-3" />—</span>
+              {!n.hasCallback
+                ? <span className="flex items-center gap-0.5 text-rose-400"><PhoneOff className="h-3 w-3" />—</span>
+                : n.callbackConnected
+                  ? <span className="flex items-center gap-0.5 text-emerald-400 font-medium"><PhoneCall className="h-3 w-3" />{n.responseMinutes !== null ? fmtResponseTime(n.responseMinutes) : ""}</span>
+                  : <span className="flex items-center gap-0.5 text-amber-400"><PhoneCall className="h-3 w-3" />no answer</span>
               }
             </div>
           </div>
@@ -4823,6 +4830,7 @@ type CallbackReviewItem = {
   ringGroupName: string;
   missedAt: string;
   hasCallback: boolean;
+  callbackConnected: boolean;
   callbackAt: string | null;
   responseMinutes: number | null;
 };
@@ -4830,7 +4838,9 @@ type CallbackReviewItem = {
 type CallbackReviewStats = {
   total: number;
   withCallback: number;
+  connected: number;
   rate: number;
+  connectRate: number;
   avgResponseMinutes: number;
   days: number;
 };
@@ -4860,7 +4870,7 @@ function fmtResponseTime(minutes: number): string {
 function CallbackReviewPanel() {
   const [days, setDays] = useState(14);
   const [teamFilter, setTeamFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | "called" | "not-called">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "talked" | "no-answer" | "not-called">("all");
   const [search, setSearch] = useState("");
 
   const { data, isLoading } = useCallbackReview(days);
@@ -4870,7 +4880,8 @@ function CallbackReviewPanel() {
   const visible = useMemo(() => {
     let list = items;
     if (teamFilter !== "all") list = list.filter((i) => i.team === teamFilter);
-    if (statusFilter === "called") list = list.filter((i) => i.hasCallback);
+    if (statusFilter === "talked") list = list.filter((i) => i.callbackConnected);
+    if (statusFilter === "no-answer") list = list.filter((i) => i.hasCallback && !i.callbackConnected);
     if (statusFilter === "not-called") list = list.filter((i) => !i.hasCallback);
     if (search) {
       const s = search.replace(/\D/g, "");
@@ -4901,11 +4912,12 @@ function CallbackReviewPanel() {
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Stats */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
           <StatTile label="Total Missed" value={isLoading ? "…" : (stats?.total ?? 0).toLocaleString()} tone="rose" icon={<PhoneOff className="h-3.5 w-3.5" />} />
           <StatTile label="Called Back" value={isLoading ? "…" : (stats?.withCallback ?? 0).toLocaleString()} tone="emerald" icon={<PhoneCall className="h-3.5 w-3.5" />} />
-          <StatTile label="Callback Rate" value={isLoading ? "…" : `${Math.round((stats?.rate ?? 0) * 100)}%`} tone="violet" />
-          <StatTile label="Avg Response" value={isLoading ? "…" : (stats?.avgResponseMinutes ? fmtResponseTime(stats.avgResponseMinutes) : "—")} tone="sky" />
+          <StatTile label="CB Rate" value={isLoading ? "…" : `${Math.round((stats?.rate ?? 0) * 100)}%`} tone="violet" />
+          <StatTile label="Talked" value={isLoading ? "…" : (stats?.connected ?? 0).toLocaleString()} tone="sky" icon={<PhoneCall className="h-3.5 w-3.5" />} />
+          <StatTile label="Connect Rate" value={isLoading ? "…" : `${Math.round((stats?.connectRate ?? 0) * 100)}%`} tone="amber" />
         </div>
 
         {/* Filters */}
@@ -4936,16 +4948,17 @@ function CallbackReviewPanel() {
           ))}
           <div className="w-px h-4 bg-zinc-700" />
           {/* Status */}
-          {(["all", "called", "not-called"] as const).map((s) => (
+          {(["all", "talked", "no-answer", "not-called"] as const).map((s) => (
             <button key={s} onClick={() => setStatusFilter(s)}
               className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
                 statusFilter === s
-                  ? s === "called" ? "bg-emerald-500/25 text-emerald-200 border-emerald-500/40"
+                  ? s === "talked" ? "bg-emerald-500/25 text-emerald-200 border-emerald-500/40"
+                  : s === "no-answer" ? "bg-amber-500/25 text-amber-200 border-amber-500/40"
                   : s === "not-called" ? "bg-rose-500/25 text-rose-200 border-rose-500/40"
                   : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
                   : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"
               }`}>
-              {s === "all" ? "All" : s === "called" ? "Called Back" : "Not Called"}
+              {s === "all" ? "All" : s === "talked" ? "Talked" : s === "no-answer" ? "No Answer" : "Not Called"}
             </button>
           ))}
           <input
@@ -4990,9 +5003,11 @@ function CallbackReviewPanel() {
                         </span>
                       </TableCell>
                       <TableCell className="text-xs">
-                        {item.hasCallback
-                          ? <span className="flex items-center gap-1 text-emerald-400 font-medium"><PhoneCall className="h-3 w-3" />Called Back</span>
-                          : <span className="flex items-center gap-1 text-rose-400"><PhoneOff className="h-3 w-3" />Not Called</span>
+                        {!item.hasCallback
+                          ? <span className="flex items-center gap-1 text-rose-400"><PhoneOff className="h-3 w-3" />Not Called</span>
+                          : item.callbackConnected
+                            ? <span className="flex items-center gap-1 text-emerald-400 font-medium"><PhoneCall className="h-3 w-3" />Talked</span>
+                            : <span className="flex items-center gap-1 text-amber-400"><PhoneCall className="h-3 w-3" />No Answer</span>
                         }
                       </TableCell>
                       <TableCell className="text-xs text-zinc-400 tabular-nums whitespace-nowrap">

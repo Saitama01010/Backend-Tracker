@@ -1170,7 +1170,7 @@ router.get("/vos/missed-breakdown", async (req, res) => {
     const rawList = sql.join(Array.from(allRaw).map(n => sql`${n}`), sql`, `);
 
     const outboundRaw = await db.execute(sql`
-      SELECT participant, created_at
+      SELECT participant, created_at, duration_seconds, post_answer_seconds
       FROM phone_calls
       WHERE direction = 'outgoing'
         AND (created_at AT TIME ZONE 'America/Los_Angeles')::date >= ${dateParam}::date
@@ -1179,19 +1179,23 @@ router.get("/vos/missed-breakdown", async (req, res) => {
       ORDER BY created_at ASC
     `);
 
+    type OutRow = { participant: string; created_at: Date; duration_seconds: number; post_answer_seconds: number | null };
+    type CbEntry = { date: Date; connected: boolean };
+
     // Normalize outbound results back to the same key as numMap
-    const callbackMap = new Map<string, Date[]>();
-    for (const r of outboundRaw.rows as { participant: string; created_at: Date }[]) {
+    const callbackMap = new Map<string, CbEntry[]>();
+    for (const r of outboundRaw.rows as OutRow[]) {
       const norm = normalizePhone(r.participant);
       if (!norm) continue;
       if (!callbackMap.has(norm)) callbackMap.set(norm, []);
-      callbackMap.get(norm)!.push(new Date(r.created_at));
+      const talkSecs = r.post_answer_seconds ?? r.duration_seconds ?? 0;
+      callbackMap.get(norm)!.push({ date: new Date(r.created_at), connected: talkSecs > 60 });
     }
 
     type NumberBreakdown = {
       fromNumber: string; team: string; source: "quo" | "pbx" | "both";
       missedCount: number; firstMissedAt: string; hasCallback: boolean;
-      callbackAt: string | null; responseMinutes: number | null;
+      callbackConnected: boolean; callbackAt: string | null; responseMinutes: number | null;
     };
     const numbers: NumberBreakdown[] = [];
 
@@ -1199,7 +1203,7 @@ router.get("/vos/missed-breakdown", async (req, res) => {
       entry.missedTimes.sort((a, b) => a.getTime() - b.getTime());
       const firstMissed = entry.missedTimes[0];
       const callbacks = callbackMap.get(norm);
-      const callbackAt = callbacks?.find(t => t >= firstMissed) ?? null;
+      const cbEntry = callbacks?.find(c => c.date >= firstMissed) ?? null;
       const srcArr = Array.from(entry.sources);
       numbers.push({
         fromNumber: entry.fromNumber,
@@ -1207,20 +1211,31 @@ router.get("/vos/missed-breakdown", async (req, res) => {
         source: srcArr.length === 2 ? "both" : srcArr[0]!,
         missedCount: entry.missedTimes.length,
         firstMissedAt: firstMissed.toISOString(),
-        hasCallback: !!callbackAt,
-        callbackAt: callbackAt?.toISOString() ?? null,
-        responseMinutes: callbackAt ? Math.round((callbackAt.getTime() - firstMissed.getTime()) / 60000) : null,
+        hasCallback: !!cbEntry,
+        callbackConnected: cbEntry?.connected ?? false,
+        callbackAt: cbEntry?.date.toISOString() ?? null,
+        responseMinutes: cbEntry ? Math.round((cbEntry.date.getTime() - firstMissed.getTime()) / 60000) : null,
       });
     }
 
-    // Not-called-back first, then by first missed time
+    // Not connected first, then not called, then connected — within each group by first missed time
     numbers.sort((a, b) => {
-      if (a.hasCallback !== b.hasCallback) return a.hasCallback ? 1 : -1;
+      const rankA = !a.hasCallback ? 0 : !a.callbackConnected ? 1 : 2;
+      const rankB = !b.hasCallback ? 0 : !b.callbackConnected ? 1 : 2;
+      if (rankA !== rankB) return rankA - rankB;
       return new Date(a.firstMissedAt).getTime() - new Date(b.firstMissedAt).getTime();
     });
 
     const withCallback = numbers.filter(n => n.hasCallback).length;
-    res.json({ date: dateParam, numbers, stats: { total: numbers.length, withCallback, rate: Math.round(withCallback / numbers.length * 100) / 100 } });
+    const connected = numbers.filter(n => n.callbackConnected).length;
+    res.json({
+      date: dateParam, numbers,
+      stats: {
+        total: numbers.length, withCallback, connected,
+        callbackRate: numbers.length > 0 ? Math.round(withCallback / numbers.length * 100) / 100 : 0,
+        connectRate: withCallback > 0 ? Math.round(connected / withCallback * 100) / 100 : 0,
+      },
+    });
   } catch (err) {
     req.log.error(err, "vos missed-breakdown error");
     res.status(500).json({ error: String(err) });
@@ -1285,30 +1300,33 @@ router.get("/vos/callback-review", async (req, res) => {
     }
 
     // Build callback lookup from Quo outbound calls (query by raw participant values)
-    const callbackMap = new Map<string, Date[]>();
+    type CbEntryReview = { date: Date; connected: boolean };
+    const callbackMap = new Map<string, CbEntryReview[]>();
     if (allRawNumbers.size > 0) {
       const rawList = sql.join(Array.from(allRawNumbers).map(n => sql`${n}`), sql`, `);
       const outboundRaw = await db.execute(sql`
-        SELECT participant, created_at
+        SELECT participant, created_at, duration_seconds, post_answer_seconds
         FROM phone_calls
         WHERE direction = 'outgoing'
           AND created_at >= ${windowStart}
           AND participant IN (${rawList})
         ORDER BY created_at ASC
       `);
-      // Normalize outbound results to match allNumbers keys
-      for (const r of outboundRaw.rows as { participant: string; created_at: Date }[]) {
+      type OutRow2 = { participant: string; created_at: Date; duration_seconds: number; post_answer_seconds: number | null };
+      for (const r of outboundRaw.rows as OutRow2[]) {
         const norm = normalizePhone(r.participant);
         if (!norm) continue;
         if (!callbackMap.has(norm)) callbackMap.set(norm, []);
-        callbackMap.get(norm)!.push(new Date(r.created_at));
+        const talkSecs = r.post_answer_seconds ?? r.duration_seconds ?? 0;
+        callbackMap.get(norm)!.push({ date: new Date(r.created_at), connected: talkSecs > 60 });
       }
     }
 
+    type CbEntry2 = { date: Date; connected: boolean };
     type ReviewItem = {
       id: string; fromNumber: string; team: string; source: "quo" | "pbx";
       ringGroupName: string; missedAt: string; hasCallback: boolean;
-      callbackAt: string | null; responseMinutes: number | null;
+      callbackConnected: boolean; callbackAt: string | null; responseMinutes: number | null;
     };
     const items: ReviewItem[] = [];
 
@@ -1317,8 +1335,8 @@ router.get("/vos/callback-review", async (req, res) => {
       const norm = normalizePhone(r.participant);
       if (!norm) continue;
       const missedAt = new Date(r.created_at);
-      const callbacks = callbackMap.get(norm);
-      const callbackAt = callbacks?.find(t => t >= missedAt) ?? null;
+      const callbacks = callbackMap.get(norm) as CbEntry2[] | undefined;
+      const cbEntry = callbacks?.find(c => c.date >= missedAt) ?? null;
       items.push({
         id: `quo-${r.id}`,
         fromNumber: r.participant,
@@ -1326,9 +1344,10 @@ router.get("/vos/callback-review", async (req, res) => {
         source: "quo",
         ringGroupName: r.line_name,
         missedAt: missedAt.toISOString(),
-        hasCallback: !!callbackAt,
-        callbackAt: callbackAt?.toISOString() ?? null,
-        responseMinutes: callbackAt ? Math.round((callbackAt.getTime() - missedAt.getTime()) / 60000) : null,
+        hasCallback: !!cbEntry,
+        callbackConnected: cbEntry?.connected ?? false,
+        callbackAt: cbEntry?.date.toISOString() ?? null,
+        responseMinutes: cbEntry ? Math.round((cbEntry.date.getTime() - missedAt.getTime()) / 60000) : null,
       });
     }
 
@@ -1337,8 +1356,8 @@ router.get("/vos/callback-review", async (req, res) => {
       const norm = normalizePhone(r.from_number);
       if (!norm) continue;
       const missedAt = new Date(r.created_at);
-      const callbacks = callbackMap.get(norm);
-      const callbackAt = callbacks?.find(t => t >= missedAt) ?? null;
+      const callbacks = callbackMap.get(norm) as CbEntry2[] | undefined;
+      const cbEntry = callbacks?.find(c => c.date >= missedAt) ?? null;
       items.push({
         id: `pbx-${r.id}`,
         fromNumber: r.from_number,
@@ -1346,22 +1365,34 @@ router.get("/vos/callback-review", async (req, res) => {
         source: "pbx",
         ringGroupName: r.ring_group_name,
         missedAt: missedAt.toISOString(),
-        hasCallback: !!callbackAt,
-        callbackAt: callbackAt?.toISOString() ?? null,
-        responseMinutes: callbackAt ? Math.round((callbackAt.getTime() - missedAt.getTime()) / 60000) : null,
+        hasCallback: !!cbEntry,
+        callbackConnected: cbEntry?.connected ?? false,
+        callbackAt: cbEntry?.date.toISOString() ?? null,
+        responseMinutes: cbEntry ? Math.round((cbEntry.date.getTime() - missedAt.getTime()) / 60000) : null,
       });
     }
 
     items.sort((a, b) => new Date(b.missedAt).getTime() - new Date(a.missedAt).getTime());
 
     const withCallback = items.filter(i => i.hasCallback).length;
+    const connected = items.filter(i => i.callbackConnected).length;
     const rate = items.length > 0 ? withCallback / items.length : 0;
+    const connectRate = withCallback > 0 ? connected / withCallback : 0;
     const responseTimes = items.filter(i => i.responseMinutes !== null).map(i => i.responseMinutes!);
     const avgResponseMinutes = responseTimes.length > 0
       ? Math.round(responseTimes.reduce((s, m) => s + m, 0) / responseTimes.length)
       : 0;
 
-    res.json({ items, stats: { total: items.length, withCallback, rate: Math.round(rate * 100) / 100, avgResponseMinutes, days } });
+    res.json({
+      items,
+      stats: {
+        total: items.length, withCallback, connected,
+        rate: Math.round(rate * 100) / 100,
+        connectRate: Math.round(connectRate * 100) / 100,
+        avgResponseMinutes,
+        days,
+      },
+    });
   } catch (err) {
     req.log.error(err, "vos callback-review error");
     res.status(500).json({ error: String(err) });
