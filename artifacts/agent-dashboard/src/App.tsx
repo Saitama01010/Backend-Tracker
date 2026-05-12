@@ -321,6 +321,12 @@ async function fetchRetentionSheetCSCrossoverRows(): Promise<Row[]> {
 
 const NAME_ALIASES: Record<string, string> = {
   "kaite miller": "katie miller",
+  // Compound Discord-bot names → canonical English display name
+  // Ensures aggregate() merges submissions under one row and sheetToPhoneKey resolves correctly.
+  "ahmed gamal-austin white":      "austin white",
+  "raneem-renee solomon-3209":     "renee solomon",
+  "omar badr-kevin micheal-3140":  "kevin micheal",
+  "yousef taher-raymond reed-2977":"raymond reed",
 };
 
 // Agents who submit files in the Retention sheet but actually belong to the NSF team.
