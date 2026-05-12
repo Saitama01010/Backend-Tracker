@@ -5115,7 +5115,7 @@ function ViolationsPanel() {
                       <TableCell className="text-xs text-zinc-300 tabular-nums">{fmtTime(r.firstCallAt)}</TableCell>
                       <TableCell className={`text-xs tabular-nums text-right ${lateMinsColor(r.minutesLate)}`}>{fmtMins(r.minutesLate)}</TableCell>
                       <TableCell className="pr-3">
-                        <button onClick={() => dismissViolation(r.key)} title="Dismiss" className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-zinc-600 hover:text-zinc-400 hover:bg-zinc-700/40">
+                        <button onClick={() => dismissViolation(r.key)} title="Dismiss" className="p-1 rounded text-zinc-600 hover:text-zinc-300 hover:bg-zinc-700/50 transition-colors">
                           <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-current"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
                         </button>
                       </TableCell>
@@ -5185,7 +5185,7 @@ function ViolationsPanel() {
                         </div>
                       </TableCell>
                       <TableCell className="pr-3">
-                        <button onClick={() => dismissViolation(r.key)} title="Dismiss" className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-zinc-600 hover:text-zinc-400 hover:bg-zinc-700/40">
+                        <button onClick={() => dismissViolation(r.key)} title="Dismiss" className="p-1 rounded text-zinc-600 hover:text-zinc-300 hover:bg-zinc-700/50 transition-colors">
                           <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-current"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
                         </button>
                       </TableCell>
@@ -5265,7 +5265,7 @@ function ViolationsPanel() {
                         </div>
                       </TableCell>
                       <TableCell className="pr-3">
-                        <button onClick={() => dismissViolation(r.key)} title="Dismiss" className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-zinc-600 hover:text-zinc-400 hover:bg-zinc-700/40">
+                        <button onClick={() => dismissViolation(r.key)} title="Dismiss" className="p-1 rounded text-zinc-600 hover:text-zinc-300 hover:bg-zinc-700/50 transition-colors">
                           <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-current"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
                         </button>
                       </TableCell>
@@ -5313,7 +5313,7 @@ function ViolationsPanel() {
                         <TableCell className="text-xs font-mono text-zinc-300">{r.fileId || <span className="text-zinc-600">—</span>}</TableCell>
                         <TableCell className="text-xs text-red-400 font-medium">{r.rawStatus}</TableCell>
                         <TableCell className="pr-3">
-                          <button onClick={() => dismissViolation(r.key)} title="Dismiss" className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-zinc-600 hover:text-zinc-400 hover:bg-zinc-700/40">
+                          <button onClick={() => dismissViolation(r.key)} title="Dismiss" className="p-1 rounded text-zinc-600 hover:text-zinc-300 hover:bg-zinc-700/50 transition-colors">
                             <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-current"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
                           </button>
                         </TableCell>
