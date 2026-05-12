@@ -253,10 +253,10 @@ async function fetchRetentionSheetNSFCrossoverRows(): Promise<Row[]> {
       const agentRaw = (r[oldAgentCol] ?? "").trim();
       if (!RETENTION_SHEET_NSF_AGENTS.has(normalizeAgent(agentRaw))) continue;
       const rawStatus = (r[oldStatusCol] ?? "").trim();
-      if (!isRetainedStatus(rawStatus)) continue; // only count retains as Fixed
+      if (!isRetainedStatus(rawStatus)) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
       const d = oldDateCol ? parseDate(dateStr) : null;
-      rows.push({ Agent: agentRaw, Status: "Fixed", Date: d ? toIsoDate(d) : dateStr });
+      rows.push({ Agent: agentRaw, Status: "Retained", Date: d ? toIsoDate(d) : dateStr });
     }
   }
 
@@ -269,16 +269,15 @@ async function fetchRetentionSheetNSFCrossoverRows(): Promise<Row[]> {
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!RETENTION_SHEET_NSF_AGENTS.has(normalizeAgent(agentRaw))) continue;
     const derived = deriveNewRetentionStatus(r["Cancel request update"] ?? "");
-    if (!isRetainedStatus(derived)) continue; // only count retains as Fixed
-    rows.push({ Agent: agentRaw, Status: "Fixed", Date: caDate });
+    if (!isRetainedStatus(derived)) continue;
+    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate });
   }
 
   return rows;
 }
 
-// Pulls Retention-sheet rows for CS cross-over agents (Youssef Nady, Nour Eldin, Hiba Kamil,
-// Nourhan Amr) and maps their *retained* submissions to "Fixed" for the CS panel.
-// Cancelled rows are intentionally dropped — they are not counted in any team.
+// Pulls Retention-sheet rows for CS/NSF cross-over agents and maps their retained
+// submissions to "Retained". Cancelled rows are intentionally dropped.
 async function fetchRetentionSheetCSCrossoverRows(): Promise<Row[]> {
   const [oldSheet, newSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status),
@@ -296,10 +295,10 @@ async function fetchRetentionSheetCSCrossoverRows(): Promise<Row[]> {
       const agentRaw = (r[oldAgentCol] ?? "").trim();
       if (!RETENTION_SHEET_CS_AGENTS.has(normalizeAgent(agentRaw))) continue;
       const rawStatus = (r[oldStatusCol] ?? "").trim();
-      if (!isRetainedStatus(rawStatus)) continue; // cancels are dropped
+      if (!isRetainedStatus(rawStatus)) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
       const d = oldDateCol ? parseDate(dateStr) : null;
-      rows.push({ Agent: agentRaw, Status: "Fixed", Date: d ? toIsoDate(d) : dateStr });
+      rows.push({ Agent: agentRaw, Status: "Retained", Date: d ? toIsoDate(d) : dateStr });
     }
   }
 
@@ -312,8 +311,8 @@ async function fetchRetentionSheetCSCrossoverRows(): Promise<Row[]> {
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!RETENTION_SHEET_CS_AGENTS.has(normalizeAgent(agentRaw))) continue;
     const derived = deriveNewRetentionStatus(r["Cancel request update"] ?? "");
-    if (!isRetainedStatus(derived)) continue; // cancels are dropped
-    rows.push({ Agent: agentRaw, Status: "Fixed", Date: caDate });
+    if (!isRetainedStatus(derived)) continue;
+    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate });
   }
 
   return rows;
@@ -936,8 +935,7 @@ function aggregate(
     return true;
   });
 
-  // Build status counts
-  // For NSF mode, collapse every record to "Fixed"
+  // Build status counts — statuses pass through as-is for all modes
   const allStatuses = new Set<string>();
   const dayMap = new Map<string, DayBreakdown>();
   const agentMap = new Map<string, AgentBreakdown>();
@@ -974,7 +972,7 @@ function aggregate(
   for (const r of filteredStatus) {
     const agent = (r[agentColumn] ?? "").trim();
     const rawStatus = normalizeStatus((r[statusColumn] ?? "").trim() || "(blank)");
-    const status = mode === "nsf" ? "Fixed" : rawStatus;
+    const status = rawStatus;
     allStatuses.add(status);
     const ag = ensureAgent(agent);
     ag.byStatus.set(status, (ag.byStatus.get(status) ?? 0) + 1);
