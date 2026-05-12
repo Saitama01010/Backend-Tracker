@@ -459,6 +459,8 @@ async function fetchNewSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
 
 // Shared helper: parses the IDP-Handled tab (gid=871007220) and returns rows for a team.
 // Every submission to this sheet counts as "IDP-Handled".
+// Compound agent names like "riham samir-rika hart-1234" are matched by checking each
+// dash-separated segment against teamNames so new formats are handled automatically.
 async function fetchIDPSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
   const sheet = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
   const rows: Row[] = [];
@@ -471,7 +473,11 @@ async function fetchIDPSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
     if (!agentRaw) continue;
     const agentNorm = normalizeAgent(agentRaw);
     const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
-    if (!teamNames.has(agentNorm) && !teamNames.has(resolvedKey)) continue;
+    // Also try each segment of compound names (e.g. "riham samir-rika hart-1234" → ["riham samir", "rika hart", "1234"])
+    const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
+    const matches = teamNames.has(agentNorm) || teamNames.has(resolvedKey)
+      || segments.some(seg => teamNames.has(seg));
+    if (!matches) continue;
     rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate });
   }
   return rows;
