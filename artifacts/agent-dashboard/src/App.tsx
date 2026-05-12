@@ -218,16 +218,19 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
   }
 
   // Add IDP-Handled tab rows (gid=871007220) — every row from Retention agents = IDP-Handled.
+  // Compound names like "nour-michael belfort-2900" are matched by checking each segment.
   for (const r of idpSheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
     const d = parseEgyptTimestamp(tsRaw);
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
-    if (caDate < "2026-05-04") continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
     const agentNorm = normalizeAgent(agentRaw);
-    if (!RETENTION_AGENTS_NORM_EARLY.has(agentNorm)) continue;
+    const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
+    const isRetentionAgent = RETENTION_AGENTS_NORM_EARLY.has(agentNorm)
+      || segments.some(seg => RETENTION_AGENTS_NORM_EARLY.has(seg));
+    if (!isRetentionAgent) continue;
     rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate });
   }
 
