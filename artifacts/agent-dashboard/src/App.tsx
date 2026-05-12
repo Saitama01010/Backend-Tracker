@@ -529,8 +529,6 @@ async function fetchNSFCombinedSheet(): Promise<SheetData> {
       if (!matches) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "").trim() : "";
       const d = parseDate(dateStr);
-      // Skip rows on/after the Discord-bot cutover to avoid double-counting with the new sheet.
-      if (d && d >= RETENTION_CUTOVER) continue;
       oldNsfRows.push({ Agent: agentRaw, Status: "Fixed", Date: d ? toIsoDate(d) : dateStr });
     }
   }
