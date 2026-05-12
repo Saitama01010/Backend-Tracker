@@ -914,16 +914,18 @@ router.get("/vos/missed-hourly", async (req, res) => {
     // Accept optional ?date=YYYY-MM-DD; fall back to today.
     const dateParam = typeof req.query["date"] === "string" ? req.query["date"] : todayLA;
     const isToday = dateParam === todayLA;
+    const mode = req.query["mode"] === "numbers" ? "numbers" : "times";
 
     const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
     const internalExclude = cachedInternalNumbers.length > 0
       ? sql`AND participant NOT IN (${sql.join(cachedInternalNumbers.map(n => sql`${n}`), sql`, `)})`
       : sql``;
+    const quoCountExpr = mode === "numbers" ? sql`COUNT(DISTINCT participant)::int` : sql`COUNT(*)::int`;
     const rows = await db.execute(sql`
       SELECT
         EXTRACT(HOUR FROM (created_at AT TIME ZONE 'America/Los_Angeles'))::int AS hour,
         line_team,
-        COUNT(*)::int AS cnt
+        ${quoCountExpr} AS cnt
       FROM phone_calls
       WHERE direction = 'incoming'
         AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
@@ -955,8 +957,8 @@ router.get("/vos/missed-hourly", async (req, res) => {
       else if (r.line_team === "nsf") row.nsf.quo += r.cnt;
     }
 
-    if (isToday) {
-      // Today: use fast in-memory accumulator
+    if (isToday && mode === "times") {
+      // Today + times: use fast in-memory accumulator
       for (const [h, pbx] of Object.entries(cumulativeMissedByHour)) {
         const row = getHour(Number(h));
         row.retention.pbx += pbx.retention;
@@ -964,12 +966,13 @@ router.get("/vos/missed-hourly", async (req, res) => {
         row.nsf.pbx += pbx.nsf;
       }
     } else {
-      // Historical date: query pbx_missed_calls table
+      // Historical date OR numbers mode: query pbx_missed_calls table
+      const pbxCountExpr = mode === "numbers" ? sql`COUNT(DISTINCT from_number)::int` : sql`COUNT(*)::int`;
       const pbxRows = await db.execute(sql`
         SELECT
           EXTRACT(HOUR FROM (created_at AT TIME ZONE 'America/Los_Angeles'))::int AS hour,
           team,
-          COUNT(*)::int AS cnt
+          ${pbxCountExpr} AS cnt
         FROM pbx_missed_calls
         WHERE (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${dateParam}::date
           AND team IN ('retention', 'cs', 'nsf')
@@ -998,17 +1001,19 @@ router.get("/vos/missed-hourly", async (req, res) => {
 router.get("/vos/missed-daily", async (req, res) => {
   try {
     const window14d = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+    const mode = req.query["mode"] === "numbers" ? "numbers" : "times";
 
     // Quo: daily missed counts — shared team lines only, excluding internal callers
     const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
     const internalExclude = cachedInternalNumbers.length > 0
       ? sql`AND participant NOT IN (${sql.join(cachedInternalNumbers.map(n => sql`${n}`), sql`, `)})`
       : sql``;
+    const quoCountExpr = mode === "numbers" ? sql`COUNT(DISTINCT participant)::int` : sql`COUNT(*)::int`;
     const rows = await db.execute(sql`
       SELECT
         (created_at AT TIME ZONE 'America/Los_Angeles')::date AS day,
         line_team,
-        COUNT(*)::int AS cnt
+        ${quoCountExpr} AS cnt
       FROM phone_calls
       WHERE direction = 'incoming'
         AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
@@ -1022,12 +1027,13 @@ router.get("/vos/missed-daily", async (req, res) => {
 
     const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
 
-    // PBX historical: query persisted missed calls grouped by LA date + team
+    // PBX: query persisted missed calls grouped by LA date + team
+    const pbxCountExpr = mode === "numbers" ? sql`COUNT(DISTINCT from_number)::int` : sql`COUNT(*)::int`;
     const pbxRows = await db.execute(sql`
       SELECT
         (created_at AT TIME ZONE 'America/Los_Angeles')::date AS day,
         team,
-        COUNT(*)::int AS cnt
+        ${pbxCountExpr} AS cnt
       FROM pbx_missed_calls
       WHERE created_at >= ${window14d}
         AND team IN ('retention', 'cs', 'nsf')
@@ -1035,12 +1041,15 @@ router.get("/vos/missed-daily", async (req, res) => {
       ORDER BY day DESC, team
     `);
 
-    // PBX today: supplement DB with the live in-memory cache (catches calls not yet persisted)
+    // PBX today supplement: use live in-memory cache only in "times" mode
+    // (in "numbers" mode the DB query above already covers today with DISTINCT)
     const pbxTodayByTeam: Record<string, number> = {};
-    for (const [rgId, count] of Object.entries(ringGroupMissedCache)) {
-      const name = ringGroupNameCache.get(Number(rgId)) ?? "";
-      const team = teamFromRingGroupName(name);
-      if (team !== "other") pbxTodayByTeam[team] = (pbxTodayByTeam[team] ?? 0) + count;
+    if (mode === "times") {
+      for (const [rgId, count] of Object.entries(ringGroupMissedCache)) {
+        const name = ringGroupNameCache.get(Number(rgId)) ?? "";
+        const team = teamFromRingGroupName(name);
+        if (team !== "other") pbxTodayByTeam[team] = (pbxTodayByTeam[team] ?? 0) + count;
+      }
     }
 
     // Merge Quo rows into a map keyed by date
@@ -1063,7 +1072,7 @@ router.get("/vos/missed-daily", async (req, res) => {
       if (team === "retention" || team === "cs" || team === "nsf") d[team].quo += r.cnt;
     }
 
-    // Merge PBX historical rows from DB
+    // Merge PBX rows from DB
     for (const r of pbxRows.rows as { day: unknown; team: string; cnt: number }[]) {
       const dateStr = r.day instanceof Date ? r.day.toISOString().split("T")[0] : String(r.day);
       const d = getDay(dateStr);
@@ -1071,8 +1080,8 @@ router.get("/vos/missed-daily", async (req, res) => {
       if (team === "retention" || team === "cs" || team === "nsf") d[team].pbx += r.cnt;
     }
 
-    // For today, use the max of DB count and live cache (live cache is more current)
-    if (Object.keys(pbxTodayByTeam).length > 0) {
+    // For today in times mode, use the max of DB count and live cache (live is more current)
+    if (mode === "times" && Object.keys(pbxTodayByTeam).length > 0) {
       const d = getDay(todayStr);
       for (const team of ["retention", "cs", "nsf"] as const) {
         const live = pbxTodayByTeam[team] ?? 0;

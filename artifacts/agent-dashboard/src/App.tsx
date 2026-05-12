@@ -1698,11 +1698,11 @@ type DailyMissedDay = {
   nsf: { quo: number; pbx: number };
 };
 
-function useMissedDaily() {
+function useMissedDaily(mode: "times" | "numbers" = "times") {
   return useQuery<{ days: DailyMissedDay[] }>({
-    queryKey: ["missedDaily"],
+    queryKey: ["missedDaily", mode],
     queryFn: async () => {
-      const r = await fetch("/api/vos/missed-daily");
+      const r = await fetch(`/api/vos/missed-daily?mode=${mode}`);
       if (!r.ok) return { days: [] };
       return r.json();
     },
@@ -1719,13 +1719,13 @@ type HourlyMissedHour = {
   nsf: { quo: number; pbx: number };
 };
 
-function useMissedHourly(date: string) {
+function useMissedHourly(date: string, mode: "times" | "numbers" = "times") {
   const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
   const isToday = date === todayStr;
   return useQuery<{ hours: HourlyMissedHour[] }>({
-    queryKey: ["missedHourly", date],
+    queryKey: ["missedHourly", date, mode],
     queryFn: async () => {
-      const r = await fetch(`/api/vos/missed-hourly?date=${date}`);
+      const r = await fetch(`/api/vos/missed-hourly?date=${date}&mode=${mode}`);
       if (!r.ok) return { hours: [] };
       return r.json();
     },
@@ -4317,6 +4317,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
   const [sourceFilter, setSourceFilter] = useState<"all" | "pbx" | "quo">("all");
   const [lineFilter, setLineFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
+  const [missedMode, setMissedMode] = useState<"times" | "numbers">("times");
 
   const teams = useMemo(() => {
     const s = new Set<string>();
@@ -4529,21 +4530,34 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
         )}
 
         {/* Hourly missed breakdown (today) — managers only */}
-        {canViewMissedTables && <HourlyMissedRecord />}
+        {canViewMissedTables && (
+          <div className="border-t border-zinc-800 pt-4 flex items-center justify-between">
+            <span className="text-xs text-zinc-500">Count by</span>
+            <div className="flex gap-1">
+              {(["times", "numbers"] as const).map(m => (
+                <button key={m} onClick={() => setMissedMode(m)}
+                  className={`text-[10px] px-2 py-0.5 rounded ${missedMode === m ? "bg-zinc-700 text-white" : "text-zinc-500 hover:text-zinc-300"}`}>
+                  {m === "times" ? "Times" : "Numbers"}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {canViewMissedTables && <HourlyMissedRecord mode={missedMode} />}
 
         {/* Daily missed record — managers only */}
-        {canViewMissedTables && <DailyMissedRecord />}
+        {canViewMissedTables && <DailyMissedRecord mode={missedMode} />}
       </CardContent>
     </Card>
   );
 }
 
-function HourlyMissedRecord() {
+function HourlyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) {
   const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
   const [date, setDate] = useState(todayStr);
   const isToday = date === todayStr;
 
-  const { data, isLoading } = useMissedHourly(date);
+  const { data, isLoading } = useMissedHourly(date, mode);
   const hours = data?.hours ?? [];
 
   const shift = (days: number) => {
@@ -4577,9 +4591,11 @@ function HourlyMissedRecord() {
   };
 
   return (
-    <div className="border-t border-zinc-800 pt-4">
+    <div className="pt-4">
       <div className="flex items-center justify-between mb-2">
-        <p className="text-xs font-medium text-zinc-400">Missed by Hour (Quo + PBX)</p>
+        <p className="text-xs font-medium text-zinc-400">
+          Missed by Hour — {mode === "numbers" ? "unique callers" : "call events"} (Quo + PBX)
+        </p>
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -4638,8 +4654,8 @@ function HourlyMissedRecord() {
   );
 }
 
-function DailyMissedRecord() {
-  const { data, isLoading } = useMissedDaily();
+function DailyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) {
+  const { data, isLoading } = useMissedDaily(mode);
   const days = data?.days ?? [];
   if (isLoading) return <div className="space-y-1.5">{Array.from({length:3}).map((_,i)=><Skeleton key={i} className="h-8 w-full"/>)}</div>;
   if (days.length === 0) return null;
@@ -4654,7 +4670,9 @@ function DailyMissedRecord() {
 
   return (
     <div className="border-t border-zinc-800 pt-4">
-      <p className="text-xs font-medium text-zinc-400 mb-2">Daily Missed — All calls (PBX + Quo)</p>
+      <p className="text-xs font-medium text-zinc-400 mb-2">
+        Daily Missed — {mode === "numbers" ? "unique callers" : "call events"} (PBX + Quo)
+      </p>
       <div className="rounded-lg border border-zinc-800 overflow-hidden">
         <Table>
           <TableHeader>
