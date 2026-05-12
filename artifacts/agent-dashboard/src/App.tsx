@@ -328,14 +328,14 @@ const NAME_ALIASES: Record<string, string> = {
 const RETENTION_SHEET_NSF_AGENTS = new Set([
   "katie miller", "sama farouk",
   "zach carter", "ziad",
-  "austin white", "ahmed gamal",
+  "austin white", "ahmed gamal", "ahmed gamal-austin white",
   "rika hart", "riham samir",
   "jenny morgan", "ayaat",
   "renee solomon", "raneem", "raneem-renee solomon-3209",
   "ellie moser", "engy mahmoud",
   "estella cruz", "eman khamis",
-  "kevin micheal", "omar badr",
-  "raymond reed", "yousef taher",
+  "kevin micheal", "omar badr", "omar badr-kevin micheal-3140",
+  "raymond reed", "yousef taher", "yousef taher-raymond reed-2977",
 ]);
 
 // Agents who submit files in the Retention sheet but actually belong to the CS team.
@@ -363,8 +363,11 @@ const NSF_AGENT_NAMES = new Set([
   "ziad", "ahmed gamal", "riham samir", "ayaat",
   "raneem", "engy mahmoud", "eman khamis", "sama farouk",
   "omar badr", "yousef taher",
-  // Compound old-sheet names (submitted in retention sheet)
+  // Compound Discord-bot names
   "raneem-renee solomon-3209",
+  "ahmed gamal-austin white",
+  "omar badr-kevin micheal-3140",
+  "yousef taher-raymond reed-2977",
 ]);
 // CS agent display names (normalized lowercase)
 const CS_AGENT_NAMES = new Set([
@@ -443,6 +446,8 @@ async function fetchCancelViolations(): Promise<CancelViolation[]> {
 
 // Shared helper: parses the Discord-bot sheet (gid=0) and returns rows belonging to a team.
 // Every submission to this sheet counts as "Fixed" regardless of any status column.
+// Compound agent names like "Ahmed Gamal-Austin White" are matched by checking each
+// dash-separated segment against teamNames so new Discord username formats are handled automatically.
 async function fetchNewSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
   const newSheet = await fetchHeaderCsv(NEW_NSF_URL);
   const rows: Row[] = [];
@@ -454,7 +459,10 @@ async function fetchNewSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
     const agentRaw = (r["Agent Name"] ?? "").trim();
     const agentNorm = normalizeAgent(agentRaw);
     const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
-    if (!teamNames.has(agentNorm) && !teamNames.has(resolvedKey)) continue;
+    const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
+    const matches = teamNames.has(agentNorm) || teamNames.has(resolvedKey)
+      || segments.some(seg => teamNames.has(seg));
+    if (!matches) continue;
     rows.push({ Agent: agentRaw, Status: "Fixed", Date: caDate });
   }
   return rows;
@@ -589,9 +597,11 @@ const TEAM_ALLOWLIST: Record<string, Set<string>> = {
     // Katie Miller / Sama Farouk
     "katie miller", "sama farouk",
     // Kevin Micheal / Omar Badr
-    "kevin micheal", "omar badr",
+    "kevin micheal", "omar badr", "omar badr-kevin micheal-3140",
     // Raymond Reed / Yousef Taher
-    "raymond reed", "yousef taher",
+    "raymond reed", "yousef taher", "yousef taher-raymond reed-2977",
+    // Austin White / Ahmed Gamal (compound Discord name)
+    "ahmed gamal-austin white",
   ]),
   cs: new Set([
     // Ella Monroe / Hiba Kamil
