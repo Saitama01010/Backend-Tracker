@@ -68,7 +68,7 @@ router.get("/violations", async (req, res) => {
         lte(phoneCallsTable.createdAt, rangeEnd),
         or(
           eq(phoneCallsTable.direction, "outgoing"),
-          and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed")),
+          eq(phoneCallsTable.direction, "incoming"),
         ),
       )),
       db.select().from(pbxMissedCallsTable).where(and(
@@ -105,11 +105,18 @@ router.get("/violations", async (req, res) => {
       callsByAgentDate.set(dateKey, dateArr);
 
       // spans map for busy check
+      // in-progress calls have duration=0; use 30-min fallback so they register as busy
+      const INPROGRESS_FALLBACK_S = 1800;
+      const dur = (row.durationSeconds && row.durationSeconds > 0)
+        ? row.durationSeconds
+        : (row.status === "in-progress" ? INPROGRESS_FALLBACK_S : 0);
       const spanStart = t.getTime();
-      const spanEnd   = spanStart + (row.durationSeconds || 0) * 1000;
-      const spanArr   = agentCallSpans.get(lower) ?? [];
-      spanArr.push({ start: spanStart, end: spanEnd });
-      agentCallSpans.set(lower, spanArr);
+      const spanEnd   = spanStart + dur * 1000;
+      if (spanEnd > spanStart) {
+        const spanArr = agentCallSpans.get(lower) ?? [];
+        spanArr.push({ start: spanStart, end: spanEnd });
+        agentCallSpans.set(lower, spanArr);
+      }
     }
     for (const arr of callsByAgentDate.values()) arr.sort((a, b) => a.getTime() - b.getTime());
 
