@@ -829,6 +829,38 @@ function toIsoDate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+const CA_TZ = "America/Los_Angeles";
+
+/** Returns today's date as "YYYY-MM-DD" in PDT, regardless of device timezone. */
+function todayPDT(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: CA_TZ,
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+}
+
+/** Returns current year/month(0-indexed)/date components in PDT. */
+function nowPDTParts(): { year: number; month: number; date: number } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: CA_TZ,
+    year: "numeric", month: "numeric", day: "numeric",
+  }).formatToParts(new Date());
+  const get = (t: string) => Number(parts.find(p => p.type === t)?.value ?? 0);
+  return { year: get("year"), month: get("month") - 1, date: get("day") };
+}
+
+/** Formats a timestamp string for display in PDT. */
+function formatPDTTime(isoStr: string): string {
+  return new Date(isoStr).toLocaleTimeString("en-US", {
+    hour: "2-digit", minute: "2-digit", hour12: true, timeZone: CA_TZ,
+  });
+}
+
+/** Formats a Date for display as a short date in PDT. */
+function formatPDTDate(d: Date): string {
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: CA_TZ });
+}
+
 // Discord-bot sheets record timestamps in Egypt local time (EET = UTC+2, no DST since 2011).
 // This parses those timestamps and returns a proper UTC Date so the California date can be derived.
 // Google Forms timestamp format is typically "M/D/YYYY HH:MM:SS".
@@ -1395,7 +1427,7 @@ function ByDayView({ data }: { data: Aggregated }) {
                         {DAY_NAMES[d.date.getDay()]}
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-muted-foreground tabular-nums">
-                        {d.date.toLocaleDateString()}
+                        {d.date.toLocaleDateString("en-US", { timeZone: CA_TZ, month: "short", day: "numeric" })}
                       </TableCell>
                       <TableCell className="text-right tabular-nums font-mono">
                         {d.calls || ""}
@@ -1427,7 +1459,7 @@ function ByDayView({ data }: { data: Aggregated }) {
                   <TableRow key={`week-${wi}`} className="bg-accent/40 font-semibold">
                     <TableCell className="whitespace-nowrap">Week of</TableCell>
                     <TableCell className="whitespace-nowrap text-muted-foreground tabular-nums">
-                      {week.weekStart.toLocaleDateString()} – {weekEnd.toLocaleDateString()}
+                      {week.weekStart.toLocaleDateString("en-US", { timeZone: CA_TZ, month: "short", day: "numeric" })} – {weekEnd.toLocaleDateString("en-US", { timeZone: CA_TZ, month: "short", day: "numeric" })}
                     </TableCell>
                     <TableCell className="text-right tabular-nums font-mono">
                       {subtotal.calls || ""}
@@ -2309,7 +2341,7 @@ function DateFilters({
           variant="outline"
           size="sm"
           onClick={() => {
-            const today = toIsoDate(new Date());
+            const today = todayPDT();
             setFrom(today);
             setTo(today);
           }}
@@ -2322,9 +2354,9 @@ function DateFilters({
           variant="outline"
           size="sm"
           onClick={() => {
-            const now = new Date();
-            const start = new Date(now.getFullYear(), now.getMonth(), 1);
-            const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+            const { year, month } = nowPDTParts();
+            const start = new Date(year, month, 1);
+            const end = new Date(year, month + 1, 0);
             setFrom(toIsoDate(start));
             setTo(toIsoDate(end));
           }}
@@ -2352,7 +2384,7 @@ function DateFilters({
       </div>
       {minDate && maxDate && (
         <span className="text-xs text-muted-foreground sm:ml-auto">
-          Sheet covers {minDate.toLocaleDateString()} – {maxDate.toLocaleDateString()}
+          Sheet covers {minDate.toLocaleDateString("en-US", { timeZone: CA_TZ, month: "short", day: "numeric", year: "numeric" })} – {maxDate.toLocaleDateString("en-US", { timeZone: CA_TZ, month: "short", day: "numeric", year: "numeric" })}
         </span>
       )}
     </div>
@@ -2362,12 +2394,12 @@ function DateFilters({
 type Preset = { label: string; from: string; to: string };
 
 function getPresets(): Preset[] {
-  const now = new Date();
-  const today = toIsoDate(now);
-  const yesterday = toIsoDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
-  const firstOfMonth = toIsoDate(new Date(now.getFullYear(), now.getMonth(), 1));
-  const firstOfLastMonth = toIsoDate(new Date(now.getFullYear(), now.getMonth() - 1, 1));
-  const lastOfLastMonth = toIsoDate(new Date(now.getFullYear(), now.getMonth(), 0));
+  const { year, month, date } = nowPDTParts();
+  const today = todayPDT();
+  const yesterday = toIsoDate(new Date(year, month, date - 1));
+  const firstOfMonth = toIsoDate(new Date(year, month, 1));
+  const firstOfLastMonth = toIsoDate(new Date(year, month - 1, 1));
+  const lastOfLastMonth = toIsoDate(new Date(year, month, 0));
   return [
     { label: "Today", from: today, to: today },
     { label: "Yesterday", from: yesterday, to: yesterday },
@@ -2380,7 +2412,7 @@ function getPresets(): Preset[] {
 function PresetFilter({ from, to, setFrom, setTo }: { from: string; to: string; setFrom: (s: string) => void; setTo: (s: string) => void }) {
   const presets = getPresets();
   const active = presets.find((p) => p.from === from && p.to === to)?.label;
-  const todayIso = toIsoDate(new Date());
+  const todayIso = todayPDT();
   return (
     <div className="flex gap-2 flex-wrap items-center">
       <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
@@ -2502,7 +2534,7 @@ function TeamPanel({
   const isFetching = statusQ.isFetching;
   const error = statusQ.error;
 
-  const todayIso = toIsoDate(new Date());
+  const todayIso = todayPDT();
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
@@ -2792,7 +2824,7 @@ function CSPanel() {
   const ringGroupMissed = useVosRingGroupMissed();
   // CS ring group ID = 4 in VoSLogic
   const pbxMissed = ringGroupMissed.get(4) ?? 0;
-  const todayIso = toIsoDate(new Date());
+  const todayIso = todayPDT();
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
@@ -3016,7 +3048,7 @@ function RetentionPanel() {
   // Retention ring group ID = 2 in VoSLogic
   const pbxMissed = ringGroupMissed.get(2) ?? 0;
 
-  const todayIso = toIsoDate(new Date());
+  const todayIso = todayPDT();
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
@@ -3322,7 +3354,7 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
               {calls.map((c) => (
                 <TableRow key={c.id} className="hover-elevate text-sm">
                   <TableCell className="tabular-nums font-mono text-xs text-muted-foreground whitespace-nowrap">
-                    {new Date(c.createdAt).toLocaleString()}
+                    {new Date(c.createdAt).toLocaleString("en-US", { timeZone: CA_TZ, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: true })}
                   </TableCell>
                   <TableCell className="font-medium whitespace-nowrap">{c.agentName ?? "—"}</TableCell>
                   <TableCell className="text-muted-foreground text-xs whitespace-nowrap">{c.lineName}</TableCell>
@@ -3896,7 +3928,7 @@ const LINE_TEAM_COLORS: Record<string, string> = {
 const LINE_TEAM_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "Internal CS" };
 
 function QuoLinesPanel() {
-  const todayIso = toIsoDate(new Date());
+  const todayIso = todayPDT();
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
@@ -4582,7 +4614,7 @@ function ReadyModePanel() {
           </CardTitle>
           <p className="text-sm text-muted-foreground mt-1">
             {q.data?.updatedAt
-              ? `Per-agent dialer stats · updated ${new Date(q.data.updatedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true })}`
+              ? `Per-agent dialer stats · updated ${new Date(q.data.updatedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: CA_TZ })} PDT`
               : "Per-agent call stats from ReadyMode dialer · refreshes every 60s"}
           </p>
         </div>
