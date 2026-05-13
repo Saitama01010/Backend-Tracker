@@ -140,7 +140,9 @@ router.get("/quo/line-stats", async (req, res) => {
     }
 
     const fromDate = new Date(from);
-    const toDate = new Date(to);
+    const toDate = /^\d{4}-\d{2}-\d{2}$/.test(to)
+      ? new Date(new Date(to).getTime() + 86400000)
+      : new Date(to);
 
     const rows = await db
       .select({
@@ -260,7 +262,12 @@ router.get("/quo/stats", async (req, res) => {
     const to = (req.query["to"] as string) || new Date().toISOString();
 
     const fromDate = new Date(from);
-    const toDate = new Date(to);
+    // If `to` is a date-only string (YYYY-MM-DD), advance by one day so the
+    // entire calendar day is included (new Date("2026-05-13") = midnight UTC,
+    // which would exclude every call that happened after 00:00 UTC).
+    const toDate = /^\d{4}-\d{2}-\d{2}$/.test(to)
+      ? new Date(new Date(to).getTime() + 86400000)
+      : new Date(to);
 
     const rows = await db
       .select({
@@ -645,7 +652,9 @@ router.get("/quo/calls", async (req, res) => {
     const offsetParam = Number(req.query["offset"] ?? 0);
 
     const fromDate = new Date(from);
-    const toDate = new Date(to);
+    const toDate = /^\d{4}-\d{2}-\d{2}$/.test(to)
+      ? new Date(new Date(to).getTime() + 86400000)
+      : new Date(to);
 
     const rows = await db
       .select({
