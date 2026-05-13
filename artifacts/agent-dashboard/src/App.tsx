@@ -1488,7 +1488,7 @@ function avgDuration(seconds: number, calls: number): string {
   return formatDuration(Math.round(seconds / calls));
 }
 
-function ByFilesView({ data, hideTeamRow }: { data: Aggregated; hideTeamRow?: boolean }) {
+function ByFilesView({ data, hideTeamRow, phoneData }: { data: Aggregated; hideTeamRow?: boolean; phoneData?: Map<string, PhoneAgentMetrics> }) {
   const showRate = data.mode === "retention";
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>({ column: "__total__", dir: "desc" });
@@ -1524,11 +1524,38 @@ function ByFilesView({ data, hideTeamRow }: { data: Aggregated; hideTeamRow?: bo
   }
 
   function exportCsv() {
-    const rows = visible.map((a) => {
-      const record: Record<string, string | number> = { Agent: a.agent };
-      for (const s of data.statuses) record[s] = a.byStatus.get(s) ?? 0;
-      record["Total"] = a.total;
-      if (showRate) record["Retention Rate"] = retentionRate(sumRetained(a.byStatus, data.retainedStatuses), a.total);
+    // Collect all agents: sheet agents first, then phone-only agents not in the sheet
+    const sheetAgents = visible.map((a) => a.agent);
+    const sheetKeys = new Set(sheetAgents.map((a) => sheetToPhoneKey(a)));
+    const phoneOnlyAgents: string[] = [];
+    if (phoneData) {
+      for (const key of phoneData.keys()) {
+        if (!sheetKeys.has(key)) {
+          phoneOnlyAgents.push(key.replace(/\b\w/g, (c) => c.toUpperCase()));
+        }
+      }
+    }
+    const allAgentsForExport = [...sheetAgents, ...phoneOnlyAgents];
+
+    const rows = allAgentsForExport.map((agent) => {
+      const sheetEntry = visible.find((a) => a.agent === agent);
+      const record: Record<string, string | number> = { Agent: agent };
+      // Sheet columns
+      for (const s of data.statuses) record[s] = sheetEntry?.byStatus.get(s) ?? 0;
+      record["Total Files"] = sheetEntry?.total ?? 0;
+      if (showRate) {
+        const retained = sheetEntry ? sumRetained(sheetEntry.byStatus, data.retainedStatuses) : 0;
+        record["Retention Rate"] = sheetEntry ? retentionRate(retained, sheetEntry.total) : "—";
+      }
+      // Phone call columns
+      const ph = phoneData?.get(sheetToPhoneKey(agent));
+      record["Calls"] = ph?.calls ?? 0;
+      record["Outbound"] = ph?.outbound ?? 0;
+      record["Inbound"] = ph?.inbound ?? 0;
+      record["Answered"] = ph?.answered ?? 0;
+      record["Missed"] = ph?.missed ?? 0;
+      record["VM Brief"] = ph?.vmBrief ?? 0;
+      record["Talk Time"] = ph ? formatDuration(ph.seconds) : "—";
       return record;
     });
     const csv = Papa.unparse(rows);
@@ -1536,7 +1563,7 @@ function ByFilesView({ data, hideTeamRow }: { data: Aggregated; hideTeamRow?: bo
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `files_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `files_${new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" })}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -2662,7 +2689,7 @@ function TeamPanel({
               {aggregated && !("error" in aggregated) && (
                 <>
                   <TabsContent value="files">
-                    <ByFilesView data={aggregated} hideTeamRow={isRestricted} />
+                    <ByFilesView data={aggregated} hideTeamRow={isRestricted} phoneData={phoneData} />
                   </TabsContent>
                   <TabsContent value="day">
                     <div className="space-y-3">
@@ -2889,7 +2916,7 @@ function CSPanel() {
           {aggregated && !("error" in aggregated) && (
             <>
               <TabsContent value="files">
-                <ByFilesView data={aggregated} />
+                <ByFilesView data={aggregated} phoneData={phoneData} />
               </TabsContent>
               <TabsContent value="day">
                 <div className="space-y-3">
@@ -3081,7 +3108,7 @@ function RetentionPanel() {
           {aggregated && !("error" in aggregated) && (
             <>
               <TabsContent value="files">
-                <ByFilesView data={aggregated} hideTeamRow={!!(retUser.allowedAgents?.length)} />
+                <ByFilesView data={aggregated} hideTeamRow={!!(retUser.allowedAgents?.length)} phoneData={phoneData} />
               </TabsContent>
               <TabsContent value="day">
                 <div className="space-y-3">
