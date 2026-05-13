@@ -5367,13 +5367,27 @@ function CallbackReviewPanel() {
         )}
 
         {/* Individual phone numbers table */}
-        {!isLoading && teamItems.length > 0 && (
+        {!isLoading && items.length > 0 && (
           <div className="rounded-lg border border-zinc-800 overflow-hidden">
-            <div className="px-3 py-2 bg-zinc-900/60 border-b border-zinc-800 flex items-center justify-between">
-              <p className="text-xs font-semibold text-zinc-400">Phone Numbers ({teamItems.length})</p>
+            <div className="px-3 py-2 bg-zinc-900/60 border-b border-zinc-800 flex flex-wrap items-center gap-2">
+              <p className="text-xs font-semibold text-zinc-400 mr-1">Phone Numbers</p>
+              {(["all","retention","cs","nsf"] as const).map(t => (
+                <button key={t} onClick={() => setTeamFilter(t)}
+                  className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
+                    teamFilter === t
+                      ? t === "retention" ? "bg-violet-500/25 text-violet-200 border-violet-500/40"
+                        : t === "cs" ? "bg-emerald-500/25 text-emerald-200 border-emerald-500/40"
+                        : t === "nsf" ? "bg-sky-500/25 text-sky-200 border-sky-500/40"
+                        : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
+                      : "bg-zinc-800/50 text-zinc-500 border-zinc-700/50 hover:border-zinc-500"
+                  }`}>
+                  {t === "all" ? "All" : t === "retention" ? "Retention" : t.toUpperCase()}
+                </button>
+              ))}
+              <span className="text-[10px] text-zinc-600 ml-auto">{teamItems.length} numbers</span>
               <div className="flex gap-3 text-[10px] text-zinc-600">
-                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-zinc-700 inline-block" />No callback</span>
-                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500/60 inline-block" />Called, no answer</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-zinc-700 inline-block" />No CB</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500/60 inline-block" />No answer</span>
                 <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500/60 inline-block" />Talked</span>
               </div>
             </div>
@@ -5392,11 +5406,8 @@ function CallbackReviewPanel() {
                 <TableBody>
                   {teamItems.map((item) => {
                     const num = item.fromNumber.replace(/(\+1)(\d{3})(\d{3})(\d{4})/, "$1 ($2) $3-$4");
-                    const dot = !item.hasCallback
-                      ? "bg-zinc-700"
-                      : item.callbackConnected
-                      ? "bg-emerald-500/70"
-                      : "bg-amber-500/60";
+                    const dot = !item.hasCallback ? "bg-zinc-700"
+                      : item.callbackConnected ? "bg-emerald-500/70" : "bg-amber-500/60";
                     const teamColor = item.team === "retention" ? "text-violet-300 border-violet-500/30 bg-violet-500/10"
                       : item.team === "cs" ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/10"
                       : item.team === "nsf" ? "text-sky-300 border-sky-500/30 bg-sky-500/10"
@@ -5410,9 +5421,7 @@ function CallbackReviewPanel() {
                           </div>
                         </TableCell>
                         <TableCell className="py-2">
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${teamColor}`}>
-                            {item.team}
-                          </span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${teamColor}`}>{item.team}</span>
                         </TableCell>
                         <TableCell className="text-[10px] text-zinc-500 py-2 uppercase">{item.source}</TableCell>
                         <TableCell className="text-xs text-zinc-500 tabular-nums py-2 whitespace-nowrap">
