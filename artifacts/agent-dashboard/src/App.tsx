@@ -5446,13 +5446,17 @@ function CallbackReviewPanel() {
                           <div className="flex items-center gap-1.5">
                             <span className={`w-2 h-2 rounded-full flex-shrink-0 ${dot}`} />
                             {num}
-                            {item.isGhost && <span className="text-[9px] text-zinc-600 font-sans normal-case tracking-normal">ghost</span>}
                           </div>
                         </TableCell>
                         <TableCell className="py-2">
                           <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${teamColor}`}>{item.team}</span>
                         </TableCell>
-                        <TableCell className="text-[10px] text-zinc-500 py-2 uppercase">{item.source}</TableCell>
+                        <TableCell className="text-[10px] text-zinc-500 py-2">
+                          <div className="flex items-center gap-1">
+                            <span className="uppercase">{item.source}</span>
+                            {item.isGhost && <span className="px-1 py-0.5 rounded border text-[9px] font-medium uppercase text-zinc-400 border-zinc-600 bg-zinc-800">ghost</span>}
+                          </div>
+                        </TableCell>
                         <TableCell className="text-xs text-zinc-500 tabular-nums py-2 whitespace-nowrap">
                           {new Date(item.missedAt).toLocaleString("en-US", {
                             month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
