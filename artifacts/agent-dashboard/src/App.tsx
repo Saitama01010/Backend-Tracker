@@ -333,26 +333,34 @@ const NAME_ALIASES: Record<string, string> = {
 // Egypt shift number → label (Egypt local time)
 // Shift 4 = 4pm–12am EGY, Shift 5 = 5pm–1am EGY, Shift 6 = 6pm–2am EGY,
 // Shift 7 = 7pm–3am EGY, Shift 8 = 8pm–4am EGY
+const SHIFT_COLORS: Record<number, string> = {
+  4: "bg-blue-500",
+  5: "bg-emerald-500",
+  6: "bg-orange-500",
+  7: "bg-pink-500",
+  8: "bg-red-500",
+};
+
 const AGENT_SHIFTS: Record<string, { num: number; label: string; color: string }> = {
   // CS
-  "ella monroe":       { num: 4, label: "Shift 4 · 4pm EGY", color: "bg-sky-500" },
-  "chase miller":      { num: 4, label: "Shift 4 · 4pm EGY", color: "bg-sky-500" },
-  "leo carter":        { num: 5, label: "Shift 5 · 5pm EGY", color: "bg-violet-500" },
-  "nora adam":         { num: 6, label: "Shift 6 · 6pm EGY", color: "bg-amber-500" },
-  "jacob xander":      { num: 8, label: "Shift 8 · 8pm EGY", color: "bg-rose-500" },
-  "carla bennet":      { num: 8, label: "Shift 8 · 8pm EGY", color: "bg-rose-500" },
+  "ella monroe":       { num: 4, label: "Shift 4 · 4pm EGY", color: SHIFT_COLORS[4]! },
+  "chase miller":      { num: 4, label: "Shift 4 · 4pm EGY", color: SHIFT_COLORS[4]! },
+  "leo carter":        { num: 5, label: "Shift 5 · 5pm EGY", color: SHIFT_COLORS[5]! },
+  "nora adam":         { num: 6, label: "Shift 6 · 6pm EGY", color: SHIFT_COLORS[6]! },
+  "jacob xander":      { num: 8, label: "Shift 8 · 8pm EGY", color: SHIFT_COLORS[8]! },
+  "carla bennet":      { num: 8, label: "Shift 8 · 8pm EGY", color: SHIFT_COLORS[8]! },
   // Retention
-  "levi miller":       { num: 4, label: "Shift 4 · 4pm EGY", color: "bg-sky-500" },
-  "ahmed ayman":       { num: 4, label: "Shift 4 · 4pm EGY", color: "bg-sky-500" },
-  "henry hart":        { num: 4, label: "Shift 4 · 4pm EGY", color: "bg-sky-500" },
-  "rick miller":       { num: 4, label: "Shift 4 · 4pm EGY", color: "bg-sky-500" },
-  "zeiad fouad":       { num: 4, label: "Shift 4 · 4pm EGY", color: "bg-sky-500" },
-  "michael belfort":   { num: 5, label: "Shift 5 · 5pm EGY", color: "bg-violet-500" },
-  "ryan henderson":    { num: 5, label: "Shift 5 · 5pm EGY", color: "bg-violet-500" },
-  "katherine adams":   { num: 5, label: "Shift 5 · 5pm EGY", color: "bg-violet-500" },
-  "talia morgan":      { num: 6, label: "Shift 6 · 6pm EGY", color: "bg-amber-500" },
-  "jacob stephenson":  { num: 7, label: "Shift 7 · 7pm EGY", color: "bg-orange-500" },
-  "abdulrhman isawi":  { num: 7, label: "Shift 7 · 7pm EGY", color: "bg-orange-500" },
+  "levi miller":       { num: 4, label: "Shift 4 · 4pm EGY", color: SHIFT_COLORS[4]! },
+  "ahmed ayman":       { num: 4, label: "Shift 4 · 4pm EGY", color: SHIFT_COLORS[4]! },
+  "henry hart":        { num: 4, label: "Shift 4 · 4pm EGY", color: SHIFT_COLORS[4]! },
+  "rick miller":       { num: 4, label: "Shift 4 · 4pm EGY", color: SHIFT_COLORS[4]! },
+  "zeiad fouad":       { num: 4, label: "Shift 4 · 4pm EGY", color: SHIFT_COLORS[4]! },
+  "michael belfort":   { num: 5, label: "Shift 5 · 5pm EGY", color: SHIFT_COLORS[5]! },
+  "ryan henderson":    { num: 5, label: "Shift 5 · 5pm EGY", color: SHIFT_COLORS[5]! },
+  "katherine adams":   { num: 5, label: "Shift 5 · 5pm EGY", color: SHIFT_COLORS[5]! },
+  "talia morgan":      { num: 6, label: "Shift 6 · 6pm EGY", color: SHIFT_COLORS[6]! },
+  "jacob stephenson":  { num: 7, label: "Shift 7 · 7pm EGY", color: SHIFT_COLORS[7]! },
+  "abdulrhman isawi":  { num: 7, label: "Shift 7 · 7pm EGY", color: SHIFT_COLORS[7]! },
 };
 
 function ShiftDot({ agentName }: { agentName: string }) {
