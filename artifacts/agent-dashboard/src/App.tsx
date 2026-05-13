@@ -5365,6 +5365,80 @@ function CallbackReviewPanel() {
             </Table>
           </div>
         )}
+
+        {/* Individual phone numbers table */}
+        {!isLoading && teamItems.length > 0 && (
+          <div className="rounded-lg border border-zinc-800 overflow-hidden">
+            <div className="px-3 py-2 bg-zinc-900/60 border-b border-zinc-800 flex items-center justify-between">
+              <p className="text-xs font-semibold text-zinc-400">Phone Numbers ({teamItems.length})</p>
+              <div className="flex gap-3 text-[10px] text-zinc-600">
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-zinc-700 inline-block" />No callback</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500/60 inline-block" />Called, no answer</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500/60 inline-block" />Talked</span>
+              </div>
+            </div>
+            <div className="max-h-[420px] overflow-y-auto">
+              <Table>
+                <TableHeader className="sticky top-0 z-10 bg-zinc-950">
+                  <TableRow className="border-zinc-800">
+                    <TableHead className="text-xs w-36">Phone</TableHead>
+                    <TableHead className="text-xs">Team</TableHead>
+                    <TableHead className="text-xs">Source</TableHead>
+                    <TableHead className="text-xs">Missed At</TableHead>
+                    <TableHead className="text-xs">Status</TableHead>
+                    <TableHead className="text-xs text-zinc-500">Response</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {teamItems.map((item) => {
+                    const num = item.fromNumber.replace(/(\+1)(\d{3})(\d{3})(\d{4})/, "$1 ($2) $3-$4");
+                    const dot = !item.hasCallback
+                      ? "bg-zinc-700"
+                      : item.callbackConnected
+                      ? "bg-emerald-500/70"
+                      : "bg-amber-500/60";
+                    const teamColor = item.team === "retention" ? "text-violet-300 border-violet-500/30 bg-violet-500/10"
+                      : item.team === "cs" ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/10"
+                      : item.team === "nsf" ? "text-sky-300 border-sky-500/30 bg-sky-500/10"
+                      : "text-zinc-400 border-zinc-600 bg-zinc-800";
+                    return (
+                      <TableRow key={item.id} className="border-zinc-800/60 hover:bg-zinc-800/20">
+                        <TableCell className="text-xs font-mono text-zinc-200 tabular-nums py-2">
+                          <div className="flex items-center gap-1.5">
+                            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${dot}`} />
+                            {num}
+                          </div>
+                        </TableCell>
+                        <TableCell className="py-2">
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${teamColor}`}>
+                            {item.team}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-[10px] text-zinc-500 py-2 uppercase">{item.source}</TableCell>
+                        <TableCell className="text-xs text-zinc-500 tabular-nums py-2 whitespace-nowrap">
+                          {new Date(item.missedAt).toLocaleString("en-US", {
+                            month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+                            hour12: true, timeZone: "America/Los_Angeles",
+                          })}
+                        </TableCell>
+                        <TableCell className="text-xs py-2">
+                          {!item.hasCallback
+                            ? <span className="text-zinc-600">No callback</span>
+                            : item.callbackConnected
+                            ? <span className="text-emerald-400">Talked</span>
+                            : <span className="text-amber-400">Called, no answer</span>}
+                        </TableCell>
+                        <TableCell className="text-[10px] text-zinc-600 tabular-nums py-2">
+                          {item.responseMinutes !== null ? `${item.responseMinutes}m` : "—"}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
