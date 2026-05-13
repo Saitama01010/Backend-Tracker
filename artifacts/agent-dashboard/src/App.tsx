@@ -5999,6 +5999,7 @@ function ViolationsPanel() {
                     <TableHead className="w-8" />
                     <TableHead className="text-xs w-32">Date / Time</TableHead>
                     <TableHead className="text-xs">Ring Group</TableHead>
+                    <TableHead className="text-xs">Source</TableHead>
                     <TableHead className="text-xs">Caller</TableHead>
                     <TableHead className="text-xs">Available (on shift)</TableHead>
                     <TableHead className="text-xs text-zinc-600">Busy</TableHead>
@@ -6020,6 +6021,11 @@ function ViolationsPanel() {
                         <Badge className={`text-[10px] px-1.5 py-0 mt-0.5 border ${deptBadge(r.team.charAt(0).toUpperCase() + r.team.slice(1))}`}>
                           {r.team}
                         </Badge>
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-500/15 text-sky-300 border border-sky-500/25">
+                          PBX
+                        </span>
                       </TableCell>
                       <TableCell className="text-xs text-zinc-400 tabular-nums font-mono">
                         {r.fromNumber.replace(/(\+1)(\d{3})(\d{3})(\d{4})/, "$1 ($2) $3-$4")}
