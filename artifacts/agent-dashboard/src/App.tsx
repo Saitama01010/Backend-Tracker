@@ -344,11 +344,11 @@ const NAME_ALIASES: Record<string, string> = {
 // Shift 4 = 4pm–12am EGY, Shift 5 = 5pm–1am EGY, Shift 6 = 6pm–2am EGY,
 // Shift 7 = 7pm–3am EGY, Shift 8 = 8pm–4am EGY
 const SHIFT_COLORS: Record<number, string> = {
-  4: "bg-blue-500",
-  5: "bg-emerald-500",
-  6: "bg-orange-500",
-  7: "bg-pink-500",
-  8: "bg-red-500",
+  4: "bg-blue-700",
+  5: "bg-emerald-700",
+  6: "bg-orange-700",
+  7: "bg-pink-700",
+  8: "bg-red-700",
 };
 
 const AGENT_SHIFTS: Record<string, { num: number; label: string; color: string }> = {
