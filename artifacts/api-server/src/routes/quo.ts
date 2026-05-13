@@ -7,6 +7,42 @@ import { logger } from "../lib/logger.js";
 
 const router: IRouter = Router();
 
+// ─── California date helpers ──────────────────────────────────────────────────
+// All stats are grouped and filtered by California (Pacific) date so they match
+// what the OpenPhone admin panel shows.
+
+/** Format a UTC Date as a YYYY-MM-DD string in California time. */
+function toCaDate(d: Date): string {
+  return d.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+}
+
+/**
+ * Given a YYYY-MM-DD string treated as a California calendar date, return the
+ * UTC [from, to) bounds that span exactly that California day.
+ * Handles PDT (UTC-7) and PST (UTC-8) automatically.
+ */
+function caDateBounds(dateStr: string): { from: Date; to: Date } {
+  // Midnight PDT = 07:00 UTC; midnight PST = 08:00 UTC.
+  // Try 07:00 first; if that still lands on a different CA date, use 08:00.
+  const pdtMidnight = new Date(`${dateStr}T07:00:00Z`);
+  const fromMs = toCaDate(pdtMidnight) === dateStr
+    ? pdtMidnight.getTime()
+    : pdtMidnight.getTime() + 60 * 60 * 1000; // PST offset
+  return { from: new Date(fromMs), to: new Date(fromMs + 24 * 60 * 60 * 1000) };
+}
+
+/**
+ * Parse `from` / `to` query-param strings into UTC Date bounds.
+ * Date-only strings (YYYY-MM-DD) are treated as California calendar dates so
+ * the query window matches what agents and OpenPhone show locally.
+ */
+function parseDateRange(from: string, to: string): { fromDate: Date; toDate: Date } {
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const fromDate = DATE_RE.test(from) ? caDateBounds(from).from : new Date(from);
+  const toDate   = DATE_RE.test(to)   ? caDateBounds(to).to   : new Date(to);
+  return { fromDate, toDate };
+}
+
 const QUO_BASE = "https://api.openphone.com/v1";
 
 function quoHeaders(): Record<string, string> {
@@ -139,10 +175,7 @@ router.get("/quo/line-stats", async (req, res) => {
       return;
     }
 
-    const fromDate = new Date(from);
-    const toDate = /^\d{4}-\d{2}-\d{2}$/.test(to)
-      ? new Date(new Date(to).getTime() + 86400000)
-      : new Date(to);
+    const { fromDate, toDate } = parseDateRange(from, to);
 
     const rows = await db
       .select({
@@ -181,7 +214,7 @@ router.get("/quo/line-stats", async (req, res) => {
       }
 
       const agentName = row.agentName ?? "Unknown";
-      const date = row.createdAt.toISOString().slice(0, 10);
+      const date = toCaDate(row.createdAt);
 
       if (!agentStats[agentName]) agentStats[agentName] = {};
       if (!agentStats[agentName][date]) {
@@ -261,13 +294,7 @@ router.get("/quo/stats", async (req, res) => {
     const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString();
     const to = (req.query["to"] as string) || new Date().toISOString();
 
-    const fromDate = new Date(from);
-    // If `to` is a date-only string (YYYY-MM-DD), advance by one day so the
-    // entire calendar day is included (new Date("2026-05-13") = midnight UTC,
-    // which would exclude every call that happened after 00:00 UTC).
-    const toDate = /^\d{4}-\d{2}-\d{2}$/.test(to)
-      ? new Date(new Date(to).getTime() + 86400000)
-      : new Date(to);
+    const { fromDate, toDate } = parseDateRange(from, to);
 
     const rows = await db
       .select({
@@ -320,7 +347,7 @@ router.get("/quo/stats", async (req, res) => {
       // Agent-based team takes priority over line-based; skip calls from unknown agents
       const team = agentTeam(agentName) ?? row.lineTeam;
       if (!team || !(team in teamStats)) continue;
-      const date = row.createdAt.toISOString().slice(0, 10);
+      const date = toCaDate(row.createdAt);
 
       if (!teamStats[team]) teamStats[team] = {};
       if (!teamStats[team][agentName]) teamStats[team][agentName] = {};
@@ -651,10 +678,7 @@ router.get("/quo/calls", async (req, res) => {
     const limitParam = Math.min(Number(req.query["limit"] ?? 500), 1000);
     const offsetParam = Number(req.query["offset"] ?? 0);
 
-    const fromDate = new Date(from);
-    const toDate = /^\d{4}-\d{2}-\d{2}$/.test(to)
-      ? new Date(new Date(to).getTime() + 86400000)
-      : new Date(to);
+    const { fromDate, toDate } = parseDateRange(from, to);
 
     const rows = await db
       .select({
