@@ -475,7 +475,8 @@ function purgeExpiredLiveCalls() {
     if (entry.ringingSince.getTime() < cutoff) liveWebhookCalls.delete(callId);
 }
 
-// POST /api/quo/webhook — receives call.ringing and call.completed from OpenPhone.
+// POST /api/quo/webhook — receives call events from OpenPhone.
+// Handles call.ringing, call.answered, and call.completed.
 // Register this URL in OpenPhone → Settings → Webhooks.
 router.post("/quo/webhook", async (req, res) => {
   // Respond 200 immediately so OpenPhone doesn't retry on our processing time.
@@ -488,16 +489,23 @@ router.post("/quo/webhook", async (req, res) => {
     const body = req.body as WebhookBody;
     const eventType = body?.type;
     const callObj = body?.data?.object;
+
+    // Log every event so we can see exactly what OpenPhone sends
+    logger.info({ eventType, callId: callObj?.id, userId: callObj?.userId }, "quo webhook: received");
+
     if (!eventType || !callObj?.id) return;
 
     purgeExpiredLiveCalls();
 
-    if (eventType === "call.ringing" && callObj.userId) {
+    // call.ringing — fires when the call starts ringing (userId may be null for inbound)
+    // call.answered — fires when an agent actually picks up (userId always set)
+    // Handle both so inbound calls aren't missed
+    if ((eventType === "call.ringing" || eventType === "call.answered") && callObj.userId) {
       try {
         const userMap = await getWebhookUserMap();
         const agentName = userMap.get(callObj.userId) ?? callObj.userId;
         liveWebhookCalls.set(callObj.id, { agentName, ringingSince: new Date() });
-        logger.info({ callId: callObj.id, agentName }, "quo webhook: call.ringing → agent live");
+        logger.info({ callId: callObj.id, agentName, eventType }, "quo webhook: agent now live");
       } catch (err) {
         logger.warn({ err: String(err), callId: callObj.id }, "quo webhook: user map fetch failed");
       }
