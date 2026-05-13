@@ -23,3 +23,4 @@ export * from "./attendance";
 export * from "./users";
 export * from "./blockedNumbers";
 export * from "./violationVerifications";
+export * from "./samiaMessages";

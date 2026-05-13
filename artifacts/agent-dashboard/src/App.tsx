@@ -6222,6 +6222,8 @@ function SamiaChat() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<SamiaMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const [pendingImages, setPendingImages] = useState<string[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -6231,10 +6233,25 @@ function SamiaChat() {
   useEffect(() => {
     if (open) {
       setTimeout(() => inputRef.current?.focus(), 80);
-      if (messages.length === 0) {
-        const hr = new Date().getHours();
-        const timeGreet = hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
-        setMessages([{ role: "assistant", content: `${timeGreet}. I'm Samia — I know every number in this dashboard cold. What do you need?` }]);
+      if (!historyLoaded) {
+        setHistoryLoading(true);
+        fetch("/api/samia/history", { headers: { Authorization: `Bearer ${token}` } })
+          .then((r) => r.ok ? r.json() : [])
+          .then((rows: Array<{ role: string; content: string; images?: string[] | null }>) => {
+            if (rows.length > 0) {
+              setMessages(rows.map((r) => ({ role: r.role as "user" | "assistant", content: r.content, images: r.images ?? undefined })));
+            } else {
+              const hr = new Date().getHours();
+              const timeGreet = hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
+              setMessages([{ role: "assistant", content: `${timeGreet}. I'm Samia — I know every number in this dashboard cold. What do you need?` }]);
+            }
+          })
+          .catch(() => {
+            const hr = new Date().getHours();
+            const timeGreet = hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
+            setMessages([{ role: "assistant", content: `${timeGreet}. I'm Samia — I know every number in this dashboard cold. What do you need?` }]);
+          })
+          .finally(() => { setHistoryLoading(false); setHistoryLoaded(true); });
       }
     }
   }, [open]);
@@ -6272,14 +6289,13 @@ function SamiaChat() {
     const images = [...pendingImages];
     setInput("");
     setPendingImages([]);
-    const history = messages.filter((m) => m.role !== "assistant" || messages.indexOf(m) > 0);
     setMessages((prev) => [...prev, { role: "user", content: text, images: images.length ? images : undefined }]);
     setLoading(true);
     try {
       const res = await fetch("/api/samia/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ message: text || "What do you see in this image?", images, history }),
+        body: JSON.stringify({ message: text || "What do you see in this image?", images }),
       });
       const data = (await res.json()) as { reply?: string; error?: string };
       setMessages((prev) => [...prev, { role: "assistant", content: data.reply ?? "Sorry, something went wrong." }]);
@@ -6348,6 +6364,12 @@ function SamiaChat() {
 
           {/* Messages */}
           <div className={`flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0 ${size === "minimized" ? "hidden" : ""}`}>
+            {historyLoading && (
+              <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-4">
+                <div className="h-3 w-3 rounded-full border-2 border-violet-400 border-t-transparent animate-spin" />
+                Loading memory…
+              </div>
+            )}
             {messages.map((m, i) => (
               <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                 {m.role === "assistant" && (

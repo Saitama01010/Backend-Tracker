@@ -1,7 +1,25 @@
 import { Router } from "express";
 import OpenAI from "openai";
+import { db, samiaMessagesTable } from "@workspace/db";
+import { desc } from "drizzle-orm";
 
 const router = Router();
+
+// ── GET /samia/history — last 200 messages ────────────────────────────────────
+router.get("/samia/history", async (req, res) => {
+  try {
+    const rows = await db
+      .select()
+      .from(samiaMessagesTable)
+      .orderBy(desc(samiaMessagesTable.createdAt))
+      .limit(200);
+    // Return in chronological order
+    return res.json(rows.reverse());
+  } catch (err) {
+    req.log.error(err, "samia history error");
+    return res.status(500).json({ error: "Failed to load history" });
+  }
+});
 
 const openai = new OpenAI({
   baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
@@ -285,10 +303,29 @@ async function fetchSheetSummary(
 
 router.post("/samia/chat", async (req, res) => {
   try {
-    const { message, images = [], history = [] } = req.body as { message: string; images?: string[]; history: ChatMessage[] };
+    const { message, images = [] } = req.body as { message: string; images?: string[] };
     if (!message?.trim()) {
       return res.status(400).json({ error: "message is required" });
     }
+
+    // Load last 60 messages from DB as persistent memory
+    const dbHistory = await db
+      .select()
+      .from(samiaMessagesTable)
+      .orderBy(desc(samiaMessagesTable.createdAt))
+      .limit(60);
+    const history: ChatMessage[] = dbHistory.reverse().map((r) => ({
+      role: r.role as "user" | "assistant",
+      content: r.content,
+      images: (r.images as string[] | null) ?? undefined,
+    }));
+
+    // Save the incoming user message to DB immediately
+    await db.insert(samiaMessagesTable).values({
+      role: "user",
+      content: message,
+      images: images.length > 0 ? images : null,
+    });
 
     const port = process.env["PORT"];
     const base = `http://localhost:${port}`;
@@ -768,6 +805,14 @@ router.post("/samia/chat", async (req, res) => {
 
     if (!finalReply) finalReply = "Done.";
     finalReply = ensureSwearing(finalReply);
+
+    // Save Samia's reply to DB
+    await db.insert(samiaMessagesTable).values({
+      role: "assistant",
+      content: finalReply,
+      images: null,
+    });
+
     return res.json({ reply: finalReply, attendanceMarked });
   } catch (err) {
     req.log.error(err, "samia chat error");
