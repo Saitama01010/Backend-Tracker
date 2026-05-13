@@ -144,7 +144,7 @@ function deriveNewRetentionStatus(val: string): string {
 // Normalized set of Retention agent names for fast membership checks.
 // Defined here (before fetchRetentionCombinedSheet) but after normalizeAgent.
 const RETENTION_AGENTS_NORM_EARLY = new Set([
-  "levi miller", "henry hart", "ryan henderson", "michael belfort",
+  "levi miller", "ahmed ayman-levi miller", "henry hart", "ryan henderson", "michael belfort",
   "jacob stephenson", "katherine adams", "talia morgan", "rick miller",
 ]);
 
@@ -201,6 +201,8 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
 
   // Add Discord-bot sheet (same spreadsheet NSF uses, gid=0) rows for Retention agents.
   // Retention agents can now also submit there.
+  // Note: Discord sheet uses "File Status" column (not "Cancel request update").
+  // "Force Cancel Pending" / "Stopped Payment/Revoked" = Cancelled; everything else = Retained.
   for (const r of discordSheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
     const d = parseEgyptTimestamp(tsRaw);
@@ -210,9 +212,11 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     const agentRaw = (r["Agent Name"] ?? "").trim();
     const agentNorm = normalizeAgent(agentRaw);
     if (!RETENTION_AGENTS_NORM_EARLY.has(agentNorm)) continue;
+    const fileStatus = (r["File Status"] ?? "").toLowerCase();
+    const derivedStatus = /cancel|revok/.test(fileStatus) ? "Cancelled" : "Retained";
     rows.push({
       Agent: agentRaw,
-      Status: deriveNewRetentionStatus(r["Cancel request update"] ?? ""),
+      Status: derivedStatus,
       Date: caDate,
     });
   }
@@ -328,9 +332,9 @@ const NAME_ALIASES: Record<string, string> = {
   "omar badr-kevin micheal-3140":  "kevin micheal",
   "yousef taher-raymond reed-2977":"raymond reed",
   "engy-ellie moser-2046":         "ellie moser",
-  // Retention: Arabic OpenPhone / Discord names → English display name
-  // Needed so submissions using the Arabic name merge into the same agent row as the English name.
-  "ahmed ayman":       "levi miller",
+  // Retention: Arabic OpenPhone / Discord names → compound display name
+  // Needed so submissions using the Arabic name merge into the same agent row as the compound name.
+  "ahmed ayman":       "ahmed ayman-levi miller",
   "tuqa hossam":       "talia morgan",
   "abdulrhman isawi":  "jacob stephenson",
   "zeiad fouad":       "rick miller",
@@ -360,8 +364,9 @@ const AGENT_SHIFTS: Record<string, { num: number; label: string; color: string }
   "jacob xander":      { num: 8, label: "Shift 8 · 8pm EGY", color: SHIFT_COLORS[8]! },
   "carla bennet":      { num: 8, label: "Shift 8 · 8pm EGY", color: SHIFT_COLORS[8]! },
   // Retention
-  "levi miller":       { num: 4, label: "Shift 4 · 4pm EGY", color: SHIFT_COLORS[4]! },
-  "ahmed ayman":       { num: 4, label: "Shift 4 · 4pm EGY", color: SHIFT_COLORS[4]! },
+  "levi miller":            { num: 4, label: "Shift 4 · 4pm EGY", color: SHIFT_COLORS[4]! },
+  "ahmed ayman":            { num: 4, label: "Shift 4 · 4pm EGY", color: SHIFT_COLORS[4]! },
+  "ahmed ayman-levi miller":{ num: 4, label: "Shift 4 · 4pm EGY", color: SHIFT_COLORS[4]! },
   "henry hart":        { num: 4, label: "Shift 4 · 4pm EGY", color: SHIFT_COLORS[4]! },
   "rick miller":       { num: 4, label: "Shift 4 · 4pm EGY", color: SHIFT_COLORS[4]! },
   "zeiad fouad":       { num: 4, label: "Shift 4 · 4pm EGY", color: SHIFT_COLORS[4]! },
