@@ -947,8 +947,8 @@ router.get("/vos/missed-hourly", async (req, res) => {
         COUNT(*)::int AS cnt
       FROM phone_calls
       WHERE direction = 'incoming'
-        AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
-        AND duration_seconds = 0
+        AND status = 'voicemail-brief'
+        AND duration_seconds <= 4
         AND line_name IN (${teamLinesInList})
         AND (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${dateParam}::date
         AND participant ~ '^[^a-zA-Z]+$'
@@ -1092,8 +1092,8 @@ router.get("/vos/missed-daily", async (req, res) => {
         COUNT(*)::int AS cnt
       FROM phone_calls
       WHERE direction = 'incoming'
-        AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
-        AND duration_seconds = 0
+        AND status = 'voicemail-brief'
+        AND duration_seconds <= 4
         AND line_name IN (${teamLinesInList})
         AND created_at >= ${window14d}
         AND participant ~ '^[^a-zA-Z]+$'
@@ -1333,7 +1333,7 @@ router.get("/vos/callback-review", async (req, res) => {
 
     // All Quo missed calls in window (excluding internal/blocked)
     const quoMissedRaw = await db.execute(sql`
-      SELECT id, participant, line_team, line_name, created_at, duration_seconds
+      SELECT id, participant, line_team, line_name, created_at, duration_seconds, status
       FROM phone_calls
       WHERE direction = 'incoming'
         AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
@@ -1356,7 +1356,7 @@ router.get("/vos/callback-review", async (req, res) => {
       LIMIT 2000
     `);
 
-    type QuoRow = { id: string; participant: string; line_team: string; line_name: string; created_at: Date; duration_seconds: number | null };
+    type QuoRow = { id: string; participant: string; line_team: string; line_name: string; created_at: Date; duration_seconds: number | null; status: string };
     type PbxRow = { id: number; from_number: string; team: string; ring_group_name: string; created_at: Date };
 
     const quoMissed = quoMissedRaw.rows as QuoRow[];
@@ -1424,7 +1424,7 @@ router.get("/vos/callback-review", async (req, res) => {
         source: "quo",
         ringGroupName: r.line_name,
         missedAt: missedAt.toISOString(),
-        isGhost: (r.duration_seconds ?? 0) <= 1,
+        isGhost: r.status === 'voicemail-brief' && (r.duration_seconds ?? 0) <= 4,
         hasCallback: !!cbEntry,
         callbackConnected: cbEntry?.connected ?? false,
         callbackAt: cbEntry?.date.toISOString() ?? null,
