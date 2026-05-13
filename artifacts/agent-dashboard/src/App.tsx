@@ -2400,7 +2400,7 @@ function TeamPanel({
 
   const todayIso = toIsoDate(new Date());
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
-  const [from, setFrom] = useState(thisMonthStart);
+  const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
   const [dayAgentFilter, setDayAgentFilter] = useState("");
 
@@ -2690,7 +2690,7 @@ function CSPanel() {
   const pbxMissed = ringGroupMissed.get(4) ?? 0;
   const todayIso = toIsoDate(new Date());
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
-  const [from, setFrom] = useState(thisMonthStart);
+  const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
   const [dayAgentFilter, setDayAgentFilter] = useState("");
 
@@ -2914,7 +2914,7 @@ function RetentionPanel() {
 
   const todayIso = toIsoDate(new Date());
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
-  const [from, setFrom] = useState(thisMonthStart);
+  const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
   const [dayAgentFilter, setDayAgentFilter] = useState("");
 
@@ -3794,7 +3794,7 @@ const LINE_TEAM_LABELS: Record<string, string> = { retention: "Retention", nsf: 
 function QuoLinesPanel() {
   const todayIso = toIsoDate(new Date());
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
-  const [from, setFrom] = useState(thisMonthStart);
+  const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
   const [selectedLine, setSelectedLine] = useState<QuoLine | null>(null);
   const [agentFilter, setAgentFilter] = useState("");
