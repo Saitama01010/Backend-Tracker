@@ -2268,7 +2268,7 @@ function getPresets(): Preset[] {
 }
 
 function PresetFilter({ from, to, setFrom, setTo }: { from: string; to: string; setFrom: (s: string) => void; setTo: (s: string) => void }) {
-  const presets = useMemo(() => getPresets(), []);
+  const presets = getPresets();
   const active = presets.find((p) => p.from === from && p.to === to)?.label;
   const todayIso = toIsoDate(new Date());
   return (
