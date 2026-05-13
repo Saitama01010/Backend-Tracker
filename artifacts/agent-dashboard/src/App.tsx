@@ -330,6 +330,44 @@ const NAME_ALIASES: Record<string, string> = {
   "engy-ellie moser-2046":         "ellie moser",
 };
 
+// Egypt shift number → label (Egypt local time)
+// Shift 4 = 4pm–12am EGY, Shift 5 = 5pm–1am EGY, Shift 6 = 6pm–2am EGY,
+// Shift 7 = 7pm–3am EGY, Shift 8 = 8pm–4am EGY
+const AGENT_SHIFTS: Record<string, { num: number; label: string; color: string }> = {
+  // CS
+  "ella monroe":       { num: 4, label: "Shift 4 · 4pm EGY", color: "bg-sky-500" },
+  "chase miller":      { num: 4, label: "Shift 4 · 4pm EGY", color: "bg-sky-500" },
+  "leo carter":        { num: 5, label: "Shift 5 · 5pm EGY", color: "bg-violet-500" },
+  "nora adam":         { num: 6, label: "Shift 6 · 6pm EGY", color: "bg-amber-500" },
+  "jacob xander":      { num: 8, label: "Shift 8 · 8pm EGY", color: "bg-rose-500" },
+  "carla bennet":      { num: 8, label: "Shift 8 · 8pm EGY", color: "bg-rose-500" },
+  // Retention
+  "levi miller":       { num: 4, label: "Shift 4 · 4pm EGY", color: "bg-sky-500" },
+  "ahmed ayman":       { num: 4, label: "Shift 4 · 4pm EGY", color: "bg-sky-500" },
+  "henry hart":        { num: 4, label: "Shift 4 · 4pm EGY", color: "bg-sky-500" },
+  "rick miller":       { num: 4, label: "Shift 4 · 4pm EGY", color: "bg-sky-500" },
+  "zeiad fouad":       { num: 4, label: "Shift 4 · 4pm EGY", color: "bg-sky-500" },
+  "michael belfort":   { num: 5, label: "Shift 5 · 5pm EGY", color: "bg-violet-500" },
+  "ryan henderson":    { num: 5, label: "Shift 5 · 5pm EGY", color: "bg-violet-500" },
+  "katherine adams":   { num: 5, label: "Shift 5 · 5pm EGY", color: "bg-violet-500" },
+  "talia morgan":      { num: 6, label: "Shift 6 · 6pm EGY", color: "bg-amber-500" },
+  "jacob stephenson":  { num: 7, label: "Shift 7 · 7pm EGY", color: "bg-orange-500" },
+  "abdulrhman isawi":  { num: 7, label: "Shift 7 · 7pm EGY", color: "bg-orange-500" },
+};
+
+function ShiftDot({ agentName }: { agentName: string }) {
+  const shift = AGENT_SHIFTS[agentName.toLowerCase().trim()];
+  if (!shift) return null;
+  return (
+    <span
+      title={shift.label}
+      className={`inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold text-white leading-none ${shift.color}`}
+    >
+      {shift.num}
+    </span>
+  );
+}
+
 // Agents who submit files in the Retention sheet but actually belong to the NSF team.
 // Their rows are EXCLUDED from Retention stats and counted as "Fixed" in NSF instead.
 const RETENTION_SHEET_NSF_AGENTS = new Set([
@@ -1938,6 +1976,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
                   </span>
                   <span className="text-emerald-300 font-medium">{agent}</span>
+                  <ShiftDot agentName={agent} />
                   {pbxCall && (
                     <>
                       <span className="text-zinc-500">·</span>
@@ -2025,6 +2064,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                           )
                         )}
                         {agent}
+                        <ShiftDot agentName={agent} />
                         {dept && (
                           <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold leading-none ${dept === "Retention" ? "bg-violet-500/20 text-violet-300 border border-violet-500/30" : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"}`}>
                             {dept}
