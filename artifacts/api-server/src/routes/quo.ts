@@ -3,6 +3,7 @@ import { db, phoneCallsTable } from "@workspace/db";
 import { and, eq, gte, lte, desc, ne } from "drizzle-orm";
 import { runSync, startBackgroundSync, getSyncState, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES } from "./quoSync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
+import { logger } from "../lib/logger.js";
 
 const router: IRouter = Router();
 
@@ -437,17 +438,92 @@ router.get("/quo/sync-state", async (req, res) => {
   }
 });
 
+// ─── Webhook live-call state ──────────────────────────────────────────────────
+// Populated by call.ringing / call.completed events from OpenPhone webhooks.
+// Gives near-instant live detection without waiting for the 15-min DB sync.
+
+type OPUser = { id: string; firstName: string; lastName: string; email?: string };
+interface LiveCallEntry { agentName: string; ringingSince: Date }
+
+const liveWebhookCalls = new Map<string, LiveCallEntry>();
+let cachedUserMap: Map<string, string> | null = null;
+let userMapExpiry = 0;
+
+async function getWebhookUserMap(): Promise<Map<string, string>> {
+  if (cachedUserMap && Date.now() < userMapExpiry) return cachedUserMap;
+  const [usersRes, linesRes] = await Promise.all([
+    quoFetch<{ data: OPUser[] }>("/users").catch(() => ({ data: [] as OPUser[] })),
+    quoFetch<{ data: { id: string; users: OPUser[] }[] }>("/phone-numbers").catch(() => ({ data: [] as { id: string; users: OPUser[] }[] })),
+  ]);
+  const map = new Map<string, string>();
+  function addUser(u: OPUser) {
+    if (map.has(u.id)) return;
+    const emailKey = u.email?.toLowerCase().trim() ?? "";
+    const override = USER_ID_OVERRIDES[u.id] ?? (emailKey && USER_EMAIL_OVERRIDES[emailKey]);
+    map.set(u.id, override || `${u.firstName} ${u.lastName}`.trim());
+  }
+  for (const u of usersRes.data ?? []) addUser(u);
+  for (const line of linesRes.data ?? []) for (const u of line.users ?? []) addUser(u);
+  cachedUserMap = map;
+  userMapExpiry = Date.now() + 30 * 60 * 1000;
+  return map;
+}
+
+function purgeExpiredLiveCalls() {
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [callId, entry] of liveWebhookCalls)
+    if (entry.ringingSince.getTime() < cutoff) liveWebhookCalls.delete(callId);
+}
+
+// POST /api/quo/webhook — receives call.ringing and call.completed from OpenPhone.
+// Register this URL in OpenPhone → Settings → Webhooks.
+router.post("/quo/webhook", async (req, res) => {
+  // Respond 200 immediately so OpenPhone doesn't retry on our processing time.
+  res.sendStatus(200);
+  try {
+    type WebhookBody = {
+      type?: string;
+      data?: { object?: { id?: string; userId?: string | null; answeredAt?: string | null } };
+    };
+    const body = req.body as WebhookBody;
+    const eventType = body?.type;
+    const callObj = body?.data?.object;
+    if (!eventType || !callObj?.id) return;
+
+    purgeExpiredLiveCalls();
+
+    if (eventType === "call.ringing" && callObj.userId) {
+      try {
+        const userMap = await getWebhookUserMap();
+        const agentName = userMap.get(callObj.userId) ?? callObj.userId;
+        liveWebhookCalls.set(callObj.id, { agentName, ringingSince: new Date() });
+        logger.info({ callId: callObj.id, agentName }, "quo webhook: call.ringing → agent live");
+      } catch (err) {
+        logger.warn({ err: String(err), callId: callObj.id }, "quo webhook: user map fetch failed");
+      }
+    } else if (eventType === "call.completed") {
+      const entry = liveWebhookCalls.get(callObj.id);
+      liveWebhookCalls.delete(callObj.id);
+      logger.info(
+        { callId: callObj.id, agentName: entry?.agentName, answeredAt: callObj.answeredAt },
+        "quo webhook: call.completed → agent cleared"
+      );
+    }
+  } catch (err) {
+    logger.warn({ err: String(err) }, "quo webhook: error processing event");
+  }
+});
+
 router.get("/quo/live", async (req, res) => {
   try {
     const active = new Set<string>();
 
-    // Primary source: DB in-progress calls synced in the last 30 minutes.
-    // The background sync runs every 15 minutes and picks up in-progress calls,
-    // so the DB is always a reliable near-real-time source. OpenPhone's /calls
-    // REST endpoint does NOT expose in-progress calls while they are still live,
-    // making the DB the only dependable source for this status.
-    // Use a 2-hour window so calls synced in earlier cycles are still captured.
-    // in-progress status is specific enough that false positives (stale rows) are rare.
+    // Primary: webhook in-memory state — near-instant, updated by call.ringing / call.completed.
+    purgeExpiredLiveCalls();
+    for (const { agentName } of liveWebhookCalls.values()) active.add(agentName);
+
+    // Fallback: DB in-progress rows — covers calls that started before webhooks were registered
+    // or after a server restart. 2-hour window matches the sync interval safety margin.
     const since2h = new Date(Date.now() - 2 * 60 * 60 * 1000);
     const dbRows = await db
       .select({ agentName: phoneCallsTable.agentName })
@@ -455,52 +531,11 @@ router.get("/quo/live", async (req, res) => {
       .where(and(gte(phoneCallsTable.syncedAt, since2h), eq(phoneCallsTable.status, "in-progress")));
     for (const r of dbRows) if (r.agentName) active.add(r.agentName);
 
-    req.log.info({ fromDb: active.size }, "quo live: DB in-progress");
-
-    // Secondary source: attempt OpenPhone live API for any calls not yet synced.
-    try {
-      const since4h = new Date(Date.now() - 4 * 60 * 60 * 1000);
-      type OPUser = { id: string; firstName: string; lastName: string; email?: string };
-      const [linesRes, usersRes] = await Promise.all([
-        quoFetch<{ data: { id: string; users: OPUser[] }[] }>("/phone-numbers"),
-        quoFetch<{ data: OPUser[] }>("/users").catch(() => ({ data: [] as OPUser[] })),
-      ]);
-
-      const userMap = new Map<string, string>();
-      function addUser(u: OPUser) {
-        if (userMap.has(u.id)) return;
-        const emailKey = u.email?.toLowerCase().trim() ?? "";
-        const override = USER_ID_OVERRIDES[u.id] ?? (emailKey && USER_EMAIL_OVERRIDES[emailKey]);
-        userMap.set(u.id, override || `${u.firstName} ${u.lastName}`.trim());
-      }
-      for (const u of usersRes.data ?? []) addUser(u);
-      for (const line of linesRes.data ?? []) for (const u of line.users ?? []) addUser(u);
-
-      const lines = linesRes.data ?? [];
-      const CONCURRENCY = 8;
-      for (let i = 0; i < lines.length; i += CONCURRENCY) {
-        await Promise.all(
-          lines.slice(i, i + CONCURRENCY).map(async (line) => {
-            try {
-              const callsRes = await quoFetch<{ data: { status: string; userId?: string | null }[] }>(
-                `/calls?phoneNumberId=${encodeURIComponent(line.id)}` +
-                `&createdAfter=${encodeURIComponent(since4h.toISOString())}&maxResults=50`
-              );
-              for (const call of callsRes.data ?? []) {
-                if (call.status === "in-progress" && call.userId) {
-                  const name = userMap.get(call.userId);
-                  if (name) active.add(name);
-                }
-              }
-            } catch { /* best-effort per line */ }
-          })
-        );
-      }
-    } catch (apiErr) {
-      req.log.warn({ err: String(apiErr) }, "quo live: real-time API failed, using DB only");
-    }
-
-    res.json({ active: [...active] });
+    req.log.info(
+      { fromWebhook: liveWebhookCalls.size, total: active.size },
+      "quo live"
+    );
+    res.json({ active: [...active], webhookActive: liveWebhookCalls.size > 0 });
   } catch (err) {
     req.log.error(err, "quo live error");
     res.status(500).json({ error: String(err) });
