@@ -1686,6 +1686,10 @@ function useLiveCalls(): LiveCallStatus {
       const norm = normalizeAgent(name);
       quo.add(norm);
       any.add(norm);
+      // Expand Arabic OpenPhone names to their English display-name equivalents
+      // so the retention/CS/NSF panels can match the live dot correctly.
+      const alias = PHONE_ALIASES[norm];
+      if (alias) { quo.add(alias); any.add(alias); }
     }
 
     const addPbx = (name: string) => {
