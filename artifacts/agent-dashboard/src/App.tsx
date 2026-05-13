@@ -328,6 +328,16 @@ const NAME_ALIASES: Record<string, string> = {
   "omar badr-kevin micheal-3140":  "kevin micheal",
   "yousef taher-raymond reed-2977":"raymond reed",
   "engy-ellie moser-2046":         "ellie moser",
+  // Retention: Arabic OpenPhone / Discord names → English display name
+  // Needed so submissions using the Arabic name merge into the same agent row as the English name.
+  "ahmed ayman":       "levi miller",
+  "tuqa hossam":       "talia morgan",
+  "abdulrhman isawi":  "jacob stephenson",
+  "zeiad fouad":       "rick miller",
+  "karma farouk":      "katherine adams",
+  "muhamed walid":     "ryan henderson",
+  "nouralden":         "michael belfort",
+  "saif aziz":         "henry hart",
 };
 
 // Egypt shift number → label (Egypt local time)
