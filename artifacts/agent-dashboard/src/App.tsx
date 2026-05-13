@@ -151,12 +151,15 @@ const RETENTION_AGENTS_NORM_EARLY = new Set([
 // Fetches old + new retention sheets AND the Discord-bot sheet (which Retention agents
 // can now also submit to) AND the IDP-Handled tab, merging them all together.
 async function fetchRetentionCombinedSheet(): Promise<SheetData> {
-  const [oldSheet, newSheet, discordSheet, idpSheet] = await Promise.all([
+  // Fetch the first three sheets in parallel (all from different spreadsheets).
+  // IDP_RETENTION_URL shares the same spreadsheet as NEW_NSF_URL — fetching them
+  // concurrently causes Google to silently drop one, so fetch IDP sequentially after.
+  const [oldSheet, newSheet, discordSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status),
     fetchHeaderCsv(NEW_RETENTION_URL),
     fetchHeaderCsv(NEW_NSF_URL),
-    fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
   ]);
+  const idpSheet = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
 
   const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
   const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
@@ -568,12 +571,14 @@ async function fetchIDPSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
 //   – Discord-bot gid=0 (Sheet 2)                  → Fixed
 //   – IDP-Handled tab (Sheet 3, gid=871007220)      → IDP-Handled
 async function fetchNSFCombinedSheet(): Promise<SheetData> {
-  const [newRows, crossoverRows, idpRows, oldNsfSheet] = await Promise.all([
+  // fetchNewSheetForTeam (gid=0) and fetchIDPSheetForTeam (gid=871007220) use the same
+  // spreadsheet — serialize to avoid Google dropping the concurrent second request.
+  const [newRows, crossoverRows, oldNsfSheet] = await Promise.all([
     fetchNewSheetForTeam(NSF_AGENT_NAMES),
     fetchRetentionSheetNSFCrossoverRows(),
-    fetchIDPSheetForTeam(NSF_AGENT_NAMES),
     fetchHeaderCsv(NSF.status).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
   ]);
+  const idpRows = await fetchIDPSheetForTeam(NSF_AGENT_NAMES);
 
   // Pull pre-cutover rows from the old NSF sheet (where agents tracked files before the Discord-bot sheet).
   // All rows map to "Fixed" since every row represents a file the agent submitted/handled.
@@ -604,11 +609,13 @@ async function fetchNSFCombinedSheet(): Promise<SheetData> {
 //   – Old retention sheet (Sheet 1) → Fixed (retained only)
 //   – IDP-Handled tab (Sheet 3)    → IDP-Handled
 async function fetchCSCombinedSheet(): Promise<SheetData> {
-  const [newRows, crossoverRows, idpRows] = await Promise.all([
+  // fetchNewSheetForTeam (gid=0) and fetchIDPSheetForTeam (gid=871007220) use the same
+  // spreadsheet — serialize to avoid Google dropping the concurrent second request.
+  const [newRows, crossoverRows] = await Promise.all([
     fetchNewSheetForTeam(CS_AGENT_NAMES),
     fetchRetentionSheetCSCrossoverRows(),
-    fetchIDPSheetForTeam(CS_AGENT_NAMES),
   ]);
+  const idpRows = await fetchIDPSheetForTeam(CS_AGENT_NAMES);
   return { headers: ["Agent", "Status", "Date"], rows: [...newRows, ...crossoverRows, ...idpRows] };
 }
 
