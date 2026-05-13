@@ -251,6 +251,13 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
   }
 
+  // Manually added retained files not present in CRM portal (added 2026-05-13)
+  const MANUAL_RETAINED: Row[] = [
+    { Agent: "Ahmed Ayman-Levi Miller", Status: "Retained", Date: "2026-05-13", "File ID": "1178162824" },
+    { Agent: "Ahmed Ayman-Levi Miller", Status: "Retained", Date: "2026-05-13", "File ID": "1206222742" },
+  ];
+  rows.push(...MANUAL_RETAINED);
+
   return { headers: ["Agent", "Status", "Date", "File ID"], rows };
 }
 
