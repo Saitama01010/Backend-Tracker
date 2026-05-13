@@ -105,8 +105,10 @@ const NEW_RETENTION_URL =
 const NEW_NSF_URL =
   "https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=0";
 // IDP-Handled submissions tab in the same Discord-bot spreadsheet — all rows count as IDP-Handled.
+// Browser fetches of this tab fail silently when fetched concurrently with gid=0 (same spreadsheet).
+// Route through the API server proxy so the server fetches it without browser CORS constraints.
 const IDP_RETENTION_URL =
-  "https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=871007220";
+  `/api/csv-proxy?url=${encodeURIComponent("https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=871007220")}`;
 // Records on/after this date come from the new Discord-bot sheets; older records from the old sheets.
 const RETENTION_CUTOVER = new Date("2026-05-04T00:00:00");
 const NSF = {
@@ -216,7 +218,11 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     const agentNorm = normalizeAgent(agentRaw);
     if (!RETENTION_AGENTS_NORM_EARLY.has(agentNorm)) continue;
     const fileStatus = (r["File Status"] ?? "").toLowerCase();
-    const derivedStatus = /cancel|revok/.test(fileStatus) ? "Cancelled" : "Retained";
+    const derivedStatus = /cancel|revok/.test(fileStatus)
+      ? "Cancelled"
+      : /\bfixed\b|\bidp\b/.test(fileStatus)
+      ? "IDP-Handled"
+      : "Retained";
     rows.push({
       Agent: agentRaw,
       Status: derivedStatus,
@@ -339,7 +345,8 @@ const NAME_ALIASES: Record<string, string> = {
   // Needed so submissions using the Arabic name merge into the same agent row as the compound name.
   "ahmed ayman":       "ahmed ayman-levi miller",
   "tuqa hossam":       "talia morgan",
-  "abdulrhman isawi":  "jacob stephenson",
+  "abdulrhman isawi":       "jacob stephenson",
+  "abdlrhman-adam maxwell": "jacob stephenson",
   "zeiad fouad":       "rick miller",
   "karma farouk":      "katherine adams",
   "muhamed walid":     "ryan henderson",

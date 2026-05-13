@@ -9,6 +9,7 @@ import samiaRouter from "./samia";
 import blockedNumbersRouter from "./blockedNumbers";
 import violationsRouter from "./violations";
 import readymodeRouter from "./readymode";
+import csvProxyRouter from "./csvProxy";
 
 const router: IRouter = Router();
 
@@ -22,5 +23,6 @@ router.use(samiaRouter);
 router.use(blockedNumbersRouter);
 router.use(violationsRouter);
 router.use(readymodeRouter);
+router.use(csvProxyRouter);
 
 export default router;
