@@ -1161,7 +1161,7 @@ function aggregate(
 
 // ---------- UI ----------
 
-type TileTone = "violet" | "emerald" | "amber" | "sky" | "rose" | "slate";
+type TileTone = "violet" | "emerald" | "amber" | "sky" | "rose" | "slate" | "zinc";
 
 const TONE_STYLES: Record<TileTone, { bg: string; ring: string; text: string; glow: string }> = {
   violet: {
@@ -1198,6 +1198,12 @@ const TONE_STYLES: Record<TileTone, { bg: string; ring: string; text: string; gl
     bg: "bg-card",
     ring: "border-border",
     text: "text-foreground",
+    glow: "",
+  },
+  zinc: {
+    bg: "bg-zinc-900/40",
+    ring: "border-zinc-700/40",
+    text: "text-zinc-400",
     glow: "",
   },
 };
@@ -5182,6 +5188,7 @@ type CallbackReviewItem = {
   source: "quo" | "pbx";
   ringGroupName: string;
   missedAt: string;
+  isGhost: boolean;
   hasCallback: boolean;
   callbackConnected: boolean;
   callbackAt: string | null;
@@ -5190,6 +5197,7 @@ type CallbackReviewItem = {
 
 type CallbackReviewStats = {
   total: number;
+  ghost: number;
   withCallback: number;
   connected: number;
   rate: number;
@@ -5241,18 +5249,21 @@ function CallbackReviewPanel() {
   );
 
   const stats = useMemo(() => {
-    const total = teamItems.length;
-    const withCB = teamItems.filter(i => i.hasCallback).length;
-    const connected = teamItems.filter(i => i.callbackConnected).length;
-    return { total, withCB, connected };
+    const real = teamItems.filter(i => !i.isGhost);
+    const ghost = teamItems.filter(i => i.isGhost).length;
+    const total = real.length;
+    const withCB = real.filter(i => i.hasCallback).length;
+    const connected = real.filter(i => i.callbackConnected).length;
+    return { total, ghost, withCB, connected };
   }, [teamItems]);
 
   const dailyStats = useMemo(() => {
-    const map = new Map<string, { missed: number; withCB: number; connected: number }>();
+    const map = new Map<string, { missed: number; ghost: number; withCB: number; connected: number }>();
     for (const item of teamItems) {
       const date = new Date(item.missedAt).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-      if (!map.has(date)) map.set(date, { missed: 0, withCB: 0, connected: 0 });
+      if (!map.has(date)) map.set(date, { missed: 0, ghost: 0, withCB: 0, connected: 0 });
       const d = map.get(date)!;
+      if (item.isGhost) { d.ghost++; continue; }
       d.missed++;
       if (item.hasCallback) d.withCB++;
       if (item.callbackConnected) d.connected++;
@@ -5315,8 +5326,9 @@ function CallbackReviewPanel() {
         </div>
 
         {/* Stat tiles */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
           <StatTile label="Total Missed" value={isLoading ? "…" : stats.total.toLocaleString()} tone="rose" icon={<PhoneOff className="h-3.5 w-3.5" />} />
+          <StatTile label="Ghost Calls" value={isLoading ? "…" : stats.ghost.toLocaleString()} tone="zinc" icon={<PhoneOff className="h-3.5 w-3.5 opacity-40" />} />
           <StatTile label="Called Back" value={isLoading ? "…" : stats.withCB.toLocaleString()} tone="emerald" icon={<PhoneCall className="h-3.5 w-3.5" />} />
           <StatTile label="Talked" value={isLoading ? "…" : stats.connected.toLocaleString()} tone="sky" />
           <StatTile label="Connect Rate" value={isLoading ? "…" : pct(stats.connected, stats.withCB)} tone="amber" />
@@ -5334,6 +5346,7 @@ function CallbackReviewPanel() {
                 <TableRow className="border-zinc-800 bg-zinc-900/60">
                   <TableHead className="text-xs">Date</TableHead>
                   <TableHead className="text-xs text-right text-rose-400">Missed</TableHead>
+                  <TableHead className="text-xs text-right text-zinc-500">Ghost</TableHead>
                   <TableHead className="text-xs text-right text-emerald-400">Called Back</TableHead>
                   <TableHead className="text-xs text-right text-violet-400">CB%</TableHead>
                   <TableHead className="text-xs text-right text-sky-400">Talked</TableHead>
@@ -5347,6 +5360,7 @@ function CallbackReviewPanel() {
                       {fmtDay(d.date)}
                     </TableCell>
                     <TableCell className="text-xs text-right text-zinc-200 tabular-nums font-medium">{d.missed}</TableCell>
+                    <TableCell className="text-xs text-right text-zinc-600 tabular-nums">{d.ghost > 0 ? d.ghost : "—"}</TableCell>
                     <TableCell className="text-xs text-right text-emerald-300 tabular-nums font-medium">{d.withCB}</TableCell>
                     <TableCell className="text-xs text-right tabular-nums">
                       <span className={`font-medium ${d.missed === 0 ? "text-zinc-600" : d.withCB / d.missed >= 0.8 ? "text-emerald-300" : d.withCB / d.missed >= 0.6 ? "text-amber-300" : "text-rose-300"}`}>
@@ -5413,11 +5427,12 @@ function CallbackReviewPanel() {
                       : item.team === "nsf" ? "text-sky-300 border-sky-500/30 bg-sky-500/10"
                       : "text-zinc-400 border-zinc-600 bg-zinc-800";
                     return (
-                      <TableRow key={item.id} className="border-zinc-800/60 hover:bg-zinc-800/20">
+                      <TableRow key={item.id} className={`border-zinc-800/60 hover:bg-zinc-800/20 ${item.isGhost ? "opacity-50" : ""}`}>
                         <TableCell className="text-xs font-mono text-zinc-200 tabular-nums py-2">
                           <div className="flex items-center gap-1.5">
                             <span className={`w-2 h-2 rounded-full flex-shrink-0 ${dot}`} />
                             {num}
+                            {item.isGhost && <span className="text-[9px] text-zinc-600 font-sans normal-case tracking-normal">ghost</span>}
                           </div>
                         </TableCell>
                         <TableCell className="py-2">

@@ -1279,7 +1279,7 @@ router.get("/vos/callback-review", async (req, res) => {
 
     // All Quo missed calls in window (excluding internal/blocked)
     const quoMissedRaw = await db.execute(sql`
-      SELECT id, participant, line_team, line_name, created_at
+      SELECT id, participant, line_team, line_name, created_at, duration_seconds
       FROM phone_calls
       WHERE direction = 'incoming'
         AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
@@ -1302,7 +1302,7 @@ router.get("/vos/callback-review", async (req, res) => {
       LIMIT 2000
     `);
 
-    type QuoRow = { id: string; participant: string; line_team: string; line_name: string; created_at: Date };
+    type QuoRow = { id: string; participant: string; line_team: string; line_name: string; created_at: Date; duration_seconds: number | null };
     type PbxRow = { id: number; from_number: string; team: string; ring_group_name: string; created_at: Date };
 
     const quoMissed = quoMissedRaw.rows as QuoRow[];
@@ -1351,7 +1351,7 @@ router.get("/vos/callback-review", async (req, res) => {
     type CbEntry2 = { date: Date; connected: boolean };
     type ReviewItem = {
       id: string; fromNumber: string; team: string; source: "quo" | "pbx";
-      ringGroupName: string; missedAt: string; hasCallback: boolean;
+      ringGroupName: string; missedAt: string; isGhost: boolean; hasCallback: boolean;
       callbackConnected: boolean; callbackAt: string | null; responseMinutes: number | null;
     };
     const items: ReviewItem[] = [];
@@ -1370,6 +1370,7 @@ router.get("/vos/callback-review", async (req, res) => {
         source: "quo",
         ringGroupName: r.line_name,
         missedAt: missedAt.toISOString(),
+        isGhost: (r.duration_seconds ?? 0) <= 1,
         hasCallback: !!cbEntry,
         callbackConnected: cbEntry?.connected ?? false,
         callbackAt: cbEntry?.date.toISOString() ?? null,
@@ -1391,6 +1392,7 @@ router.get("/vos/callback-review", async (req, res) => {
         source: "pbx",
         ringGroupName: r.ring_group_name,
         missedAt: missedAt.toISOString(),
+        isGhost: false,
         hasCallback: !!cbEntry,
         callbackConnected: cbEntry?.connected ?? false,
         callbackAt: cbEntry?.date.toISOString() ?? null,
@@ -1400,11 +1402,12 @@ router.get("/vos/callback-review", async (req, res) => {
 
     items.sort((a, b) => new Date(b.missedAt).getTime() - new Date(a.missedAt).getTime());
 
-    const withCallback = items.filter(i => i.hasCallback).length;
-    const connected = items.filter(i => i.callbackConnected).length;
-    const rate = items.length > 0 ? withCallback / items.length : 0;
+    const realItems = items.filter(i => !i.isGhost);
+    const withCallback = realItems.filter(i => i.hasCallback).length;
+    const connected = realItems.filter(i => i.callbackConnected).length;
+    const rate = realItems.length > 0 ? withCallback / realItems.length : 0;
     const connectRate = withCallback > 0 ? connected / withCallback : 0;
-    const responseTimes = items.filter(i => i.responseMinutes !== null).map(i => i.responseMinutes!);
+    const responseTimes = realItems.filter(i => i.responseMinutes !== null).map(i => i.responseMinutes!);
     const avgResponseMinutes = responseTimes.length > 0
       ? Math.round(responseTimes.reduce((s, m) => s + m, 0) / responseTimes.length)
       : 0;
@@ -1412,7 +1415,9 @@ router.get("/vos/callback-review", async (req, res) => {
     res.json({
       items,
       stats: {
-        total: items.length, withCallback, connected,
+        total: realItems.length,
+        ghost: items.filter(i => i.isGhost).length,
+        withCallback, connected,
         rate: Math.round(rate * 100) / 100,
         connectRate: Math.round(connectRate * 100) / 100,
         avgResponseMinutes,
