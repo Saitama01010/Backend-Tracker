@@ -361,7 +361,8 @@ function ShiftDot({ agentName }: { agentName: string }) {
   return (
     <span
       title={shift.label}
-      className={`inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold text-white leading-none ${shift.color}`}
+      className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[11px] font-extrabold text-white leading-none shadow-md ring-2 ring-black/30 ${shift.color}`}
+      style={{ verticalAlign: "middle", flexShrink: 0 }}
     >
       {shift.num}
     </span>
