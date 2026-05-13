@@ -642,6 +642,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
         lineTeam: phoneCallsTable.lineTeam,
         lineName: phoneCallsTable.lineName,
         status: phoneCallsTable.status,
+        durationSeconds: phoneCallsTable.durationSeconds,
         createdAt: phoneCallsTable.createdAt,
       })
       .from(phoneCallsTable)
@@ -659,6 +660,9 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       if (blocklist.has(row.participant)) continue;
       if (/[a-zA-Z]/.test(row.participant)) continue; // skip internal line-name participants
       if (internalNumbers.has(normalizePhone(row.participant))) continue; // skip our own line numbers
+      // skip ghost calls (instant no-answer or brief voicemail-brief)
+      const dur = row.durationSeconds ?? 0;
+      if ((row.status === "no-answer" && dur === 0) || (row.status === "voicemail-brief" && dur <= 4)) continue;
       const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);
       const times = callbackTimes.get(norm);
@@ -850,6 +854,7 @@ router.get("/vos/missed-no-callback", async (req, res) => {
           lineTeam: phoneCallsTable.lineTeam,
           lineName: phoneCallsTable.lineName,
           status: phoneCallsTable.status,
+          durationSeconds: phoneCallsTable.durationSeconds,
           createdAt: phoneCallsTable.createdAt,
         })
         .from(phoneCallsTable)
@@ -882,6 +887,9 @@ router.get("/vos/missed-no-callback", async (req, res) => {
       if (blocklist.has(row.participant)) continue;
       if (/[a-zA-Z]/.test(row.participant)) continue; // skip internal line-name participants
       if (internalSet.has(normalizePhone(row.participant))) continue; // skip internal numbers
+      // skip ghost calls
+      const dur = row.durationSeconds ?? 0;
+      if ((row.status === "no-answer" && dur === 0) || (row.status === "voicemail-brief" && dur <= 4)) continue;
       const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);
       const times = callbackTimes.get(norm);
