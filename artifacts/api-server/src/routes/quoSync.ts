@@ -402,6 +402,25 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
         }
       }
 
+      // DND voicemail detection: inbound no-answer + duration=0 but caller stayed on the
+      // line for 20+ seconds means they were engaged with a voicemail system (DND-forwarded).
+      // OpenPhone records duration=0 because no agent answered, but completedAt - createdAt
+      // reveals the true elapsed time. A true ghost call drops in <5s; a voicemail takes 20s+.
+      if (
+        call.status === "no-answer" &&
+        call.direction === "incoming" &&
+        (call.duration ?? 0) === 0 &&
+        call.completedAt &&
+        call.createdAt
+      ) {
+        const elapsedSeconds = Math.round(
+          (new Date(call.completedAt).getTime() - new Date(call.createdAt).getTime()) / 1000,
+        );
+        if (elapsedSeconds >= 20) {
+          effectiveStatus = "voicemail"; // caller left a voicemail via DND forwarding
+        }
+      }
+
       rows.push({
         id: call.id,
         lineId: line.id,
