@@ -5543,7 +5543,7 @@ function ViolationsPanel() {
   const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
   const sevenAgo = new Date(Date.now() - 6 * 86400000).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
 
-  const [from, setFrom] = useState(sevenAgo);
+  const [from, setFrom] = useState(todayLA);
   const [to, setTo]     = useState(todayLA);
   const [sub, setSub]   = useState<"late" | "gaps" | "missed" | "cancels" | "verified">("late");
   const [deptFilter, setDeptFilter] = useState<string>("all");
