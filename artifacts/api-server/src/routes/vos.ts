@@ -1058,15 +1058,35 @@ router.get("/vos/missed-daily", async (req, res) => {
       }
     }
 
+    // Ghost counts (Quo missed calls that rang 0 seconds — instantly dropped)
+    const ghostRows = await db.execute(sql`
+      SELECT
+        (created_at AT TIME ZONE 'America/Los_Angeles')::date AS day,
+        line_team,
+        COUNT(*)::int AS cnt
+      FROM phone_calls
+      WHERE direction = 'incoming'
+        AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
+        AND duration_seconds = 0
+        AND line_name IN (${teamLinesInList})
+        AND created_at >= ${window14d}
+        AND participant ~ '^[^a-zA-Z]+$'
+        AND EXTRACT(hour FROM (created_at AT TIME ZONE 'America/Los_Angeles')) >= 8
+        AND EXTRACT(hour FROM (created_at AT TIME ZONE 'America/Los_Angeles')) < 20
+        ${internalExclude}
+      GROUP BY day, line_team
+      ORDER BY day DESC, line_team
+    `);
+
     // Merge Quo rows into a map keyed by date
-    type TeamDay = { retention: { quo: number; pbx: number }; cs: { quo: number; pbx: number }; nsf: { quo: number; pbx: number } };
+    type TeamDay = { retention: { quo: number; ghost: number; pbx: number }; cs: { quo: number; ghost: number; pbx: number }; nsf: { quo: number; ghost: number; pbx: number } };
     const dayMap = new Map<string, TeamDay>();
 
     const getDay = (d: string): TeamDay => {
       if (!dayMap.has(d)) dayMap.set(d, {
-        retention: { quo: 0, pbx: 0 },
-        cs: { quo: 0, pbx: 0 },
-        nsf: { quo: 0, pbx: 0 },
+        retention: { quo: 0, ghost: 0, pbx: 0 },
+        cs: { quo: 0, ghost: 0, pbx: 0 },
+        nsf: { quo: 0, ghost: 0, pbx: 0 },
       });
       return dayMap.get(d)!;
     };
@@ -1076,6 +1096,14 @@ router.get("/vos/missed-daily", async (req, res) => {
       const d = getDay(dateStr);
       const team = r.line_team as "retention" | "cs" | "nsf";
       if (team === "retention" || team === "cs" || team === "nsf") d[team].quo += r.cnt;
+    }
+
+    // Merge ghost counts
+    for (const r of ghostRows.rows as { day: unknown; line_team: string; cnt: number }[]) {
+      const dateStr = r.day instanceof Date ? r.day.toISOString().split("T")[0] : String(r.day);
+      const d = getDay(dateStr);
+      const team = r.line_team as "retention" | "cs" | "nsf";
+      if (team === "retention" || team === "cs" || team === "nsf") d[team].ghost += r.cnt;
     }
 
     // Merge PBX rows from DB

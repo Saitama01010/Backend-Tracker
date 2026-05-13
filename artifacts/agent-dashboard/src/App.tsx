@@ -1796,9 +1796,9 @@ function useMissedNoCB() {
 
 type DailyMissedDay = {
   date: string;
-  retention: { quo: number; pbx: number };
-  cs: { quo: number; pbx: number };
-  nsf: { quo: number; pbx: number };
+  retention: { quo: number; ghost: number; pbx: number };
+  cs: { quo: number; ghost: number; pbx: number };
+  nsf: { quo: number; ghost: number; pbx: number };
 };
 
 function useMissedDaily(mode: "times" | "numbers" = "times") {
@@ -5129,25 +5129,31 @@ function DailyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) {
                     </TableCell>
                     <TableCell className="text-xs">
                       <span className="text-violet-300 font-medium">{ret || "—"}</span>
-                      {ret > 0 && (d.retention.quo > 0 || d.retention.pbx > 0) && (
+                      {ret > 0 && (
                         <span className="text-zinc-600 ml-1 text-[10px]">
-                          {d.retention.quo}q{d.retention.pbx > 0 && ` ${d.retention.pbx}p`}
+                          {d.retention.quo > 0 && <>{d.retention.quo}q</>}
+                          {d.retention.ghost > 0 && <span className="text-zinc-700 ml-0.5">({d.retention.ghost}g)</span>}
+                          {d.retention.pbx > 0 && <> {d.retention.pbx}p</>}
                         </span>
                       )}
                     </TableCell>
                     <TableCell className="text-xs">
                       <span className="text-emerald-300 font-medium">{cs || "—"}</span>
-                      {cs > 0 && (d.cs.quo > 0 || d.cs.pbx > 0) && (
+                      {cs > 0 && (
                         <span className="text-zinc-600 ml-1 text-[10px]">
-                          {d.cs.quo}q{d.cs.pbx > 0 && ` ${d.cs.pbx}p`}
+                          {d.cs.quo > 0 && <>{d.cs.quo}q</>}
+                          {d.cs.ghost > 0 && <span className="text-zinc-700 ml-0.5">({d.cs.ghost}g)</span>}
+                          {d.cs.pbx > 0 && <> {d.cs.pbx}p</>}
                         </span>
                       )}
                     </TableCell>
                     <TableCell className="text-xs">
                       <span className="text-sky-300 font-medium">{nsf || "—"}</span>
-                      {nsf > 0 && (d.nsf.quo > 0 || d.nsf.pbx > 0) && (
+                      {nsf > 0 && (
                         <span className="text-zinc-600 ml-1 text-[10px]">
-                          {d.nsf.quo}q{d.nsf.pbx > 0 && ` ${d.nsf.pbx}p`}
+                          {d.nsf.quo > 0 && <>{d.nsf.quo}q</>}
+                          {d.nsf.ghost > 0 && <span className="text-zinc-700 ml-0.5">({d.nsf.ghost}g)</span>}
+                          {d.nsf.pbx > 0 && <> {d.nsf.pbx}p</>}
                         </span>
                       )}
                     </TableCell>
