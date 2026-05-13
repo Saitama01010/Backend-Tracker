@@ -1022,6 +1022,8 @@ router.get("/vos/missed-daily", async (req, res) => {
         AND line_name IN (${teamLinesInList})
         AND created_at >= ${window14d}
         AND participant ~ '^[^a-zA-Z]+$'
+        AND EXTRACT(hour FROM (created_at AT TIME ZONE 'America/Los_Angeles')) >= 8
+        AND EXTRACT(hour FROM (created_at AT TIME ZONE 'America/Los_Angeles')) < 20
         ${internalExclude}
       GROUP BY day, line_team
       ORDER BY day DESC, line_team
@@ -1039,6 +1041,8 @@ router.get("/vos/missed-daily", async (req, res) => {
       FROM pbx_missed_calls
       WHERE created_at >= ${window14d}
         AND team IN ('retention', 'cs', 'nsf')
+        AND EXTRACT(hour FROM (created_at AT TIME ZONE 'America/Los_Angeles')) >= 8
+        AND EXTRACT(hour FROM (created_at AT TIME ZONE 'America/Los_Angeles')) < 20
       GROUP BY day, team
       ORDER BY day DESC, team
     `);
