@@ -166,6 +166,7 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
   const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
   const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
   const oldDateCol = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
+  const oldFileIdCol = findColumn(oldSheet.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
 
   const rows: Row[] = [];
 
@@ -182,6 +183,7 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
         Agent: agentRaw,
         Status: (r[oldStatusCol] ?? "").trim(),
         Date: d ? toIsoDate(d) : dateStr,
+        "File ID": oldFileIdCol ? (r[oldFileIdCol] ?? "").trim() : "",
       });
     }
   }
@@ -201,6 +203,7 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
       Agent: agentRaw,
       Status: deriveNewRetentionStatus(r["Cancel request update"] ?? ""),
       Date: caDate,
+      "File ID": (r["File ID"] ?? "").trim(),
     });
   }
 
@@ -227,6 +230,7 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
       Agent: agentRaw,
       Status: derivedStatus,
       Date: caDate,
+      "File ID": (r["File ID"] ?? "").trim(),
     });
   }
 
@@ -244,10 +248,10 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     const isRetentionAgent = RETENTION_AGENTS_NORM_EARLY.has(agentNorm)
       || segments.some(seg => RETENTION_AGENTS_NORM_EARLY.has(seg));
     if (!isRetentionAgent) continue;
-    rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate });
+    rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
   }
 
-  return { headers: ["Agent", "Status", "Date"], rows };
+  return { headers: ["Agent", "Status", "Date", "File ID"], rows };
 }
 
 // Pulls Retention-sheet rows for NSF cross-over agents (e.g. Katie Miller) and maps
@@ -1591,6 +1595,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
       Agent: (r[agentCol] ?? "").trim(),
       Status: (r[statusCol] ?? "").trim(),
       Date: dateCol ? (r[dateCol] ?? "") : "",
+      "File ID": (r["File ID"] ?? "").trim(),
     }));
 
     const csv = Papa.unparse(exportRows);
