@@ -1817,9 +1817,9 @@ function useMissedDaily(mode: "times" | "numbers" = "times") {
 
 type HourlyMissedHour = {
   hour: number;
-  retention: { quo: number; pbx: number };
-  cs: { quo: number; pbx: number };
-  nsf: { quo: number; pbx: number };
+  retention: { quo: number; ghost: number; pbx: number };
+  cs: { quo: number; ghost: number; pbx: number };
+  nsf: { quo: number; ghost: number; pbx: number };
 };
 
 function useMissedHourly(date: string, mode: "times" | "numbers" = "times") {
@@ -4939,12 +4939,13 @@ function HourlyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) 
     return `${display}${ampm}`;
   };
 
-  const cellVal = (quo: number, pbx: number) => {
+  const cellVal = (quo: number, ghost: number, pbx: number) => {
     const total = quo + pbx;
     if (total === 0) return <span className="text-zinc-600">—</span>;
     return (
       <span>
         {total}
+        {ghost > 0 && <span className="ml-1 text-[10px] text-zinc-600">({ghost}g)</span>}
         {pbx > 0 && <span className="ml-1 text-[10px] text-zinc-500">(+{pbx} PBX)</span>}
       </span>
     );
@@ -4999,9 +5000,9 @@ function HourlyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) 
                 return (
                   <TableRow key={h.hour} className="border-zinc-800 hover:bg-zinc-800/20">
                     <TableCell className="text-xs text-zinc-400 tabular-nums">{fmt(h.hour)}</TableCell>
-                    <TableCell className="text-xs text-violet-300 font-medium">{cellVal(h.retention.quo, h.retention.pbx)}</TableCell>
-                    <TableCell className="text-xs text-emerald-300 font-medium">{cellVal(h.cs.quo, h.cs.pbx)}</TableCell>
-                    <TableCell className="text-xs text-sky-300 font-medium">{cellVal(h.nsf.quo, h.nsf.pbx)}</TableCell>
+                    <TableCell className="text-xs text-violet-300 font-medium">{cellVal(h.retention.quo, h.retention.ghost, h.retention.pbx)}</TableCell>
+                    <TableCell className="text-xs text-emerald-300 font-medium">{cellVal(h.cs.quo, h.cs.ghost, h.cs.pbx)}</TableCell>
+                    <TableCell className="text-xs text-sky-300 font-medium">{cellVal(h.nsf.quo, h.nsf.ghost, h.nsf.pbx)}</TableCell>
                     <TableCell className="text-xs text-right font-semibold text-zinc-200">{total}</TableCell>
                   </TableRow>
                 );

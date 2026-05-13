@@ -939,14 +939,32 @@ router.get("/vos/missed-hourly", async (req, res) => {
       ORDER BY hour
     `);
 
-    // Build hour map 0–23 with separate quo/pbx buckets per team
-    type HourRow = { retention: { quo: number; pbx: number }; cs: { quo: number; pbx: number }; nsf: { quo: number; pbx: number } };
+    // Ghost counts per hour (Quo missed calls with 0s ring duration)
+    const ghostRows = await db.execute(sql`
+      SELECT
+        EXTRACT(HOUR FROM (created_at AT TIME ZONE 'America/Los_Angeles'))::int AS hour,
+        line_team,
+        COUNT(*)::int AS cnt
+      FROM phone_calls
+      WHERE direction = 'incoming'
+        AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
+        AND duration_seconds = 0
+        AND line_name IN (${teamLinesInList})
+        AND (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${dateParam}::date
+        AND participant ~ '^[^a-zA-Z]+$'
+        ${internalExclude}
+      GROUP BY hour, line_team
+      ORDER BY hour
+    `);
+
+    // Build hour map 0–23 with separate quo/ghost/pbx buckets per team
+    type HourRow = { retention: { quo: number; ghost: number; pbx: number }; cs: { quo: number; ghost: number; pbx: number }; nsf: { quo: number; ghost: number; pbx: number } };
     const hourMap = new Map<number, HourRow>();
     const getHour = (h: number): HourRow => {
       if (!hourMap.has(h)) hourMap.set(h, {
-        retention: { quo: 0, pbx: 0 },
-        cs: { quo: 0, pbx: 0 },
-        nsf: { quo: 0, pbx: 0 },
+        retention: { quo: 0, ghost: 0, pbx: 0 },
+        cs: { quo: 0, ghost: 0, pbx: 0 },
+        nsf: { quo: 0, ghost: 0, pbx: 0 },
       });
       return hourMap.get(h)!;
     };
@@ -957,6 +975,14 @@ router.get("/vos/missed-hourly", async (req, res) => {
       if (r.line_team === "retention") row.retention.quo += r.cnt;
       else if (r.line_team === "cs") row.cs.quo += r.cnt;
       else if (r.line_team === "nsf") row.nsf.quo += r.cnt;
+    }
+
+    // Populate ghost counts
+    for (const r of ghostRows.rows as { hour: number; line_team: string; cnt: number }[]) {
+      const row = getHour(r.hour);
+      if (r.line_team === "retention") row.retention.ghost += r.cnt;
+      else if (r.line_team === "cs") row.cs.ghost += r.cnt;
+      else if (r.line_team === "nsf") row.nsf.ghost += r.cnt;
     }
 
     if (isToday && mode === "times") {
