@@ -947,8 +947,10 @@ router.get("/vos/missed-hourly", async (req, res) => {
         COUNT(*)::int AS cnt
       FROM phone_calls
       WHERE direction = 'incoming'
-        AND status = 'voicemail-brief'
-        AND duration_seconds <= 4
+        AND (
+          (status = 'no-answer' AND duration_seconds = 0)
+          OR (status = 'voicemail-brief' AND duration_seconds <= 4)
+        )
         AND line_name IN (${teamLinesInList})
         AND (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${dateParam}::date
         AND participant ~ '^[^a-zA-Z]+$'
@@ -1092,8 +1094,10 @@ router.get("/vos/missed-daily", async (req, res) => {
         COUNT(*)::int AS cnt
       FROM phone_calls
       WHERE direction = 'incoming'
-        AND status = 'voicemail-brief'
-        AND duration_seconds <= 4
+        AND (
+          (status = 'no-answer' AND duration_seconds = 0)
+          OR (status = 'voicemail-brief' AND duration_seconds <= 4)
+        )
         AND line_name IN (${teamLinesInList})
         AND created_at >= ${window14d}
         AND participant ~ '^[^a-zA-Z]+$'
@@ -1424,7 +1428,7 @@ router.get("/vos/callback-review", async (req, res) => {
         source: "quo",
         ringGroupName: r.line_name,
         missedAt: missedAt.toISOString(),
-        isGhost: r.status === 'voicemail-brief' && (r.duration_seconds ?? 0) <= 4,
+        isGhost: (r.status === 'no-answer' && (r.duration_seconds ?? 0) === 0) || (r.status === 'voicemail-brief' && (r.duration_seconds ?? 0) <= 4),
         hasCallback: !!cbEntry,
         callbackConnected: cbEntry?.connected ?? false,
         callbackAt: cbEntry?.date.toISOString() ?? null,
