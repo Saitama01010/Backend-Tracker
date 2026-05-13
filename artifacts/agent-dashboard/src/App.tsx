@@ -5021,6 +5021,13 @@ type NumberBreakdown = {
   callbackConnected: boolean; callbackAt: string | null; responseMinutes: number | null;
 };
 
+function fmtResponseTime(minutes: number): string {
+  if (minutes < 60) return `${minutes}m`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
 function DailyMissedBreakdown({ date }: { date: string }) {
   const q = useQuery<{ date: string; numbers: NumberBreakdown[]; stats: { total: number; withCallback: number; connected: number; callbackRate: number; connectRate: number } }>({
     queryKey: ["missedBreakdown", date],
