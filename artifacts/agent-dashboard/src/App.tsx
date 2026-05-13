@@ -775,7 +775,7 @@ const SHEET_TO_PHONE: Record<string, string> = {
   "muhamed-ryan henderson": "ryan henderson",
   "zeiad fouad-zack ford": "zeiad fouad",
   "youssef nady-jacob xander": "youssef nady",
-  "ahmed ayman-levi miller": "ahmed ayman",
+  "ahmed ayman-levi miller": "levi miller",
   "nour-michael belfort-2900": "michael belfort",
   "mohammed ayman-max francis-2268": "max francis",
   // NSF combined OpenPhone display names
