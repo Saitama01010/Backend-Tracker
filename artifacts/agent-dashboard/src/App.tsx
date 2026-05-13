@@ -1488,7 +1488,7 @@ function avgDuration(seconds: number, calls: number): string {
   return formatDuration(Math.round(seconds / calls));
 }
 
-function ByFilesView({ data, hideTeamRow, phoneData }: { data: Aggregated; hideTeamRow?: boolean; phoneData?: Map<string, PhoneAgentMetrics> }) {
+function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate }: { data: Aggregated; hideTeamRow?: boolean; phoneData?: Map<string, PhoneAgentMetrics>; sheetData?: SheetData; fromDate?: Date | null; toDate?: Date | null }) {
   const showRate = data.mode === "retention";
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>({ column: "__total__", dir: "desc" });
@@ -1568,6 +1568,41 @@ function ByFilesView({ data, hideTeamRow, phoneData }: { data: Aggregated; hideT
     URL.revokeObjectURL(url);
   }
 
+  function exportRawRows() {
+    if (!sheetData) return;
+    const agentCol = findColumn(sheetData.headers, ["Agent", "Agent Name", "Rep"]);
+    const statusCol = findColumn(sheetData.headers, ["Status", "Result", "Outcome", "Disposition"]);
+    const dateCol = findColumn(sheetData.headers, ["Date", "Day", "Call Date"]);
+    if (!agentCol || !statusCol) return;
+
+    const rows = sheetData.rows.filter((r) => {
+      const agent = (r[agentCol] ?? "").trim();
+      if (!agent || /total$/i.test(agent)) return false;
+      if (dateCol && (fromDate || toDate)) {
+        const d = parseDate(r[dateCol] ?? "");
+        if (!d) return false;
+        if (fromDate && d < fromDate) return false;
+        if (toDate && d > toDate) return false;
+      }
+      return true;
+    });
+
+    const exportRows = rows.map((r) => ({
+      Agent: (r[agentCol] ?? "").trim(),
+      Status: (r[statusCol] ?? "").trim(),
+      Date: dateCol ? (r[dateCol] ?? "") : "",
+    }));
+
+    const csv = Papa.unparse(exportRows);
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `submissions_${new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" })}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -1585,9 +1620,15 @@ function ByFilesView({ data, hideTeamRow, phoneData }: { data: Aggregated; hideT
           <Badge variant="secondary" className="font-mono">
             {visible.length} of {data.byAgent.length} agents
           </Badge>
+          {sheetData && (
+            <Button variant="outline" size="sm" onClick={exportRawRows} data-testid="button-export-rows">
+              <Download className="h-3.5 w-3.5 mr-1.5" />
+              Export Rows
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={exportCsv} data-testid="button-export-csv">
             <Download className="h-3.5 w-3.5 mr-1.5" />
-            Export CSV
+            Export Summary
           </Button>
         </div>
       </div>
@@ -2689,7 +2730,7 @@ function TeamPanel({
               {aggregated && !("error" in aggregated) && (
                 <>
                   <TabsContent value="files">
-                    <ByFilesView data={aggregated} hideTeamRow={isRestricted} phoneData={phoneData} />
+                    <ByFilesView data={aggregated} hideTeamRow={isRestricted} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
                   </TabsContent>
                   <TabsContent value="day">
                     <div className="space-y-3">
@@ -2916,7 +2957,7 @@ function CSPanel() {
           {aggregated && !("error" in aggregated) && (
             <>
               <TabsContent value="files">
-                <ByFilesView data={aggregated} phoneData={phoneData} />
+                <ByFilesView data={aggregated} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
               </TabsContent>
               <TabsContent value="day">
                 <div className="space-y-3">
@@ -3108,7 +3149,7 @@ function RetentionPanel() {
           {aggregated && !("error" in aggregated) && (
             <>
               <TabsContent value="files">
-                <ByFilesView data={aggregated} hideTeamRow={!!(retUser.allowedAgents?.length)} phoneData={phoneData} />
+                <ByFilesView data={aggregated} hideTeamRow={!!(retUser.allowedAgents?.length)} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
               </TabsContent>
               <TabsContent value="day">
                 <div className="space-y-3">
