@@ -438,9 +438,12 @@ router.get("/quo/sync-state", async (req, res) => {
   }
 });
 
-// ─── Webhook live-call state ──────────────────────────────────────────────────
-// Populated by call.ringing / call.completed events from OpenPhone webhooks.
-// Gives near-instant live detection without waiting for the 15-min DB sync.
+// ─── Live-call detection ───────────────────────────────────────────────────────
+// Three sources merged in /quo/live:
+//   1. Webhook state   — instant (requires OpenPhone webhook registration)
+//   2. Poll state      — 60-second background poll; queries conversations updated in
+//                        the last 5 min, then fetches calls for each to find in-progress
+//   3. DB fallback     — catches calls synced by the 15-min background sync
 
 type OPUser = { id: string; firstName: string; lastName: string; email?: string };
 interface LiveCallEntry { agentName: string; ringingSince: Date }
@@ -474,6 +477,85 @@ function purgeExpiredLiveCalls() {
   for (const [callId, entry] of liveWebhookCalls)
     if (entry.ringingSince.getTime() < cutoff) liveWebhookCalls.delete(callId);
 }
+
+// ─── 60-second background live poller ─────────────────────────────────────────
+// Finds in-progress calls by scanning conversations updated in the last 5 minutes.
+// Fills the gap between webhook events (often not configured) and the 15-min DB sync.
+const pollLiveAgents = new Set<string>();
+let livePollRunning = false;
+
+async function runLivePoll(): Promise<void> {
+  if (livePollRunning) return;
+  livePollRunning = true;
+  try {
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const now = new Date().toISOString();
+
+    const userMap = await getWebhookUserMap();
+
+    // Fetch all phone line IDs so we can filter conversations to known lines
+    const linesRes = await quoFetch<{ data: { id: string }[] }>("/phone-numbers")
+      .catch(() => ({ data: [] as { id: string }[] }));
+    const lineIds = new Set(linesRes.data.map((l) => l.id));
+
+    // Conversations updated in last 5 minutes = potentially active calls
+    const convRes = await quoFetch<{
+      data: { id: string; phoneNumberId: string; participants: string[] }[];
+    }>(`/conversations?updatedAfter=${encodeURIComponent(fiveMinAgo)}&updatedBefore=${encodeURIComponent(now)}&maxResults=100`)
+      .catch(() => ({ data: [] as { id: string; phoneNumberId: string; participants: string[] }[] }));
+
+    const newLive = new Set<string>();
+
+    // For each recently-active conversation, check for in-progress calls
+    const tasks = (convRes.data ?? [])
+      .filter((c) => lineIds.has(c.phoneNumberId) && c.participants?.length > 0)
+      .map((c) => async () => {
+        const participant = c.participants[0];
+        const callsRes = await quoFetch<{
+          data: { id: string; status: string; userId?: string | null }[];
+        }>(
+          `/calls?phoneNumberId=${encodeURIComponent(c.phoneNumberId)}` +
+          `&participants[]=${encodeURIComponent(participant)}` +
+          `&createdAfter=${encodeURIComponent(fiveMinAgo)}` +
+          `&createdBefore=${encodeURIComponent(now)}` +
+          `&maxResults=5`,
+        ).catch(() => ({ data: [] as { id: string; status: string; userId?: string | null }[] }));
+
+        for (const call of callsRes.data ?? []) {
+          if (call.status === "in-progress" && call.userId) {
+            const agentName = userMap.get(call.userId) ?? call.userId;
+            newLive.add(agentName);
+          }
+        }
+      });
+
+    // Run up to 8 concurrent checks
+    const limit = 8;
+    let idx = 0;
+    async function worker() {
+      while (idx < tasks.length) {
+        const task = tasks[idx++];
+        if (task) await task().catch(() => {});
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+
+    pollLiveAgents.clear();
+    for (const a of newLive) pollLiveAgents.add(a);
+
+    if (newLive.size > 0) {
+      logger.info({ agents: [...newLive] }, "quo livePoll: in-progress calls found");
+    }
+  } catch (err) {
+    logger.warn({ err: String(err) }, "quo livePoll: error");
+  } finally {
+    livePollRunning = false;
+  }
+}
+
+// Start the 60-second live poller immediately on module load
+runLivePoll().catch(() => {});
+setInterval(() => { runLivePoll().catch(() => {}); }, 60_000);
 
 // POST /api/quo/webhook — receives call events from OpenPhone.
 // Handles call.ringing, call.answered, and call.completed.
@@ -526,12 +608,15 @@ router.get("/quo/live", async (req, res) => {
   try {
     const active = new Set<string>();
 
-    // Primary: webhook in-memory state — near-instant, updated by call.ringing / call.completed.
+    // Source 1: webhook in-memory state — near-instant, updated by call.ringing / call.completed.
     purgeExpiredLiveCalls();
     for (const { agentName } of liveWebhookCalls.values()) active.add(agentName);
 
-    // Fallback: DB in-progress rows — covers calls that started before webhooks were registered
-    // or after a server restart. 2-hour window matches the sync interval safety margin.
+    // Source 2: 60-second background poll — finds in-progress calls via conversations API.
+    // Covers the gap between webhook events and the 15-min DB sync.
+    for (const agentName of pollLiveAgents) active.add(agentName);
+
+    // Source 3: DB in-progress rows — covers calls synced by the 15-min background sync.
     const since2h = new Date(Date.now() - 2 * 60 * 60 * 1000);
     const dbRows = await db
       .select({ agentName: phoneCallsTable.agentName })
@@ -540,7 +625,7 @@ router.get("/quo/live", async (req, res) => {
     for (const r of dbRows) if (r.agentName) active.add(r.agentName);
 
     req.log.info(
-      { fromWebhook: liveWebhookCalls.size, total: active.size },
+      { fromWebhook: liveWebhookCalls.size, fromPoll: pollLiveAgents.size, total: active.size },
       "quo live"
     );
     res.json({ active: [...active], webhookActive: liveWebhookCalls.size > 0 });
