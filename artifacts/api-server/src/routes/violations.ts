@@ -95,6 +95,12 @@ router.get("/violations", async (req, res) => {
       if (!row.agentName || !row.createdAt) continue;
       const lower = row.agentName.trim().toLowerCase();
       if (!allAgentLower.has(lower)) continue;
+      // skip ghost calls — they shouldn't count as agent activity
+      const ghostDur = row.durationSeconds ?? 0;
+      if (row.direction === "incoming" && (
+        (row.status === "no-answer" && ghostDur === 0) ||
+        (row.status === "voicemail-brief" && ghostDur <= 4)
+      )) continue;
       const t = new Date(row.createdAt);
 
       // by-date map
