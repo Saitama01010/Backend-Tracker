@@ -1177,7 +1177,7 @@ router.get("/vos/missed-breakdown", async (req, res) => {
 
     const [quoRaw, pbxRaw] = await Promise.all([
       db.execute(sql`
-        SELECT participant, line_team, created_at
+        SELECT participant, line_team, created_at, status, duration_seconds
         FROM phone_calls
         WHERE direction = 'incoming'
           AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
@@ -1196,22 +1196,27 @@ router.get("/vos/missed-breakdown", async (req, res) => {
       `),
     ]);
 
-    type QuoRow = { participant: string; line_team: string; created_at: Date };
+    type QuoRow = { participant: string; line_team: string; created_at: Date; status: string; duration_seconds: number };
     type PbxRow = { from_number: string; team: string; created_at: Date };
 
+    const isGhostCall = (status: string, duration: number) =>
+      (status === "no-answer" && duration === 0) || (status === "voicemail-brief" && duration <= 4);
+
     // numMap keyed by normalized number; also track raw participant strings for SQL lookup
-    type NumEntry = { fromNumber: string; team: string; sources: Set<"quo" | "pbx">; missedTimes: Date[]; rawParticipants: Set<string> };
+    type NumEntry = { fromNumber: string; team: string; sources: Set<"quo" | "pbx">; missedTimes: Date[]; rawParticipants: Set<string>; quoCalls: number; ghostCalls: number };
     const numMap = new Map<string, NumEntry>();
 
     for (const r of quoRaw.rows as QuoRow[]) {
       if (blocklist.has(r.participant)) continue;
       const norm = normalizePhone(r.participant);
       if (!norm) continue;
-      if (!numMap.has(norm)) numMap.set(norm, { fromNumber: r.participant, team: r.line_team, sources: new Set(), missedTimes: [], rawParticipants: new Set() });
+      if (!numMap.has(norm)) numMap.set(norm, { fromNumber: r.participant, team: r.line_team, sources: new Set(), missedTimes: [], rawParticipants: new Set(), quoCalls: 0, ghostCalls: 0 });
       const e = numMap.get(norm)!;
       e.sources.add("quo");
       e.missedTimes.push(new Date(r.created_at));
       e.rawParticipants.add(r.participant);
+      e.quoCalls++;
+      if (isGhostCall(r.status, r.duration_seconds)) e.ghostCalls++;
     }
     for (const r of pbxRaw.rows as PbxRow[]) {
       if (blocklist.has(r.from_number)) continue;
@@ -1258,6 +1263,7 @@ router.get("/vos/missed-breakdown", async (req, res) => {
       fromNumber: string; team: string; source: "quo" | "pbx" | "both";
       missedCount: number; firstMissedAt: string; hasCallback: boolean;
       callbackConnected: boolean; callbackAt: string | null; responseMinutes: number | null;
+      ghostCount: number; isGhost: boolean;
     };
     const numbers: NumberBreakdown[] = [];
 
@@ -1267,6 +1273,7 @@ router.get("/vos/missed-breakdown", async (req, res) => {
       const callbacks = callbackMap.get(norm);
       const cbEntry = callbacks?.find(c => c.date >= firstMissed) ?? null;
       const srcArr = Array.from(entry.sources);
+      const isGhost = entry.quoCalls > 0 && entry.ghostCalls === entry.quoCalls && !entry.sources.has("pbx");
       numbers.push({
         fromNumber: entry.fromNumber,
         team: entry.team,
@@ -1277,6 +1284,8 @@ router.get("/vos/missed-breakdown", async (req, res) => {
         callbackConnected: cbEntry?.connected ?? false,
         callbackAt: cbEntry?.date.toISOString() ?? null,
         responseMinutes: cbEntry ? Math.round((cbEntry.date.getTime() - firstMissed.getTime()) / 60000) : null,
+        ghostCount: entry.ghostCalls,
+        isGhost,
       });
     }
 

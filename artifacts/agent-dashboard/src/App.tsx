@@ -5019,6 +5019,7 @@ type NumberBreakdown = {
   fromNumber: string; team: string; source: "quo" | "pbx" | "both";
   missedCount: number; firstMissedAt: string; hasCallback: boolean;
   callbackConnected: boolean; callbackAt: string | null; responseMinutes: number | null;
+  ghostCount: number; isGhost: boolean;
 };
 
 function fmtResponseTime(minutes: number): string {
@@ -5048,24 +5049,27 @@ function DailyMissedBreakdown({ date }: { date: string }) {
   const numbers = q.data?.numbers ?? [];
   if (numbers.length === 0) return <p className="px-3 py-2 text-xs text-zinc-600">No breakdown available.</p>;
 
+  const realNumbers = numbers.filter(n => !n.isGhost);
+  const ghostNumbers = numbers.filter(n => n.isGhost);
   const s = q.data?.stats;
-  const withCB = s?.withCallback ?? numbers.filter(n => n.hasCallback).length;
-  const connected = s?.connected ?? numbers.filter(n => n.callbackConnected).length;
+  const withCB = s?.withCallback ?? realNumbers.filter(n => n.hasCallback).length;
+  const connected = s?.connected ?? realNumbers.filter(n => n.callbackConnected).length;
   const noAnswer = withCB - connected;
-  const notCalled = numbers.length - withCB;
+  const notCalled = realNumbers.length - withCB;
 
   return (
     <div className="bg-zinc-950/60 border-t border-zinc-800/60 px-3 py-2">
       <div className="flex items-center gap-3 mb-2 text-[10px] flex-wrap">
-        <span className="text-zinc-500">{numbers.length} unique callers</span>
-        <span className="text-emerald-400 font-medium">{connected} talked ({Math.round(connected / numbers.length * 100)}%)</span>
+        <span className="text-zinc-500">{realNumbers.length} unique callers</span>
+        {ghostNumbers.length > 0 && <span className="text-zinc-600">{ghostNumbers.length} ghost</span>}
+        <span className="text-emerald-400 font-medium">{connected} talked ({realNumbers.length > 0 ? Math.round(connected / realNumbers.length * 100) : 0}%)</span>
         {noAnswer > 0 && <span className="text-amber-400">{noAnswer} no answer</span>}
         <span className="text-rose-400">{notCalled} not called</span>
         {withCB > 0 && <span className="text-zinc-600">· connect rate: {Math.round(connected / withCB * 100)}%</span>}
       </div>
       <div className="space-y-px max-h-64 overflow-y-auto pr-1">
         {numbers.map((n) => (
-          <div key={n.fromNumber + n.firstMissedAt} className="flex items-center justify-between text-xs py-1 px-2 rounded hover:bg-zinc-800/40">
+          <div key={n.fromNumber + n.firstMissedAt} className={`flex items-center justify-between text-xs py-1 px-2 rounded hover:bg-zinc-800/40 ${n.isGhost ? "opacity-50" : ""}`}>
             <span className="font-mono text-zinc-300 tabular-nums">{n.fromNumber}</span>
             <div className="flex items-center gap-2 shrink-0">
               <span className={`text-[10px] ${n.team === "retention" ? "text-violet-400" : n.team === "cs" ? "text-emerald-400" : "text-sky-400"}`}>
@@ -5074,13 +5078,14 @@ function DailyMissedBreakdown({ date }: { date: string }) {
               <span className={`text-[10px] px-1 py-0.5 rounded ${n.source === "quo" ? "bg-violet-500/20 text-violet-300" : n.source === "pbx" ? "bg-sky-500/20 text-sky-300" : "bg-zinc-500/20 text-zinc-300"}`}>
                 {n.source === "both" ? "Quo+PBX" : n.source === "quo" ? "Quo" : "PBX"}
               </span>
+              {n.isGhost && <span className="text-[9px] px-1 py-0.5 rounded border border-zinc-700 bg-zinc-800 text-zinc-500 uppercase font-medium">ghost</span>}
               {n.missedCount > 1 && <span className="text-zinc-600 text-[10px]">×{n.missedCount}</span>}
-              {!n.hasCallback
+              {!n.isGhost && (!n.hasCallback
                 ? <span className="flex items-center gap-0.5 text-rose-400"><PhoneOff className="h-3 w-3" />—</span>
                 : n.callbackConnected
                   ? <span className="flex items-center gap-0.5 text-emerald-400 font-medium"><PhoneCall className="h-3 w-3" />{n.responseMinutes !== null ? fmtResponseTime(n.responseMinutes) : ""}</span>
                   : <span className="flex items-center gap-0.5 text-amber-400"><PhoneCall className="h-3 w-3" />no answer</span>
-              }
+              )}
             </div>
           </div>
         ))}
