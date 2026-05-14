@@ -1210,6 +1210,14 @@ router.get("/vos/missed-breakdown", async (req, res) => {
     const isGhostCall = (status: string, duration: number) =>
       (status === "no-answer" && duration === 0) || (status === "voicemail-brief" && duration <= 4);
 
+    // Numbers confirmed as ghost callers — always flagged regardless of call metadata
+    const KNOWN_GHOST_NUMBERS = new Set([
+      "12522688125",
+      "19083338704",
+      "12404861358",
+      "19496103598",
+    ]);
+
     // numMap keyed by normalized number; also track raw participant strings for SQL lookup
     type NumEntry = { fromNumber: string; team: string; sources: Set<"quo" | "pbx">; missedTimes: Date[]; rawParticipants: Set<string>; quoCalls: number; ghostCalls: number };
     const numMap = new Map<string, NumEntry>();
@@ -1281,7 +1289,8 @@ router.get("/vos/missed-breakdown", async (req, res) => {
       const callbacks = callbackMap.get(norm);
       const cbEntry = callbacks?.find(c => c.date >= firstMissed) ?? null;
       const srcArr = Array.from(entry.sources);
-      const isGhost = entry.quoCalls > 0 && entry.ghostCalls === entry.quoCalls && !entry.sources.has("pbx");
+      const isGhost = KNOWN_GHOST_NUMBERS.has(norm) ||
+        (entry.quoCalls > 0 && entry.ghostCalls === entry.quoCalls && !entry.sources.has("pbx"));
       numbers.push({
         fromNumber: entry.fromNumber,
         team: entry.team,
