@@ -1212,14 +1212,14 @@ router.get("/vos/missed-breakdown", async (req, res) => {
 
     // Numbers confirmed as ghost callers — always flagged regardless of call metadata
     const KNOWN_GHOST_NUMBERS = new Set([
-      "12522688125",
-      "19083338704",
-      "12404861358",
-      "19496103598",
-      "14065646099",
-      "13234400324",
-      "15803517195",
-      "12174146873",
+      "2522688125",
+      "9083338704",
+      "2404861358",
+      "9496103598",
+      "4065646099",
+      "3234400324",
+      "5803517195",
+      "2174146873",
     ]);
 
     // numMap keyed by normalized number; also track raw participant strings for SQL lookup
