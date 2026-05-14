@@ -120,6 +120,19 @@ function normalizePhone(num: string): string {
 // Ring groups whose missed calls should never appear in the missed-no-callback panel.
 const EXCLUDED_RING_GROUPS = new Set(["MX Retention"]);
 
+// Numbers confirmed as ghost callers — always flagged regardless of call metadata.
+// Stored as last-10-digits (matches normalizePhone output).
+const KNOWN_GHOST_NUMBERS = new Set([
+  "2522688125",
+  "9083338704",
+  "2404861358",
+  "9496103598",
+  "4065646099",
+  "3234400324",
+  "5803517195",
+  "2174146873",
+]);
+
 // ─── Fetch our own OpenPhone line numbers ─────────────────────────────────────
 
 async function fetchQuoLineNumbers(): Promise<Set<string>> {
@@ -1210,18 +1223,6 @@ router.get("/vos/missed-breakdown", async (req, res) => {
     const isGhostCall = (status: string, duration: number) =>
       (status === "no-answer" && duration === 0) || (status === "voicemail-brief" && duration <= 4);
 
-    // Numbers confirmed as ghost callers — always flagged regardless of call metadata
-    const KNOWN_GHOST_NUMBERS = new Set([
-      "2522688125",
-      "9083338704",
-      "2404861358",
-      "9496103598",
-      "4065646099",
-      "3234400324",
-      "5803517195",
-      "2174146873",
-    ]);
-
     // numMap keyed by normalized number; also track raw participant strings for SQL lookup
     type NumEntry = { fromNumber: string; team: string; sources: Set<"quo" | "pbx">; missedTimes: Date[]; rawParticipants: Set<string>; quoCalls: number; ghostCalls: number };
     const numMap = new Map<string, NumEntry>();
@@ -1458,7 +1459,7 @@ router.get("/vos/callback-review", async (req, res) => {
         source: "quo",
         ringGroupName: r.line_name,
         missedAt: missedAt.toISOString(),
-        isGhost: (r.status === 'no-answer' && (r.duration_seconds ?? 0) === 0) || (r.status === 'voicemail-brief' && (r.duration_seconds ?? 0) <= 4),
+        isGhost: KNOWN_GHOST_NUMBERS.has(norm) || (r.status === 'no-answer' && (r.duration_seconds ?? 0) === 0) || (r.status === 'voicemail-brief' && (r.duration_seconds ?? 0) <= 4),
         hasCallback: !!cbEntry,
         callbackConnected: cbEntry?.connected ?? false,
         callbackAt: cbEntry?.date.toISOString() ?? null,
