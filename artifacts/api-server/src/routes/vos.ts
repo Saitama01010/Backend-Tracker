@@ -1226,7 +1226,9 @@ router.get("/vos/missed-breakdown", async (req, res) => {
     type PbxRow = { from_number: string; team: string; created_at: Date };
 
     const isGhostCall = (status: string, duration: number) =>
-      (status === "no-answer" && duration === 0) || (status === "voicemail-brief" && duration <= 4);
+      (status === "no-answer" && duration === 0) ||
+      (status === "voicemail" && duration === 0) ||
+      (status === "voicemail-brief" && duration <= 4);
 
     // numMap keyed by normalized number; also track raw participant strings for SQL lookup
     type NumEntry = { fromNumber: string; team: string; sources: Set<"quo" | "pbx">; missedTimes: Date[]; rawParticipants: Set<string>; quoCalls: number; ghostCalls: number };
@@ -1464,7 +1466,10 @@ router.get("/vos/callback-review", async (req, res) => {
         source: "quo",
         ringGroupName: r.line_name,
         missedAt: missedAt.toISOString(),
-        isGhost: KNOWN_GHOST_NUMBERS.has(norm) || (r.status === 'no-answer' && (r.duration_seconds ?? 0) === 0) || (r.status === 'voicemail-brief' && (r.duration_seconds ?? 0) <= 4),
+        isGhost: KNOWN_GHOST_NUMBERS.has(norm) ||
+          (r.status === 'no-answer' && (r.duration_seconds ?? 0) === 0) ||
+          (r.status === 'voicemail' && (r.duration_seconds ?? 0) === 0) ||
+          (r.status === 'voicemail-brief' && (r.duration_seconds ?? 0) <= 4),
         hasCallback: !!cbEntry,
         callbackConnected: cbEntry?.connected ?? false,
         callbackAt: cbEntry?.date.toISOString() ?? null,
