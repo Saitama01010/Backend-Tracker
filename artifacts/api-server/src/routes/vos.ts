@@ -136,6 +136,12 @@ const KNOWN_GHOST_NUMBERS = new Set([
   "9515524937",
   "9492351784",
   "8656432111",
+  // Added from today's CS missed call review (2026-05-13)
+  "5613693233",
+  "4075088747",
+  "4073401750",
+  "8709958183",
+  "7194692964",
 ]);
 
 // ─── Fetch our own OpenPhone line numbers ─────────────────────────────────────
