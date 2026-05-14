@@ -1290,7 +1290,7 @@ router.get("/vos/missed-breakdown", async (req, res) => {
       const cbEntry = callbacks?.find(c => c.date >= firstMissed) ?? null;
       const srcArr = Array.from(entry.sources);
       const isGhost = KNOWN_GHOST_NUMBERS.has(norm) ||
-        (entry.quoCalls > 0 && entry.ghostCalls === entry.quoCalls && !entry.sources.has("pbx"));
+        (entry.quoCalls > 0 && entry.ghostCalls === entry.quoCalls);
       numbers.push({
         fromNumber: entry.fromNumber,
         team: entry.team,
