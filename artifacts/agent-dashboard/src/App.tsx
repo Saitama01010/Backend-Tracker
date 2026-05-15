@@ -755,6 +755,8 @@ const PHONE_ALIASES: Record<string, string> = {
   "nourhan ame": "nora adam",
   "youssef nady": "jacob xander",
   "bassant emad": "carla bennet",
+  "anisa-anna stone-2382": "anna stone",
+  "anisa": "anna stone",
   // NSF: Arabic OpenPhone name → English display name
   "ziad": "zach carter",
   "ahmed gamal": "austin white",
@@ -766,6 +768,10 @@ const PHONE_ALIASES: Record<string, string> = {
   "sama farouk": "katie miller",
   "omar badr": "kevin micheal",
   "yousef taher": "raymond reed",
+  "jana": "kayla navarro",
+  "seif eslam": "alex miller",
+  "abdelrahman": "tyler grant",
+  "omar": "otto klein",
 };
 
 // Maps normalized SHEET agent name → normalized PBX (VoSLogic) agent name

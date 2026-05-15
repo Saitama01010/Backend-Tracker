@@ -103,6 +103,12 @@ export const USER_EMAIL_OVERRIDES: Record<string, string> = {
   "saifaziz.598@gmail.com":   "Henry Hart",     // Retention
   "natef737@gmail.com":       "Chase Miller",   // Retention
   "karmaafarouk@gmail.com":   "Katherine Adams", // Retention
+  // Added 2026-05-15
+  "anisaeisa3@gmail.com":        "Anna Stone",     // CS
+  "janahisham054@gmail.com":     "Jana",            // NSF → Kayla Navarro
+  "adoniselijah69@gmail.com":    "Seif Eslam",      // NSF → Alex Miller
+  "hnasserhaware333@gmail.com":  "Abdelrahman",     // NSF → Tyler Grant
+  "elgedely@gmail.com":          "Omar",            // NSF → Otto Klein
   // Resolved via /users endpoint
   "ahmedatta9696@gmail.com": "Elias Boone",
   "crazyanas36@gmail.com": "Kyle Scott",
