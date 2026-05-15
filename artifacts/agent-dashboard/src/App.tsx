@@ -6844,12 +6844,11 @@ function AttendancePanel() {
     const cols: string[] = [];
     const d = new Date(monthStart);
     while (d <= monthEnd) {
-      const iso = d.toISOString().slice(0, 10);
-      if (iso <= tomorrowStr) cols.push(iso);
+      cols.push(d.toISOString().slice(0, 10));
       d.setDate(d.getDate() + 1);
     }
     return cols;
-  }, [monthOff, tomorrowStr]);
+  }, [monthOff]);
 
   const qc = useQueryClient();
   const { data, isLoading } = useQuery<AttData>({
