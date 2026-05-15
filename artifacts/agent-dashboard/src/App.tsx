@@ -2418,12 +2418,13 @@ function getPresets(): Preset[] {
   const today = todayPDT();
   const yesterday = toIsoDate(new Date(year, month, date - 1));
   const firstOfMonth = toIsoDate(new Date(year, month, 1));
+  const lastOfMonth = toIsoDate(new Date(year, month + 1, 0));
   const firstOfLastMonth = toIsoDate(new Date(year, month - 1, 1));
   const lastOfLastMonth = toIsoDate(new Date(year, month, 0));
   return [
     { label: "Today", from: today, to: today },
     { label: "Yesterday", from: yesterday, to: yesterday },
-    { label: "This Month", from: firstOfMonth, to: today },
+    { label: "This Month", from: firstOfMonth, to: lastOfMonth },
     { label: "Last Month", from: firstOfLastMonth, to: lastOfLastMonth },
     { label: "All time", from: "2024-01-01", to: today },
   ];
