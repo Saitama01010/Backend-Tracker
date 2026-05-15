@@ -7175,12 +7175,11 @@ function AttendancePanel() {
                       return (
                         <td
                           key={d}
-                          onClick={() => canEdit && !isFuture && openCell(member, d)}
-                          title={rec?.note ? `📝 ${rec.note}` : (canEdit && isTomorrow) ? "Click to pre-confirm tomorrow's attendance" : undefined}
+                          onClick={() => canEdit && openCell(member, d)}
+                          title={rec?.note ? `📝 ${rec.note}` : undefined}
                           className={`text-center border-b border-white/5 w-12 h-8 transition-colors
                             ${isToday ? "bg-violet-950/40" : isTomorrow ? "bg-teal-950/30" : ""}
-                            ${isFuture || !canEdit ? "cursor-default" : "cursor-pointer hover:bg-white/5"}
-                            ${!canEdit ? "opacity-20" : ""}`}
+                            ${!canEdit ? "cursor-default opacity-20" : "cursor-pointer hover:bg-white/5"}`}
                           style={isWknd && !isToday && !isTomorrow ? { background: "repeating-linear-gradient(135deg, #0f0f12 0px, #0f0f12 4px, #16141a 4px, #16141a 8px)" } : undefined}
                         >
                           <AttCell status={rec?.status ?? ""} note={rec?.note} coaching={rec?.coaching} weekend={isWknd && !isTomorrow} />
