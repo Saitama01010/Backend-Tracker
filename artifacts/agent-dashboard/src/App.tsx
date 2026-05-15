@@ -426,6 +426,11 @@ const RETENTION_SHEET_NSF_AGENTS = new Set([
   "estella cruz", "eman khamis",
   "kevin micheal", "omar badr", "omar badr-kevin micheal-3140",
   "raymond reed", "yousef taher", "yousef taher-raymond reed-2977",
+  // New agents — May 2026
+  "kayla navarro", "jana",
+  "alex miller", "seif eslam",
+  "tyler grant", "abdelrahman",
+  "otto klein", "omar",
 ]);
 
 // Agents who submit files in the Retention sheet but actually belong to the CS team.
@@ -440,6 +445,8 @@ const RETENTION_SHEET_CS_AGENTS = new Set([
   "nour eldin-chase miller-2787",
   "hiba kamil-ella monroe-2882",
   "nourhan amr-nora adam-2186",
+  // New agents — May 2026
+  "anna stone", "anisa", "anisa-anna stone-2382",
 ]);
 
 // NSF agent display names (normalized lowercase) — used to split the shared
@@ -458,6 +465,11 @@ const NSF_AGENT_NAMES = new Set([
   "ahmed gamal-austin white",
   "omar badr-kevin micheal-3140",
   "yousef taher-raymond reed-2977",
+  // New agents — May 2026
+  "kayla navarro", "jana",
+  "alex miller", "seif eslam",
+  "tyler grant", "abdelrahman",
+  "otto klein", "omar",
 ]);
 // CS agent display names (normalized lowercase)
 const CS_AGENT_NAMES = new Set([
@@ -470,6 +482,8 @@ const CS_AGENT_NAMES = new Set([
   "nour eldin-chase miller-2787",
   "hiba kamil-ella monroe-2882",
   "nourhan amr-nora adam-2186",
+  // New agents — May 2026
+  "anna stone", "anisa", "anisa-anna stone-2382",
 ]);
 
 type CancelViolation = {
