@@ -428,6 +428,7 @@ const RETENTION_SHEET_NSF_AGENTS = new Set([
   "raymond reed", "yousef taher", "yousef taher-raymond reed-2977",
   // New agents — May 2026
   "kayla navarro", "jana",
+  "jana-kayla navarro-2718",
   "alex miller", "seif eslam",
   "tyler grant", "abdelrahman",
   "otto klein", "omar",
@@ -467,6 +468,7 @@ const NSF_AGENT_NAMES = new Set([
   "yousef taher-raymond reed-2977",
   // New agents — May 2026
   "kayla navarro", "jana",
+  "jana-kayla navarro-2718",
   "alex miller", "seif eslam",
   "tyler grant", "abdelrahman",
   "otto klein", "omar",
@@ -783,6 +785,7 @@ const PHONE_ALIASES: Record<string, string> = {
   "omar badr": "kevin micheal",
   "yousef taher": "raymond reed",
   "jana": "kayla navarro",
+  "jana-kayla navarro-2718": "kayla navarro",
   "seif eslam": "alex miller",
   "abdelrahman": "tyler grant",
   "omar": "otto klein",
