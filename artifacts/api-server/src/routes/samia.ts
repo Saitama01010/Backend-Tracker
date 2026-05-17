@@ -1,22 +1,57 @@
 import { Router } from "express";
 import OpenAI from "openai";
 import { db, samiaMessagesTable } from "@workspace/db";
-import { desc } from "drizzle-orm";
+import { desc, eq, isNull, or, sql } from "drizzle-orm";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
 
-// ── GET /samia/history — last 200 messages ────────────────────────────────────
-router.get("/samia/history", async (req, res) => {
+// ── GET /samia/history — last 200 messages for the calling user ───────────────
+router.get("/samia/history", requireAuth, async (req, res) => {
   try {
+    const userId = req.user!.userId;
     const rows = await db
       .select()
       .from(samiaMessagesTable)
+      .where(or(eq(samiaMessagesTable.userId, userId), isNull(samiaMessagesTable.userId)))
       .orderBy(desc(samiaMessagesTable.createdAt))
       .limit(200);
-    // Return in chronological order
     return res.json(rows.reverse());
   } catch (err) {
     req.log.error(err, "samia history error");
+    return res.status(500).json({ error: "Failed to load history" });
+  }
+});
+
+// ── GET /samia/users — admin: list all users who have chat history ─────────────
+router.get("/samia/users", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const rows = await db
+      .selectDistinct({ userId: samiaMessagesTable.userId, username: samiaMessagesTable.username })
+      .from(samiaMessagesTable)
+      .where(sql`${samiaMessagesTable.userId} IS NOT NULL`)
+      .orderBy(samiaMessagesTable.username);
+    return res.json(rows.filter((r) => r.userId !== null));
+  } catch (err) {
+    req.log.error(err, "samia users error");
+    return res.status(500).json({ error: "Failed to load users" });
+  }
+});
+
+// ── GET /samia/history/:userId — admin: view a specific user's chat ───────────
+router.get("/samia/history/:userId", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const targetId = parseInt(req.params["userId"] ?? "", 10);
+    if (isNaN(targetId)) return res.status(400).json({ error: "Invalid userId" });
+    const rows = await db
+      .select()
+      .from(samiaMessagesTable)
+      .where(eq(samiaMessagesTable.userId, targetId))
+      .orderBy(desc(samiaMessagesTable.createdAt))
+      .limit(200);
+    return res.json(rows.reverse());
+  } catch (err) {
+    req.log.error(err, "samia admin history error");
     return res.status(500).json({ error: "Failed to load history" });
   }
 });
@@ -301,17 +336,20 @@ async function fetchSheetSummary(
 
 // ─── Route ────────────────────────────────────────────────────────────────────
 
-router.post("/samia/chat", async (req, res) => {
+router.post("/samia/chat", requireAuth, async (req, res) => {
   try {
     const { message, images = [] } = req.body as { message: string; images?: string[] };
     if (!message?.trim()) {
       return res.status(400).json({ error: "message is required" });
     }
+    const userId = req.user!.userId;
+    const username = req.user!.username;
 
-    // Load last 60 messages from DB as persistent memory
+    // Load last 60 messages for this user as persistent memory
     const dbHistory = await db
       .select()
       .from(samiaMessagesTable)
+      .where(or(eq(samiaMessagesTable.userId, userId), isNull(samiaMessagesTable.userId)))
       .orderBy(desc(samiaMessagesTable.createdAt))
       .limit(60);
     const history: ChatMessage[] = dbHistory.reverse().map((r) => ({
@@ -322,6 +360,8 @@ router.post("/samia/chat", async (req, res) => {
 
     // Save the incoming user message to DB immediately
     await db.insert(samiaMessagesTable).values({
+      userId,
+      username,
       role: "user",
       content: message,
       images: images.length > 0 ? images : null,
@@ -806,8 +846,10 @@ router.post("/samia/chat", async (req, res) => {
     if (!finalReply) finalReply = "Done.";
     finalReply = ensureSwearing(finalReply);
 
-    // Save Samia's reply to DB
+    // Save Samia's reply to DB (scoped to same user)
     await db.insert(samiaMessagesTable).values({
+      userId,
+      username,
       role: "assistant",
       content: finalReply,
       images: null,

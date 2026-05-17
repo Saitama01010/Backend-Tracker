@@ -6530,10 +6530,17 @@ function SamiaChat() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [pendingImages, setPendingImages] = useState<string[]>([]);
+  // Admin "All chats" state
+  const [adminView, setAdminView] = useState<"chat" | "users" | "viewUser">("chat");
+  const [adminUsers, setAdminUsers] = useState<{ userId: number; username: string }[]>([]);
+  const [adminViewUser, setAdminViewUser] = useState<{ userId: number; username: string } | null>(null);
+  const [adminMessages, setAdminMessages] = useState<SamiaMessage[]>([]);
+  const [adminLoading, setAdminLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { token } = useUser();
+  const { token, user } = useUser();
+  const isAdmin = user.role === "admin";
 
   useEffect(() => {
     if (open) {
@@ -6560,6 +6567,29 @@ function SamiaChat() {
       }
     }
   }, [open]);
+
+  function openAdminUsers() {
+    setAdminView("users");
+    setAdminLoading(true);
+    fetch("/api/samia/users", { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.ok ? r.json() : [])
+      .then((rows: { userId: number; username: string }[]) => setAdminUsers(rows))
+      .catch(() => setAdminUsers([]))
+      .finally(() => setAdminLoading(false));
+  }
+
+  function viewUserChat(u: { userId: number; username: string }) {
+    setAdminViewUser(u);
+    setAdminView("viewUser");
+    setAdminLoading(true);
+    fetch(`/api/samia/history/${u.userId}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.ok ? r.json() : [])
+      .then((rows: Array<{ role: string; content: string; images?: string[] | null }>) =>
+        setAdminMessages(rows.map((r) => ({ role: r.role as "user" | "assistant", content: r.content, images: r.images ?? undefined })))
+      )
+      .catch(() => setAdminMessages([]))
+      .finally(() => setAdminLoading(false));
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -6633,18 +6663,31 @@ function SamiaChat() {
         }`}>
           {/* Header */}
           <div className="flex items-center gap-3 px-4 py-3 border-b border-white/8 bg-gradient-to-r from-violet-600/20 to-fuchsia-600/20 flex-shrink-0">
-            <div className="h-9 w-9 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white font-bold text-sm shadow-md flex-shrink-0">
-              S
-            </div>
+            {(adminView === "users" || adminView === "viewUser") ? (
+              <button onClick={() => adminView === "viewUser" ? setAdminView("users") : setAdminView("chat")} className="text-zinc-400 hover:text-white transition-colors p-1 -ml-1">
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+            ) : (
+              <div className="h-9 w-9 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white font-bold text-sm shadow-md flex-shrink-0">S</div>
+            )}
             <div>
-              <p className="text-sm font-semibold text-white leading-none">Samia</p>
+              <p className="text-sm font-semibold text-white leading-none">
+                {adminView === "users" ? "All Chats" : adminView === "viewUser" ? adminViewUser?.username ?? "User" : "Samia"}
+              </p>
               <p className="text-[10px] text-violet-300 mt-0.5 flex items-center gap-1">
-                <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                AI Analyst · Live data
+                {adminView === "chat" && <><span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />AI Analyst · Live data</>}
+                {adminView === "users" && "Select a user to view their chat"}
+                {adminView === "viewUser" && "Read-only · Admin view"}
               </p>
             </div>
             <div className="ml-auto flex items-center gap-1">
-              {/* Minimize — collapse to header only */}
+              {/* Admin all-chats button */}
+              {isAdmin && adminView === "chat" && (
+                <button onClick={openAdminUsers} title="View all user chats" className="text-zinc-500 hover:text-violet-300 transition-colors p-1">
+                  <Users className="h-4 w-4" />
+                </button>
+              )}
+              {/* Minimize */}
               <button
                 onClick={() => setSize((s) => s === "minimized" ? "normal" : "minimized")}
                 title={size === "minimized" ? "Restore" : "Minimize"}
@@ -6652,7 +6695,7 @@ function SamiaChat() {
               >
                 <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${size === "minimized" ? "rotate-180" : ""}`} />
               </button>
-              {/* Maximize — fill the screen */}
+              {/* Maximize */}
               <button
                 onClick={() => setSize((s) => s === "maximized" ? "normal" : "maximized")}
                 title={size === "maximized" ? "Restore" : "Maximize"}
@@ -6661,111 +6704,138 @@ function SamiaChat() {
                 {size === "maximized" ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
               </button>
               {/* Close */}
-              <button onClick={() => { setOpen(false); setSize("normal"); }} className="text-zinc-500 hover:text-white transition-colors p-1">
+              <button onClick={() => { setOpen(false); setSize("normal"); setAdminView("chat"); }} className="text-zinc-500 hover:text-white transition-colors p-1">
                 <X className="h-4 w-4" />
               </button>
             </div>
           </div>
 
-          {/* Messages */}
-          <div className={`flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0 ${size === "minimized" ? "hidden" : ""}`}>
-            {historyLoading && (
-              <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-4">
-                <div className="h-3 w-3 rounded-full border-2 border-violet-400 border-t-transparent animate-spin" />
-                Loading memory…
-              </div>
-            )}
-            {messages.map((m, i) => (
-              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                {m.role === "assistant" && (
-                  <div className="h-6 w-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
-                )}
-                <div className={`max-w-[80%] flex flex-col gap-1.5 ${m.role === "user" ? "items-end" : "items-start"}`}>
-                  {m.images?.map((src, idx) => (
-                    <img key={idx} src={src} alt="attachment" className="max-w-[220px] rounded-xl border border-white/10 object-cover" />
-                  ))}
-                  {m.content && (
-                    <div className={`rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                      m.role === "user"
-                        ? "bg-violet-600 text-white rounded-br-sm"
-                        : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
-                    }`}>
-                      {m.content}
-                    </div>
-                  )}
+          {/* Panel body — switches between admin views and normal chat */}
+          {adminView === "users" ? (
+            <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1 min-h-0">
+              {adminLoading && (
+                <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-6">
+                  <div className="h-3 w-3 rounded-full border-2 border-violet-400 border-t-transparent animate-spin" />
+                  Loading…
                 </div>
-              </div>
-            ))}
-            {loading && (
-              <div className="flex justify-start">
-                <div className="h-6 w-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
-                <div className="bg-zinc-800 rounded-2xl rounded-bl-sm px-3 py-2">
-                  <div className="flex gap-1 items-center h-4">
-                    <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:0ms]" />
-                    <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:150ms]" />
-                    <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:300ms]" />
+              )}
+              {!adminLoading && adminUsers.length === 0 && (
+                <p className="text-center text-xs text-zinc-500 py-6">No chat history yet.</p>
+              )}
+              {adminUsers.map((u) => (
+                <button
+                  key={u.userId}
+                  onClick={() => viewUserChat(u)}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white/5 transition-colors text-left"
+                >
+                  <div className="h-8 w-8 rounded-full bg-zinc-700 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+                    {u.username.slice(0, 1).toUpperCase()}
                   </div>
+                  <span className="text-sm text-white">{u.username}</span>
+                  <ChevronRight className="h-4 w-4 text-zinc-600 ml-auto" />
+                </button>
+              ))}
+            </div>
+          ) : adminView === "viewUser" ? (
+            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
+              {adminLoading && (
+                <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-4">
+                  <div className="h-3 w-3 rounded-full border-2 border-violet-400 border-t-transparent animate-spin" />
+                  Loading…
                 </div>
-              </div>
-            )}
-            <div ref={bottomRef} />
-          </div>
-
-          {/* Input */}
-          <div className={`px-3 pb-3 pt-2 border-t border-white/8 flex flex-col gap-2 ${size === "minimized" ? "hidden" : ""}`}>
-            {/* Pending image thumbnails */}
-            {pendingImages.length > 0 && (
-              <div className="flex gap-2 flex-wrap">
-                {pendingImages.map((src, idx) => (
-                  <div key={idx} className="relative group">
-                    <img src={src} alt="pending" className="h-16 w-16 rounded-lg object-cover border border-white/10" />
-                    <button
-                      onClick={() => setPendingImages((p) => p.filter((_, i) => i !== idx))}
-                      className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-zinc-700 border border-white/20 text-zinc-300 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <X className="h-2.5 w-2.5" />
-                    </button>
+              )}
+              {!adminLoading && adminMessages.length === 0 && (
+                <p className="text-center text-xs text-zinc-500 py-6">No messages yet.</p>
+              )}
+              {adminMessages.map((m, i) => (
+                <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                  {m.role === "assistant" && (
+                    <div className="h-6 w-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
+                  )}
+                  <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
+                    m.role === "user" ? "bg-violet-600/70 text-white rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
+                  }`}>{m.content}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <>
+              {/* Normal chat messages */}
+              <div className={`flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0 ${size === "minimized" ? "hidden" : ""}`}>
+                {historyLoading && (
+                  <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-4">
+                    <div className="h-3 w-3 rounded-full border-2 border-violet-400 border-t-transparent animate-spin" />
+                    Loading memory…
+                  </div>
+                )}
+                {messages.map((m, i) => (
+                  <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                    {m.role === "assistant" && (
+                      <div className="h-6 w-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
+                    )}
+                    <div className={`max-w-[80%] flex flex-col gap-1.5 ${m.role === "user" ? "items-end" : "items-start"}`}>
+                      {m.images?.map((src, idx) => (
+                        <img key={idx} src={src} alt="attachment" className="max-w-[220px] rounded-xl border border-white/10 object-cover" />
+                      ))}
+                      {m.content && (
+                        <div className={`rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
+                          m.role === "user" ? "bg-violet-600 text-white rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
+                        }`}>{m.content}</div>
+                      )}
+                    </div>
                   </div>
                 ))}
+                {loading && (
+                  <div className="flex justify-start">
+                    <div className="h-6 w-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
+                    <div className="bg-zinc-800 rounded-2xl rounded-bl-sm px-3 py-2">
+                      <div className="flex gap-1 items-center h-4">
+                        <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:0ms]" />
+                        <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:150ms]" />
+                        <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:300ms]" />
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div ref={bottomRef} />
               </div>
-            )}
-            <div className="flex gap-2 items-center">
-              {/* Hidden file input */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={(e) => { if (e.target.files) { void addImages(e.target.files); e.target.value = ""; } }}
-              />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={loading}
-                title="Attach image"
-                className="h-9 w-9 rounded-xl bg-zinc-800 border border-white/10 text-zinc-400 hover:text-violet-400 flex items-center justify-center transition-colors disabled:opacity-40 flex-shrink-0"
-              >
-                <Paperclip className="h-4 w-4" />
-              </button>
-              <input
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
-                onPaste={handlePaste}
-                placeholder="Ask Samia anything… or paste a screenshot"
-                disabled={loading}
-                className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-violet-500 disabled:opacity-50"
-              />
-              <button
-                onClick={() => void send()}
-                disabled={(!input.trim() && pendingImages.length === 0) || loading}
-                className="h-9 w-9 rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity flex-shrink-0"
-              >
-                <Send className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
+
+              {/* Input bar */}
+              <div className={`px-3 pb-3 pt-2 border-t border-white/8 flex flex-col gap-2 ${size === "minimized" ? "hidden" : ""}`}>
+                {pendingImages.length > 0 && (
+                  <div className="flex gap-2 flex-wrap">
+                    {pendingImages.map((src, idx) => (
+                      <div key={idx} className="relative group">
+                        <img src={src} alt="pending" className="h-16 w-16 rounded-lg object-cover border border-white/10" />
+                        <button
+                          onClick={() => setPendingImages((p) => p.filter((_, i) => i !== idx))}
+                          className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-zinc-700 border border-white/20 text-zinc-300 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <X className="h-2.5 w-2.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex gap-2 items-center">
+                  <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
+                    onChange={(e) => { if (e.target.files) { void addImages(e.target.files); e.target.value = ""; } }} />
+                  <button onClick={() => fileInputRef.current?.click()} disabled={loading} title="Attach image"
+                    className="h-9 w-9 rounded-xl bg-zinc-800 border border-white/10 text-zinc-400 hover:text-violet-400 flex items-center justify-center transition-colors disabled:opacity-40 flex-shrink-0">
+                    <Paperclip className="h-4 w-4" />
+                  </button>
+                  <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
+                    onPaste={handlePaste} placeholder="Ask Samia anything… or paste a screenshot" disabled={loading}
+                    className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-violet-500 disabled:opacity-50" />
+                  <button onClick={() => void send()} disabled={(!input.trim() && pendingImages.length === 0) || loading}
+                    className="h-9 w-9 rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity flex-shrink-0">
+                    <Send className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       )}
     </>
