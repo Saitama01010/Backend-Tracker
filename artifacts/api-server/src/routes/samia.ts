@@ -338,12 +338,14 @@ async function fetchSheetSummary(
 
 router.post("/samia/chat", requireAuth, async (req, res) => {
   try {
-    const { message, images = [] } = req.body as { message: string; images?: string[] };
+    const { message, images = [], displayName } = req.body as { message: string; images?: string[]; displayName?: string };
     if (!message?.trim()) {
       return res.status(400).json({ error: "message is required" });
     }
     const userId = req.user!.userId;
-    const username = req.user!.username;
+    // Prefer the display name the user typed in the name-gate prompt over the
+    // shared login username (e.g. "retention" or "cs").
+    const username = (displayName?.trim()) || req.user!.username;
 
     // Load last 60 messages for this user as persistent memory
     const dbHistory = await db
