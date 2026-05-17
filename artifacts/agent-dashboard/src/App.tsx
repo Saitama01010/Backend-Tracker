@@ -6530,6 +6530,10 @@ function SamiaChat() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [pendingImages, setPendingImages] = useState<string[]>([]);
+  // Name gate
+  const [chatName, setChatName] = useState<string>(() => localStorage.getItem("samia_display_name") ?? "");
+  const [nameInput, setNameInput] = useState("");
+  const nameRef = useRef<HTMLInputElement>(null);
   // Admin "All chats" state
   const [adminView, setAdminView] = useState<"chat" | "users" | "viewUser">("chat");
   const [adminUsers, setAdminUsers] = useState<{ userId: number; username: string }[]>([]);
@@ -6542,9 +6546,19 @@ function SamiaChat() {
   const { token, user } = useUser();
   const isAdmin = user.role === "admin";
 
+  function submitName() {
+    const n = nameInput.trim();
+    if (!n) return;
+    localStorage.setItem("samia_display_name", n);
+    setChatName(n);
+  }
+
   useEffect(() => {
     if (open) {
-      setTimeout(() => inputRef.current?.focus(), 80);
+      setTimeout(() => {
+        if (!chatName) { nameRef.current?.focus(); return; }
+        inputRef.current?.focus();
+      }, 80);
       if (!historyLoaded) {
         setHistoryLoading(true);
         fetch("/api/samia/history", { headers: { Authorization: `Bearer ${token}` } })
@@ -6630,7 +6644,7 @@ function SamiaChat() {
       const res = await fetch("/api/samia/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ message: text || "What do you see in this image?", images }),
+        body: JSON.stringify({ message: text || "What do you see in this image?", images, displayName: chatName || undefined }),
       });
       const data = (await res.json()) as { reply?: string; error?: string };
       setMessages((prev) => [...prev, { role: "assistant", content: data.reply ?? "Sorry, something went wrong." }]);
@@ -6710,8 +6724,33 @@ function SamiaChat() {
             </div>
           </div>
 
-          {/* Panel body — switches between admin views and normal chat */}
-          {adminView === "users" ? (
+          {/* Name gate — shown if user hasn't set their display name yet */}
+          {!chatName ? (
+            <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 gap-5">
+              <div className="h-14 w-14 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white font-bold text-xl shadow-lg">S</div>
+              <div className="text-center">
+                <p className="text-sm font-semibold text-white mb-1">Hey, before we start —</p>
+                <p className="text-xs text-zinc-400">What's your name? Samia will use it to remember you.</p>
+              </div>
+              <div className="w-full flex gap-2">
+                <input
+                  ref={nameRef}
+                  value={nameInput}
+                  onChange={(e) => setNameInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") submitName(); }}
+                  placeholder="Your first name…"
+                  className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2.5 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                />
+                <button
+                  onClick={submitName}
+                  disabled={!nameInput.trim()}
+                  className="px-4 rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white text-sm font-medium disabled:opacity-40 hover:opacity-90 transition-opacity"
+                >
+                  Go
+                </button>
+              </div>
+            </div>
+          ) : adminView === "users" ? (
             <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1 min-h-0">
               {adminLoading && (
                 <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-6">
