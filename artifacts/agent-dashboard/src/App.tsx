@@ -356,8 +356,12 @@ const NAME_ALIASES: Record<string, string> = {
   // Needed so submissions using the Arabic name merge into the same agent row as the compound name.
   "ahmed ayman":       "ahmed ayman-levi miller",
   "tuqa hossam":       "talia morgan",
-  "abdulrhman isawi":       "jacob stephenson",
-  "abdlrhman-adam maxwell": "jacob stephenson",
+  "abdulrhman isawi":          "jacob stephenson",
+  "abdlrhman-adam maxwell":    "jacob stephenson",
+  "abdlrhman-jacob stephenson":"jacob stephenson",
+  // Youssef Nasser / Youssef-John Marcus → John Marcus
+  "youssef nasser":            "john marcus",
+  "youssef-john marcus":       "john marcus",
   "zeiad fouad":       "rick miller",
   "karma farouk":      "katherine adams",
   "muhamed walid":     "ryan henderson",
@@ -701,6 +705,8 @@ const TEAM_ALLOWLIST: Record<string, Set<string>> = {
     "michael belfort", "nouralden",
     // Jacob Stephenson / Abdlrhman / Adam Maxwell
     "jacob stephenson", "abdulrhman isawi", "adam maxwell",
+    // John Marcus / Youssef Nasser / Youssef-John Marcus
+    "john marcus", "youssef nasser", "youssef-john marcus",
     // Katherine Adams / Karma Farouk
     "katherine adams", "karma farouk",
     // Rick Miller / Zeiad Fouad
@@ -804,12 +810,16 @@ const SHEET_TO_PBX: Record<string, string> = {
   "abdlrhman-jacob stephenson": "abdulrhman isawi",
   "abdlrhman-adam maxwell": "abdulrhman isawi",
   "adam maxwell": "jacob stephenson",
+  "youssef-john marcus": "john marcus",
+  "youssef nasser": "john marcus",
 };
 
 // Maps normalized SHEET agent name → normalized PHONE (OpenPhone) agent name
 const SHEET_TO_PHONE: Record<string, string> = {
   "abdlrhman-jacob stephenson": "abdulrhman isawi",
   "abdlrhman-adam maxwell": "abdulrhman isawi",
+  "youssef-john marcus": "john marcus",
+  "youssef nasser": "john marcus",
   "muhamed-ryan henderson": "ryan henderson",
   "zeiad fouad-zack ford": "zeiad fouad",
   "youssef nady-jacob xander": "youssef nady",
@@ -2844,7 +2854,7 @@ function TeamPanel({
 }
 
 const CS_AGENTS = ["Ella Monroe", "Chase Miller", "Leo Carter", "Nora Adam", "Jacob Xander", "Carla Bennet"];
-const RETENTION_AGENTS = ["Levi Miller", "Henry Hart", "Rick Miller", "Michael Belfort", "Ryan Henderson", "Katherine Adams", "Talia Morgan", "Jacob Stephenson"];
+const RETENTION_AGENTS = ["Levi Miller", "Henry Hart", "Rick Miller", "Michael Belfort", "Ryan Henderson", "Katherine Adams", "Talia Morgan", "Jacob Stephenson", "John Marcus"];
 
 function CSPanel() {
   const pbxData = useVosCalls();
