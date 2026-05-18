@@ -1,7 +1,7 @@
 import { Router } from "express";
 import OpenAI from "openai";
-import { db, samiaMessagesTable } from "@workspace/db";
-import { desc, eq, isNull, or, sql } from "drizzle-orm";
+import { db, samiaMessagesTable, phoneCallsTable, pbxMissedCallsTable } from "@workspace/db";
+import { and, gte, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
@@ -53,6 +53,80 @@ router.get("/samia/history/:userId", requireAuth, requireRole("admin"), async (r
   } catch (err) {
     req.log.error(err, "samia admin history error");
     return res.status(500).json({ error: "Failed to load history" });
+  }
+});
+
+// ── GET /api/samia/number-lookup — look up all call history for a phone number ──
+router.get("/samia/number-lookup", async (req, res) => {
+  try {
+    const raw = ((req.query["number"] as string) ?? "").replace(/\s/g, "");
+    if (!raw) return res.status(400).json({ error: "number param required" });
+
+    // Normalize to E.164
+    const digits = raw.replace(/\D/g, "");
+    let normalized = raw;
+    if (digits.length === 10) normalized = "+1" + digits;
+    else if (digits.length === 11 && digits.startsWith("1")) normalized = "+" + digits;
+
+    const sinceDays = parseInt((req.query["sinceDays"] as string) ?? "90", 10) || 90;
+    const since = new Date(Date.now() - sinceDays * 24 * 3600 * 1000);
+
+    const [openPhoneCalls, pbxCalls] = await Promise.all([
+      db.select({
+        direction:           phoneCallsTable.direction,
+        status:              phoneCallsTable.status,
+        createdAt:           phoneCallsTable.createdAt,
+        durationSeconds:     phoneCallsTable.durationSeconds,
+        ringDurationSeconds: phoneCallsTable.ringDurationSeconds,
+        agentName:           phoneCallsTable.agentName,
+        lineName:            phoneCallsTable.lineName,
+      }).from(phoneCallsTable).where(and(
+        eq(phoneCallsTable.participant, normalized),
+        gte(phoneCallsTable.createdAt, since),
+      )).orderBy(desc(phoneCallsTable.createdAt)).limit(50),
+      db.select({
+        fromNumber:    pbxMissedCallsTable.fromNumber,
+        toNumber:      pbxMissedCallsTable.toNumber,
+        ringGroupName: pbxMissedCallsTable.ringGroupName,
+        team:          pbxMissedCallsTable.team,
+        createdAt:     pbxMissedCallsTable.createdAt,
+      }).from(pbxMissedCallsTable).where(and(
+        eq(pbxMissedCallsTable.fromNumber, normalized),
+        gte(pbxMissedCallsTable.createdAt, since),
+      )).orderBy(desc(pbxMissedCallsTable.createdAt)).limit(50),
+    ]);
+
+    const fmt = (d: Date | string | null) =>
+      d ? new Date(d).toLocaleString("en-US", { timeZone: "America/Los_Angeles", hour12: true }) : null;
+
+    return res.json({
+      number: normalized,
+      openPhone: openPhoneCalls.map((c) => ({
+        source: "openphone",
+        direction:           c.direction,
+        status:              c.status,
+        agentName:           c.agentName,
+        lineName:            c.lineName,
+        ringDurationSeconds: c.ringDurationSeconds,
+        durationSeconds:     c.durationSeconds,
+        createdAtLA:         fmt(c.createdAt),
+        createdAt:           c.createdAt,
+      })),
+      pbx: pbxCalls.map((c) => ({
+        source: "pbx",
+        direction:       "inbound",
+        status:          "missed",
+        ringGroupName:   c.ringGroupName,
+        team:            c.team,
+        ringDurationSeconds: null,
+        durationSeconds: 0,
+        createdAtLA:     fmt(c.createdAt),
+        createdAt:       c.createdAt,
+      })),
+    });
+  } catch (err) {
+    req.log.error(err, "samia number-lookup error");
+    return res.status(500).json({ error: String(err) });
   }
 });
 
@@ -162,6 +236,16 @@ Member names must match exactly — they're in the attendance data shown above.
 Use this when asked "who did X call today", "what numbers did X speak with", "get me the phone numbers that X spoke with", etc. agentName is a partial name — case-insensitive search.
 
 When presenting phone contacts, list them as a clean numbered list: phone number, calls count, talk time, direction (in/out/both). Keep it tight — no extra commentary unless asked.
+
+## Number lookup tool
+
+**lookup_number(number, sinceDays?)** — Looks up all call history for a specific phone number across both OpenPhone (Quo) and PBX (VoSLogic). Returns every call: direction, status, ring duration, talk time, which agent handled it, which line, and when. Use this when asked "how long did +1XXX ring", "did this number call us", "what happened when X called", "check this number", etc.
+
+- ring_duration_seconds = how long the phone rang before it was answered or abandoned
+- duration_seconds = actual talk time after pickup (0 if missed/voicemail)
+- source "openphone" = OpenPhone/Quo line; source "pbx" = VoSLogic ring group
+
+When presenting: show each call with time (LA timezone), direction, status, ring time, and talk time. Be precise — lead with the numbers.
 
 Your personality: professional but warm, sharp, and helpful. Speak like a smart analyst who knows the numbers cold.`;
 
@@ -706,6 +790,27 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       {
         type: "function",
         function: {
+          name: "lookup_number",
+          description: "Look up all call history for a specific phone number across OpenPhone (Quo) and PBX (VoSLogic). Returns each call's direction, status, ring duration (how long it rang), talk time, agent, line, and timestamp in LA time. Use when asked about a specific number: how long it rang, whether it was answered, who handled it, etc.",
+          parameters: {
+            type: "object",
+            properties: {
+              number: {
+                type: "string",
+                description: "The phone number to look up. Accepts any format: +15551234567, (555) 123-4567, 5551234567, etc.",
+              },
+              sinceDays: {
+                type: "number",
+                description: "How many days back to search. Default 90.",
+              },
+            },
+            required: ["number"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
           name: "set_attendance",
           description: "Write attendance records for specific agents on specific dates. Use for manual corrections or when auto_mark misses someone. Pass force=true to overwrite existing records.",
           parameters: {
@@ -823,6 +928,19 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
             if (args.date) params.set("date", args.date);
             const contactsRes = await fetch(`${base}/api/attendance/agent-contacts?${params.toString()}`);
             toolResult = JSON.stringify(await contactsRes.json());
+
+          } else if (fnName === "lookup_number") {
+            const args = JSON.parse(toolCall.function.arguments || "{}") as { number: string; sinceDays?: number };
+            const params = new URLSearchParams({ number: args.number });
+            if (args.sinceDays) params.set("sinceDays", String(args.sinceDays));
+            const r = await fetch(`${base}/api/samia/number-lookup?${params.toString()}`);
+            const data = await r.json() as { number: string; openPhone: unknown[]; pbx: unknown[] };
+            const total = data.openPhone.length + data.pbx.length;
+            if (total === 0) {
+              toolResult = JSON.stringify({ number: data.number, found: false, message: "No call records found for this number in OpenPhone or PBX." });
+            } else {
+              toolResult = JSON.stringify({ number: data.number, found: true, openPhone: data.openPhone, pbx: data.pbx });
+            }
 
           } else if (fnName === "set_attendance") {
             const args = JSON.parse(toolCall.function.arguments || "{}");
