@@ -247,6 +247,7 @@ const MEMBER_TO_AGENT_NAMES: Record<string, string[]> = {
   "Ryan Henderson":    ["Ryan Henderson", "Jacob Ahmed"],
   "Henry Hart":        ["Henry Hart", "Max Francis"],
   "Jacob Xander":      ["Jacob Xander", "Youssef Nady"],
+  "John Marcus":       ["John Marcus", "Youssef Nasser", "Youssef-John Marcus"],
 };
 
 function lateNote(minsLate: number): string {
