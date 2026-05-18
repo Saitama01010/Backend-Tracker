@@ -2,8 +2,10 @@ import { Router } from "express";
 import {
   db, phoneCallsTable, attendanceMembersTable,
   violationVerificationsTable, pbxMissedCallsTable,
+  agentBreaksTable,
 } from "@workspace/db";
 import { and, gte, lte, or, eq, inArray } from "drizzle-orm";
+import { vosCallSpansCache } from "./vos";
 
 const TEAM_QUO_LINES = ["Retention", "CS Team", "Main NSF"];
 
@@ -146,7 +148,11 @@ router.get("/violations", async (req, res) => {
     for (const arr of callsByAgentDate.values()) arr.sort((a, b) => a.getTime() - b.getTime());
 
     function isAgentBusy(agentLower: string, atMs: number): boolean {
-      return (agentCallSpans.get(agentLower) ?? []).some((s) => s.start <= atMs && s.end >= atMs);
+      // Check OpenPhone (phone_calls DB) spans first
+      if ((agentCallSpans.get(agentLower) ?? []).some((s) => s.start <= atMs && s.end >= atMs)) return true;
+      // Also check VoSLogic dialer spans (in-memory cache from last VoS refresh)
+      if ((vosCallSpansCache.get(agentLower) ?? []).some((s) => s.start <= atMs && s.end >= atMs)) return true;
+      return false;
     }
 
     const nowUtc = new Date();

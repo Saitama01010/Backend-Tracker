@@ -84,6 +84,12 @@ interface VosCallRaw {
   ringGroupName?: string | null;
 }
 
+/**
+ * Per-agent completed-call spans from the most recent VoSLogic refresh.
+ * Keyed by lowercase agent name. Consumed by violations.ts for busy detection.
+ */
+export const vosCallSpansCache = new Map<string, Array<{ start: number; end: number }>>();
+
 export interface VosCallHistoryStat {
   agentName: string;
   calls: number;
@@ -194,8 +200,10 @@ async function fetchAgentCallsForDate(
   inboundToNumbers: string[];
   outboundCallbacks: Array<{ toNumber: string; createdAt: string }>;
   inboundAnsweredFrom: Array<{ fromNumber: string; createdAt: string }>;
+  callSpans: Array<{ start: number; end: number }>;
 }> {
   let answered = 0, missed = 0, voicemail = 0, durationSeconds = 0;
+  const callSpans: Array<{ start: number; end: number }> = [];
   let lastCallAt: string | null = null;
   let firstCallAt: string | null = null;
   const inboundToNumbers: string[] = [];
@@ -223,6 +231,17 @@ async function fetchAgentCallsForDate(
       totalSeen++;
 
       if (call.status === "active" || call.status === "ringing") continue;
+
+      // Track call span for busy detection (used by violations.ts).
+      // In-progress calls use a 30-min fallback so they register as busy.
+      const INPROGRESS_FALLBACK_VOS = 1800;
+      const spanDur = (call.duration && call.duration > 0)
+        ? call.duration
+        : (call.status === "in-progress" ? INPROGRESS_FALLBACK_VOS : 0);
+      if (spanDur > 0) {
+        const s = new Date(call.createdAt).getTime();
+        callSpans.push({ start: s, end: s + spanDur * 1000 });
+      }
 
       const callEndAt = call.duration ? new Date(new Date(call.createdAt).getTime() + call.duration * 1000).toISOString() : call.createdAt;
       if (!lastCallAt) lastCallAt = callEndAt;
@@ -255,7 +274,7 @@ async function fetchAgentCallsForDate(
     page++;
   }
 
-  return { answered, missed, voicemail, durationSeconds, lastCallAt, firstCallAt, inboundToNumbers, outboundCallbacks, inboundAnsweredFrom };
+  return { answered, missed, voicemail, durationSeconds, lastCallAt, firstCallAt, inboundToNumbers, outboundCallbacks, inboundAnsweredFrom, callSpans };
 }
 
 /**
@@ -425,6 +444,8 @@ let cachedInternalNumbers: string[] = [];
 async function refreshCallHistory(log?: Logger): Promise<void> {
   if (callHistoryFetching) return;
   callHistoryFetching = true;
+  // Clear the span cache before rebuilding so stale entries from previous day don't persist.
+  vosCallSpansCache.clear();
   const t0 = Date.now();
   try {
     const today = new Date().toISOString().slice(0, 10);
@@ -482,6 +503,8 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
               firstCallAt: null,
               inboundToNumbers: [] as string[],
               outboundCallbacks: [] as Array<{ toNumber: string; createdAt: string }>,
+              inboundAnsweredFrom: [] as Array<{ fromNumber: string; createdAt: string }>,
+              callSpans: [] as Array<{ start: number; end: number }>,
             };
           }
           const detail = await fetchAgentCallsForDate(agentId, a.calls, today, yesterday);
@@ -507,17 +530,25 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
             inboundToNumbers: detail.inboundToNumbers,
             outboundCallbacks: detail.outboundCallbacks,
             inboundAnsweredFrom: detail.inboundAnsweredFrom,
+            callSpans: detail.callSpans,
           };
         })
       );
       for (const r of batchResults) {
-        const { inboundToNumbers: _, outboundCallbacks: __, inboundAnsweredFrom: _ia, ...stat } = r;
+        const { inboundToNumbers: _, outboundCallbacks: __, inboundAnsweredFrom: _ia, callSpans: _cs, ...stat } = r;
         results.push(stat satisfies VosCallHistoryStat);
         // Feed every per-agent outbound call into the callback map immediately
         // so it's available for cross-referencing after all agents are scanned.
         for (const cb of __) agentOutboundCallbacks.push(cb);
         // Inbound answered calls also resolve a missed call (customer called back in).
         for (const ia of _ia) agentInboundAnswered.push(ia);
+        // Populate busy-detection span cache used by violations.ts
+        if (_cs && _cs.length > 0) {
+          const key = r.agentName.toLowerCase();
+          const existing = vosCallSpansCache.get(key) ?? [];
+          for (const sp of _cs) existing.push(sp);
+          vosCallSpansCache.set(key, existing);
+        }
       }
     }
 

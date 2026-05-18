@@ -11,6 +11,7 @@ import blockedNumbersRouter from "./blockedNumbers";
 import violationsRouter from "./violations";
 import readymodeRouter from "./readymode";
 import csvProxyRouter from "./csvProxy";
+import breaksRouter from "./breaks";
 
 const router: IRouter = Router();
 
@@ -24,6 +25,7 @@ router.use(vosRouter);
 router.use(samiaRouter);
 router.use(blockedNumbersRouter);
 router.use(violationsRouter);
+router.use(breaksRouter);
 router.use(readymodeRouter);
 router.use(csvProxyRouter);
 
