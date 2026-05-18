@@ -5,6 +5,8 @@ import {
 } from "@workspace/db";
 import { and, gte, lte, or, eq, inArray } from "drizzle-orm";
 
+const TEAM_QUO_LINES = ["Retention", "CS Team", "Main NSF"];
+
 const router = Router();
 
 function laStartOfDay(dateStr: string): Date {
@@ -54,8 +56,8 @@ router.get("/violations", async (req, res) => {
     const rangeStart = laStartOfDay(dates[0]);
     const rangeEnd   = new Date(laStartOfDay(dates[dates.length - 1]).getTime() + 24 * 3600 * 1000 - 1);
 
-    // Parallel fetch: members, verified keys, phone calls, missed PBX calls
-    const [members, verifications, callRows, missedRows] = await Promise.all([
+    // Parallel fetch: members, verified keys, phone calls, missed PBX calls, missed Quo calls
+    const [members, verifications, callRows, missedRows, quoMissedRows] = await Promise.all([
       db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true)),
       db.select({ key: violationVerificationsTable.key }).from(violationVerificationsTable),
       db.select({
@@ -77,6 +79,22 @@ router.get("/violations", async (req, res) => {
         gte(pbxMissedCallsTable.createdAt, rangeStart),
         lte(pbxMissedCallsTable.createdAt, rangeEnd),
         inArray(pbxMissedCallsTable.team, ["retention", "cs", "nsf"]),
+      )),
+      db.select({
+        id:                  phoneCallsTable.id,
+        participant:         phoneCallsTable.participant,
+        lineTeam:            phoneCallsTable.lineTeam,
+        lineName:            phoneCallsTable.lineName,
+        createdAt:           phoneCallsTable.createdAt,
+        status:              phoneCallsTable.status,
+        durationSeconds:     phoneCallsTable.durationSeconds,
+        ringDurationSeconds: phoneCallsTable.ringDurationSeconds,
+      }).from(phoneCallsTable).where(and(
+        gte(phoneCallsTable.createdAt, rangeStart),
+        lte(phoneCallsTable.createdAt, rangeEnd),
+        eq(phoneCallsTable.direction, "incoming"),
+        inArray(phoneCallsTable.status, ["no-answer", "voicemail", "missed", "voicemail-brief"]),
+        inArray(phoneCallsTable.lineName, TEAM_QUO_LINES),
       )),
     ]);
 
@@ -142,7 +160,7 @@ router.get("/violations", async (req, res) => {
       gapCount: number; gaps: { start: string; end: string; minutes: number }[];
     };
     type MissedCallEntry = {
-      key: string; pbxCallId: number; date: string; missedAt: string;
+      key: string; pbxCallId: number | null; source: "pbx" | "quo"; date: string; missedAt: string;
       team: string; fromNumber: string; ringGroupName: string;
       availableAgents: string[]; busyAgents: string[];
     };
@@ -230,10 +248,55 @@ router.get("/violations", async (req, res) => {
       if (availableAgents.length > 0) {
         missedWhileAvail.push({
           key: `missed:${missed.id}`,
-          pbxCallId: missed.id, date: missedDate,
+          pbxCallId: missed.id, source: "pbx", date: missedDate,
           missedAt: missed.createdAt.toISOString(),
           team: missed.team, fromNumber: missed.fromNumber,
           ringGroupName: missed.ringGroupName,
+          availableAgents, busyAgents,
+        });
+      }
+    }
+
+    // ── Missed While Available — OpenPhone (Quo) ────────────────────────────────
+    for (const r of quoMissedRows) {
+      // Ghost call filter: rang ≤2 seconds (fallback for old records without ring_duration_seconds)
+      const ringDur = r.ringDurationSeconds;
+      const isGhost = ringDur != null
+        ? ringDur <= 2
+        : (r.status === "no-answer" && (r.durationSeconds ?? 0) === 0) ||
+          (r.status === "voicemail" && (r.durationSeconds ?? 0) === 0) ||
+          (r.status === "voicemail-brief" && (r.durationSeconds ?? 0) <= 4);
+      if (isGhost) continue;
+
+      const missedMs   = new Date(r.createdAt).getTime();
+      const missedDate = new Date(r.createdAt).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+      const dayStart   = laStartOfDay(missedDate);
+
+      const availableAgents: string[] = [];
+      const busyAgents:      string[] = [];
+
+      const teamMembers = members.filter((m) => m.department.toLowerCase() === r.lineTeam);
+      for (const member of teamMembers) {
+        const shiftNum = parseInt(member.shift || "0");
+        if (!shiftNum) continue;
+        // Shift N = N PM Egypt time. Egypt = UTC+2, PDT = UTC-7 → pdtHour = shiftNum + 3
+        const shiftStart = dayStart.getTime() + (shiftNum + 3) * 3600 * 1000;
+        const shiftDurH  = Math.max(1, parseInt(member.shiftHours || "8"));
+        const shiftEnd   = shiftStart + shiftDurH * 3600 * 1000;
+        if (missedMs < shiftStart || missedMs > shiftEnd) continue;
+
+        const agentNames = agentNamesForMember(member.name);
+        const busy = agentNames.some((n) => isAgentBusy(n.toLowerCase(), missedMs));
+        (busy ? busyAgents : availableAgents).push(member.name);
+      }
+
+      if (availableAgents.length > 0) {
+        missedWhileAvail.push({
+          key: `quo-missed:${r.id}`,
+          pbxCallId: null, source: "quo", date: missedDate,
+          missedAt: new Date(r.createdAt).toISOString(),
+          team: r.lineTeam, fromNumber: r.participant,
+          ringGroupName: r.lineName,
           availableAgents, busyAgents,
         });
       }

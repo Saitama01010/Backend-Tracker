@@ -5678,7 +5678,7 @@ type AvailGapRow = {
   gapCount: number; gaps: GapEntry[];
 };
 type MissedCallEntry = {
-  key: string; pbxCallId: number; date: string; missedAt: string;
+  key: string; pbxCallId: number | null; source: "pbx" | "quo"; date: string; missedAt: string;
   team: string; fromNumber: string; ringGroupName: string;
   availableAgents: string[]; busyAgents: string[];
 };
@@ -6198,9 +6198,10 @@ function ViolationsPanel() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-xs">
-                        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-500/15 text-sky-300 border border-sky-500/25">
-                          PBX
-                        </span>
+                        {r.source === "quo"
+                          ? <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-violet-500/15 text-violet-300 border border-violet-500/25">OpenPhone</span>
+                          : <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-500/15 text-sky-300 border border-sky-500/25">PBX</span>
+                        }
                       </TableCell>
                       <TableCell className="text-xs text-zinc-400 tabular-nums font-mono">
                         {r.fromNumber.replace(/(\+1)(\d{3})(\d{3})(\d{4})/, "$1 ($2) $3-$4")}
