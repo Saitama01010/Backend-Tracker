@@ -5720,7 +5720,7 @@ function ViolationsPanel() {
 
   const [from, setFrom] = useState(todayLA);
   const [to, setTo]     = useState(todayLA);
-  const [sub, setSub]   = useState<"late" | "gaps" | "missed" | "cancels" | "verified">("late");
+  const [sub, setSub]   = useState<"late" | "gaps" | "missed" | "cancels" | "verified">("missed");
   const [deptFilter, setDeptFilter] = useState<string>("all");
   const [sortLate, setSortLate]     = useState<"date" | "mins">("date");
   const [sortGaps, setSortGaps]     = useState<"date" | "count">("count");
@@ -5743,6 +5743,8 @@ function ViolationsPanel() {
       return r.json() as Promise<ViolationsData>;
     },
     staleTime: 2 * 60 * 1000,
+    refetchInterval: 5 * 60 * 1000,
+    refetchOnWindowFocus: true,
   });
 
   const { data: verifiedData, refetch: refetchVerified } = useQuery<{ items: VerifiedItem[] }>({
