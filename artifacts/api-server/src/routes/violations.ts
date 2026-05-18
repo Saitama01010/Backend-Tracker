@@ -27,7 +27,7 @@ function dateRangeLA(from: string, to: string): string[] {
 const MEMBER_TO_AGENT_NAMES: Record<string, string[]> = {
   "Levi Miller":      ["Levi Miller", "Ahmed Ayman"],
   "Rick Miller":      ["Rick Miller", "Zeiad Fouad"],
-  "Jacob Stephenson": ["Jacob Stephenson", "Abdulrhman Isawi"],
+  "Jacob Stephenson": ["Jacob Stephenson", "Abdulrhman Isawi", "Adam Maxwell"],
   "Michael Belfort":  ["Michael Belfort", "Nouralden"],
   "Ryan Henderson":   ["Ryan Henderson", "Jacob Ahmed"],
   "Henry Hart":       ["Henry Hart", "Max Francis"],

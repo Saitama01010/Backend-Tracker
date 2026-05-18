@@ -699,8 +699,8 @@ const TEAM_ALLOWLIST: Record<string, Set<string>> = {
     "ryan henderson", "muhamed walid",
     // Michael Belfort / Nouralden
     "michael belfort", "nouralden",
-    // Jacob Stephenson / Abdulrhman Isawi
-    "jacob stephenson", "abdulrhman isawi",
+    // Jacob Stephenson / Abdlrhman / Adam Maxwell
+    "jacob stephenson", "abdulrhman isawi", "adam maxwell",
     // Katherine Adams / Karma Farouk
     "katherine adams", "karma farouk",
     // Rick Miller / Zeiad Fouad
@@ -802,6 +802,7 @@ const SHEET_TO_PBX: Record<string, string> = {
   "engy-ellie moser-2046": "ellie moser",
   "muhamed-ryan henderson": "jacob ahmed",         // PBX: Jacob Ahmed = Ryan Henderson
   "abdlrhman-jacob stephenson": "abdulrhman isawi",
+  "adam maxwell": "jacob stephenson",
 };
 
 // Maps normalized SHEET agent name → normalized PHONE (OpenPhone) agent name
