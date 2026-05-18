@@ -77,11 +77,12 @@ router.get("/attendance", async (req, res) => {
   try {
     const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
     const to = (req.query["to"] as string) || new Date().toISOString().slice(0, 10);
+    const includeInactive = req.query["includeInactive"] === "true";
 
     const members = await db
       .select()
       .from(attendanceMembersTable)
-      .where(eq(attendanceMembersTable.active, true))
+      .where(includeInactive ? undefined : eq(attendanceMembersTable.active, true))
       .orderBy(attendanceMembersTable.department, attendanceMembersTable.name);
 
     const records =

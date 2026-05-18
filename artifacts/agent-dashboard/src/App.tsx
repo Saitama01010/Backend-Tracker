@@ -6959,6 +6959,7 @@ function AttendancePanel() {
   const [autoMarking, setAutoMarking] = useState(false);
   const [autoMarkResult, setAutoMarkResult] = useState<string | null>(null);
   const [editingMember, setEditingMember] = useState<AttMember | null>(null);
+  const [showInactive, setShowInactive] = useState(false);
 
   const monthStart = new Date(today.getFullYear(), today.getMonth() + monthOff, 1);
   const monthEnd = new Date(today.getFullYear(), today.getMonth() + monthOff + 1, 0);
@@ -6978,9 +6979,11 @@ function AttendancePanel() {
 
   const qc = useQueryClient();
   const { data, isLoading } = useQuery<AttData>({
-    queryKey: ["attendance", fromStr, toStr],
+    queryKey: ["attendance", fromStr, toStr, showInactive],
     queryFn: async () => {
-      const r = await fetch(`/api/attendance?from=${fromStr}&to=${toStr}`);
+      const params = new URLSearchParams({ from: fromStr, to: toStr });
+      if (showInactive) params.set("includeInactive", "true");
+      const r = await fetch(`/api/attendance?${params}`);
       if (!r.ok) throw new Error("fetch failed");
       return r.json();
     },
@@ -7003,7 +7006,10 @@ function AttendancePanel() {
   const visible = useMemo(
     () => (data?.members ?? [])
       .filter((m) => deptFilter === "All" || m.department === deptFilter)
-      .sort((a, b) => parseFloat(a.shift || "0") - parseFloat(b.shift || "0")),
+      .sort((a, b) => {
+        if (a.active !== b.active) return a.active ? -1 : 1;
+        return parseFloat(a.shift || "0") - parseFloat(b.shift || "0");
+      }),
     [data, deptFilter],
   );
 
@@ -7075,10 +7081,10 @@ function AttendancePanel() {
     qc.invalidateQueries({ queryKey: ["attendance"] });
   }
 
-  async function deactivateMember(id: number) {
+  async function setMemberActive(id: number, active: boolean) {
     await fetch(`/api/attendance/members/${id}`, {
       method: "PATCH", headers: authHeaders(token),
-      body: JSON.stringify({ active: false }),
+      body: JSON.stringify({ active }),
     });
     qc.invalidateQueries({ queryKey: ["attendance"] });
   }
@@ -7212,7 +7218,7 @@ function AttendancePanel() {
 
       {/* Dept filter + month navigation */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex gap-1.5">
+        <div className="flex gap-1.5 flex-wrap items-center">
           {departments.map((d) => (
             <button
               key={d}
@@ -7222,6 +7228,14 @@ function AttendancePanel() {
               {d}
             </button>
           ))}
+          {canManage && (
+            <button
+              onClick={() => setShowInactive((v) => !v)}
+              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors border ${showInactive ? "border-amber-500/50 bg-amber-500/10 text-amber-300" : "border-white/10 text-zinc-500 hover:text-zinc-300 hover:bg-white/5"}`}
+            >
+              {showInactive ? "Hide inactive" : "Show inactive"}
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => setMonthOff((v) => v - 1)} className="px-2 py-1 rounded text-muted-foreground hover:text-white hover:bg-white/5 transition-colors">←</button>
@@ -7276,9 +7290,10 @@ function AttendancePanel() {
                 }
                 const rowBg = mi % 2 === 0 ? "bg-zinc-900/20" : "bg-zinc-900/50";
                 return (
-                  <tr key={member.id} className={`${rowBg} hover:bg-white/[0.03] transition-colors`}>
-                    <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-3 py-1.5 text-sm text-white font-medium border-b border-white/5 whitespace-nowrap`}>
+                  <tr key={member.id} className={`${rowBg} hover:bg-white/[0.03] transition-colors ${!member.active ? "opacity-40" : ""}`}>
+                    <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-3 py-1.5 text-sm font-medium border-b border-white/5 whitespace-nowrap ${member.active ? "text-white" : "text-zinc-400 line-through"}`}>
                       {member.name}
+                      {!member.active && <span className="ml-1.5 no-underline text-[10px] font-normal text-amber-500/70 bg-amber-500/10 px-1 rounded" style={{textDecoration:"none"}}>inactive</span>}
                     </td>
                     <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`} title={`Shift ${member.shift} (LA time) · ${member.shiftHours || "8"}h shift`}>
                       <div>{shiftLabel(member.shift)}</div>
@@ -7432,7 +7447,15 @@ function AttendancePanel() {
               </div>
             </div>
             <div className="flex gap-2 justify-between pt-1">
-              <Button size="sm" variant="destructive" onClick={() => { deactivateMember(editingMember.id); setEditingMember(null); }}>Remove</Button>
+              {editingMember.active ? (
+                <Button size="sm" variant="destructive" onClick={() => { setMemberActive(editingMember.id, false); setEditingMember(null); }}>
+                  Set inactive
+                </Button>
+              ) : (
+                <Button size="sm" className="bg-emerald-700 hover:bg-emerald-600 text-white" onClick={() => { setMemberActive(editingMember.id, true); setEditingMember(null); }}>
+                  Reactivate
+                </Button>
+              )}
               <div className="flex gap-2">
                 <Button size="sm" variant="ghost" onClick={() => setEditingMember(null)}>Cancel</Button>
                 <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white" onClick={saveMember}>Save</Button>
