@@ -45,7 +45,7 @@ const LINE_TEAM_MAP: Record<string, "retention" | "nsf" | "cs"> = {
   "mohammed ayman-max francis-2268": "retention",
 };
 
-function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
+export function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   const n = name.toLowerCase().trim();
   // Exact overrides first (agents who moved teams)
   if (n in LINE_TEAM_MAP) return LINE_TEAM_MAP[n];
