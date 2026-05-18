@@ -59,11 +59,12 @@ router.get("/violations", async (req, res) => {
       db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true)),
       db.select({ key: violationVerificationsTable.key }).from(violationVerificationsTable),
       db.select({
-        agentName:       phoneCallsTable.agentName,
-        direction:       phoneCallsTable.direction,
-        status:          phoneCallsTable.status,
-        createdAt:       phoneCallsTable.createdAt,
-        durationSeconds: phoneCallsTable.durationSeconds,
+        agentName:           phoneCallsTable.agentName,
+        direction:           phoneCallsTable.direction,
+        status:              phoneCallsTable.status,
+        createdAt:           phoneCallsTable.createdAt,
+        durationSeconds:     phoneCallsTable.durationSeconds,
+        ringDurationSeconds: phoneCallsTable.ringDurationSeconds,
       }).from(phoneCallsTable).where(and(
         gte(phoneCallsTable.createdAt, rangeStart),
         lte(phoneCallsTable.createdAt, rangeEnd),
@@ -96,12 +97,11 @@ router.get("/violations", async (req, res) => {
       if (!row.agentName || !row.createdAt) continue;
       const lower = row.agentName.trim().toLowerCase();
       if (!allAgentLower.has(lower)) continue;
-      // skip ghost calls — they shouldn't count as agent activity
-      const ghostDur = row.durationSeconds ?? 0;
-      if (row.direction === "incoming" && (
-        (row.status === "no-answer" && ghostDur === 0) ||
-        (row.status === "voicemail-brief" && ghostDur <= 4)
-      )) continue;
+      // skip ghost calls — rang ≤2 seconds
+      if (row.direction === "incoming") {
+        const ringDur = row.ringDurationSeconds ?? ((row.durationSeconds ?? 0) === 0 ? 0 : 999);
+        if (ringDur <= 2) continue;
+      }
       const t = new Date(row.createdAt);
 
       // by-date map

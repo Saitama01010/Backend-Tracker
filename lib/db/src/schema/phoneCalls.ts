@@ -14,6 +14,7 @@ export const phoneCallsTable = pgTable(
     status: text("status").notNull(),
     durationSeconds: integer("duration_seconds").notNull().default(0),
     postAnswerSeconds: integer("post_answer_seconds"),
+    ringDurationSeconds: integer("ring_duration_seconds"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     syncedAt: timestamp("synced_at", { withTimezone: true }).defaultNow().notNull(),
   },

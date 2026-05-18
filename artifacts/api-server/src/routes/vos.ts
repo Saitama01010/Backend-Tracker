@@ -667,6 +667,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
         lineName: phoneCallsTable.lineName,
         status: phoneCallsTable.status,
         durationSeconds: phoneCallsTable.durationSeconds,
+        ringDurationSeconds: phoneCallsTable.ringDurationSeconds,
         createdAt: phoneCallsTable.createdAt,
       })
       .from(phoneCallsTable)
@@ -684,9 +685,9 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       if (blocklist.has(row.participant)) continue;
       if (/[a-zA-Z]/.test(row.participant)) continue; // skip internal line-name participants
       if (internalNumbers.has(normalizePhone(row.participant))) continue; // skip our own line numbers
-      // skip ghost calls (instant no-answer or brief voicemail-brief)
-      const dur = row.durationSeconds ?? 0;
-      if ((row.status === "no-answer" && dur === 0) || (row.status === "voicemail-brief" && dur <= 4)) continue;
+      // Ghost call: rang for ≤2 seconds. Use ring_duration_seconds when available, fall back to duration_seconds=0.
+      const ringDur = row.ringDurationSeconds ?? ((row.durationSeconds ?? 0) === 0 ? 0 : 999);
+      if (ringDur <= 2) continue;
       const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);
       const times = callbackTimes.get(norm);
@@ -879,6 +880,7 @@ router.get("/vos/missed-no-callback", async (req, res) => {
           lineName: phoneCallsTable.lineName,
           status: phoneCallsTable.status,
           durationSeconds: phoneCallsTable.durationSeconds,
+          ringDurationSeconds: phoneCallsTable.ringDurationSeconds,
           createdAt: phoneCallsTable.createdAt,
         })
         .from(phoneCallsTable)
@@ -911,9 +913,9 @@ router.get("/vos/missed-no-callback", async (req, res) => {
       if (blocklist.has(row.participant)) continue;
       if (/[a-zA-Z]/.test(row.participant)) continue; // skip internal line-name participants
       if (internalSet.has(normalizePhone(row.participant))) continue; // skip internal numbers
-      // skip ghost calls
-      const dur = row.durationSeconds ?? 0;
-      if ((row.status === "no-answer" && dur === 0) || (row.status === "voicemail-brief" && dur <= 4)) continue;
+      // Ghost call: rang for ≤2 seconds. Use ring_duration_seconds when available, fall back to duration_seconds=0.
+      const ringDur = row.ringDurationSeconds ?? ((row.durationSeconds ?? 0) === 0 ? 0 : 999);
+      if (ringDur <= 2) continue;
       const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);
       const times = callbackTimes.get(norm);
@@ -971,7 +973,7 @@ router.get("/vos/missed-hourly", async (req, res) => {
       ORDER BY hour
     `);
 
-    // Ghost counts per hour (Quo missed calls with 0s ring duration)
+    // Ghost counts per hour (Quo missed calls that rang ≤2 seconds)
     const ghostRows = await db.execute(sql`
       SELECT
         EXTRACT(HOUR FROM (created_at AT TIME ZONE 'America/Los_Angeles'))::int AS hour,
@@ -979,9 +981,11 @@ router.get("/vos/missed-hourly", async (req, res) => {
         COUNT(*)::int AS cnt
       FROM phone_calls
       WHERE direction = 'incoming'
+        AND status IN ('no-answer', 'voicemail-brief', 'voicemail', 'missed')
         AND (
-          (status = 'no-answer' AND duration_seconds = 0)
-          OR (status = 'voicemail-brief' AND duration_seconds <= 4)
+          (ring_duration_seconds IS NOT NULL AND ring_duration_seconds <= 2)
+          OR (ring_duration_seconds IS NULL AND duration_seconds = 0 AND status = 'no-answer')
+          OR (ring_duration_seconds IS NULL AND duration_seconds <= 4 AND status = 'voicemail-brief')
         )
         AND line_name IN (${teamLinesInList})
         AND (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${dateParam}::date

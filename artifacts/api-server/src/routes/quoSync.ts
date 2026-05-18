@@ -427,6 +427,13 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
         }
       }
 
+      const ringDurationSeconds =
+        call.completedAt && call.createdAt
+          ? Math.round(
+              (new Date(call.completedAt).getTime() - new Date(call.createdAt).getTime()) / 1000,
+            )
+          : null;
+
       rows.push({
         id: call.id,
         lineId: line.id,
@@ -439,6 +446,7 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
         status: effectiveStatus,
         durationSeconds: call.duration ?? 0,
         postAnswerSeconds,
+        ringDurationSeconds,
         createdAt: new Date(call.createdAt),
       });
     }
@@ -464,6 +472,7 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
               status: sql`excluded.status`,
               durationSeconds: sql`excluded.duration_seconds`,
               postAnswerSeconds: sql`excluded.post_answer_seconds`,
+              ringDurationSeconds: sql`excluded.ring_duration_seconds`,
               syncedAt: sql`now()`,
             },
           });
