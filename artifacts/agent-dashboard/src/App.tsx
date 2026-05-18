@@ -755,6 +755,8 @@ const TEAM_ALLOWLIST: Record<string, Set<string>> = {
     "jacob xander", "youssef nady",
     // Carla Bennet / Bassant Emad
     "carla bennet", "bassant emad",
+    // Anna Stone / Anisa
+    "anna stone", "anisa", "anisa-anna stone-2382",
   ]),
 };
 
@@ -2853,7 +2855,7 @@ function TeamPanel({
   );
 }
 
-const CS_AGENTS = ["Ella Monroe", "Chase Miller", "Leo Carter", "Nora Adam", "Jacob Xander", "Carla Bennet"];
+const CS_AGENTS = ["Ella Monroe", "Chase Miller", "Leo Carter", "Nora Adam", "Anna Stone", "Jacob Xander", "Carla Bennet"];
 const RETENTION_AGENTS = ["Levi Miller", "Henry Hart", "Rick Miller", "Michael Belfort", "Ryan Henderson", "Katherine Adams", "Talia Morgan", "Jacob Stephenson", "John Marcus"];
 
 function CSPanel() {
