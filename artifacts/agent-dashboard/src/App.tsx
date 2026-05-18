@@ -802,12 +802,14 @@ const SHEET_TO_PBX: Record<string, string> = {
   "engy-ellie moser-2046": "ellie moser",
   "muhamed-ryan henderson": "jacob ahmed",         // PBX: Jacob Ahmed = Ryan Henderson
   "abdlrhman-jacob stephenson": "abdulrhman isawi",
+  "abdlrhman-adam maxwell": "abdulrhman isawi",
   "adam maxwell": "jacob stephenson",
 };
 
 // Maps normalized SHEET agent name → normalized PHONE (OpenPhone) agent name
 const SHEET_TO_PHONE: Record<string, string> = {
   "abdlrhman-jacob stephenson": "abdulrhman isawi",
+  "abdlrhman-adam maxwell": "abdulrhman isawi",
   "muhamed-ryan henderson": "ryan henderson",
   "zeiad fouad-zack ford": "zeiad fouad",
   "youssef nady-jacob xander": "youssef nady",
