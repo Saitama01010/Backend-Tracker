@@ -6,6 +6,16 @@ import { classifyLine, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES } from "./quoSync
 
 const router: IRouter = Router();
 
+// ─── Shared live-call state (imported by quo.ts for /api/quo/live) ────────────
+export interface LiveCallEntry { agentName: string; participant: string; ringingSince: Date }
+export const liveWebhookCalls = new Map<string, LiveCallEntry>();
+
+function purgeExpiredLiveCalls() {
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [callId, entry] of liveWebhookCalls)
+    if (entry.ringingSince.getTime() < cutoff) liveWebhookCalls.delete(callId);
+}
+
 const QUO_BASE = "https://api.openphone.com/v1";
 
 function quoKey(): string {
@@ -184,12 +194,29 @@ router.post("/quo/webhook", async (req, res) => {
 
   logger.info({ type }, "quoWebhook: received event");
 
-  if (type === "call.completed") {
+  purgeExpiredLiveCalls();
+
+  if (type === "call.ringing" || type === "call.answered") {
+    // Track live call immediately from webhook — no poll lag
+    const call = obj as { id?: string; userId?: string | null; from?: string; to?: string; direction?: string };
+    if (call.id && call.userId) {
+      const agentName = await getAgentName(call.userId).catch(() => call.userId!);
+      const participant = call.direction === "outgoing" ? (call.to ?? "") : (call.from ?? "");
+      liveWebhookCalls.set(call.id, { agentName: agentName ?? call.userId!, participant, ringingSince: new Date() });
+      logger.info({ callId: call.id, agentName, participant, type }, "quoWebhook: agent now live");
+    }
+  } else if (type === "call.completed") {
+    const call = obj as { id?: string };
+    if (call.id) {
+      const entry = liveWebhookCalls.get(call.id);
+      liveWebhookCalls.delete(call.id);
+      if (entry) logger.info({ callId: call.id, agentName: entry.agentName }, "quoWebhook: agent cleared");
+    }
     handleCallCompleted(obj).catch((err) => {
       logger.error(err, "quoWebhook: handleCallCompleted error");
     });
   }
-  // call.ringing, call.summary.completed, message.*, contact.* — acknowledged, not yet processed
+  // call.summary.completed, message.*, contact.* — acknowledged, not processed
 });
 
 export default router;
