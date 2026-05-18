@@ -6898,12 +6898,13 @@ function SamiaChat() {
 
 interface AttMember { id: number; name: string; shift: string; shiftHours: string; department: string; active: boolean; }
 
-// Convert a 24-hour LA shift number (e.g. 15) to a friendly label like "3 PM".
+// Convert an Egypt-local shift hour (e.g. 4 → "4 PM") to a friendly label.
+// All shifts are afternoon/evening so values 1–11 are always PM.
 function shiftLabel(shift: string): string {
   const n = parseInt(shift);
   if (!n) return shift;
   const h12 = n % 12 === 0 ? 12 : n % 12;
-  const ampm = n < 12 ? "AM" : "PM";
+  const ampm = n >= 12 ? "AM" : "PM";
   return `${h12} ${ampm}`;
 }
 interface AttRecord { id: number; memberId: number; date: string; status: string; note: string | null; coaching: boolean; }
