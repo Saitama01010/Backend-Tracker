@@ -1801,15 +1801,25 @@ interface LiveCallStatus {
   quo: Set<string>; // normalized names on Quo right now
   pbx: Set<string>; // normalized PBX agent names on PBX right now
   any: Set<string>; // union — PBX names mapped to their display-name equivalent
+  quoParticipant: Map<string, string>; // normName → external number they're talking to
+}
+
+function formatParticipant(num: string): string {
+  const d = num.replace(/\D/g, "");
+  if (d.length === 11 && d.startsWith("1"))
+    return `(${d.slice(1, 4)}) ${d.slice(4, 7)}-${d.slice(7)}`;
+  if (d.length === 10)
+    return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+  return num;
 }
 
 function useLiveCalls(): LiveCallStatus {
-  const quoQ = useQuery<{ active: string[] }>({
+  const quoQ = useQuery<{ active: string[]; agentCalls?: { agentName: string; participant: string | null }[] }>({
     queryKey: ["liveCalls"],
     queryFn: async () => {
       const r = await fetch("/api/quo/live");
       if (!r.ok) return { active: [] };
-      return r.json() as Promise<{ active: string[] }>;
+      return r.json() as Promise<{ active: string[]; agentCalls?: { agentName: string; participant: string | null }[] }>;
     },
     refetchInterval: 15 * 1000,
     staleTime: 10 * 1000,
@@ -1832,6 +1842,7 @@ function useLiveCalls(): LiveCallStatus {
     const quo = new Set<string>();
     const pbx = new Set<string>();
     const any = new Set<string>();
+    const quoParticipant = new Map<string, string>();
 
     for (const name of quoQ.data?.active ?? []) {
       const norm = normalizeAgent(name);
@@ -1841,6 +1852,15 @@ function useLiveCalls(): LiveCallStatus {
       // so the retention/CS/NSF panels can match the live dot correctly.
       const alias = PHONE_ALIASES[norm];
       if (alias) { quo.add(alias); any.add(alias); }
+    }
+
+    // Populate participant map from agentCalls (DB + poll sources)
+    for (const { agentName, participant } of quoQ.data?.agentCalls ?? []) {
+      if (!participant) continue;
+      const norm = normalizeAgent(agentName);
+      quoParticipant.set(norm, participant);
+      const alias = PHONE_ALIASES[norm];
+      if (alias) quoParticipant.set(alias, participant);
     }
 
     const addPbx = (name: string) => {
@@ -1853,7 +1873,7 @@ function useLiveCalls(): LiveCallStatus {
     for (const c of vosQ.data?.liveCalls ?? []) if (c.agentName) addPbx(c.agentName);
     for (const a of vosQ.data?.agentStatuses ?? []) if (a.status === "on_call") addPbx(a.name);
 
-    return { quo, pbx, any };
+    return { quo, pbx, any, quoParticipant };
   }, [quoQ.data, vosQ.data]);
 }
 
@@ -2272,11 +2292,23 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                       </div>
                     </TableCell>
                     <TableCell className="text-right whitespace-nowrap">
-                      {isLive ? (
-                        <span className={`font-medium text-xs ${onBoth ? "text-violet-400" : onPbx ? "text-blue-400" : "text-emerald-400"}`}>
-                          On call {onBoth ? "(Quo + PBX)" : onPbx ? "(PBX)" : "(Quo)"}
-                        </span>
-                      ) : (
+                      {isLive ? (() => {
+                        const participant = onQuo ? liveAgents.quoParticipant.get(phoneKey) : undefined;
+                        const label = `On call ${onBoth ? "(Quo + PBX)" : onPbx ? "(PBX)" : "(Quo)"}`;
+                        const cls = `font-medium text-xs ${onBoth ? "text-violet-400" : onPbx ? "text-blue-400" : "text-emerald-400"}`;
+                        return participant ? (
+                          <Tooltip delayDuration={120}>
+                            <TooltipTrigger asChild>
+                              <span className={`${cls} cursor-help underline decoration-dotted underline-offset-2`}>{label}</span>
+                            </TooltipTrigger>
+                            <TooltipContent side="left" className="font-mono text-xs">
+                              {formatParticipant(participant)}
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          <span className={cls}>{label}</span>
+                        );
+                      })() : (
                         <TimeSince isoStr={lastCall ?? undefined} />
                       )}
                     </TableCell>

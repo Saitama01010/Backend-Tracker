@@ -516,6 +516,8 @@ function purgeExpiredLiveCalls() {
 // Finds in-progress calls by scanning conversations updated in the last 5 minutes.
 // Fills the gap between webhook events (often not configured) and the 15-min DB sync.
 const pollLiveAgents = new Set<string>();
+/** agentName → external participant number for the current in-progress call */
+const pollLiveParticipants = new Map<string, string>();
 let livePollRunning = false;
 
 async function runLivePoll(): Promise<void> {
@@ -539,6 +541,7 @@ async function runLivePoll(): Promise<void> {
       .catch(() => ({ data: [] as { id: string; phoneNumberId: string; participants: string[] }[] }));
 
     const newLive = new Set<string>();
+    const newParticipants = new Map<string, string>();
 
     // For each recently-active conversation, check for in-progress calls
     const tasks = (convRes.data ?? [])
@@ -559,6 +562,8 @@ async function runLivePoll(): Promise<void> {
           if (call.status === "in-progress" && call.userId) {
             const agentName = userMap.get(call.userId) ?? call.userId;
             newLive.add(agentName);
+            // Store the external participant number so the UI can show it on hover
+            if (participant) newParticipants.set(agentName, participant);
           }
         }
       });
@@ -575,7 +580,9 @@ async function runLivePoll(): Promise<void> {
     await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
 
     pollLiveAgents.clear();
+    pollLiveParticipants.clear();
     for (const a of newLive) pollLiveAgents.add(a);
+    for (const [a, p] of newParticipants) pollLiveParticipants.set(a, p);
 
     if (newLive.size > 0) {
       logger.info({ agents: [...newLive] }, "quo livePoll: in-progress calls found");
@@ -653,16 +660,29 @@ router.get("/quo/live", async (req, res) => {
     // Source 3: DB in-progress rows — covers calls synced by the 15-min background sync.
     const since2h = new Date(Date.now() - 2 * 60 * 60 * 1000);
     const dbRows = await db
-      .select({ agentName: phoneCallsTable.agentName })
+      .select({ agentName: phoneCallsTable.agentName, participant: phoneCallsTable.participant })
       .from(phoneCallsTable)
       .where(and(gte(phoneCallsTable.syncedAt, since2h), eq(phoneCallsTable.status, "in-progress")));
     for (const r of dbRows) if (r.agentName) active.add(r.agentName);
+
+    // Build agentName → participant map from all sources (DB is most reliable for participant)
+    const agentParticipant = new Map<string, string | null>();
+    for (const agentName of pollLiveAgents) {
+      agentParticipant.set(agentName, pollLiveParticipants.get(agentName) ?? null);
+    }
+    for (const r of dbRows) {
+      if (r.agentName) agentParticipant.set(r.agentName, r.participant ?? null);
+    }
 
     req.log.info(
       { fromWebhook: liveWebhookCalls.size, fromPoll: pollLiveAgents.size, total: active.size },
       "quo live"
     );
-    res.json({ active: [...active], webhookActive: liveWebhookCalls.size > 0 });
+    res.json({
+      active: [...active],
+      agentCalls: [...agentParticipant.entries()].map(([agentName, participant]) => ({ agentName, participant })),
+      webhookActive: liveWebhookCalls.size > 0,
+    });
   } catch (err) {
     req.log.error(err, "quo live error");
     res.status(500).json({ error: String(err) });
