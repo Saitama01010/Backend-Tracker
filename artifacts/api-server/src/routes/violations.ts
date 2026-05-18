@@ -155,7 +155,9 @@ router.get("/violations", async (req, res) => {
       for (const member of members) {
         const shiftNum = parseInt(member.shift || "0");
         if (!shiftNum) continue;
-        const shiftStartUtc = new Date(dayStart.getTime() + shiftNum * 3600 * 1000);
+        // Shift N = N PM Egypt time. Egypt = UTC+2, PDT = UTC-7 → pdtHour = shiftNum + 3
+        const pdtHour = shiftNum + 3;
+        const shiftStartUtc = new Date(dayStart.getTime() + pdtHour * 3600 * 1000);
         if (shiftStartUtc > nowUtc) continue;
 
         const memberNames = agentNamesForMember(member.name);
@@ -214,7 +216,8 @@ router.get("/violations", async (req, res) => {
       for (const member of teamMembers) {
         const shiftNum = parseInt(member.shift || "0");
         if (!shiftNum) continue;
-        const shiftStart = dayStart.getTime() + shiftNum * 3600 * 1000;
+        // Shift N = N PM Egypt time. Egypt = UTC+2, PDT = UTC-7 → pdtHour = shiftNum + 3
+        const shiftStart = dayStart.getTime() + (shiftNum + 3) * 3600 * 1000;
         const shiftDurH  = Math.max(1, parseInt(member.shiftHours || "8"));
         const shiftEnd   = shiftStart + shiftDurH * 3600 * 1000;
         if (missedMs < shiftStart || missedMs > shiftEnd) continue;
