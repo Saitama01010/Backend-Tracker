@@ -147,7 +147,7 @@ function deriveNewRetentionStatus(val: string): string {
 // Defined here (before fetchRetentionCombinedSheet) but after normalizeAgent.
 const RETENTION_AGENTS_NORM_EARLY = new Set([
   "levi miller", "ahmed ayman-levi miller", "henry hart", "ryan henderson", "michael belfort",
-  "jacob stephenson", "katherine adams", "talia morgan", "rick miller",
+  "jacob stephenson", "katherine adams", "talia morgan", "rick miller", "dean lewis", "haythem",
 ]);
 
 // Fetches old + new retention sheets AND the Discord-bot sheet (which Retention agents
@@ -362,6 +362,8 @@ const NAME_ALIASES: Record<string, string> = {
   // Youssef Nasser / Youssef-John Marcus → John Marcus
   "youssef nasser":            "john marcus",
   "youssef-john marcus":       "john marcus",
+  // Haythem → Dean Lewis
+  "haythem":                   "dean lewis",
   "zeiad fouad":       "rick miller",
   "karma farouk":      "katherine adams",
   "muhamed walid":     "ryan henderson",
@@ -715,6 +717,8 @@ const TEAM_ALLOWLIST: Record<string, Set<string>> = {
     "talia morgan", "tuqa hossam",
     // Michael Belfort / Nour (Nour-Michael Belfort-2900 line)
     "michael belfort", "nouralden",
+    // Dean Lewis / Haythem (ext 2089)
+    "dean lewis", "haythem",
     // Legacy extras kept for historical data
     "max francis", "michael ross",
   ]),
@@ -1795,6 +1799,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
 // Only needed for agents whose PBX name differs from their Quo display name.
 const PBX_TO_DISPLAY_NAME: Record<string, string> = {
   "jacob ahmed": "ryan henderson",
+  "haythem":     "dean lewis",
 };
 
 interface LiveCallStatus {
@@ -2788,9 +2793,7 @@ function TeamPanel({
         {(aggregated && !("error" in aggregated)) || callAgentList.length > 0 ? (
           <>
             {!isRestricted && <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {aggregated && !("error" in aggregated) && (
-                <StatTile label="Agents" value={aggregated.totals.agents} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
-              )}
+              <StatTile label="Agents" value={agentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
               <StatTile
                 label="Total calls"
                 value={(phoneTotals.calls + pbxTotals.calls).toLocaleString()}
@@ -2888,7 +2891,7 @@ function TeamPanel({
 }
 
 const CS_AGENTS = ["Ella Monroe", "Chase Miller", "Leo Carter", "Nora Adam", "Anna Stone", "Jacob Xander", "Carla Bennet"];
-const RETENTION_AGENTS = ["Levi Miller", "Henry Hart", "Rick Miller", "Michael Belfort", "Ryan Henderson", "Katherine Adams", "Talia Morgan", "Jacob Stephenson", "John Marcus"];
+const RETENTION_AGENTS = ["Levi Miller", "Henry Hart", "Rick Miller", "Michael Belfort", "Ryan Henderson", "Katherine Adams", "Talia Morgan", "Jacob Stephenson", "John Marcus", "Dean Lewis"];
 
 function CSPanel() {
   const pbxData = useVosCalls();
