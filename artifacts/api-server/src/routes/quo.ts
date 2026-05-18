@@ -549,21 +549,23 @@ async function runLivePoll(): Promise<void> {
       .map((c) => async () => {
         const participant = c.participants[0];
         const callsRes = await quoFetch<{
-          data: { id: string; status: string; userId?: string | null }[];
+          data: { id: string; status: string; userId?: string | null; participants?: string[] }[];
         }>(
           `/calls?phoneNumberId=${encodeURIComponent(c.phoneNumberId)}` +
           `&participants[]=${encodeURIComponent(participant)}` +
           `&createdAfter=${encodeURIComponent(fiveMinAgo)}` +
           `&createdBefore=${encodeURIComponent(now)}` +
           `&maxResults=5`,
-        ).catch(() => ({ data: [] as { id: string; status: string; userId?: string | null }[] }));
+        ).catch(() => ({ data: [] as { id: string; status: string; userId?: string | null; participants?: string[] }[] }));
 
         for (const call of callsRes.data ?? []) {
           if (call.status === "in-progress" && call.userId) {
             const agentName = userMap.get(call.userId) ?? call.userId;
             newLive.add(agentName);
-            // Store the external participant number so the UI can show it on hover
-            if (participant) newParticipants.set(agentName, participant);
+            // Use the participant from the call record itself (not the conversation) — it reflects
+            // the actual live caller, not the last historical contact on that conversation.
+            const liveParticipant = call.participants?.[0] ?? participant;
+            newParticipants.set(agentName, liveParticipant);
           }
         }
       });
