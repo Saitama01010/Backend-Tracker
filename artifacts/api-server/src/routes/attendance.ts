@@ -375,9 +375,11 @@ router.get("/attendance/call-logs", async (req, res) => {
 
     const agents = members.map((member) => {
       const shiftNum = parseInt(member.shift || "0");
-      // Shift N = N:00 LA time. shiftStartUtc = midnight LA + N hours.
-      const shiftStartUtc = shiftNum
-        ? new Date(dayStartUtc.getTime() + shiftNum * 3600 * 1000)
+      // Shift N = N PM Egypt time. Egypt = UTC+2, PDT = UTC-7 → subtract 9h → PDT hour = shiftNum + 3
+      // e.g. shift 4 (4 PM EGY = 16:00 EGY) → 7:00 PDT; shift 8 → 11:00 PDT
+      const pdtHour = shiftNum ? shiftNum + 3 : 0;
+      const shiftStartUtc = pdtHour
+        ? new Date(dayStartUtc.getTime() + pdtHour * 3600 * 1000)
         : null;
       // ISO string of shift start (for AI/display use)
       const shiftStartLA = shiftStartUtc ? shiftStartUtc.toISOString() : null;
@@ -510,8 +512,10 @@ router.post("/attendance/auto-mark", async (req, res) => {
       const shiftNum = parseInt(member.shift || "0");
       if (!shiftNum) { results.push({ name: member.name, status: "", note: "", skipped: "no shift" }); continue; }
 
-      // Shift N = N:00 LA time
-      const shiftStartUtc = new Date(dayStartUtc.getTime() + shiftNum * 3600 * 1000);
+      // Shift N = N PM Egypt time. Egypt = UTC+2, PDT = UTC-7 → pdtHour = shiftNum + 3
+      // e.g. shift 4 (4 PM EGY) → 7 AM PDT; shift 8 (8 PM EGY) → 11 AM PDT
+      const pdtHour = shiftNum + 3;
+      const shiftStartUtc = new Date(dayStartUtc.getTime() + pdtHour * 3600 * 1000);
 
       // For today: skip if shift hasn't started. For past dates: always process.
       if (isToday && nowUtc < shiftStartUtc) {
