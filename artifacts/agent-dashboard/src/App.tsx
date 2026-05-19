@@ -812,6 +812,8 @@ const SHEET_TO_PBX: Record<string, string> = {
   "nour-michael belfort-2900": "michael belfort",  // PBX: Michael Belfort = Nour/Michael
   "mohammed ayman-max francis-2268": "max francis",
   "engy-ellie moser-2046": "ellie moser",
+  "haythem-dean lewis-2089": "haythem",           // PBX: Haythem = Dean Lewis
+  "dean lewis": "haythem",                         // lookup by display name → PBX key
   "muhamed-ryan henderson": "jacob ahmed",         // PBX: Jacob Ahmed = Ryan Henderson
   "abdlrhman-jacob stephenson": "abdulrhman isawi",
   "abdlrhman-adam maxwell": "abdulrhman isawi",
@@ -830,6 +832,7 @@ const SHEET_TO_PHONE: Record<string, string> = {
   "zeiad fouad-zack ford": "zeiad fouad",
   "youssef nady-jacob xander": "youssef nady",
   "ahmed ayman-levi miller": "levi miller",
+  "haythem-dean lewis-2089": "dean lewis",
   "nour-michael belfort-2900": "michael belfort",
   "mohammed ayman-max francis-2268": "max francis",
   // NSF combined OpenPhone display names
