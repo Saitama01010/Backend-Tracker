@@ -2796,7 +2796,7 @@ function TeamPanel({
         {(aggregated && !("error" in aggregated)) || callAgentList.length > 0 ? (
           <>
             {!isRestricted && <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <StatTile label="Agents" value={agentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+              <StatTile label="Agents" value={callAgentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
               <StatTile
                 label="Total calls"
                 value={(phoneTotals.calls + pbxTotals.calls).toLocaleString()}
