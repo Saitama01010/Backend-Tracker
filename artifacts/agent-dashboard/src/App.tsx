@@ -269,7 +269,7 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
-    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
+    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim(), _idpCancel: "1" });
   }
 
   // Pull Talia Morgan / Tuqa Hossam rows from the old NSF sheet.
@@ -1098,6 +1098,8 @@ type Aggregated = {
   monthFixed: number;
   todayCount: number;
   monthCount: number;
+  todayIdpCancelRetained: number;
+  monthIdpCancelRetained: number;
   totalRowCount: number;
   filteredRowCount: number;
   minDate: Date | null;
@@ -1264,6 +1266,8 @@ function aggregate(
   let monthFixed = 0;
   let todayCount = 0;
   let monthCount = 0;
+  let todayIdpCancelRetained = 0;
+  let monthIdpCancelRetained = 0;
   if (dateColumn) {
     // Use California time (America/Los_Angeles) — sheet dates are stored in CA time.
     // Do NOT use browser local time here: some browsers may be in non-LA timezones,
@@ -1290,6 +1294,10 @@ function aggregate(
       if (/\bidp\b/i.test(rawStatus)) {
         if (isToday) todayFixed += 1;
         if (inThisMonth) monthFixed += 1;
+      }
+      if (r["_idpCancel"] === "1") {
+        if (isToday) todayIdpCancelRetained += 1;
+        if (inThisMonth) monthIdpCancelRetained += 1;
       }
     }
   }
@@ -1318,6 +1326,8 @@ function aggregate(
     monthFixed,
     todayCount,
     monthCount,
+    todayIdpCancelRetained,
+    monthIdpCancelRetained,
     totalRowCount: status.rows.length,
     filteredRowCount: filteredStatus.length,
     minDate,
@@ -2860,8 +2870,9 @@ function TeamPanel({
         )}
         <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
 
-        {callAgentList.length > 0 && (
+        {!isLoading && (
           <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">Agent:</span>
             <select
               value={agentFilter}
               onChange={(e) => setAgentFilter(e.target.value)}
@@ -3125,6 +3136,7 @@ function CSPanel() {
 
         {allAgents.length > 0 && (
           <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">Agent:</span>
             <select
               value={agentFilter}
               onChange={(e) => setAgentFilter(e.target.value)}
@@ -3325,6 +3337,7 @@ function RetentionPanel() {
 
         {agentList.length > 0 && (
           <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">Agent:</span>
             <select
               value={agentFilter}
               onChange={(e) => setAgentFilter(e.target.value)}
@@ -3360,6 +3373,8 @@ function RetentionPanel() {
                 <StatTile label="Today's retains" value={filteredAggregated.todayRetained.toLocaleString()} tone="emerald" />
                 <StatTile label="This month's retains" value={filteredAggregated.monthRetained.toLocaleString()} tone="emerald" />
                 <StatTile label="This month's cancels" value={filteredAggregated.monthCancelled.toLocaleString()} tone="rose" />
+                <StatTile label="Today's IDP cancel retained" value={filteredAggregated.todayIdpCancelRetained.toLocaleString()} tone="sky" />
+                <StatTile label="Month IDP cancel retained" value={filteredAggregated.monthIdpCancelRetained.toLocaleString()} tone="sky" />
                 <StatTile label="Today's fixed" value={filteredAggregated.todayFixed.toLocaleString()} tone="sky" />
                 <StatTile label="This month's fixed" value={filteredAggregated.monthFixed.toLocaleString()} tone="sky" />
                 <StatTile label="Retention rate" value={retentionRate(filteredAggregated.totals.retained, filteredAggregated.totals.grand)} tone="violet" />
