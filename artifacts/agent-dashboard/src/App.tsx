@@ -109,6 +109,10 @@ const NEW_NSF_URL =
 // Route through the API server proxy so the server fetches it without browser CORS constraints.
 const IDP_RETENTION_URL =
   `/api/csv-proxy?url=${encodeURIComponent("https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=871007220")}`;
+// IDP Cancel Retained tab — same spreadsheet, fetched sequentially to avoid silent drops.
+// Every row counts as "Retained" (file was ultimately retained via the IDP cancel path).
+const IDP_CANCEL_RETAINED_URL =
+  `/api/csv-proxy?url=${encodeURIComponent("https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=1018337469")}`;
 // Records on/after this date come from the new Discord-bot sheets; older records from the old sheets.
 const RETENTION_CUTOVER = new Date("2026-05-04T00:00:00");
 const NSF = {
@@ -166,6 +170,7 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     fetchHeaderCsv(NSF.status).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
   ]);
   const idpSheet = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
+  const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
 
   const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
   const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
@@ -253,6 +258,18 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
       || segments.some(seg => RETENTION_AGENTS_NORM_EARLY.has(seg));
     if (!isRetentionAgent) continue;
     rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
+  }
+
+  // Add IDP Cancel Retained tab rows (gid=1018337469) — every row counts as "Retained".
+  // These are files that went through the IDP cancel path and were ultimately retained.
+  for (const r of idpCancelSheet.rows) {
+    const tsRaw = (r["Timestamp"] ?? "").trim();
+    const d = parseEgyptTimestamp(tsRaw);
+    if (!d) continue;
+    const caDate = toCaliforniaDateStr(d);
+    const agentRaw = (r["Agent Name"] ?? "").trim();
+    if (!agentRaw) continue;
+    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
   }
 
   // Pull Talia Morgan / Tuqa Hossam rows from the old NSF sheet.
@@ -2658,7 +2675,7 @@ function TeamPanel({
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
-  const [dayAgentFilter, setDayAgentFilter] = useState("");
+  const [agentFilter, setAgentFilter] = useState("");
 
   const fromDate = from ? parseDate(from) : null;
   const toDate = to ? parseDate(to) : null;
@@ -2718,21 +2735,24 @@ function TeamPanel({
     return aggregate(statusQ.data, mode, fromDate, toDate);
   }, [statusQ.data, mode, from, to]);
 
-  const aggregatedForDay = useMemo(() => {
+  const filteredAggregated = useMemo(() => {
     if (!statusQ.data) return null;
-    return aggregate(statusQ.data, mode, fromDate, toDate, dayAgentFilter || undefined);
-  }, [statusQ.data, mode, from, to, dayAgentFilter]);
-
-  const dayAgentOptions = useMemo(() => {
-    if (!aggregated || "error" in aggregated) return [];
-    return aggregated.byAgent.map((a) => a.agent).sort((a, b) => a.localeCompare(b));
-  }, [aggregated]);
+    return aggregate(statusQ.data, mode, fromDate, toDate, agentFilter || undefined);
+  }, [statusQ.data, mode, from, to, agentFilter]);
 
   const phoneTotals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0;
-    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; }
+    if (!agentFilter) {
+      for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; }
+    } else {
+      const filterKey = normalizeAgent(agentFilter);
+      const resolvedKey = PHONE_ALIASES[filterKey] ?? filterKey;
+      for (const [k, v] of phoneData.entries()) {
+        if (k === filterKey || k === resolvedKey) { calls += v.calls; seconds += v.seconds; answered += v.answered; }
+      }
+    }
     return { calls, seconds, answered };
-  }, [phoneData]);
+  }, [phoneData, agentFilter]);
 
   // Build the "By call" agent list:
   // 1. Sheet agents (best display names)
@@ -2780,10 +2800,16 @@ function TeamPanel({
     return result;
   }, [aggregated, phoneData, mode, pbxData]);
 
+  const filteredCallAgentList = useMemo(() => {
+    if (!agentFilter) return callAgentList;
+    const filterKey = normalizeAgent(agentFilter);
+    return callAgentList.filter(a => normalizeAgent(a) === filterKey || sheetToPhoneKey(a) === filterKey);
+  }, [callAgentList, agentFilter]);
+
   const pbxTotals = useMemo(() => {
     if (!pbxData) return { calls: 0, answered: 0, seconds: 0 };
     let calls = 0, answered = 0, seconds = 0;
-    for (const agent of callAgentList) {
+    for (const agent of filteredCallAgentList) {
       const norm = normalizeAgent(agent);
       const pbxKey = SHEET_TO_PBX[norm] ?? norm;
       const px = pbxData.get(pbxKey);
@@ -2792,7 +2818,7 @@ function TeamPanel({
       seconds += px?.durationSeconds ?? 0;
     }
     return { calls, answered, seconds };
-  }, [pbxData, callAgentList]);
+  }, [pbxData, filteredCallAgentList]);
 
   function refresh() {
     statusQ.refetch();
@@ -2834,10 +2860,34 @@ function TeamPanel({
         )}
         <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
 
+        {callAgentList.length > 0 && (
+          <div className="flex items-center gap-2">
+            <select
+              value={agentFilter}
+              onChange={(e) => setAgentFilter(e.target.value)}
+              className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
+            >
+              <option value="">All agents</option>
+              {callAgentList.slice().sort((a, b) => a.localeCompare(b)).map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+            {agentFilter && (
+              <button
+                type="button"
+                onClick={() => setAgentFilter("")}
+                className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+
         {(aggregated && !("error" in aggregated)) || callAgentList.length > 0 ? (
           <>
             {!isRestricted && <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <StatTile label="Agents" value={callAgentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+              <StatTile label="Agents" value={filteredCallAgentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
               <StatTile
                 label="Total calls"
                 value={(phoneTotals.calls + pbxTotals.calls).toLocaleString()}
@@ -2860,18 +2910,18 @@ function TeamPanel({
                 value={responseRate(phoneTotals.answered + pbxTotals.answered, phoneTotals.calls + pbxTotals.calls)}
                 tone="amber"
               />
-              {aggregated && !("error" in aggregated) && (mode === "nsf" ? (
+              {filteredAggregated && !("error" in filteredAggregated) && (mode === "nsf" ? (
                 <>
-                  <StatTile label="Today's fixed" value={aggregated.todayCount.toLocaleString()} tone="emerald" />
-                  <StatTile label="This month's fixed" value={aggregated.monthCount.toLocaleString()} tone="emerald" />
-                  <StatTile label="Total fixed" value={aggregated.totals.grand.toLocaleString()} tone="violet" />
+                  <StatTile label="Today's fixed" value={filteredAggregated.todayCount.toLocaleString()} tone="emerald" />
+                  <StatTile label="This month's fixed" value={filteredAggregated.monthCount.toLocaleString()} tone="emerald" />
+                  <StatTile label="Total fixed" value={filteredAggregated.totals.grand.toLocaleString()} tone="violet" />
                 </>
               ) : (
                 <>
-                  <StatTile label="Today's retains" value={aggregated.todayRetained.toLocaleString()} tone="emerald" />
-                  <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />
-                  <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />
-                  <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />
+                  <StatTile label="Today's retains" value={filteredAggregated.todayRetained.toLocaleString()} tone="emerald" />
+                  <StatTile label="This month's retains" value={filteredAggregated.monthRetained.toLocaleString()} tone="emerald" />
+                  <StatTile label="This month's cancels" value={filteredAggregated.monthCancelled.toLocaleString()} tone="rose" />
+                  <StatTile label="Retention rate" value={retentionRate(filteredAggregated.totals.retained, filteredAggregated.totals.grand)} tone="violet" />
                 </>
               ))}
             </div>}
@@ -2887,42 +2937,19 @@ function TeamPanel({
                 )}
               </TabsList>
               <TabsContent value="call">
-                <ByCallStatsView agentList={callAgentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={isRestricted} />
+                <ByCallStatsView agentList={filteredCallAgentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={isRestricted} />
               </TabsContent>
               {aggregated && !("error" in aggregated) && (
                 <>
                   <TabsContent value="files">
-                    <ByFilesView data={aggregated} hideTeamRow={isRestricted} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
+                    {filteredAggregated && !("error" in filteredAggregated) && (
+                      <ByFilesView data={filteredAggregated} hideTeamRow={isRestricted} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
+                    )}
                   </TabsContent>
                   <TabsContent value="day">
-                    <div className="space-y-3">
-                      {dayAgentOptions.length > 0 && (
-                        <div className="flex items-center gap-2">
-                          <select
-                            value={dayAgentFilter}
-                            onChange={(e) => setDayAgentFilter(e.target.value)}
-                            className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
-                          >
-                            <option value="">All agents</option>
-                            {dayAgentOptions.map((n) => (
-                              <option key={n} value={n}>{n}</option>
-                            ))}
-                          </select>
-                          {dayAgentFilter && (
-                            <button
-                              type="button"
-                              onClick={() => setDayAgentFilter("")}
-                              className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
-                            >
-                              Clear
-                            </button>
-                          )}
-                        </div>
-                      )}
-                      {aggregatedForDay && !("error" in aggregatedForDay) && (
-                        <ByDayView data={aggregatedForDay} />
-                      )}
-                    </div>
+                    {filteredAggregated && !("error" in filteredAggregated) && (
+                      <ByDayView data={filteredAggregated} />
+                    )}
                   </TabsContent>
                 </>
               )}
@@ -2946,7 +2973,7 @@ function CSPanel() {
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
-  const [dayAgentFilter, setDayAgentFilter] = useState("");
+  const [agentFilter, setAgentFilter] = useState("");
 
   const fromDate = from ? parseDate(from) : null;
   const toDate = to ? parseDate(to) : null;
@@ -2979,15 +3006,10 @@ function CSPanel() {
     return aggregate(statusQ.data, "nsf", fromDate, toDate);
   }, [statusQ.data, from, to]);
 
-  const aggregatedForDay = useMemo(() => {
+  const filteredAggregated = useMemo(() => {
     if (!statusQ.data) return null;
-    return aggregate(statusQ.data, "nsf", fromDate, toDate, dayAgentFilter || undefined);
-  }, [statusQ.data, from, to, dayAgentFilter]);
-
-  const dayAgentOptions = useMemo(() => {
-    if (!aggregated || "error" in aggregated) return [];
-    return aggregated.byAgent.map((a) => a.agent).sort((a, b) => a.localeCompare(b));
-  }, [aggregated]);
+    return aggregate(statusQ.data, "nsf", fromDate, toDate, agentFilter || undefined);
+  }, [statusQ.data, from, to, agentFilter]);
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
     const allowlist = TEAM_ALLOWLIST["cs"];
@@ -3048,23 +3070,37 @@ function CSPanel() {
     return result.filter((a) => aa.some((x) => normalizeAgent(x) === normalizeAgent(a)));
   }, [phoneData, pbxData, csUser.allowedAgents]);
 
+  const filteredAllAgents = useMemo(() => {
+    if (!agentFilter) return allAgents;
+    const filterKey = normalizeAgent(agentFilter);
+    return allAgents.filter(a => normalizeAgent(a) === filterKey || sheetToPhoneKey(a) === filterKey);
+  }, [allAgents, agentFilter]);
+
   const totals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0, missed = 0, uniqueContacts = 0;
-    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; uniqueContacts += v.uniqueContacts; }
+    if (!agentFilter) {
+      for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; uniqueContacts += v.uniqueContacts; }
+    } else {
+      const filterKey = normalizeAgent(agentFilter);
+      const resolvedKey = PHONE_ALIASES[filterKey] ?? filterKey;
+      for (const [k, v] of phoneData.entries()) {
+        if (k === filterKey || k === resolvedKey) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; uniqueContacts += v.uniqueContacts; }
+      }
+    }
     return { calls, seconds, answered, missed, uniqueContacts };
-  }, [phoneData]);
+  }, [phoneData, agentFilter]);
 
   const pbxTotals = useMemo(() => {
     if (!pbxData) return { calls: 0, answered: 0, seconds: 0 };
     let calls = 0, answered = 0, seconds = 0;
-    for (const agent of allAgents) {
+    for (const agent of filteredAllAgents) {
       const norm = normalizeAgent(agent);
       const pbxKey = SHEET_TO_PBX[norm] ?? norm;
       const px = pbxData.get(pbxKey);
       calls += px?.calls ?? 0; answered += px?.answered ?? 0; seconds += px?.durationSeconds ?? 0;
     }
     return { calls, answered, seconds };
-  }, [pbxData, allAgents]);
+  }, [pbxData, filteredAllAgents]);
 
   function refresh() { statusQ.refetch(); phoneQ.refetch(); }
 
@@ -3087,18 +3123,42 @@ function CSPanel() {
 
         <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
 
+        {allAgents.length > 0 && (
+          <div className="flex items-center gap-2">
+            <select
+              value={agentFilter}
+              onChange={(e) => setAgentFilter(e.target.value)}
+              className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
+            >
+              <option value="">All agents</option>
+              {allAgents.slice().sort((a, b) => a.localeCompare(b)).map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+            {agentFilter && (
+              <button
+                type="button"
+                onClick={() => setAgentFilter("")}
+                className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <StatTile label="Agents" value={allAgents.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+          <StatTile label="Agents" value={filteredAllAgents.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
           <StatTile label="Total calls" value={(totals.calls + pbxTotals.calls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
           <StatTile label="Answered" value={(totals.answered + pbxTotals.answered).toLocaleString()} tone="emerald" />
           <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
           <StatTile label="Time on calls" value={formatHours(totals.seconds + pbxTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
           <StatTile label="Response rate" value={responseRate(totals.answered + pbxTotals.answered, totals.calls + pbxTotals.calls)} tone="amber" />
-          {aggregated && !("error" in aggregated) && (
+          {filteredAggregated && !("error" in filteredAggregated) && (
             <>
-              <StatTile label="Today's files" value={aggregated.todayCount.toLocaleString()} tone="emerald" />
-              <StatTile label="This month's files" value={aggregated.monthCount.toLocaleString()} tone="emerald" />
-              <StatTile label="Total files" value={aggregated.totals.grand.toLocaleString()} tone="violet" />
+              <StatTile label="Today's files" value={filteredAggregated.todayCount.toLocaleString()} tone="emerald" />
+              <StatTile label="This month's files" value={filteredAggregated.monthCount.toLocaleString()} tone="emerald" />
+              <StatTile label="Total files" value={filteredAggregated.totals.grand.toLocaleString()} tone="violet" />
             </>
           )}
         </div>
@@ -3114,42 +3174,19 @@ function CSPanel() {
             )}
           </TabsList>
           <TabsContent value="call">
-            <ByCallStatsView agentList={allAgents} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} />
+            <ByCallStatsView agentList={filteredAllAgents} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} />
           </TabsContent>
           {aggregated && !("error" in aggregated) && (
             <>
               <TabsContent value="files">
-                <ByFilesView data={aggregated} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
+                {filteredAggregated && !("error" in filteredAggregated) && (
+                  <ByFilesView data={filteredAggregated} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
+                )}
               </TabsContent>
               <TabsContent value="day">
-                <div className="space-y-3">
-                  {dayAgentOptions.length > 0 && (
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={dayAgentFilter}
-                        onChange={(e) => setDayAgentFilter(e.target.value)}
-                        className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
-                      >
-                        <option value="">All agents</option>
-                        {dayAgentOptions.map((n) => (
-                          <option key={n} value={n}>{n}</option>
-                        ))}
-                      </select>
-                      {dayAgentFilter && (
-                        <button
-                          type="button"
-                          onClick={() => setDayAgentFilter("")}
-                          className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
-                        >
-                          Clear
-                        </button>
-                      )}
-                    </div>
-                  )}
-                  {aggregatedForDay && !("error" in aggregatedForDay) && (
-                    <ByDayView data={aggregatedForDay} />
-                  )}
-                </div>
+                {filteredAggregated && !("error" in filteredAggregated) && (
+                  <ByDayView data={filteredAggregated} />
+                )}
               </TabsContent>
             </>
           )}
@@ -3170,7 +3207,7 @@ function RetentionPanel() {
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
-  const [dayAgentFilter, setDayAgentFilter] = useState("");
+  const [agentFilter, setAgentFilter] = useState("");
 
   const fromDate = from ? parseDate(from) : null;
   const toDate = to ? parseDate(to) : null;
@@ -3203,15 +3240,10 @@ function RetentionPanel() {
     return aggregate(statusQ.data, "retention", fromDate, toDate);
   }, [statusQ.data, from, to]);
 
-  const aggregatedForDay = useMemo(() => {
+  const filteredAggregated = useMemo(() => {
     if (!statusQ.data) return null;
-    return aggregate(statusQ.data, "retention", fromDate, toDate, dayAgentFilter || undefined);
-  }, [statusQ.data, from, to, dayAgentFilter]);
-
-  const dayAgentOptions = useMemo(() => {
-    if (!aggregated || "error" in aggregated) return [];
-    return aggregated.byAgent.map((a) => a.agent).sort((a, b) => a.localeCompare(b));
-  }, [aggregated]);
+    return aggregate(statusQ.data, "retention", fromDate, toDate, agentFilter || undefined);
+  }, [statusQ.data, from, to, agentFilter]);
 
   const phoneData = useMemo(() => buildTeamPhoneData("retention", phoneQ.data), [phoneQ.data]);
 
@@ -3234,23 +3266,37 @@ function RetentionPanel() {
     return result.filter((a) => aa.some((x) => normalizeAgent(x) === normalizeAgent(a)));
   }, [phoneData, retUser.allowedAgents]);
 
+  const filteredAgentList = useMemo(() => {
+    if (!agentFilter) return agentList;
+    const filterKey = normalizeAgent(agentFilter);
+    return agentList.filter(a => normalizeAgent(a) === filterKey || sheetToPhoneKey(a) === filterKey);
+  }, [agentList, agentFilter]);
+
   const totals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0, missed = 0;
-    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; }
+    if (!agentFilter) {
+      for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; }
+    } else {
+      const filterKey = normalizeAgent(agentFilter);
+      const resolvedKey = PHONE_ALIASES[filterKey] ?? filterKey;
+      for (const [k, v] of phoneData.entries()) {
+        if (k === filterKey || k === resolvedKey) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; }
+      }
+    }
     return { calls, seconds, answered, missed };
-  }, [phoneData]);
+  }, [phoneData, agentFilter]);
 
   const pbxTotals = useMemo(() => {
     if (!pbxData) return { calls: 0, answered: 0, seconds: 0 };
     let calls = 0, answered = 0, seconds = 0;
-    for (const agent of agentList) {
+    for (const agent of filteredAgentList) {
       const norm = normalizeAgent(agent);
       const pbxKey = SHEET_TO_PBX[norm] ?? norm;
       const px = pbxData.get(pbxKey);
       calls += px?.calls ?? 0; answered += px?.answered ?? 0; seconds += px?.durationSeconds ?? 0;
     }
     return { calls, answered, seconds };
-  }, [pbxData, agentList]);
+  }, [pbxData, filteredAgentList]);
 
   function refresh() { statusQ.refetch(); phoneQ.refetch(); }
 
@@ -3276,22 +3322,47 @@ function RetentionPanel() {
           </div>
         )}
         <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
+
+        {agentList.length > 0 && (
+          <div className="flex items-center gap-2">
+            <select
+              value={agentFilter}
+              onChange={(e) => setAgentFilter(e.target.value)}
+              className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
+            >
+              <option value="">All agents</option>
+              {agentList.slice().sort((a, b) => a.localeCompare(b)).map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+            {agentFilter && (
+              <button
+                type="button"
+                onClick={() => setAgentFilter("")}
+                className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+
         {!retUser.allowedAgents?.length && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <StatTile label="Agents" value={agentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+            <StatTile label="Agents" value={filteredAgentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
             <StatTile label="Total calls" value={(totals.calls + pbxTotals.calls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
             <StatTile label="Answered" value={(totals.answered + pbxTotals.answered).toLocaleString()} tone="emerald" />
             <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
             <StatTile label="Time on calls" value={formatHours(totals.seconds + pbxTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
             <StatTile label="Response rate" value={responseRate(totals.answered + pbxTotals.answered, totals.calls + pbxTotals.calls)} tone="amber" />
-            {aggregated && !("error" in aggregated) && (
+            {filteredAggregated && !("error" in filteredAggregated) && (
               <>
-                <StatTile label="Today's retains" value={aggregated.todayRetained.toLocaleString()} tone="emerald" />
-                <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />
-                <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />
-                <StatTile label="Today's fixed" value={aggregated.todayFixed.toLocaleString()} tone="sky" />
-                <StatTile label="This month's fixed" value={aggregated.monthFixed.toLocaleString()} tone="sky" />
-                <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />
+                <StatTile label="Today's retains" value={filteredAggregated.todayRetained.toLocaleString()} tone="emerald" />
+                <StatTile label="This month's retains" value={filteredAggregated.monthRetained.toLocaleString()} tone="emerald" />
+                <StatTile label="This month's cancels" value={filteredAggregated.monthCancelled.toLocaleString()} tone="rose" />
+                <StatTile label="Today's fixed" value={filteredAggregated.todayFixed.toLocaleString()} tone="sky" />
+                <StatTile label="This month's fixed" value={filteredAggregated.monthFixed.toLocaleString()} tone="sky" />
+                <StatTile label="Retention rate" value={retentionRate(filteredAggregated.totals.retained, filteredAggregated.totals.grand)} tone="violet" />
               </>
             )}
           </div>
@@ -3308,42 +3379,19 @@ function RetentionPanel() {
             )}
           </TabsList>
           <TabsContent value="call">
-            <ByCallStatsView agentList={agentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={!!(retUser.allowedAgents?.length)} />
+            <ByCallStatsView agentList={filteredAgentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={!!(retUser.allowedAgents?.length)} />
           </TabsContent>
           {aggregated && !("error" in aggregated) && (
             <>
               <TabsContent value="files">
-                <ByFilesView data={aggregated} hideTeamRow={!!(retUser.allowedAgents?.length)} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
+                {filteredAggregated && !("error" in filteredAggregated) && (
+                  <ByFilesView data={filteredAggregated} hideTeamRow={!!(retUser.allowedAgents?.length)} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
+                )}
               </TabsContent>
               <TabsContent value="day">
-                <div className="space-y-3">
-                  {dayAgentOptions.length > 0 && (
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={dayAgentFilter}
-                        onChange={(e) => setDayAgentFilter(e.target.value)}
-                        className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
-                      >
-                        <option value="">All agents</option>
-                        {dayAgentOptions.map((n) => (
-                          <option key={n} value={n}>{n}</option>
-                        ))}
-                      </select>
-                      {dayAgentFilter && (
-                        <button
-                          type="button"
-                          onClick={() => setDayAgentFilter("")}
-                          className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
-                        >
-                          Clear
-                        </button>
-                      )}
-                    </div>
-                  )}
-                  {aggregatedForDay && !("error" in aggregatedForDay) && (
-                    <ByDayView data={aggregatedForDay} />
-                  )}
-                </div>
+                {filteredAggregated && !("error" in filteredAggregated) && (
+                  <ByDayView data={filteredAggregated} />
+                )}
               </TabsContent>
             </>
           )}
