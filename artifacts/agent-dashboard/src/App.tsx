@@ -605,9 +605,10 @@ async function fetchCancelViolations(): Promise<CancelViolation[]> {
 }
 
 // Shared helper: parses the Discord-bot sheet (gid=0) and returns rows belonging to a team.
-// Every submission to this sheet counts as "Fixed" regardless of any status column.
-// Compound agent names like "Ahmed Gamal-Austin White" are matched by checking each
-// dash-separated segment against teamNames so new Discord username formats are handled automatically.
+// Submissions to the Discord/NSF backend sheet — normally count as "Fixed".
+// EXCEPTION: if the "Cancel request update" or "File Status" or "Notes" field
+// contains "retain" / "retention", the file was ultimately retained and should
+// count as "Retained" instead so it appears in the retention metrics.
 async function fetchNewSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
   const newSheet = await fetchHeaderCsv(NEW_NSF_URL);
   const rows: Row[] = [];
@@ -623,7 +624,12 @@ async function fetchNewSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
     const matches = teamNames.has(agentNorm) || teamNames.has(resolvedKey)
       || segments.some(seg => teamNames.has(seg));
     if (!matches) continue;
-    rows.push({ Agent: agentRaw, Status: "Fixed", Date: caDate });
+    // Check all text fields for retain/retention keywords
+    const cancelUpdate = (r["Cancel request update"] ?? "").toLowerCase();
+    const fileStatus = (r["File Status"] ?? "").toLowerCase();
+    const notes = (r["Notes"] ?? r["Note"] ?? r["Comments"] ?? "").toLowerCase();
+    const hasRetainKeyword = /retain/.test(cancelUpdate) || /retain/.test(fileStatus) || /retain/.test(notes);
+    rows.push({ Agent: agentRaw, Status: hasRetainKeyword ? "Retained" : "Fixed", Date: caDate });
   }
   return rows;
 }
@@ -3757,6 +3763,189 @@ function TabCheckboxes({ tabs, onChange }: { tabs: string[]; onChange: (t: strin
   );
 }
 
+type TeamAgent = { id: number; name: string; team: string; active: boolean };
+
+function AgentRosterPanel({ onClose }: { onClose: () => void }) {
+  const { token } = useUser();
+  const [agents, setAgents] = useState<TeamAgent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [newName, setNewName] = useState("");
+  const [newTeam, setNewTeam] = useState<"retention" | "nsf" | "cs">("retention");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [movingId, setMovingId] = useState<number | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await fetch("/api/team-agents", { headers: { Authorization: `Bearer ${token}` } });
+      if (r.ok) setAgents(await r.json() as TeamAgent[]);
+    } finally { setLoading(false); }
+  }, [token]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function addAgent() {
+    if (!newName.trim()) return;
+    setSaving(true); setError("");
+    const r = await fetch("/api/team-agents", {
+      method: "POST",
+      headers: authHeaders(token),
+      body: JSON.stringify({ name: newName.trim(), team: newTeam }),
+    });
+    if (r.ok) { setNewName(""); await load(); }
+    else { const d = await r.json() as { error?: string }; setError(d.error ?? "Failed to add"); }
+    setSaving(false);
+  }
+
+  async function removeAgent(id: number) {
+    await fetch(`/api/team-agents/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+    await load();
+  }
+
+  async function moveAgent(id: number, team: string) {
+    setMovingId(id);
+    await fetch(`/api/team-agents/${id}`, {
+      method: "PATCH",
+      headers: authHeaders(token),
+      body: JSON.stringify({ team }),
+    });
+    setMovingId(null);
+    await load();
+  }
+
+  async function toggleActive(id: number, active: boolean) {
+    await fetch(`/api/team-agents/${id}`, {
+      method: "PATCH",
+      headers: authHeaders(token),
+      body: JSON.stringify({ active }),
+    });
+    await load();
+  }
+
+  const TEAMS: { key: "retention" | "nsf" | "cs"; label: string; accent: string }[] = [
+    { key: "retention", label: "Retention", accent: "violet" },
+    { key: "nsf",       label: "NSF",       accent: "sky" },
+    { key: "cs",        label: "CS",        accent: "fuchsia" },
+  ];
+
+  const accentCls = (accent: string) => ({
+    violet:  { badge: "bg-violet-500/20 text-violet-300 border-violet-500/30", dot: "bg-violet-400" },
+    sky:     { badge: "bg-sky-500/20 text-sky-300 border-sky-500/30",         dot: "bg-sky-400" },
+    fuchsia: { badge: "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30", dot: "bg-fuchsia-400" },
+  }[accent] ?? { badge: "bg-zinc-500/20 text-zinc-300 border-zinc-500/30", dot: "bg-zinc-400" });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="relative w-full max-w-2xl mx-4 rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-white/10">
+          <div className="flex items-center gap-2">
+            <Users className="h-5 w-5 text-violet-400" />
+            <h2 className="text-lg font-semibold text-white">Manage Agents</h2>
+          </div>
+          <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors"><X className="h-5 w-5" /></button>
+        </div>
+
+        <div className="p-6 space-y-6 max-h-[82vh] overflow-y-auto">
+          {/* Add agent form */}
+          <div className="space-y-3">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Add Agent</p>
+            <div className="flex gap-2">
+              <input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && void addAgent()}
+                placeholder="Agent name"
+                className="flex-1 min-w-0 rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+              />
+              <select
+                value={newTeam}
+                onChange={(e) => setNewTeam(e.target.value as "retention" | "nsf" | "cs")}
+                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+              >
+                {TEAMS.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+              </select>
+              <button
+                onClick={() => void addAgent()}
+                disabled={saving || !newName.trim()}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+              >
+                <Plus className="h-4 w-4" />Add
+              </button>
+            </div>
+            {error && <p className="text-xs text-rose-400">{error}</p>}
+          </div>
+
+          {/* Agent roster grouped by team */}
+          {loading ? (
+            <div className="text-center py-8 text-zinc-500 text-sm">Loading agents…</div>
+          ) : agents.length === 0 ? (
+            <div className="text-center py-8 text-zinc-500 text-sm">No agents added yet. Use the form above to add team members.</div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {TEAMS.map(({ key, label, accent }) => {
+                const cls = accentCls(accent);
+                const teamAgents = agents.filter(a => a.team === key);
+                return (
+                  <div key={key} className="rounded-xl border border-white/8 bg-zinc-900/60 p-4 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold ${cls.badge}`}>
+                        <span className={`h-1.5 w-1.5 rounded-full ${cls.dot}`} />
+                        {label}
+                      </span>
+                      <span className="text-xs text-zinc-500 ml-auto">{teamAgents.length}</span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {teamAgents.length === 0 && (
+                        <p className="text-xs text-zinc-600 italic">No agents</p>
+                      )}
+                      {teamAgents.map(a => (
+                        <div key={a.id} className={`flex items-center gap-2 rounded-lg px-2.5 py-2 group transition-colors ${a.active ? "bg-zinc-800/50" : "bg-zinc-900/40 opacity-60"}`}>
+                          <span className={`flex-1 min-w-0 text-sm truncate ${a.active ? "text-zinc-100" : "text-zinc-500 line-through"}`}>{a.name}</span>
+                          {/* Move to team */}
+                          <select
+                            value={a.team}
+                            disabled={movingId === a.id}
+                            onChange={(e) => void moveAgent(a.id, e.target.value)}
+                            className="text-xs rounded border border-white/10 bg-zinc-700 text-zinc-300 px-1 py-0.5 cursor-pointer focus:outline-none opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            {TEAMS.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+                          </select>
+                          {/* Toggle active */}
+                          <button
+                            onClick={() => void toggleActive(a.id, !a.active)}
+                            title={a.active ? "Deactivate" : "Activate"}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-amber-400"
+                          >
+                            {a.active ? <UserCheck className="h-3.5 w-3.5" /> : <UserX className="h-3.5 w-3.5" />}
+                          </button>
+                          {/* Delete */}
+                          <button
+                            onClick={() => void removeAgent(a.id)}
+                            title="Remove agent"
+                            className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-rose-400"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <p className="text-xs text-zinc-600 leading-relaxed">
+            Agents added here are stored in the database and used to populate the per-team dropdowns throughout the dashboard.
+            Inactive agents are hidden from filters but still visible in data.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function UserManagementPanel({ onClose }: { onClose: () => void }) {
   const { token } = useUser();
   const [users, setUsers] = useState<PortalUser[]>([]);
@@ -6527,6 +6716,7 @@ function Dashboard() {
   const { user, logout, can, canSeeTab } = useUser();
   const [showUsers, setShowUsers] = useState(false);
   const [showBlocked, setShowBlocked] = useState(false);
+  const [showAgents, setShowAgents] = useState(false);
   const defaultView: DashView = can("view_metrics") ? "metrics" : "attendance";
   const [view, setView] = useState<DashView>(defaultView);
 
@@ -6544,6 +6734,7 @@ function Dashboard() {
     <div className="min-h-screen bg-background relative overflow-hidden">
       {showUsers && <UserManagementPanel onClose={() => setShowUsers(false)} />}
       {showBlocked && <BlockedNumbersPanel onClose={() => setShowBlocked(false)} />}
+      {showAgents && <AgentRosterPanel onClose={() => setShowAgents(false)} />}
 
       <div className="pointer-events-none absolute inset-0 -z-0">
         <div className="absolute -top-32 -left-32 h-[500px] w-[500px] rounded-full bg-violet-600/20 blur-[120px]" />
@@ -6596,6 +6787,14 @@ function Dashboard() {
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>Blocked numbers</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button onClick={() => setShowAgents(true)} className="p-2 rounded-lg text-zinc-400 hover:text-violet-300 hover:bg-violet-500/10 transition-colors">
+                      <Users className="h-4 w-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>Manage agents</TooltipContent>
                 </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>

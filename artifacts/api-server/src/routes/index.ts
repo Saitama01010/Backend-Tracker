@@ -12,6 +12,7 @@ import violationsRouter from "./violations";
 import readymodeRouter from "./readymode";
 import csvProxyRouter from "./csvProxy";
 import breaksRouter from "./breaks";
+import teamAgentsRouter from "./teamAgents";
 
 const router: IRouter = Router();
 
@@ -28,5 +29,6 @@ router.use(violationsRouter);
 router.use(breaksRouter);
 router.use(readymodeRouter);
 router.use(csvProxyRouter);
+router.use(teamAgentsRouter);
 
 export default router;
