@@ -1046,6 +1046,8 @@ type Aggregated = {
   todayRetained: number;
   monthRetained: number;
   monthCancelled: number;
+  todayFixed: number;
+  monthFixed: number;
   todayCount: number;
   monthCount: number;
   totalRowCount: number;
@@ -1210,6 +1212,8 @@ function aggregate(
   let todayRetained = 0;
   let monthRetained = 0;
   let monthCancelled = 0;
+  let todayFixed = 0;
+  let monthFixed = 0;
   let todayCount = 0;
   let monthCount = 0;
   if (dateColumn) {
@@ -1235,6 +1239,10 @@ function aggregate(
         if (inThisMonth) monthRetained += 1;
       }
       if (/cancel/i.test(rawStatus) && inThisMonth) monthCancelled += 1;
+      if (/\bidp\b/i.test(rawStatus)) {
+        if (isToday) todayFixed += 1;
+        if (inThisMonth) monthFixed += 1;
+      }
     }
   }
 
@@ -1258,6 +1266,8 @@ function aggregate(
     todayRetained,
     monthRetained,
     monthCancelled,
+    todayFixed,
+    monthFixed,
     todayCount,
     monthCount,
     totalRowCount: status.rows.length,
@@ -3248,6 +3258,8 @@ function RetentionPanel() {
                 <StatTile label="Today's retains" value={aggregated.todayRetained.toLocaleString()} tone="emerald" />
                 <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />
                 <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />
+                <StatTile label="Today's fixed" value={aggregated.todayFixed.toLocaleString()} tone="sky" />
+                <StatTile label="This month's fixed" value={aggregated.monthFixed.toLocaleString()} tone="sky" />
                 <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />
               </>
             )}
