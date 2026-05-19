@@ -96,6 +96,7 @@ export const USER_EMAIL_OVERRIDES: Record<string, string> = {
   "hiitisahd@gmail.com": "Jenny Morgan",
   "emankhamisz58@gmail.com": "Estella Cruz",
   "toqahossam548@gmail.com": "Talia Morgan",
+  "haythemlasheen86@gmail.com": "Dean Lewis",
   "samafarouk90@gmail.com": "Katie Miller",
   "ingimahmoud01@gmail.com": "Ellie Moser",
   // New members from May 2026 roster update
