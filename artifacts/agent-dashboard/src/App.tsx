@@ -152,14 +152,18 @@ const RETENTION_AGENTS_NORM_EARLY = new Set([
 
 // Fetches old + new retention sheets AND the Discord-bot sheet (which Retention agents
 // can now also submit to) AND the IDP-Handled tab, merging them all together.
+// Agents who were temporarily on NSF but whose old NSF-sheet rows belong in the Retention panel.
+const RETENTION_TEMP_NSF_AGENTS = new Set(["talia morgan", "tuqa hossam"]);
+
 async function fetchRetentionCombinedSheet(): Promise<SheetData> {
-  // Fetch the first three sheets in parallel (all from different spreadsheets).
+  // Fetch the first four sheets in parallel (all from different spreadsheets).
   // IDP_RETENTION_URL shares the same spreadsheet as NEW_NSF_URL — fetching them
   // concurrently causes Google to silently drop one, so fetch IDP sequentially after.
-  const [oldSheet, newSheet, discordSheet] = await Promise.all([
+  const [oldSheet, newSheet, discordSheet, oldNsfSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status),
     fetchHeaderCsv(NEW_RETENTION_URL),
     fetchHeaderCsv(NEW_NSF_URL),
+    fetchHeaderCsv(NSF.status).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
   ]);
   const idpSheet = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
 
@@ -249,6 +253,33 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
       || segments.some(seg => RETENTION_AGENTS_NORM_EARLY.has(seg));
     if (!isRetentionAgent) continue;
     rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
+  }
+
+  // Pull Talia Morgan / Tuqa Hossam rows from the old NSF sheet.
+  // She was temporarily on NSF; all her NSF submissions count as "Fixed" in Retention.
+  const nsfAgentCol = findColumn(oldNsfSheet.headers, ["Agent", "Agent Name", "Rep"]);
+  const nsfDateCol = findColumn(oldNsfSheet.headers, ["Date", "Day", "Call Date"]);
+  const nsfFileIdCol = findColumn(oldNsfSheet.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
+  if (nsfAgentCol) {
+    for (const r of oldNsfSheet.rows) {
+      const agentRaw = (r[nsfAgentCol] ?? "").trim();
+      if (!agentRaw || /total$/i.test(agentRaw)) continue;
+      const agentNorm = normalizeAgent(agentRaw);
+      const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
+      const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
+      const matches = RETENTION_TEMP_NSF_AGENTS.has(agentNorm)
+        || RETENTION_TEMP_NSF_AGENTS.has(resolvedKey)
+        || segments.some(seg => RETENTION_TEMP_NSF_AGENTS.has(seg));
+      if (!matches) continue;
+      const dateStr = nsfDateCol ? (r[nsfDateCol] ?? "").trim() : "";
+      const d = parseDate(dateStr);
+      rows.push({
+        Agent: "Talia Morgan",
+        Status: "Fixed",
+        Date: d ? toIsoDate(d) : dateStr,
+        "File ID": nsfFileIdCol ? (r[nsfFileIdCol] ?? "").trim() : "",
+      });
+    }
   }
 
   // Manually added retained files not present in CRM portal (added 2026-05-13)
