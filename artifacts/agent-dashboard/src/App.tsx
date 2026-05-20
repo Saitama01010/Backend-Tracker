@@ -97,6 +97,88 @@ function authHeaders(token: string) {
   return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
 }
 
+// ─── Roster Context ──────────────────────────────────────────────────────────
+// The team roster (`team_agents` DB table) is the canonical identity registry.
+// Adding an agent here automatically makes them appear in Google Sheets matching
+// AND OpenPhone/PBX call matching — no code change required.
+
+type RosterTeam = "retention" | "nsf" | "cs";
+interface RosterAgent { id: number; name: string; arabicName: string | null; shift: string | null; team: RosterTeam; active: boolean; }
+interface RosterIndex {
+  agents: RosterAgent[];
+  version: number; // bump on any roster mutation; included in React Query keys for invalidation
+  teamNames: Record<RosterTeam, Set<string>>;        // normalized name aliases per team (English + Arabic)
+  phoneAliases: Record<string, string>;              // normalized arabic name → normalized english name
+  allowlist: Record<RosterTeam, Set<string>>;        // normalized phone keys allowed per team
+}
+
+function emptyRosterIndex(): RosterIndex {
+  return {
+    agents: [],
+    version: 0,
+    teamNames: { retention: new Set(), nsf: new Set(), cs: new Set() },
+    phoneAliases: {},
+    allowlist: { retention: new Set(), nsf: new Set(), cs: new Set() },
+  };
+}
+
+function buildRosterIndex(agents: RosterAgent[]): RosterIndex {
+  const idx = emptyRosterIndex();
+  idx.agents = agents;
+  // Mutation-sensitive hash: changes on any add/remove/team/active/name/arabic/shift edit
+  // so React Query keys keyed on `version` reliably re-fetch dependent sheet queries.
+  idx.version = agents.reduce((acc, a) => {
+    const s = `${a.id}|${a.team}|${a.active ? 1 : 0}|${a.name}|${a.arabicName ?? ""}|${a.shift ?? ""}`;
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+    return (acc + h) | 0;
+  }, agents.length);
+  for (const a of agents) {
+    if (!a.active) continue;
+    const enNorm = a.name.replace(/\s+/g, " ").trim().toLowerCase();
+    if (enNorm) {
+      idx.teamNames[a.team].add(enNorm);
+      idx.allowlist[a.team].add(enNorm);
+    }
+    if (a.arabicName) {
+      const arNorm = a.arabicName.replace(/\s+/g, " ").trim().toLowerCase();
+      if (arNorm) {
+        idx.teamNames[a.team].add(arNorm);
+        idx.allowlist[a.team].add(arNorm);
+        if (enNorm) idx.phoneAliases[arNorm] = enNorm;
+      }
+    }
+  }
+  return idx;
+}
+
+const RosterContext = createContext<RosterIndex>(emptyRosterIndex());
+function useRoster(): RosterIndex { return useContext(RosterContext); }
+
+function RosterProvider({ children }: { children: React.ReactNode }) {
+  const { token } = useUser();
+  const q = useQuery<RosterAgent[]>({
+    queryKey: ["roster"],
+    queryFn: async () => {
+      const r = await fetch("/api/team-agents", { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) return [];
+      return r.json() as Promise<RosterAgent[]>;
+    },
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+  });
+  const idx = useMemo(() => buildRosterIndex(q.data ?? []), [q.data]);
+  return <RosterContext.Provider value={idx}>{children}</RosterContext.Provider>;
+}
+
+// Merge a roster's per-team aliases into a hardcoded fallback Set (returns a new Set).
+function unionTeamSet(hardcoded: Set<string> | undefined, fromRoster: Set<string> | undefined): Set<string> {
+  const out = new Set(hardcoded ?? []);
+  if (fromRoster) for (const v of fromRoster) out.add(v);
+  return out;
+}
+
 const RETENTION = {
   status: "https://docs.google.com/spreadsheets/d/1qF5Dc5quGrAywf5Rtx4q7DrX91VlNIFOfKr-REoSkII/export?format=csv&gid=0",
 };
@@ -147,6 +229,28 @@ function deriveNewRetentionStatus(val: string): string {
   return "Cancelled";
 }
 
+// Inspects every plausible text column on a submission row for the retain/cancel
+// keywords. Used across all 4 sheet sources so the rule is consistent.
+function detectKeywordStatus(r: Row): "Retained" | "Cancelled" | null {
+  const fields = [
+    r["Cancel request update"], r["File Status"], r["Status"],
+    r["Notes"], r["Note"], r["Notes "], r["Note "],
+    r["Comments"], r["Comment"], r["Reason"], r["Action"], r["Result"],
+  ];
+  let hasRetain = false;
+  let hasCancel = false;
+  for (const v of fields) {
+    if (!v) continue;
+    const s = v.toLowerCase();
+    if (/retain|retention form/.test(s)) hasRetain = true;
+    if (/\bcancel(?:l?ed|ling)?\b|revok/.test(s)) hasCancel = true;
+  }
+  // Retain wins over cancel — an ultimately retained file overrides a cancel-flagged note.
+  if (hasRetain) return "Retained";
+  if (hasCancel) return "Cancelled";
+  return null;
+}
+
 // Normalized set of Retention agent names for fast membership checks.
 // Defined here (before fetchRetentionCombinedSheet) but after normalizeAgent.
 const RETENTION_AGENTS_NORM_EARLY = new Set([
@@ -159,7 +263,16 @@ const RETENTION_AGENTS_NORM_EARLY = new Set([
 // Agents who were temporarily on NSF but whose old NSF-sheet rows belong in the Retention panel.
 const RETENTION_TEMP_NSF_AGENTS = new Set(["talia morgan", "tuqa hossam"]);
 
-async function fetchRetentionCombinedSheet(): Promise<SheetData> {
+async function fetchRetentionCombinedSheet(roster?: RosterIndex): Promise<SheetData> {
+  const retentionNames = roster
+    ? unionTeamSet(RETENTION_AGENTS_NORM_EARLY, roster.teamNames.retention)
+    : RETENTION_AGENTS_NORM_EARLY;
+  const nsfExcludeNames = roster
+    ? unionTeamSet(RETENTION_SHEET_NSF_AGENTS, roster.teamNames.nsf)
+    : RETENTION_SHEET_NSF_AGENTS;
+  const csExcludeNames = roster
+    ? unionTeamSet(RETENTION_SHEET_CS_AGENTS, roster.teamNames.cs)
+    : RETENTION_SHEET_CS_AGENTS;
   // Fetch the first four sheets in parallel (all from different spreadsheets).
   // IDP_RETENTION_URL shares the same spreadsheet as NEW_NSF_URL — fetching them
   // concurrently causes Google to silently drop one, so fetch IDP sequentially after.
@@ -184,13 +297,16 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
   if (oldAgentCol && oldStatusCol) {
     for (const r of oldSheet.rows) {
       const agentRaw = (r[oldAgentCol] ?? "").trim();
-      if (RETENTION_SHEET_NSF_AGENTS.has(normalizeAgent(agentRaw))) continue;
-      if (RETENTION_SHEET_CS_AGENTS.has(normalizeAgent(agentRaw))) continue;
+      if (nsfExcludeNames.has(normalizeAgent(agentRaw))) continue;
+      if (csExcludeNames.has(normalizeAgent(agentRaw))) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
       const d = oldDateCol ? parseDate(dateStr) : null;
+      // Apply keyword override: Notes/other text fields containing retain/cancel
+      // override the explicit Status column.
+      const kw = detectKeywordStatus(r);
       rows.push({
         Agent: agentRaw,
-        Status: (r[oldStatusCol] ?? "").trim(),
+        Status: kw ?? (r[oldStatusCol] ?? "").trim(),
         Date: d ? toIsoDate(d) : dateStr,
         "File ID": oldFileIdCol ? (r[oldFileIdCol] ?? "").trim() : "",
       });
@@ -206,11 +322,12 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     const caDate = toCaliforniaDateStr(d);
     if (caDate < "2026-05-04") continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
-    if (RETENTION_SHEET_NSF_AGENTS.has(normalizeAgent(agentRaw))) continue;
-    if (RETENTION_SHEET_CS_AGENTS.has(normalizeAgent(agentRaw))) continue;
+    if (nsfExcludeNames.has(normalizeAgent(agentRaw))) continue;
+    if (csExcludeNames.has(normalizeAgent(agentRaw))) continue;
+    const kw = detectKeywordStatus(r);
     rows.push({
       Agent: agentRaw,
-      Status: deriveNewRetentionStatus(r["Cancel request update"] ?? ""),
+      Status: kw ?? deriveNewRetentionStatus(r["Cancel request update"] ?? ""),
       Date: caDate,
       "File ID": (r["File ID"] ?? "").trim(),
     });
@@ -218,8 +335,6 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
 
   // Add Discord-bot sheet (same spreadsheet NSF uses, gid=0) rows for Retention agents.
   // Retention agents can now also submit there.
-  // Note: Discord sheet uses "File Status" column (not "Cancel request update").
-  // "Force Cancel Pending" / "Stopped Payment/Revoked" = Cancelled; everything else = Retained.
   for (const r of discordSheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
     const d = parseEgyptTimestamp(tsRaw);
@@ -228,13 +343,21 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     if (caDate < "2026-05-04") continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
     const agentNorm = normalizeAgent(agentRaw);
-    if (!RETENTION_AGENTS_NORM_EARLY.has(agentNorm)) continue;
-    const fileStatus = (r["File Status"] ?? "").toLowerCase();
-    const derivedStatus = /cancel|revok/.test(fileStatus)
-      ? "Cancelled"
-      : /\bfixed\b|\bidp\b/.test(fileStatus)
-      ? "IDP-Handled"
-      : "Retained";
+    const segs = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
+    if (!retentionNames.has(agentNorm) && !segs.some(s => retentionNames.has(s))) continue;
+    // Keyword wins, then fall back to the structured File Status mapping.
+    const kw = detectKeywordStatus(r);
+    let derivedStatus: string;
+    if (kw) {
+      derivedStatus = kw;
+    } else {
+      const fileStatus = (r["File Status"] ?? "").toLowerCase();
+      derivedStatus = /cancel|revok/.test(fileStatus)
+        ? "Cancelled"
+        : /\bfixed\b|\bidp\b/.test(fileStatus)
+        ? "IDP-Handled"
+        : "Retained";
+    }
     rows.push({
       Agent: agentRaw,
       Status: derivedStatus,
@@ -243,7 +366,8 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     });
   }
 
-  // Add IDP-Handled tab rows (gid=871007220) — every row from Retention agents = IDP-Handled.
+  // Add IDP-Handled tab rows (gid=871007220) — every row from Retention agents = IDP-Handled,
+  // unless Notes explicitly say retain/cancel.
   // Compound names like "nour-michael belfort-2900" are matched by checking each segment.
   for (const r of idpSheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
@@ -254,14 +378,16 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     if (!agentRaw) continue;
     const agentNorm = normalizeAgent(agentRaw);
     const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
-    const isRetentionAgent = RETENTION_AGENTS_NORM_EARLY.has(agentNorm)
-      || segments.some(seg => RETENTION_AGENTS_NORM_EARLY.has(seg));
+    const isRetentionAgent = retentionNames.has(agentNorm)
+      || segments.some(seg => retentionNames.has(seg));
     if (!isRetentionAgent) continue;
-    rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
+    const kw = detectKeywordStatus(r);
+    rows.push({ Agent: agentRaw, Status: kw ?? "IDP-Handled", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
   }
 
-  // Add IDP Cancel Retained tab rows (gid=1018337469) — every row counts as "Retained".
-  // These are files that went through the IDP cancel path and were ultimately retained.
+  // Add IDP Cancel Retained tab rows (gid=1018337469) — every row counts as "Retained"
+  // (folded into the regular Retained metric). Keyword override still wins (e.g. a row
+  // whose Notes explicitly say "cancel" should be a Cancellation).
   for (const r of idpCancelSheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
     const d = parseEgyptTimestamp(tsRaw);
@@ -269,7 +395,8 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
-    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim(), _idpCancel: "1" });
+    const kw = detectKeywordStatus(r);
+    rows.push({ Agent: agentRaw, Status: kw ?? "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
   }
 
   // Pull Talia Morgan / Tuqa Hossam rows from the old NSF sheet.
@@ -311,7 +438,8 @@ async function fetchRetentionCombinedSheet(): Promise<SheetData> {
 
 // Pulls Retention-sheet rows for NSF cross-over agents (e.g. Katie Miller) and maps
 // their *retained* submissions to "Fixed" so they count in the NSF panel.
-async function fetchRetentionSheetNSFCrossoverRows(): Promise<Row[]> {
+async function fetchRetentionSheetNSFCrossoverRows(roster?: RosterIndex): Promise<Row[]> {
+  const nsfNames = roster ? unionTeamSet(RETENTION_SHEET_NSF_AGENTS, roster.teamNames.nsf) : RETENTION_SHEET_NSF_AGENTS;
   const [oldSheet, newSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status),
     fetchHeaderCsv(NEW_RETENTION_URL),
@@ -326,8 +454,9 @@ async function fetchRetentionSheetNSFCrossoverRows(): Promise<Row[]> {
   if (oldAgentCol && oldStatusCol) {
     for (const r of oldSheet.rows) {
       const agentRaw = (r[oldAgentCol] ?? "").trim();
-      if (!RETENTION_SHEET_NSF_AGENTS.has(normalizeAgent(agentRaw))) continue;
-      const rawStatus = (r[oldStatusCol] ?? "").trim();
+      if (!nsfNames.has(normalizeAgent(agentRaw))) continue;
+      const kw = detectKeywordStatus(r);
+      const rawStatus = kw ?? (r[oldStatusCol] ?? "").trim();
       if (!isRetainedStatus(rawStatus)) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
       const d = oldDateCol ? parseDate(dateStr) : null;
@@ -341,8 +470,9 @@ async function fetchRetentionSheetNSFCrossoverRows(): Promise<Row[]> {
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
-    if (!RETENTION_SHEET_NSF_AGENTS.has(normalizeAgent(agentRaw))) continue;
-    const derived = deriveNewRetentionStatus(r["Cancel request update"] ?? "");
+    if (!nsfNames.has(normalizeAgent(agentRaw))) continue;
+    const kw = detectKeywordStatus(r);
+    const derived = kw ?? deriveNewRetentionStatus(r["Cancel request update"] ?? "");
     if (!isRetainedStatus(derived)) continue;
     rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate });
   }
@@ -352,7 +482,8 @@ async function fetchRetentionSheetNSFCrossoverRows(): Promise<Row[]> {
 
 // Pulls Retention-sheet rows for CS/NSF cross-over agents and maps their retained
 // submissions to "Retained". Cancelled rows are intentionally dropped.
-async function fetchRetentionSheetCSCrossoverRows(): Promise<Row[]> {
+async function fetchRetentionSheetCSCrossoverRows(roster?: RosterIndex): Promise<Row[]> {
+  const csNames = roster ? unionTeamSet(RETENTION_SHEET_CS_AGENTS, roster.teamNames.cs) : RETENTION_SHEET_CS_AGENTS;
   const [oldSheet, newSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status),
     fetchHeaderCsv(NEW_RETENTION_URL),
@@ -367,8 +498,9 @@ async function fetchRetentionSheetCSCrossoverRows(): Promise<Row[]> {
   if (oldAgentCol && oldStatusCol) {
     for (const r of oldSheet.rows) {
       const agentRaw = (r[oldAgentCol] ?? "").trim();
-      if (!RETENTION_SHEET_CS_AGENTS.has(normalizeAgent(agentRaw))) continue;
-      const rawStatus = (r[oldStatusCol] ?? "").trim();
+      if (!csNames.has(normalizeAgent(agentRaw))) continue;
+      const kw = detectKeywordStatus(r);
+      const rawStatus = kw ?? (r[oldStatusCol] ?? "").trim();
       if (!isRetainedStatus(rawStatus)) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
       const d = oldDateCol ? parseDate(dateStr) : null;
@@ -382,8 +514,9 @@ async function fetchRetentionSheetCSCrossoverRows(): Promise<Row[]> {
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
-    if (!RETENTION_SHEET_CS_AGENTS.has(normalizeAgent(agentRaw))) continue;
-    const derived = deriveNewRetentionStatus(r["Cancel request update"] ?? "");
+    if (!csNames.has(normalizeAgent(agentRaw))) continue;
+    const kw = detectKeywordStatus(r);
+    const derived = kw ?? deriveNewRetentionStatus(r["Cancel request update"] ?? "");
     if (!isRetainedStatus(derived)) continue;
     rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate });
   }
@@ -548,7 +681,9 @@ type CancelViolation = {
 
 // Scans the retention sheets (Sheet 1 old + Sheet 1 new) for CS/NSF agents who submitted
 // a Cancelled row. Returns one entry per unique agent+date+fileId combination.
-async function fetchCancelViolations(): Promise<CancelViolation[]> {
+async function fetchCancelViolations(roster?: RosterIndex): Promise<CancelViolation[]> {
+  const csNames = roster ? unionTeamSet(RETENTION_SHEET_CS_AGENTS, roster.teamNames.cs) : RETENTION_SHEET_CS_AGENTS;
+  const nsfNames = roster ? unionTeamSet(RETENTION_SHEET_NSF_AGENTS, roster.teamNames.nsf) : RETENTION_SHEET_NSF_AGENTS;
   const [oldSheet, newSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
     fetchHeaderCsv(NEW_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
@@ -565,10 +700,12 @@ async function fetchCancelViolations(): Promise<CancelViolation[]> {
       const agentRaw = (r[oldAgentCol] ?? "").trim();
       const agentNorm = normalizeAgent(agentRaw);
       let team: "CS" | "NSF" | null = null;
-      if (RETENTION_SHEET_CS_AGENTS.has(agentNorm)) team = "CS";
-      else if (RETENTION_SHEET_NSF_AGENTS.has(agentNorm)) team = "NSF";
+      if (csNames.has(agentNorm)) team = "CS";
+      else if (nsfNames.has(agentNorm)) team = "NSF";
       if (!team) continue;
-      const rawStatus = (r[oldStatusCol] ?? "").trim();
+      const kw = detectKeywordStatus(r);
+      if (kw === "Retained") continue; // keyword override says retained → not a violation
+      const rawStatus = kw ?? (r[oldStatusCol] ?? "").trim();
       if (!rawStatus || isRetainedStatus(rawStatus)) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
       const d = oldDateCol ? parseDate(dateStr) : null;
@@ -589,13 +726,17 @@ async function fetchCancelViolations(): Promise<CancelViolation[]> {
     if (!agentRaw) continue;
     const agentNorm = normalizeAgent(agentRaw);
     let team: "CS" | "NSF" | null = null;
-    if (RETENTION_SHEET_CS_AGENTS.has(agentNorm)) team = "CS";
-    else if (RETENTION_SHEET_NSF_AGENTS.has(agentNorm)) team = "NSF";
+    if (csNames.has(agentNorm)) team = "CS";
+    else if (nsfNames.has(agentNorm)) team = "NSF";
     if (!team) continue;
+    const kw = detectKeywordStatus(r);
+    if (kw === "Retained") continue;
     const updateVal = (r["Cancel request update"] ?? "").trim();
-    if (!updateVal) continue; // blank = still pending, not yet confirmed cancelled
-    const derived = deriveNewRetentionStatus(updateVal);
-    if (isRetainedStatus(derived)) continue;
+    if (kw !== "Cancelled") {
+      if (!updateVal) continue; // blank = still pending, not yet confirmed cancelled
+      const derived = deriveNewRetentionStatus(updateVal);
+      if (isRetainedStatus(derived)) continue;
+    }
     const fileId = (newFileCol ? (r[newFileCol] ?? "") : "").trim();
     const key = `cancel:new:${agentNorm}:${caDate}:${fileId}`;
     if (!seen.has(key)) { seen.add(key); violations.push({ key, agent: agentRaw, team, date: caDate, rawStatus: "Cancelled", fileId }); }
@@ -624,12 +765,9 @@ async function fetchNewSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
     const matches = teamNames.has(agentNorm) || teamNames.has(resolvedKey)
       || segments.some(seg => teamNames.has(seg));
     if (!matches) continue;
-    // Check all text fields for retain/retention keywords
-    const cancelUpdate = (r["Cancel request update"] ?? "").toLowerCase();
-    const fileStatus = (r["File Status"] ?? "").toLowerCase();
-    const notes = (r["Notes"] ?? r["Note"] ?? r["Comments"] ?? "").toLowerCase();
-    const hasRetainKeyword = /retain/.test(cancelUpdate) || /retain/.test(fileStatus) || /retain/.test(notes);
-    rows.push({ Agent: agentRaw, Status: hasRetainKeyword ? "Retained" : "Fixed", Date: caDate });
+    // Keyword override (retain/cancel) across all text fields, including Notes.
+    const kw = detectKeywordStatus(r);
+    rows.push({ Agent: agentRaw, Status: kw ?? "Fixed", Date: caDate });
   }
   return rows;
 }
@@ -655,7 +793,9 @@ async function fetchIDPSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
     const matches = teamNames.has(agentNorm) || teamNames.has(resolvedKey)
       || segments.some(seg => teamNames.has(seg));
     if (!matches) continue;
-    rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate });
+    // Keyword override: Notes/etc may say retain or cancel.
+    const kw = detectKeywordStatus(r);
+    rows.push({ Agent: agentRaw, Status: kw ?? "IDP-Handled", Date: caDate });
   }
   return rows;
 }
@@ -664,15 +804,16 @@ async function fetchIDPSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
 //   – Old retention sheet (Sheet 1, gid=837339339) → Retained (via crossover)
 //   – Discord-bot gid=0 (Sheet 2)                  → Fixed
 //   – IDP-Handled tab (Sheet 3, gid=871007220)      → IDP-Handled
-async function fetchNSFCombinedSheet(): Promise<SheetData> {
+async function fetchNSFCombinedSheet(roster?: RosterIndex): Promise<SheetData> {
+  const teamNames = roster ? unionTeamSet(NSF_AGENT_NAMES, roster.teamNames.nsf) : NSF_AGENT_NAMES;
   // fetchNewSheetForTeam (gid=0) and fetchIDPSheetForTeam (gid=871007220) use the same
   // spreadsheet — serialize to avoid Google dropping the concurrent second request.
   const [newRows, crossoverRows, oldNsfSheet] = await Promise.all([
-    fetchNewSheetForTeam(NSF_AGENT_NAMES),
-    fetchRetentionSheetNSFCrossoverRows(),
+    fetchNewSheetForTeam(teamNames),
+    fetchRetentionSheetNSFCrossoverRows(roster),
     fetchHeaderCsv(NSF.status).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
   ]);
-  const idpRows = await fetchIDPSheetForTeam(NSF_AGENT_NAMES);
+  const idpRows = await fetchIDPSheetForTeam(teamNames);
 
   // Pull pre-cutover rows from the old NSF sheet (where agents tracked files before the Discord-bot sheet).
   // All rows map to "Fixed" since every row represents a file the agent submitted/handled.
@@ -686,12 +827,13 @@ async function fetchNSFCombinedSheet(): Promise<SheetData> {
       const agentNorm = normalizeAgent(agentRaw);
       const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
       const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
-      const matches = NSF_AGENT_NAMES.has(agentNorm) || NSF_AGENT_NAMES.has(resolvedKey)
-        || segments.some(seg => NSF_AGENT_NAMES.has(seg));
+      const matches = teamNames.has(agentNorm) || teamNames.has(resolvedKey)
+        || segments.some(seg => teamNames.has(seg));
       if (!matches) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "").trim() : "";
       const d = parseDate(dateStr);
-      oldNsfRows.push({ Agent: agentRaw, Status: "Fixed", Date: d ? toIsoDate(d) : dateStr });
+      const kw = detectKeywordStatus(r);
+      oldNsfRows.push({ Agent: agentRaw, Status: kw ?? "Fixed", Date: d ? toIsoDate(d) : dateStr });
     }
   }
 
@@ -702,14 +844,15 @@ async function fetchNSFCombinedSheet(): Promise<SheetData> {
 //   – Discord-bot gid=0 (Sheet 2) → Fixed
 //   – Old retention sheet (Sheet 1) → Fixed (retained only)
 //   – IDP-Handled tab (Sheet 3)    → IDP-Handled
-async function fetchCSCombinedSheet(): Promise<SheetData> {
+async function fetchCSCombinedSheet(roster?: RosterIndex): Promise<SheetData> {
+  const teamNames = roster ? unionTeamSet(CS_AGENT_NAMES, roster.teamNames.cs) : CS_AGENT_NAMES;
   // fetchNewSheetForTeam (gid=0) and fetchIDPSheetForTeam (gid=871007220) use the same
   // spreadsheet — serialize to avoid Google dropping the concurrent second request.
   const [newRows, crossoverRows] = await Promise.all([
-    fetchNewSheetForTeam(CS_AGENT_NAMES),
-    fetchRetentionSheetCSCrossoverRows(),
+    fetchNewSheetForTeam(teamNames),
+    fetchRetentionSheetCSCrossoverRows(roster),
   ]);
-  const idpRows = await fetchIDPSheetForTeam(CS_AGENT_NAMES);
+  const idpRows = await fetchIDPSheetForTeam(teamNames);
   return { headers: ["Agent", "Status", "Date"], rows: [...newRows, ...crossoverRows, ...idpRows] };
 }
 
@@ -1104,8 +1247,6 @@ type Aggregated = {
   monthFixed: number;
   todayCount: number;
   monthCount: number;
-  todayIdpCancelRetained: number;
-  monthIdpCancelRetained: number;
   totalRowCount: number;
   filteredRowCount: number;
   minDate: Date | null;
@@ -1146,7 +1287,6 @@ function aggregate(
   mode: TeamMode,
   fromDate: Date | null,
   toDate: Date | null,
-  agentFilter?: string,
 ): Aggregated | { error: string } {
   const agentColumn = findColumn(status.headers, ["Agent", "Agent Name", "Rep"]);
   const statusColumn = findColumn(status.headers, ["Status", "Result", "Outcome", "Disposition"]);
@@ -1175,12 +1315,10 @@ function aggregate(
   };
 
   // Filter status rows
-  const agentFilterKey = agentFilter ? normalizeAgent(agentFilter) : "";
   const filteredStatus = status.rows.filter((r) => {
     const agent = (r[agentColumn] ?? "").trim();
     if (!agent) return false;
     if (/total$/i.test(agent)) return false;
-    if (agentFilterKey && normalizeAgent(agent) !== agentFilterKey) return false;
     if (dateColumn && (fromDate || toDate)) {
       const d = parseDate(r[dateColumn] ?? "");
       if (!d) return false;
@@ -1272,8 +1410,6 @@ function aggregate(
   let monthFixed = 0;
   let todayCount = 0;
   let monthCount = 0;
-  let todayIdpCancelRetained = 0;
-  let monthIdpCancelRetained = 0;
   if (dateColumn) {
     // Use California time (America/Los_Angeles) — sheet dates are stored in CA time.
     // Do NOT use browser local time here: some browsers may be in non-LA timezones,
@@ -1300,10 +1436,6 @@ function aggregate(
       if (/\bidp\b/i.test(rawStatus)) {
         if (isToday) todayFixed += 1;
         if (inThisMonth) monthFixed += 1;
-      }
-      if (r["_idpCancel"] === "1") {
-        if (isToday) todayIdpCancelRetained += 1;
-        if (inThisMonth) monthIdpCancelRetained += 1;
       }
     }
   }
@@ -1332,8 +1464,6 @@ function aggregate(
     monthFixed,
     todayCount,
     monthCount,
-    todayIdpCancelRetained,
-    monthIdpCancelRetained,
     totalRowCount: status.rows.length,
     filteredRowCount: filteredStatus.length,
     minDate,
@@ -2114,15 +2244,17 @@ function useMissedHourly(date: string, mode: "times" | "numbers" = "times") {
   });
 }
 
-function buildTeamPhoneData(teamMode: string, data: PhoneStatsResponse | null | undefined): Map<string, PhoneAgentMetrics> {
-  const allowlist = TEAM_ALLOWLIST[teamMode];
+function buildTeamPhoneData(teamMode: string, data: PhoneStatsResponse | null | undefined, roster?: RosterIndex): Map<string, PhoneAgentMetrics> {
+  const rosterTeamAllow = roster && (teamMode === "retention" || teamMode === "nsf" || teamMode === "cs") ? roster.allowlist[teamMode as RosterTeam] : undefined;
+  const allowlist = unionTeamSet(TEAM_ALLOWLIST[teamMode], rosterTeamAllow);
+  const phoneAliases = roster?.phoneAliases ?? {};
   const map = new Map<string, PhoneAgentMetrics>();
   const agentStats = data?.teamStats?.[teamMode] ?? {};
   const lastCallMap = data?.agentLastCall?.[teamMode] ?? {};
   for (const [agentName, days] of Object.entries(agentStats)) {
     const rawKey = normalizeAgent(agentName);
     if (PHONE_BLOCKLIST.has(rawKey)) continue;
-    const key = PHONE_ALIASES[rawKey] ?? rawKey;
+    const key = PHONE_ALIASES[rawKey] ?? phoneAliases[rawKey] ?? rawKey;
     if (allowlist && !allowlist.has(key)) continue;
     const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
     for (const day of Object.values(days)) {
@@ -2668,7 +2800,7 @@ function TeamPanel({
   sheetKey: string;
   label: string;
   mode: TeamMode;
-  statusQueryFn?: () => Promise<SheetData>;
+  statusQueryFn?: (roster: RosterIndex) => Promise<SheetData>;
 }) {
   const { user: panelUser } = useUser();
   const isRestricted = !!(panelUser.allowedAgents?.length);
@@ -2676,9 +2808,10 @@ function TeamPanel({
   const ringGroupMissed = useVosRingGroupMissed();
   // Retention ring group = 2, Back-end (NSF) ring group = 3 in VoSLogic
   const pbxMissed = mode === "retention" ? (ringGroupMissed.get(2) ?? 0) : mode === "nsf" ? (ringGroupMissed.get(3) ?? 0) : 0;
+  const roster = useRoster();
   const statusQ = useQuery({
-    queryKey: ["status", sheetKey],
-    queryFn: statusQueryFn ?? (() => fetchHeaderCsv(urls.status)),
+    queryKey: ["status", sheetKey, roster.version],
+    queryFn: statusQueryFn ? () => statusQueryFn(roster) : (() => fetchHeaderCsv(urls.status)),
     staleTime: 1000 * 10,
     refetchOnWindowFocus: true,
     refetchInterval: 15 * 1000,
@@ -2691,7 +2824,6 @@ function TeamPanel({
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
-  const [agentFilter, setAgentFilter] = useState("");
 
   const fromDate = from ? parseDate(from) : null;
   const toDate = to ? parseDate(to) : null;
@@ -2712,14 +2844,15 @@ function TeamPanel({
   });
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
-    const allowlist = TEAM_ALLOWLIST[mode];
+    const allowlist = unionTeamSet(TEAM_ALLOWLIST[mode], roster.allowlist[mode as RosterTeam] ?? new Set());
     const map = new Map<string, PhoneAgentMetrics>();
     const agentStats = phoneQ.data?.teamStats?.[mode] ?? {};
     const lastCallMap = phoneQ.data?.agentLastCall?.[mode] ?? {};
     for (const [agentName, days] of Object.entries(agentStats)) {
       const rawKey = normalizeAgent(agentName);
       if (PHONE_BLOCKLIST.has(rawKey)) continue;
-      const key = PHONE_ALIASES[rawKey] ?? rawKey;
+      const aliased = PHONE_ALIASES[rawKey] ?? roster.phoneAliases[rawKey] ?? rawKey;
+      const key = aliased;
       if (allowlist && !allowlist.has(key)) continue; // strict team allowlist
       const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
       for (const day of Object.values(days)) {
@@ -2751,24 +2884,11 @@ function TeamPanel({
     return aggregate(statusQ.data, mode, fromDate, toDate);
   }, [statusQ.data, mode, from, to]);
 
-  const filteredAggregated = useMemo(() => {
-    if (!statusQ.data) return null;
-    return aggregate(statusQ.data, mode, fromDate, toDate, agentFilter || undefined);
-  }, [statusQ.data, mode, from, to, agentFilter]);
-
   const phoneTotals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0;
-    if (!agentFilter) {
-      for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; }
-    } else {
-      const filterKey = normalizeAgent(agentFilter);
-      const resolvedKey = PHONE_ALIASES[filterKey] ?? filterKey;
-      for (const [k, v] of phoneData.entries()) {
-        if (k === filterKey || k === resolvedKey) { calls += v.calls; seconds += v.seconds; answered += v.answered; }
-      }
-    }
+    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; }
     return { calls, seconds, answered };
-  }, [phoneData, agentFilter]);
+  }, [phoneData]);
 
   // Build the "By call" agent list:
   // 1. Sheet agents (best display names)
@@ -2816,16 +2936,10 @@ function TeamPanel({
     return result;
   }, [aggregated, phoneData, mode, pbxData]);
 
-  const filteredCallAgentList = useMemo(() => {
-    if (!agentFilter) return callAgentList;
-    const filterKey = normalizeAgent(agentFilter);
-    return callAgentList.filter(a => normalizeAgent(a) === filterKey || sheetToPhoneKey(a) === filterKey);
-  }, [callAgentList, agentFilter]);
-
   const pbxTotals = useMemo(() => {
     if (!pbxData) return { calls: 0, answered: 0, seconds: 0 };
     let calls = 0, answered = 0, seconds = 0;
-    for (const agent of filteredCallAgentList) {
+    for (const agent of callAgentList) {
       const norm = normalizeAgent(agent);
       const pbxKey = SHEET_TO_PBX[norm] ?? norm;
       const px = pbxData.get(pbxKey);
@@ -2834,7 +2948,7 @@ function TeamPanel({
       seconds += px?.durationSeconds ?? 0;
     }
     return { calls, answered, seconds };
-  }, [pbxData, filteredCallAgentList]);
+  }, [pbxData, callAgentList]);
 
   function refresh() {
     statusQ.refetch();
@@ -2876,35 +2990,10 @@ function TeamPanel({
         )}
         <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
 
-        {!isLoading && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">Agent:</span>
-            <select
-              value={agentFilter}
-              onChange={(e) => setAgentFilter(e.target.value)}
-              className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
-            >
-              <option value="">All agents</option>
-              {callAgentList.slice().sort((a, b) => a.localeCompare(b)).map((n) => (
-                <option key={n} value={n}>{n}</option>
-              ))}
-            </select>
-            {agentFilter && (
-              <button
-                type="button"
-                onClick={() => setAgentFilter("")}
-                className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
-              >
-                Clear
-              </button>
-            )}
-          </div>
-        )}
-
         {(aggregated && !("error" in aggregated)) || callAgentList.length > 0 ? (
           <>
             {!isRestricted && <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <StatTile label="Agents" value={filteredCallAgentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+              <StatTile label="Agents" value={callAgentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
               <StatTile
                 label="Total calls"
                 value={(phoneTotals.calls + pbxTotals.calls).toLocaleString()}
@@ -2927,18 +3016,18 @@ function TeamPanel({
                 value={responseRate(phoneTotals.answered + pbxTotals.answered, phoneTotals.calls + pbxTotals.calls)}
                 tone="amber"
               />
-              {filteredAggregated && !("error" in filteredAggregated) && (mode === "nsf" ? (
+              {aggregated && !("error" in aggregated) && (mode === "nsf" ? (
                 <>
-                  <StatTile label="Today's fixed" value={filteredAggregated.todayCount.toLocaleString()} tone="emerald" />
-                  <StatTile label="This month's fixed" value={filteredAggregated.monthCount.toLocaleString()} tone="emerald" />
-                  <StatTile label="Total fixed" value={filteredAggregated.totals.grand.toLocaleString()} tone="violet" />
+                  <StatTile label="Today's fixed" value={aggregated.todayCount.toLocaleString()} tone="emerald" />
+                  <StatTile label="This month's fixed" value={aggregated.monthCount.toLocaleString()} tone="emerald" />
+                  <StatTile label="Total fixed" value={aggregated.totals.grand.toLocaleString()} tone="violet" />
                 </>
               ) : (
                 <>
-                  <StatTile label="Today's retains" value={filteredAggregated.todayRetained.toLocaleString()} tone="emerald" />
-                  <StatTile label="This month's retains" value={filteredAggregated.monthRetained.toLocaleString()} tone="emerald" />
-                  <StatTile label="This month's cancels" value={filteredAggregated.monthCancelled.toLocaleString()} tone="rose" />
-                  <StatTile label="Retention rate" value={retentionRate(filteredAggregated.totals.retained, filteredAggregated.totals.grand)} tone="violet" />
+                  <StatTile label="Today's retains" value={aggregated.todayRetained.toLocaleString()} tone="emerald" />
+                  <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />
+                  <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />
+                  <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />
                 </>
               ))}
             </div>}
@@ -2954,18 +3043,18 @@ function TeamPanel({
                 )}
               </TabsList>
               <TabsContent value="call">
-                <ByCallStatsView agentList={filteredCallAgentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={isRestricted} />
+                <ByCallStatsView agentList={callAgentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={isRestricted} />
               </TabsContent>
               {aggregated && !("error" in aggregated) && (
                 <>
                   <TabsContent value="files">
-                    {filteredAggregated && !("error" in filteredAggregated) && (
-                      <ByFilesView data={filteredAggregated} hideTeamRow={isRestricted} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
+                    {aggregated && !("error" in aggregated) && (
+                      <ByFilesView data={aggregated} hideTeamRow={isRestricted} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
                     )}
                   </TabsContent>
                   <TabsContent value="day">
-                    {filteredAggregated && !("error" in filteredAggregated) && (
-                      <ByDayView data={filteredAggregated} />
+                    {aggregated && !("error" in aggregated) && (
+                      <ByDayView data={aggregated} />
                     )}
                   </TabsContent>
                 </>
@@ -2990,15 +3079,15 @@ function CSPanel() {
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
-  const [agentFilter, setAgentFilter] = useState("");
+  const roster = useRoster();
 
   const fromDate = from ? parseDate(from) : null;
   const toDate = to ? parseDate(to) : null;
   if (toDate) toDate.setHours(23, 59, 59, 999);
 
   const statusQ = useQuery({
-    queryKey: ["status", "cs"],
-    queryFn: fetchCSCombinedSheet,
+    queryKey: ["status", "cs", roster.version],
+    queryFn: () => fetchCSCombinedSheet(roster),
     staleTime: 1000 * 10,
     refetchOnWindowFocus: true,
     refetchInterval: 15 * 1000,
@@ -3023,20 +3112,15 @@ function CSPanel() {
     return aggregate(statusQ.data, "nsf", fromDate, toDate);
   }, [statusQ.data, from, to]);
 
-  const filteredAggregated = useMemo(() => {
-    if (!statusQ.data) return null;
-    return aggregate(statusQ.data, "nsf", fromDate, toDate, agentFilter || undefined);
-  }, [statusQ.data, from, to, agentFilter]);
-
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
-    const allowlist = TEAM_ALLOWLIST["cs"];
+    const allowlist = unionTeamSet(TEAM_ALLOWLIST["cs"], roster.allowlist.cs);
     const map = new Map<string, PhoneAgentMetrics>();
     const agentStats = phoneQ.data?.teamStats?.["cs"] ?? {};
     const lastCallMap = phoneQ.data?.agentLastCall?.["cs"] ?? {};
     for (const [agentName, days] of Object.entries(agentStats)) {
       const rawKey = normalizeAgent(agentName);
       if (PHONE_BLOCKLIST.has(rawKey)) continue;
-      const key = PHONE_ALIASES[rawKey] ?? rawKey;
+      const key = PHONE_ALIASES[rawKey] ?? roster.phoneAliases[rawKey] ?? rawKey;
       if (allowlist && !allowlist.has(key)) continue;
       const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
       for (const day of Object.values(days)) {
@@ -3087,37 +3171,23 @@ function CSPanel() {
     return result.filter((a) => aa.some((x) => normalizeAgent(x) === normalizeAgent(a)));
   }, [phoneData, pbxData, csUser.allowedAgents]);
 
-  const filteredAllAgents = useMemo(() => {
-    if (!agentFilter) return allAgents;
-    const filterKey = normalizeAgent(agentFilter);
-    return allAgents.filter(a => normalizeAgent(a) === filterKey || sheetToPhoneKey(a) === filterKey);
-  }, [allAgents, agentFilter]);
-
   const totals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0, missed = 0, uniqueContacts = 0;
-    if (!agentFilter) {
-      for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; uniqueContacts += v.uniqueContacts; }
-    } else {
-      const filterKey = normalizeAgent(agentFilter);
-      const resolvedKey = PHONE_ALIASES[filterKey] ?? filterKey;
-      for (const [k, v] of phoneData.entries()) {
-        if (k === filterKey || k === resolvedKey) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; uniqueContacts += v.uniqueContacts; }
-      }
-    }
+    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; uniqueContacts += v.uniqueContacts; }
     return { calls, seconds, answered, missed, uniqueContacts };
-  }, [phoneData, agentFilter]);
+  }, [phoneData]);
 
   const pbxTotals = useMemo(() => {
     if (!pbxData) return { calls: 0, answered: 0, seconds: 0 };
     let calls = 0, answered = 0, seconds = 0;
-    for (const agent of filteredAllAgents) {
+    for (const agent of allAgents) {
       const norm = normalizeAgent(agent);
       const pbxKey = SHEET_TO_PBX[norm] ?? norm;
       const px = pbxData.get(pbxKey);
       calls += px?.calls ?? 0; answered += px?.answered ?? 0; seconds += px?.durationSeconds ?? 0;
     }
     return { calls, answered, seconds };
-  }, [pbxData, filteredAllAgents]);
+  }, [pbxData, allAgents]);
 
   function refresh() { statusQ.refetch(); phoneQ.refetch(); }
 
@@ -3140,43 +3210,18 @@ function CSPanel() {
 
         <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
 
-        {allAgents.length > 0 && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">Agent:</span>
-            <select
-              value={agentFilter}
-              onChange={(e) => setAgentFilter(e.target.value)}
-              className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
-            >
-              <option value="">All agents</option>
-              {allAgents.slice().sort((a, b) => a.localeCompare(b)).map((n) => (
-                <option key={n} value={n}>{n}</option>
-              ))}
-            </select>
-            {agentFilter && (
-              <button
-                type="button"
-                onClick={() => setAgentFilter("")}
-                className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
-              >
-                Clear
-              </button>
-            )}
-          </div>
-        )}
-
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <StatTile label="Agents" value={filteredAllAgents.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+          <StatTile label="Agents" value={allAgents.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
           <StatTile label="Total calls" value={(totals.calls + pbxTotals.calls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
           <StatTile label="Answered" value={(totals.answered + pbxTotals.answered).toLocaleString()} tone="emerald" />
           <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
           <StatTile label="Time on calls" value={formatHours(totals.seconds + pbxTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
           <StatTile label="Response rate" value={responseRate(totals.answered + pbxTotals.answered, totals.calls + pbxTotals.calls)} tone="amber" />
-          {filteredAggregated && !("error" in filteredAggregated) && (
+          {aggregated && !("error" in aggregated) && (
             <>
-              <StatTile label="Today's files" value={filteredAggregated.todayCount.toLocaleString()} tone="emerald" />
-              <StatTile label="This month's files" value={filteredAggregated.monthCount.toLocaleString()} tone="emerald" />
-              <StatTile label="Total files" value={filteredAggregated.totals.grand.toLocaleString()} tone="violet" />
+              <StatTile label="Today's files" value={aggregated.todayCount.toLocaleString()} tone="emerald" />
+              <StatTile label="This month's files" value={aggregated.monthCount.toLocaleString()} tone="emerald" />
+              <StatTile label="Total files" value={aggregated.totals.grand.toLocaleString()} tone="violet" />
             </>
           )}
         </div>
@@ -3192,19 +3237,15 @@ function CSPanel() {
             )}
           </TabsList>
           <TabsContent value="call">
-            <ByCallStatsView agentList={filteredAllAgents} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} />
+            <ByCallStatsView agentList={allAgents} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} />
           </TabsContent>
           {aggregated && !("error" in aggregated) && (
             <>
               <TabsContent value="files">
-                {filteredAggregated && !("error" in filteredAggregated) && (
-                  <ByFilesView data={filteredAggregated} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
-                )}
+                <ByFilesView data={aggregated} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
               </TabsContent>
               <TabsContent value="day">
-                {filteredAggregated && !("error" in filteredAggregated) && (
-                  <ByDayView data={filteredAggregated} />
-                )}
+                <ByDayView data={aggregated} />
               </TabsContent>
             </>
           )}
@@ -3225,15 +3266,15 @@ function RetentionPanel() {
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
-  const [agentFilter, setAgentFilter] = useState("");
+  const roster = useRoster();
 
   const fromDate = from ? parseDate(from) : null;
   const toDate = to ? parseDate(to) : null;
   if (toDate) toDate.setHours(23, 59, 59, 999);
 
   const statusQ = useQuery({
-    queryKey: ["status", "retention"],
-    queryFn: fetchRetentionCombinedSheet,
+    queryKey: ["status", "retention", roster.version],
+    queryFn: () => fetchRetentionCombinedSheet(roster),
     staleTime: 1000 * 10,
     refetchOnWindowFocus: true,
     refetchInterval: 15 * 1000,
@@ -3258,12 +3299,7 @@ function RetentionPanel() {
     return aggregate(statusQ.data, "retention", fromDate, toDate);
   }, [statusQ.data, from, to]);
 
-  const filteredAggregated = useMemo(() => {
-    if (!statusQ.data) return null;
-    return aggregate(statusQ.data, "retention", fromDate, toDate, agentFilter || undefined);
-  }, [statusQ.data, from, to, agentFilter]);
-
-  const phoneData = useMemo(() => buildTeamPhoneData("retention", phoneQ.data), [phoneQ.data]);
+  const phoneData = useMemo(() => buildTeamPhoneData("retention", phoneQ.data, roster), [phoneQ.data, roster]);
 
   const agentList = useMemo(() => {
     const result: string[] = [];
@@ -3284,37 +3320,23 @@ function RetentionPanel() {
     return result.filter((a) => aa.some((x) => normalizeAgent(x) === normalizeAgent(a)));
   }, [phoneData, retUser.allowedAgents]);
 
-  const filteredAgentList = useMemo(() => {
-    if (!agentFilter) return agentList;
-    const filterKey = normalizeAgent(agentFilter);
-    return agentList.filter(a => normalizeAgent(a) === filterKey || sheetToPhoneKey(a) === filterKey);
-  }, [agentList, agentFilter]);
-
   const totals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0, missed = 0;
-    if (!agentFilter) {
-      for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; }
-    } else {
-      const filterKey = normalizeAgent(agentFilter);
-      const resolvedKey = PHONE_ALIASES[filterKey] ?? filterKey;
-      for (const [k, v] of phoneData.entries()) {
-        if (k === filterKey || k === resolvedKey) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; }
-      }
-    }
+    for (const v of phoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; missed += v.missed; }
     return { calls, seconds, answered, missed };
-  }, [phoneData, agentFilter]);
+  }, [phoneData]);
 
   const pbxTotals = useMemo(() => {
     if (!pbxData) return { calls: 0, answered: 0, seconds: 0 };
     let calls = 0, answered = 0, seconds = 0;
-    for (const agent of filteredAgentList) {
+    for (const agent of agentList) {
       const norm = normalizeAgent(agent);
       const pbxKey = SHEET_TO_PBX[norm] ?? norm;
       const px = pbxData.get(pbxKey);
       calls += px?.calls ?? 0; answered += px?.answered ?? 0; seconds += px?.durationSeconds ?? 0;
     }
     return { calls, answered, seconds };
-  }, [pbxData, filteredAgentList]);
+  }, [pbxData, agentList]);
 
   function refresh() { statusQ.refetch(); phoneQ.refetch(); }
 
@@ -3341,49 +3363,22 @@ function RetentionPanel() {
         )}
         <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
 
-        {agentList.length > 0 && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">Agent:</span>
-            <select
-              value={agentFilter}
-              onChange={(e) => setAgentFilter(e.target.value)}
-              className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
-            >
-              <option value="">All agents</option>
-              {agentList.slice().sort((a, b) => a.localeCompare(b)).map((n) => (
-                <option key={n} value={n}>{n}</option>
-              ))}
-            </select>
-            {agentFilter && (
-              <button
-                type="button"
-                onClick={() => setAgentFilter("")}
-                className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
-              >
-                Clear
-              </button>
-            )}
-          </div>
-        )}
-
         {!retUser.allowedAgents?.length && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <StatTile label="Agents" value={filteredAgentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+            <StatTile label="Agents" value={agentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
             <StatTile label="Total calls" value={(totals.calls + pbxTotals.calls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
             <StatTile label="Answered" value={(totals.answered + pbxTotals.answered).toLocaleString()} tone="emerald" />
             <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
             <StatTile label="Time on calls" value={formatHours(totals.seconds + pbxTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
             <StatTile label="Response rate" value={responseRate(totals.answered + pbxTotals.answered, totals.calls + pbxTotals.calls)} tone="amber" />
-            {filteredAggregated && !("error" in filteredAggregated) && (
+            {aggregated && !("error" in aggregated) && (
               <>
-                <StatTile label="Today's retains" value={filteredAggregated.todayRetained.toLocaleString()} tone="emerald" />
-                <StatTile label="This month's retains" value={filteredAggregated.monthRetained.toLocaleString()} tone="emerald" />
-                <StatTile label="This month's cancels" value={filteredAggregated.monthCancelled.toLocaleString()} tone="rose" />
-                <StatTile label="Today's IDP cancel retained" value={filteredAggregated.todayIdpCancelRetained.toLocaleString()} tone="sky" />
-                <StatTile label="Month IDP cancel retained" value={filteredAggregated.monthIdpCancelRetained.toLocaleString()} tone="sky" />
-                <StatTile label="Today's fixed" value={filteredAggregated.todayFixed.toLocaleString()} tone="sky" />
-                <StatTile label="This month's fixed" value={filteredAggregated.monthFixed.toLocaleString()} tone="sky" />
-                <StatTile label="Retention rate" value={retentionRate(filteredAggregated.totals.retained, filteredAggregated.totals.grand)} tone="violet" />
+                <StatTile label="Today's retains" value={aggregated.todayRetained.toLocaleString()} tone="emerald" />
+                <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />
+                <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />
+                <StatTile label="Today's fixed" value={aggregated.todayFixed.toLocaleString()} tone="sky" />
+                <StatTile label="This month's fixed" value={aggregated.monthFixed.toLocaleString()} tone="sky" />
+                <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />
               </>
             )}
           </div>
@@ -3400,19 +3395,15 @@ function RetentionPanel() {
             )}
           </TabsList>
           <TabsContent value="call">
-            <ByCallStatsView agentList={filteredAgentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={!!(retUser.allowedAgents?.length)} />
+            <ByCallStatsView agentList={agentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={!!(retUser.allowedAgents?.length)} />
           </TabsContent>
           {aggregated && !("error" in aggregated) && (
             <>
               <TabsContent value="files">
-                {filteredAggregated && !("error" in filteredAggregated) && (
-                  <ByFilesView data={filteredAggregated} hideTeamRow={!!(retUser.allowedAgents?.length)} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
-                )}
+                <ByFilesView data={aggregated} hideTeamRow={!!(retUser.allowedAgents?.length)} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
               </TabsContent>
               <TabsContent value="day">
-                {filteredAggregated && !("error" in filteredAggregated) && (
-                  <ByDayView data={filteredAggregated} />
-                )}
+                <ByDayView data={aggregated} />
               </TabsContent>
             </>
           )}
@@ -3763,25 +3754,35 @@ function TabCheckboxes({ tabs, onChange }: { tabs: string[]; onChange: (t: strin
   );
 }
 
-type TeamAgent = { id: number; name: string; team: string; active: boolean };
+type TeamAgent = { id: number; name: string; team: string; active: boolean; arabicName?: string | null; shift?: string | null };
 
 function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   const { token } = useUser();
+  const qc = useQueryClient();
   const [agents, setAgents] = useState<TeamAgent[]>([]);
   const [loading, setLoading] = useState(true);
   const [newName, setNewName] = useState("");
+  const [newArabic, setNewArabic] = useState("");
+  const [newShift, setNewShift] = useState("");
   const [newTeam, setNewTeam] = useState<"retention" | "nsf" | "cs">("retention");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [movingId, setMovingId] = useState<number | null>(null);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  // Local drafts for inline-edited arabic/shift cells so typing is smooth.
+  const [drafts, setDrafts] = useState<Record<number, { arabicName?: string; shift?: string }>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const r = await fetch("/api/team-agents", { headers: { Authorization: `Bearer ${token}` } });
-      if (r.ok) setAgents(await r.json() as TeamAgent[]);
+      if (r.ok) {
+        setAgents(await r.json() as TeamAgent[]);
+        setDrafts({});
+      }
     } finally { setLoading(false); }
-  }, [token]);
+    // Bust the dashboard-wide roster query so all panels rebuild aliases/allowlists.
+    void qc.invalidateQueries({ queryKey: ["roster"] });
+  }, [token, qc]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -3791,11 +3792,32 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
     const r = await fetch("/api/team-agents", {
       method: "POST",
       headers: authHeaders(token),
-      body: JSON.stringify({ name: newName.trim(), team: newTeam }),
+      body: JSON.stringify({
+        name: newName.trim(),
+        team: newTeam,
+        arabicName: newArabic.trim() || null,
+        shift: newShift.trim() || null,
+      }),
     });
-    if (r.ok) { setNewName(""); await load(); }
-    else { const d = await r.json() as { error?: string }; setError(d.error ?? "Failed to add"); }
+    if (r.ok) {
+      setNewName(""); setNewArabic(""); setNewShift("");
+      await load();
+    } else {
+      const d = await r.json() as { error?: string };
+      setError(d.error ?? "Failed to add");
+    }
     setSaving(false);
+  }
+
+  async function patchAgent(id: number, body: Record<string, unknown>) {
+    setBusyId(id);
+    await fetch(`/api/team-agents/${id}`, {
+      method: "PATCH",
+      headers: authHeaders(token),
+      body: JSON.stringify(body),
+    });
+    setBusyId(null);
+    await load();
   }
 
   async function removeAgent(id: number) {
@@ -3803,60 +3825,76 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
     await load();
   }
 
-  async function moveAgent(id: number, team: string) {
-    setMovingId(id);
-    await fetch(`/api/team-agents/${id}`, {
-      method: "PATCH",
-      headers: authHeaders(token),
-      body: JSON.stringify({ team }),
-    });
-    setMovingId(null);
-    await load();
+  function getDraft(a: TeamAgent, field: "arabicName" | "shift"): string {
+    const d = drafts[a.id];
+    if (d && field in d) return d[field] ?? "";
+    return (a[field] ?? "") as string;
+  }
+  function setDraft(id: number, field: "arabicName" | "shift", v: string) {
+    setDrafts(prev => ({ ...prev, [id]: { ...prev[id], [field]: v } }));
+  }
+  async function commitDraft(a: TeamAgent, field: "arabicName" | "shift") {
+    const next = (drafts[a.id]?.[field] ?? "").trim();
+    const current = (a[field] ?? "").toString().trim();
+    if (next === current) return;
+    await patchAgent(a.id, { [field]: next || null });
   }
 
-  async function toggleActive(id: number, active: boolean) {
-    await fetch(`/api/team-agents/${id}`, {
-      method: "PATCH",
-      headers: authHeaders(token),
-      body: JSON.stringify({ active }),
-    });
-    await load();
-  }
-
-  const TEAMS: { key: "retention" | "nsf" | "cs"; label: string; accent: string }[] = [
-    { key: "retention", label: "Retention", accent: "violet" },
-    { key: "nsf",       label: "NSF",       accent: "sky" },
-    { key: "cs",        label: "CS",        accent: "fuchsia" },
+  const TEAMS: { key: "retention" | "nsf" | "cs"; label: string }[] = [
+    { key: "retention", label: "Retention" },
+    { key: "nsf",       label: "NSF" },
+    { key: "cs",        label: "CS" },
   ];
+  const teamBadge: Record<string, string> = {
+    retention: "bg-violet-500/20 text-violet-300 border-violet-500/30",
+    nsf: "bg-sky-500/20 text-sky-300 border-sky-500/30",
+    cs: "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30",
+  };
 
-  const accentCls = (accent: string) => ({
-    violet:  { badge: "bg-violet-500/20 text-violet-300 border-violet-500/30", dot: "bg-violet-400" },
-    sky:     { badge: "bg-sky-500/20 text-sky-300 border-sky-500/30",         dot: "bg-sky-400" },
-    fuchsia: { badge: "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30", dot: "bg-fuchsia-400" },
-  }[accent] ?? { badge: "bg-zinc-500/20 text-zinc-300 border-zinc-500/30", dot: "bg-zinc-400" });
+  // Sort: team, then English name.
+  const sortedAgents = [...agents].sort((x, y) => {
+    if (x.team !== y.team) return x.team.localeCompare(y.team);
+    return x.name.localeCompare(y.name);
+  });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="relative w-full max-w-2xl mx-4 rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl">
+      <div className="relative w-full max-w-5xl mx-4 rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl">
         <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-white/10">
           <div className="flex items-center gap-2">
             <Users className="h-5 w-5 text-violet-400" />
-            <h2 className="text-lg font-semibold text-white">Manage Agents</h2>
+            <h2 className="text-lg font-semibold text-white">Agent Roster</h2>
+            <span className="text-xs text-zinc-500">· canonical identity registry</span>
           </div>
           <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors"><X className="h-5 w-5" /></button>
         </div>
 
-        <div className="p-6 space-y-6 max-h-[82vh] overflow-y-auto">
+        <div className="p-6 space-y-5 max-h-[82vh] overflow-y-auto">
           {/* Add agent form */}
           <div className="space-y-3">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Add Agent</p>
-            <div className="flex gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_140px_auto] gap-2">
               <input
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && void addAgent()}
-                placeholder="Agent name"
-                className="flex-1 min-w-0 rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+                placeholder="English name"
+                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+              />
+              <input
+                value={newArabic}
+                onChange={(e) => setNewArabic(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && void addAgent()}
+                placeholder="Arabic name (optional)"
+                dir="rtl"
+                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+              />
+              <input
+                value={newShift}
+                onChange={(e) => setNewShift(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && void addAgent()}
+                placeholder="Shift (e.g. 9–5, Night)"
+                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
               />
               <select
                 value={newTeam}
@@ -3868,7 +3906,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
               <button
                 onClick={() => void addAgent()}
                 disabled={saving || !newName.trim()}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
               >
                 <Plus className="h-4 w-4" />Add
               </button>
@@ -3876,69 +3914,86 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
             {error && <p className="text-xs text-rose-400">{error}</p>}
           </div>
 
-          {/* Agent roster grouped by team */}
+          {/* Roster table */}
           {loading ? (
             <div className="text-center py-8 text-zinc-500 text-sm">Loading agents…</div>
           ) : agents.length === 0 ? (
             <div className="text-center py-8 text-zinc-500 text-sm">No agents added yet. Use the form above to add team members.</div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              {TEAMS.map(({ key, label, accent }) => {
-                const cls = accentCls(accent);
-                const teamAgents = agents.filter(a => a.team === key);
-                return (
-                  <div key={key} className="rounded-xl border border-white/8 bg-zinc-900/60 p-4 space-y-3">
-                    <div className="flex items-center gap-2">
-                      <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold ${cls.badge}`}>
-                        <span className={`h-1.5 w-1.5 rounded-full ${cls.dot}`} />
-                        {label}
-                      </span>
-                      <span className="text-xs text-zinc-500 ml-auto">{teamAgents.length}</span>
-                    </div>
-                    <div className="space-y-1.5">
-                      {teamAgents.length === 0 && (
-                        <p className="text-xs text-zinc-600 italic">No agents</p>
-                      )}
-                      {teamAgents.map(a => (
-                        <div key={a.id} className={`flex items-center gap-2 rounded-lg px-2.5 py-2 group transition-colors ${a.active ? "bg-zinc-800/50" : "bg-zinc-900/40 opacity-60"}`}>
-                          <span className={`flex-1 min-w-0 text-sm truncate ${a.active ? "text-zinc-100" : "text-zinc-500 line-through"}`}>{a.name}</span>
-                          {/* Move to team */}
-                          <select
-                            value={a.team}
-                            disabled={movingId === a.id}
-                            onChange={(e) => void moveAgent(a.id, e.target.value)}
-                            className="text-xs rounded border border-white/10 bg-zinc-700 text-zinc-300 px-1 py-0.5 cursor-pointer focus:outline-none opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            {TEAMS.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
-                          </select>
-                          {/* Toggle active */}
-                          <button
-                            onClick={() => void toggleActive(a.id, !a.active)}
-                            title={a.active ? "Deactivate" : "Activate"}
-                            className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-amber-400"
-                          >
-                            {a.active ? <UserCheck className="h-3.5 w-3.5" /> : <UserX className="h-3.5 w-3.5" />}
-                          </button>
-                          {/* Delete */}
-                          <button
-                            onClick={() => void removeAgent(a.id)}
-                            title="Remove agent"
-                            className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-rose-400"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="overflow-x-auto rounded-xl border border-white/8">
+              <table className="w-full text-sm">
+                <thead className="bg-zinc-900/70 text-zinc-400 text-xs uppercase tracking-wider">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-semibold">Department</th>
+                    <th className="text-left px-3 py-2 font-semibold">English Name</th>
+                    <th className="text-left px-3 py-2 font-semibold">Arabic Name</th>
+                    <th className="text-left px-3 py-2 font-semibold">Shift</th>
+                    <th className="text-center px-3 py-2 font-semibold w-24">Active</th>
+                    <th className="text-right px-3 py-2 font-semibold w-20">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedAgents.map(a => (
+                    <tr key={a.id} className={`border-t border-white/5 ${a.active ? "" : "opacity-50"}`}>
+                      <td className="px-3 py-2">
+                        <select
+                          value={a.team}
+                          disabled={busyId === a.id}
+                          onChange={(e) => void patchAgent(a.id, { team: e.target.value })}
+                          className={`text-xs rounded-full border px-2 py-1 cursor-pointer focus:outline-none ${teamBadge[a.team] ?? "bg-zinc-700 text-zinc-300 border-zinc-600"}`}
+                        >
+                          {TEAMS.map(t => <option key={t.key} value={t.key} className="bg-zinc-900 text-white">{t.label}</option>)}
+                        </select>
+                      </td>
+                      <td className={`px-3 py-2 ${a.active ? "text-zinc-100" : "text-zinc-500 line-through"}`}>{a.name}</td>
+                      <td className="px-3 py-2">
+                        <input
+                          value={getDraft(a, "arabicName")}
+                          onChange={(e) => setDraft(a.id, "arabicName", e.target.value)}
+                          onBlur={() => void commitDraft(a, "arabicName")}
+                          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                          dir="rtl"
+                          placeholder="—"
+                          className="w-full bg-transparent text-zinc-200 placeholder:text-zinc-600 px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-violet-500/50 focus:outline-none"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          value={getDraft(a, "shift")}
+                          onChange={(e) => setDraft(a.id, "shift", e.target.value)}
+                          onBlur={() => void commitDraft(a, "shift")}
+                          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                          placeholder="—"
+                          className="w-full bg-transparent text-zinc-200 placeholder:text-zinc-600 px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-violet-500/50 focus:outline-none"
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        <button
+                          onClick={() => void patchAgent(a.id, { active: !a.active })}
+                          title={a.active ? "Deactivate" : "Activate"}
+                          className={`inline-flex items-center justify-center rounded-md p-1.5 transition-colors ${a.active ? "text-emerald-400 hover:bg-emerald-500/10" : "text-zinc-500 hover:bg-amber-500/10 hover:text-amber-400"}`}
+                        >
+                          {a.active ? <UserCheck className="h-4 w-4" /> : <UserX className="h-4 w-4" />}
+                        </button>
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <button
+                          onClick={() => { if (confirm(`Remove ${a.name}?`)) void removeAgent(a.id); }}
+                          title="Remove agent"
+                          className="inline-flex items-center justify-center rounded-md p-1.5 text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
 
           <p className="text-xs text-zinc-600 leading-relaxed">
-            Agents added here are stored in the database and used to populate the per-team dropdowns throughout the dashboard.
-            Inactive agents are hidden from filters but still visible in data.
+            This roster is the canonical identity registry. Agents added here are automatically matched in the Google Sheets data <em>and</em> in OpenPhone/PBX call data — no code change required. Arabic names are matched as aliases for the same agent.
           </p>
         </div>
       </div>
@@ -6090,9 +6145,10 @@ function ViolationsPanel() {
     staleTime: 30 * 1000,
   });
 
+  const violationsRoster = useRoster();
   const { data: cancelData, isLoading: cancelLoading } = useQuery<CancelViolation[]>({
-    queryKey: ["cancel-violations"],
-    queryFn: fetchCancelViolations,
+    queryKey: ["cancel-violations", violationsRoster.version],
+    queryFn: () => fetchCancelViolations(violationsRoster),
     staleTime: 5 * 60 * 1000,
   });
 
@@ -7821,7 +7877,9 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <LoginGate>
-          <Dashboard />
+          <RosterProvider>
+            <Dashboard />
+          </RosterProvider>
         </LoginGate>
         <Toaster />
       </TooltipProvider>

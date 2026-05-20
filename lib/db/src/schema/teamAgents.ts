@@ -8,6 +8,8 @@ export type TeamSlug = typeof VALID_TEAMS[number];
 export const teamAgentsTable = pgTable("team_agents", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
+  arabicName: text("arabic_name"),
+  shift: text("shift"),
   team: text("team", { enum: VALID_TEAMS }).notNull(),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
