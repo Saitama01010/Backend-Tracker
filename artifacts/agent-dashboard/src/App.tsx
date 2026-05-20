@@ -2399,7 +2399,8 @@ function buildTeamPhoneData(teamMode: string, data: PhoneStatsResponse | null | 
   for (const [agentName, days] of Object.entries(agentStats)) {
     const rawKey = normalizeAgent(agentName);
     if (PHONE_BLOCKLIST.has(rawKey)) continue;
-    const key = PHONE_ALIASES[rawKey] ?? phoneAliases[rawKey] ?? rawKey;
+    // Roster is authoritative when populated; legacy PHONE_ALIASES is fallback only.
+    const key = phoneAliases[rawKey] ?? PHONE_ALIASES[rawKey] ?? rawKey;
     if (allowlist && !allowlist.has(key)) continue;
     const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
     for (const day of Object.values(days)) {
@@ -3000,7 +3001,8 @@ function TeamPanel({
     for (const [agentName, days] of Object.entries(agentStats)) {
       const rawKey = normalizeAgent(agentName);
       if (PHONE_BLOCKLIST.has(rawKey)) continue;
-      const aliased = PHONE_ALIASES[rawKey] ?? roster.phoneAliases[rawKey] ?? rawKey;
+      // Roster is authoritative when populated; legacy PHONE_ALIASES is fallback only.
+      const aliased = roster.phoneAliases[rawKey] ?? PHONE_ALIASES[rawKey] ?? rawKey;
       const key = aliased;
       if (allowlist && !allowlist.has(key)) continue; // strict team allowlist
       const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
@@ -3271,7 +3273,8 @@ function CSPanel() {
     for (const [agentName, days] of Object.entries(agentStats)) {
       const rawKey = normalizeAgent(agentName);
       if (PHONE_BLOCKLIST.has(rawKey)) continue;
-      const key = PHONE_ALIASES[rawKey] ?? roster.phoneAliases[rawKey] ?? rawKey;
+      // Roster is authoritative when populated; legacy PHONE_ALIASES is fallback only.
+      const key = roster.phoneAliases[rawKey] ?? PHONE_ALIASES[rawKey] ?? rawKey;
       if (allowlist && !allowlist.has(key)) continue;
       const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
       for (const day of Object.values(days)) {
