@@ -216,37 +216,54 @@ function RosterProvider({ children }: { children: React.ReactNode }) {
   return <RosterContext.Provider value={idx}>{children}</RosterContext.Provider>;
 }
 
-// Merge a roster's per-team aliases into a hardcoded fallback Set (returns a new Set).
-// Roster-authoritative resolver per team.
-// When the roster has at least one active name for this team, the roster is the
-// canonical source of truth and the hardcoded fallback is IGNORED.
-// The hardcoded list is only used as a safety net when the roster is empty for
-// that team (e.g. fresh DB, before any roster entry has been added).
-function unionTeamSet(hardcoded: Set<string> | undefined, fromRoster: Set<string> | undefined): Set<string> {
-  if (fromRoster && fromRoster.size > 0) return new Set(fromRoster);
+// Roster-authoritative resolver per team. The AUTHORITY switch is based on
+// whether the roster has ANY entries (active or inactive) for this team —
+// not on active count. This means once a team has been populated in the
+// Roster, the roster is the canonical source of truth, and the hardcoded
+// fallback is permanently bypassed. Deactivating the last active agent on
+// a team does NOT re-enable the hardcoded fallback (that would silently
+// resurrect deactivated historical names).
+// The MEMBERSHIP set is always active-only, so deactivating an agent
+// symmetrically hides them on the next refresh.
+// The hardcoded list is used only as a safety net when the team has zero
+// roster rows at all (e.g. fresh DB, before any roster entry has been added).
+function unionTeamSet(
+  hardcoded: Set<string> | undefined,
+  fromRoster: Set<string> | undefined,
+  rosterHasAny: boolean,
+): Set<string> {
+  if (rosterHasAny) return new Set(fromRoster ?? []);
   return new Set(hardcoded ?? []);
 }
 
-// Roster-authoritative membership for a team. The AUTHORITY switch is based on
-// ACTIVE roster presence (so a team that has only inactive roster rows still
-// falls back to the hardcoded list and never goes empty). When at least one
-// active roster row exists, membership = active + inactive (so historical
-// rows for deactivated agents still attribute via past-date views).
+// Roster-authoritative membership for a team. Authority is based on ANY roster
+// entries for the team (active or inactive). Membership is active-only so
+// deactivating an agent hides them from sheet matching on the next refresh.
+// Note: roster.byName still includes inactive agents so historical sheet rows
+// resolve to the correct identity for display, but inactive agents are excluded
+// from the team membership set used for filtering.
 function rosterTeamMembers(
   hardcoded: Set<string>,
   roster: RosterIndex | null | undefined,
   team: "retention" | "nsf" | "cs",
 ): Set<string> {
   if (!roster) return new Set(hardcoded);
-  const active = roster.teamNames[team];
-  if (!active || active.size === 0) return new Set(hardcoded);
-  const all = roster.teamNamesAll[team] ?? active;
-  return new Set([...active, ...all]);
+  if (!rosterHasAnyForTeam(roster, team)) return new Set(hardcoded);
+  return new Set(roster.teamNames[team] ?? []);
 }
 
-// Per-team check: is the roster actively driving this team's membership?
+// Per-team check: does the roster have ANY entries (active or inactive)?
+// When true, the roster is authoritative and hardcoded fallbacks are bypassed.
+function rosterHasAnyForTeam(roster: RosterIndex | null | undefined, team: "retention" | "nsf" | "cs"): boolean {
+  if (!roster) return false;
+  return (roster.teamNamesAll[team]?.size ?? 0) > 0;
+}
+
+// Per-team check: is the roster actively driving this team's visible membership?
+// Mirrors rosterHasAnyForTeam so callers that gate hardcoded "seed" name lists
+// on this signal also bypass the seed when only inactive roster rows exist.
 function rosterDrivesTeam(roster: RosterIndex | null | undefined, team: "retention" | "nsf" | "cs"): boolean {
-  return !!roster && (roster.teamNames[team]?.size ?? 0) > 0;
+  return rosterHasAnyForTeam(roster, team);
 }
 
 const RETENTION = {
@@ -2464,8 +2481,10 @@ function useMissedHourly(date: string, mode: "times" | "numbers" = "times") {
 }
 
 function buildTeamPhoneData(teamMode: string, data: PhoneStatsResponse | null | undefined, roster?: RosterIndex): Map<string, PhoneAgentMetrics> {
-  const rosterTeamAllow = roster && (teamMode === "retention" || teamMode === "nsf" || teamMode === "cs") ? roster.allowlist[teamMode as RosterTeam] : undefined;
-  const allowlist = unionTeamSet(TEAM_ALLOWLIST[teamMode], rosterTeamAllow);
+  const isTeamMode = teamMode === "retention" || teamMode === "nsf" || teamMode === "cs";
+  const rosterTeamAllow = roster && isTeamMode ? roster.allowlist[teamMode as RosterTeam] : undefined;
+  const rosterHasAny = !!roster && isTeamMode && rosterHasAnyForTeam(roster, teamMode as RosterTeam);
+  const allowlist = unionTeamSet(TEAM_ALLOWLIST[teamMode], rosterTeamAllow, rosterHasAny);
   const phoneAliases = roster?.phoneAliases ?? {};
   const map = new Map<string, PhoneAgentMetrics>();
   const agentStats = data?.teamStats?.[teamMode] ?? {};
@@ -3068,7 +3087,7 @@ function TeamPanel({
   });
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
-    const allowlist = unionTeamSet(TEAM_ALLOWLIST[mode], roster.allowlist[mode as RosterTeam] ?? new Set());
+    const allowlist = unionTeamSet(TEAM_ALLOWLIST[mode], roster.allowlist[mode as RosterTeam] ?? new Set(), rosterHasAnyForTeam(roster, mode as RosterTeam));
     const map = new Map<string, PhoneAgentMetrics>();
     const agentStats = phoneQ.data?.teamStats?.[mode] ?? {};
     const lastCallMap = phoneQ.data?.agentLastCall?.[mode] ?? {};
@@ -3351,7 +3370,7 @@ function CSPanel() {
   }, [statusQ.data, from, to]);
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
-    const allowlist = unionTeamSet(TEAM_ALLOWLIST["cs"], roster.allowlist.cs);
+    const allowlist = unionTeamSet(TEAM_ALLOWLIST["cs"], roster.allowlist.cs, rosterHasAnyForTeam(roster, "cs"));
     const map = new Map<string, PhoneAgentMetrics>();
     const agentStats = phoneQ.data?.teamStats?.["cs"] ?? {};
     const lastCallMap = phoneQ.data?.agentLastCall?.["cs"] ?? {};
