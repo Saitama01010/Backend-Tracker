@@ -2945,7 +2945,7 @@ function TeamPanel({
   sheetKey: string;
   label: string;
   mode: TeamMode;
-  statusQueryFn?: (roster: RosterIndex) => Promise<SheetData>;
+  statusQueryFn?: (roster: RosterIndex, opts?: { includeInactive?: boolean }) => Promise<SheetData>;
 }) {
   const { user: panelUser } = useUser();
   const isRestricted = !!(panelUser.allowedAgents?.length);
@@ -2954,9 +2954,18 @@ function TeamPanel({
   // Retention ring group = 2, Back-end (NSF) ring group = 3 in VoSLogic
   const pbxMissed = mode === "retention" ? (ringGroupMissed.get(2) ?? 0) : mode === "nsf" ? (ringGroupMissed.get(3) ?? 0) : 0;
   const roster = useRoster();
+
+  const todayIso = todayPDT();
+  const thisMonthStart = todayIso.slice(0, 7) + "-01";
+  const [from, setFrom] = useState(todayIso);
+  const [to, setTo] = useState(todayIso);
+  // Past-date view: when the selected range ends before today, include inactive
+  // agents so historical attribution stays intact even after deactivation.
+  const includeInactive = to < todayIso;
+
   const statusQ = useQuery({
-    queryKey: ["status", sheetKey, roster.version],
-    queryFn: statusQueryFn ? () => statusQueryFn(roster) : (() => fetchHeaderCsv(urls.status)),
+    queryKey: ["status", sheetKey, roster.version, includeInactive],
+    queryFn: statusQueryFn ? () => statusQueryFn(roster, { includeInactive }) : (() => fetchHeaderCsv(urls.status)),
     staleTime: 1000 * 10,
     refetchOnWindowFocus: true,
     refetchInterval: 15 * 1000,
@@ -2964,11 +2973,6 @@ function TeamPanel({
   const isLoading = statusQ.isLoading;
   const isFetching = statusQ.isFetching;
   const error = statusQ.error;
-
-  const todayIso = todayPDT();
-  const thisMonthStart = todayIso.slice(0, 7) + "-01";
-  const [from, setFrom] = useState(todayIso);
-  const [to, setTo] = useState(todayIso);
 
   const fromDate = from ? parseDate(from) : null;
   const toDate = to ? parseDate(to) : null;
@@ -3229,9 +3233,12 @@ function CSPanel() {
   const toDate = to ? parseDate(to) : null;
   if (toDate) toDate.setHours(23, 59, 59, 999);
 
+  // Past-date view: when the selected range ends before today, include inactive
+  // agents so historical attribution stays intact even after deactivation.
+  const includeInactive = to < todayIso;
   const statusQ = useQuery({
-    queryKey: ["status", "cs", roster.version],
-    queryFn: () => fetchCSCombinedSheet(roster),
+    queryKey: ["status", "cs", roster.version, includeInactive],
+    queryFn: () => fetchCSCombinedSheet(roster, { includeInactive }),
     staleTime: 1000 * 10,
     refetchOnWindowFocus: true,
     refetchInterval: 15 * 1000,
@@ -3415,9 +3422,12 @@ function RetentionPanel() {
   const toDate = to ? parseDate(to) : null;
   if (toDate) toDate.setHours(23, 59, 59, 999);
 
+  // Past-date view: when the selected range ends before today, include inactive
+  // agents so historical attribution stays intact even after deactivation.
+  const includeInactive = to < todayIso;
   const statusQ = useQuery({
-    queryKey: ["status", "retention", roster.version],
-    queryFn: () => fetchRetentionCombinedSheet(roster),
+    queryKey: ["status", "retention", roster.version, includeInactive],
+    queryFn: () => fetchRetentionCombinedSheet(roster, { includeInactive }),
     staleTime: 1000 * 10,
     refetchOnWindowFocus: true,
     refetchInterval: 15 * 1000,
