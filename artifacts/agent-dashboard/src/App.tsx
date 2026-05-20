@@ -173,10 +173,14 @@ function RosterProvider({ children }: { children: React.ReactNode }) {
 }
 
 // Merge a roster's per-team aliases into a hardcoded fallback Set (returns a new Set).
+// Roster-authoritative resolver per team.
+// When the roster has at least one active name for this team, the roster is the
+// canonical source of truth and the hardcoded fallback is IGNORED.
+// The hardcoded list is only used as a safety net when the roster is empty for
+// that team (e.g. fresh DB, before any roster entry has been added).
 function unionTeamSet(hardcoded: Set<string> | undefined, fromRoster: Set<string> | undefined): Set<string> {
-  const out = new Set(hardcoded ?? []);
-  if (fromRoster) for (const v of fromRoster) out.add(v);
-  return out;
+  if (fromRoster && fromRoster.size > 0) return new Set(fromRoster);
+  return new Set(hardcoded ?? []);
 }
 
 const RETENTION = {
@@ -381,8 +385,9 @@ async function fetchRetentionCombinedSheet(roster?: RosterIndex): Promise<SheetD
     const isRetentionAgent = retentionNames.has(agentNorm)
       || segments.some(seg => retentionNames.has(seg));
     if (!isRetentionAgent) continue;
-    const kw = detectKeywordStatus(r);
-    rows.push({ Agent: agentRaw, Status: kw ?? "IDP-Handled", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
+    // IDP-Handled tab is its own classification; keyword override does NOT apply here
+    // (every submission to this sheet is by definition an IDP-Handled action).
+    rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
   }
 
   // Add IDP Cancel Retained tab rows (gid=1018337469) — every row counts as "Retained"
@@ -793,9 +798,9 @@ async function fetchIDPSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
     const matches = teamNames.has(agentNorm) || teamNames.has(resolvedKey)
       || segments.some(seg => teamNames.has(seg));
     if (!matches) continue;
-    // Keyword override: Notes/etc may say retain or cancel.
-    const kw = detectKeywordStatus(r);
-    rows.push({ Agent: agentRaw, Status: kw ?? "IDP-Handled", Date: caDate });
+    // IDP-Handled tab is its own classification; keyword override does NOT apply here
+    // (every submission to this sheet is by definition an IDP-Handled action).
+    rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate });
   }
   return rows;
 }
@@ -3769,7 +3774,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState<number | null>(null);
   // Local drafts for inline-edited arabic/shift cells so typing is smooth.
-  const [drafts, setDrafts] = useState<Record<number, { arabicName?: string; shift?: string }>>({});
+  const [drafts, setDrafts] = useState<Record<number, { name?: string; arabicName?: string; shift?: string }>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -3825,19 +3830,24 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
     await load();
   }
 
-  function getDraft(a: TeamAgent, field: "arabicName" | "shift"): string {
+  function getDraft(a: TeamAgent, field: "name" | "arabicName" | "shift"): string {
     const d = drafts[a.id];
     if (d && field in d) return d[field] ?? "";
     return (a[field] ?? "") as string;
   }
-  function setDraft(id: number, field: "arabicName" | "shift", v: string) {
+  function setDraft(id: number, field: "name" | "arabicName" | "shift", v: string) {
     setDrafts(prev => ({ ...prev, [id]: { ...prev[id], [field]: v } }));
   }
-  async function commitDraft(a: TeamAgent, field: "arabicName" | "shift") {
+  async function commitDraft(a: TeamAgent, field: "name" | "arabicName" | "shift") {
     const next = (drafts[a.id]?.[field] ?? "").trim();
     const current = (a[field] ?? "").toString().trim();
     if (next === current) return;
-    await patchAgent(a.id, { [field]: next || null });
+    // English name is required; ignore empty commits and reset draft.
+    if (field === "name" && !next) {
+      setDrafts(prev => { const cp = { ...prev }; if (cp[a.id]) { const inner = { ...cp[a.id] }; delete inner.name; cp[a.id] = inner; } return cp; });
+      return;
+    }
+    await patchAgent(a.id, { [field]: field === "name" ? next : (next || null) });
   }
 
   const TEAMS: { key: "retention" | "nsf" | "cs"; label: string }[] = [
@@ -3945,7 +3955,15 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                           {TEAMS.map(t => <option key={t.key} value={t.key} className="bg-zinc-900 text-white">{t.label}</option>)}
                         </select>
                       </td>
-                      <td className={`px-3 py-2 ${a.active ? "text-zinc-100" : "text-zinc-500 line-through"}`}>{a.name}</td>
+                      <td className="px-3 py-2">
+                        <input
+                          value={getDraft(a, "name")}
+                          onChange={(e) => setDraft(a.id, "name", e.target.value)}
+                          onBlur={() => void commitDraft(a, "name")}
+                          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                          className={`w-full bg-transparent px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-violet-500/50 focus:outline-none ${a.active ? "text-zinc-100" : "text-zinc-500 line-through"}`}
+                        />
+                      </td>
                       <td className="px-3 py-2">
                         <input
                           value={getDraft(a, "arabicName")}
