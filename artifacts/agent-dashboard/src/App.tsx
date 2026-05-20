@@ -426,9 +426,13 @@ async function fetchRetentionCombinedSheet(
     const caDate = toCaliforniaDateStr(d);
     if (caDate < "2026-05-04") continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
-    const agentNorm = normalizeAgent(agentRaw);
-    const segs = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
-    if (!retentionNames.has(agentNorm) && !segs.some(s => retentionNames.has(s))) continue;
+    // Roster-aware team gate: respects rosterDrives + inactive hide + segment lookup.
+    if (!includeForRetention(agentRaw)) {
+      const agentNorm = normalizeAgent(agentRaw);
+      const segs = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
+      const segHit = segs.some(s => retentionNames.has(s));
+      if (!segHit) continue;
+    }
     // Keyword wins, then fall back to the structured File Status mapping.
     const kw = detectKeywordStatus(r);
     let derivedStatus: string;
@@ -460,19 +464,20 @@ async function fetchRetentionCombinedSheet(
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
-    const agentNorm = normalizeAgent(agentRaw);
-    const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
-    const isRetentionAgent = retentionNames.has(agentNorm)
-      || segments.some(seg => retentionNames.has(seg));
-    if (!isRetentionAgent) continue;
+    // Roster-aware team gate (with segment fallback for compound names).
+    if (!includeForRetention(agentRaw)) {
+      const agentNorm = normalizeAgent(agentRaw);
+      const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
+      if (!segments.some(seg => retentionNames.has(seg))) continue;
+    }
     // IDP-Handled tab is its own classification; keyword override does NOT apply here
     // (every submission to this sheet is by definition an IDP-Handled action).
     rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
   }
 
   // Add IDP Cancel Retained tab rows (gid=1018337469) — every row counts as "Retained"
-  // (folded into the regular Retained metric). Keyword override still wins (e.g. a row
-  // whose Notes explicitly say "cancel" should be a Cancellation).
+  // (folded into the regular Retained metric). Routed by roster team so NSF/CS rows
+  // do NOT leak into the Retention panel.
   for (const r of idpCancelSheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
     const d = parseEgyptTimestamp(tsRaw);
@@ -480,9 +485,13 @@ async function fetchRetentionCombinedSheet(
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
+    // Roster-aware retention gate + inactive hide (segment-aware for compound names).
+    if (!includeForRetention(agentRaw)) {
+      const agentNorm = normalizeAgent(agentRaw);
+      const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
+      if (!segments.some(seg => retentionNames.has(seg))) continue;
+    }
     // Per task plan: every row from the IDP Cancel Retained tab counts as Retained.
-    // The keyword scanner does NOT apply here — this tab is its own "ultimately
-    // retained via the IDP cancel path" classification.
     rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
   }
 
@@ -534,21 +543,35 @@ async function fetchRetentionSheetNSFCrossoverRows(
   // Current-view hide is gated — past-date callers pass includeInactive=true.
   const hideInactive = !opts.includeInactive;
   const isInactive = (raw: string) => hideInactive && roster?.lookupByAnyName(raw)?.active === false;
+  // Spreadsheet 11kOhk8x is shared with IDP Cancel Retained — fetch sequentially
+  // so Google doesn't drop concurrent requests on the same workbook.
   const [oldSheet, newSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status),
     fetchHeaderCsv(NEW_RETENTION_URL),
   ]);
+  const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
 
   const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
   const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
   const oldDateCol = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
 
   const rows: Row[] = [];
+  // Roster-aware membership (segment-aware for compound names like "amr-katie miller-2900").
+  const matchesTeam = (agentRaw: string): boolean => {
+    if (!agentRaw) return false;
+    // Prefer roster.teamForAgent when roster active for this team.
+    const rosterTeam = roster?.teamForAgent(agentRaw);
+    if (rosterTeam === "nsf") return true;
+    const n = normalizeAgent(agentRaw);
+    if (nsfNames.has(n)) return true;
+    const segs = n.split("-").map(s => s.trim()).filter(Boolean);
+    return segs.some(s => nsfNames.has(s)) || segs.some(s => roster?.teamForAgent(s) === "nsf");
+  };
 
   if (oldAgentCol && oldStatusCol) {
     for (const r of oldSheet.rows) {
       const agentRaw = (r[oldAgentCol] ?? "").trim();
-      if (!nsfNames.has(normalizeAgent(agentRaw))) continue;
+      if (!matchesTeam(agentRaw)) continue;
       if (isInactive(agentRaw)) continue;
       const kw = detectKeywordStatus(r);
       const rawStatus = kw ?? (r[oldStatusCol] ?? "").trim();
@@ -565,11 +588,23 @@ async function fetchRetentionSheetNSFCrossoverRows(
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
-    if (!nsfNames.has(normalizeAgent(agentRaw))) continue;
+    if (!matchesTeam(agentRaw)) continue;
     if (isInactive(agentRaw)) continue;
     const kw = detectKeywordStatus(r);
     const derived = kw ?? deriveNewRetentionStatus(r["Cancel request update"] ?? "");
     if (!isRetainedStatus(derived)) continue;
+    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate });
+  }
+
+  // IDP Cancel Retained → every row counts as Retained for the routed team member.
+  for (const r of idpCancelSheet.rows) {
+    const tsRaw = (r["Timestamp"] ?? "").trim();
+    const d = parseEgyptTimestamp(tsRaw);
+    if (!d) continue;
+    const caDate = toCaliforniaDateStr(d);
+    const agentRaw = (r["Agent Name"] ?? "").trim();
+    if (!matchesTeam(agentRaw)) continue;
+    if (isInactive(agentRaw)) continue;
     rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate });
   }
 
@@ -587,21 +622,33 @@ async function fetchRetentionSheetCSCrossoverRows(
   // Current-view hide is gated — past-date callers pass includeInactive=true.
   const hideInactive = !opts.includeInactive;
   const isInactive = (raw: string) => hideInactive && roster?.lookupByAnyName(raw)?.active === false;
+  // Spreadsheet 11kOhk8x is shared with IDP Cancel Retained — fetch sequentially.
   const [oldSheet, newSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status),
     fetchHeaderCsv(NEW_RETENTION_URL),
   ]);
+  const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
 
   const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
   const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
   const oldDateCol = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
 
   const rows: Row[] = [];
+  // Roster-aware CS membership with segment fallback for compound names.
+  const matchesTeam = (agentRaw: string): boolean => {
+    if (!agentRaw) return false;
+    const rosterTeam = roster?.teamForAgent(agentRaw);
+    if (rosterTeam === "cs") return true;
+    const n = normalizeAgent(agentRaw);
+    if (csNames.has(n)) return true;
+    const segs = n.split("-").map(s => s.trim()).filter(Boolean);
+    return segs.some(s => csNames.has(s)) || segs.some(s => roster?.teamForAgent(s) === "cs");
+  };
 
   if (oldAgentCol && oldStatusCol) {
     for (const r of oldSheet.rows) {
       const agentRaw = (r[oldAgentCol] ?? "").trim();
-      if (!csNames.has(normalizeAgent(agentRaw))) continue;
+      if (!matchesTeam(agentRaw)) continue;
       if (isInactive(agentRaw)) continue;
       const kw = detectKeywordStatus(r);
       const rawStatus = kw ?? (r[oldStatusCol] ?? "").trim();
@@ -618,11 +665,23 @@ async function fetchRetentionSheetCSCrossoverRows(
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
-    if (!csNames.has(normalizeAgent(agentRaw))) continue;
+    if (!matchesTeam(agentRaw)) continue;
     if (isInactive(agentRaw)) continue;
     const kw = detectKeywordStatus(r);
     const derived = kw ?? deriveNewRetentionStatus(r["Cancel request update"] ?? "");
     if (!isRetainedStatus(derived)) continue;
+    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate });
+  }
+
+  // IDP Cancel Retained → Retained for the routed CS team member.
+  for (const r of idpCancelSheet.rows) {
+    const tsRaw = (r["Timestamp"] ?? "").trim();
+    const d = parseEgyptTimestamp(tsRaw);
+    if (!d) continue;
+    const caDate = toCaliforniaDateStr(d);
+    const agentRaw = (r["Agent Name"] ?? "").trim();
+    if (!matchesTeam(agentRaw)) continue;
+    if (isInactive(agentRaw)) continue;
     rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate });
   }
 
@@ -806,13 +865,30 @@ async function fetchCancelViolations(
   const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
   const oldDateCol   = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
   const oldFileCol   = findColumn(oldSheet.headers, ["File ID", "File Id", "FileID", "file id"]);
+  // Roster-aware team classifier (uses roster.teamForAgent + segment-aware fallback
+  // so compound names like "nour-ella monroe-2900" are correctly routed).
+  const classifyTeam = (agentRaw: string): "CS" | "NSF" | null => {
+    if (!agentRaw) return null;
+    const rosterTeam = roster?.teamForAgent(agentRaw);
+    if (rosterTeam === "cs") return "CS";
+    if (rosterTeam === "nsf") return "NSF";
+    const n = normalizeAgent(agentRaw);
+    if (csNames.has(n)) return "CS";
+    if (nsfNames.has(n)) return "NSF";
+    const segs = n.split("-").map(s => s.trim()).filter(Boolean);
+    for (const s of segs) {
+      const t = roster?.teamForAgent(s);
+      if (t === "cs" || csNames.has(s)) return "CS";
+      if (t === "nsf" || nsfNames.has(s)) return "NSF";
+    }
+    return null;
+  };
+
   if (oldAgentCol && oldStatusCol) {
     for (const r of oldSheet.rows) {
       const agentRaw = (r[oldAgentCol] ?? "").trim();
       const agentNorm = normalizeAgent(agentRaw);
-      let team: "CS" | "NSF" | null = null;
-      if (csNames.has(agentNorm)) team = "CS";
-      else if (nsfNames.has(agentNorm)) team = "NSF";
+      const team = classifyTeam(agentRaw);
       if (!team) continue;
       const kw = detectKeywordStatus(r);
       if (kw === "Retained") continue; // keyword override says retained → not a violation
@@ -836,9 +912,7 @@ async function fetchCancelViolations(
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
     const agentNorm = normalizeAgent(agentRaw);
-    let team: "CS" | "NSF" | null = null;
-    if (csNames.has(agentNorm)) team = "CS";
-    else if (nsfNames.has(agentNorm)) team = "NSF";
+    const team = classifyTeam(agentRaw);
     if (!team) continue;
     const kw = detectKeywordStatus(r);
     if (kw === "Retained") continue;
