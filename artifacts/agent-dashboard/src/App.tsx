@@ -227,6 +227,28 @@ function unionTeamSet(hardcoded: Set<string> | undefined, fromRoster: Set<string
   return new Set(hardcoded ?? []);
 }
 
+// Roster-authoritative membership for a team. The AUTHORITY switch is based on
+// ACTIVE roster presence (so a team that has only inactive roster rows still
+// falls back to the hardcoded list and never goes empty). When at least one
+// active roster row exists, membership = active + inactive (so historical
+// rows for deactivated agents still attribute via past-date views).
+function rosterTeamMembers(
+  hardcoded: Set<string>,
+  roster: RosterIndex | null | undefined,
+  team: "retention" | "nsf" | "cs",
+): Set<string> {
+  if (!roster) return new Set(hardcoded);
+  const active = roster.teamNames[team];
+  if (!active || active.size === 0) return new Set(hardcoded);
+  const all = roster.teamNamesAll[team] ?? active;
+  return new Set([...active, ...all]);
+}
+
+// Per-team check: is the roster actively driving this team's membership?
+function rosterDrivesTeam(roster: RosterIndex | null | undefined, team: "retention" | "nsf" | "cs"): boolean {
+  return !!roster && (roster.teamNames[team]?.size ?? 0) > 0;
+}
+
 const RETENTION = {
   status: "https://docs.google.com/spreadsheets/d/1qF5Dc5quGrAywf5Rtx4q7DrX91VlNIFOfKr-REoSkII/export?format=csv&gid=0",
 };
@@ -311,28 +333,26 @@ const RETENTION_AGENTS_NORM_EARLY = new Set([
 // Agents who were temporarily on NSF but whose old NSF-sheet rows belong in the Retention panel.
 const RETENTION_TEMP_NSF_AGENTS = new Set(["talia morgan", "tuqa hossam"]);
 
-async function fetchRetentionCombinedSheet(roster?: RosterIndex): Promise<SheetData> {
-  // When the roster has at least one Retention agent, it is authoritative for routing —
-  // only roster Retention agents (active or historical) flow into this panel, and
-  // non-roster names no longer leak through via a "catch-all minus NSF/CS" filter.
-  const rosterDrivesRetention = !!roster && roster.teamNamesAll.retention.size > 0;
-  const retentionNames = roster
-    ? unionTeamSet(RETENTION_AGENTS_NORM_EARLY, roster.teamNamesAll.retention)
-    : RETENTION_AGENTS_NORM_EARLY;
-  const nsfExcludeNames = roster
-    ? unionTeamSet(RETENTION_SHEET_NSF_AGENTS, roster.teamNamesAll.nsf)
-    : RETENTION_SHEET_NSF_AGENTS;
-  const csExcludeNames = roster
-    ? unionTeamSet(RETENTION_SHEET_CS_AGENTS, roster.teamNamesAll.cs)
-    : RETENTION_SHEET_CS_AGENTS;
+async function fetchRetentionCombinedSheet(
+  roster?: RosterIndex,
+  opts: { includeInactive?: boolean } = {},
+): Promise<SheetData> {
+  // Authority switch is based on ACTIVE roster presence — a team with only inactive
+  // roster rows falls back to the hardcoded list (membership never goes empty).
+  const rosterDrivesRetention = rosterDrivesTeam(roster, "retention");
+  // Membership = active + inactive when roster is authoritative (so historical rows
+  // for deactivated agents still route correctly when viewing past dates).
+  const retentionNames = rosterTeamMembers(RETENTION_AGENTS_NORM_EARLY, roster, "retention");
+  const nsfExcludeNames = rosterTeamMembers(RETENTION_SHEET_NSF_AGENTS, roster, "nsf");
+  const csExcludeNames = rosterTeamMembers(RETENTION_SHEET_CS_AGENTS, roster, "cs");
   // Helper: should this raw "Agent Name" cell flow into the Retention panel?
   // Roster-authoritative when populated; otherwise legacy "exclude NSF/CS" behaviour.
-  // Also drops rows owned by an inactive roster member so they don't contribute to
-  // current totals (historical identity is still preserved in roster.byName, so
-  // any future past-date view can opt back in).
+  // Inactive-agent rows are dropped from CURRENT views only (opts.includeInactive=true
+  // preserves them for past-date views — identity in roster.byName is always intact).
+  const hideInactive = !opts.includeInactive;
   const includeForRetention = (agentRaw: string): boolean => {
     const hit = roster?.lookupByAnyName(agentRaw);
-    if (hit && hit.active === false) return false;
+    if (hideInactive && hit && hit.active === false) return false;
     if (rosterDrivesRetention) {
       return roster!.teamForAgent(agentRaw) === "retention";
     }
@@ -505,11 +525,15 @@ async function fetchRetentionCombinedSheet(roster?: RosterIndex): Promise<SheetD
 
 // Pulls Retention-sheet rows for NSF cross-over agents (e.g. Katie Miller) and maps
 // their *retained* submissions to "Fixed" so they count in the NSF panel.
-async function fetchRetentionSheetNSFCrossoverRows(roster?: RosterIndex): Promise<Row[]> {
-  // Historical attribution: include inactive roster agents in MEMBERSHIP so past rows still route.
-  // Current-view hide: drop rows whose owner is explicitly inactive in the roster.
-  const nsfNames = roster ? unionTeamSet(RETENTION_SHEET_NSF_AGENTS, roster.teamNamesAll.nsf) : RETENTION_SHEET_NSF_AGENTS;
-  const isInactive = (raw: string) => roster?.lookupByAnyName(raw)?.active === false;
+async function fetchRetentionSheetNSFCrossoverRows(
+  roster?: RosterIndex,
+  opts: { includeInactive?: boolean } = {},
+): Promise<Row[]> {
+  // Membership preserves history (active + inactive when roster authoritative).
+  const nsfNames = rosterTeamMembers(RETENTION_SHEET_NSF_AGENTS, roster, "nsf");
+  // Current-view hide is gated — past-date callers pass includeInactive=true.
+  const hideInactive = !opts.includeInactive;
+  const isInactive = (raw: string) => hideInactive && roster?.lookupByAnyName(raw)?.active === false;
   const [oldSheet, newSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status),
     fetchHeaderCsv(NEW_RETENTION_URL),
@@ -554,11 +578,15 @@ async function fetchRetentionSheetNSFCrossoverRows(roster?: RosterIndex): Promis
 
 // Pulls Retention-sheet rows for CS/NSF cross-over agents and maps their retained
 // submissions to "Retained". Cancelled rows are intentionally dropped.
-async function fetchRetentionSheetCSCrossoverRows(roster?: RosterIndex): Promise<Row[]> {
-  // Historical attribution: include inactive roster agents in MEMBERSHIP so past rows still route.
-  // Current-view hide: drop rows whose owner is explicitly inactive in the roster.
-  const csNames = roster ? unionTeamSet(RETENTION_SHEET_CS_AGENTS, roster.teamNamesAll.cs) : RETENTION_SHEET_CS_AGENTS;
-  const isInactive = (raw: string) => roster?.lookupByAnyName(raw)?.active === false;
+async function fetchRetentionSheetCSCrossoverRows(
+  roster?: RosterIndex,
+  opts: { includeInactive?: boolean } = {},
+): Promise<Row[]> {
+  // Membership preserves history (active + inactive when roster authoritative).
+  const csNames = rosterTeamMembers(RETENTION_SHEET_CS_AGENTS, roster, "cs");
+  // Current-view hide is gated — past-date callers pass includeInactive=true.
+  const hideInactive = !opts.includeInactive;
+  const isInactive = (raw: string) => hideInactive && roster?.lookupByAnyName(raw)?.active === false;
   const [oldSheet, newSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status),
     fetchHeaderCsv(NEW_RETENTION_URL),
@@ -758,10 +786,15 @@ type CancelViolation = {
 
 // Scans the retention sheets (Sheet 1 old + Sheet 1 new) for CS/NSF agents who submitted
 // a Cancelled row. Returns one entry per unique agent+date+fileId combination.
-async function fetchCancelViolations(roster?: RosterIndex): Promise<CancelViolation[]> {
-  // Historical attribution: include inactive roster agents so past violation rows still route.
-  const csNames = roster ? unionTeamSet(RETENTION_SHEET_CS_AGENTS, roster.teamNamesAll.cs) : RETENTION_SHEET_CS_AGENTS;
-  const nsfNames = roster ? unionTeamSet(RETENTION_SHEET_NSF_AGENTS, roster.teamNamesAll.nsf) : RETENTION_SHEET_NSF_AGENTS;
+async function fetchCancelViolations(
+  roster?: RosterIndex,
+  _opts: { includeInactive?: boolean } = {},
+): Promise<CancelViolation[]> {
+  // Violations always preserve history (membership = active + inactive when roster
+  // authoritative). Currently we don't hide inactive here since the violation list
+  // surfaces past offences regardless of current employment.
+  const csNames = rosterTeamMembers(RETENTION_SHEET_CS_AGENTS, roster, "cs");
+  const nsfNames = rosterTeamMembers(RETENTION_SHEET_NSF_AGENTS, roster, "nsf");
   const [oldSheet, newSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
     fetchHeaderCsv(NEW_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
@@ -882,9 +915,13 @@ async function fetchIDPSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
 //   – Old retention sheet (Sheet 1, gid=837339339) → Retained (via crossover)
 //   – Discord-bot gid=0 (Sheet 2)                  → Fixed
 //   – IDP-Handled tab (Sheet 3, gid=871007220)      → IDP-Handled
-async function fetchNSFCombinedSheet(roster?: RosterIndex): Promise<SheetData> {
-  // Historical attribution: include inactive roster agents in MEMBERSHIP for past-date routing.
-  const teamNames = roster ? unionTeamSet(NSF_AGENT_NAMES, roster.teamNamesAll.nsf) : NSF_AGENT_NAMES;
+async function fetchNSFCombinedSheet(
+  roster?: RosterIndex,
+  opts: { includeInactive?: boolean } = {},
+): Promise<SheetData> {
+  // Membership preserves history (active + inactive when roster authoritative).
+  const teamNames = rosterTeamMembers(NSF_AGENT_NAMES, roster, "nsf");
+  const hideInactive = !opts.includeInactive;
   // fetchNewSheetForTeam (gid=0) and fetchIDPSheetForTeam (gid=871007220) use the same
   // spreadsheet — serialize to avoid Google dropping the concurrent second request.
   const [newRows, crossoverRows, oldNsfSheet] = await Promise.all([
@@ -909,7 +946,7 @@ async function fetchNSFCombinedSheet(roster?: RosterIndex): Promise<SheetData> {
       const matches = teamNames.has(agentNorm) || teamNames.has(resolvedKey)
         || segments.some(seg => teamNames.has(seg));
       if (!matches) continue;
-      if (roster?.lookupByAnyName(agentRaw)?.active === false) continue;
+      if (hideInactive && roster?.lookupByAnyName(agentRaw)?.active === false) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "").trim() : "";
       const d = parseDate(dateStr);
       const kw = detectKeywordStatus(r);
@@ -917,11 +954,10 @@ async function fetchNSFCombinedSheet(roster?: RosterIndex): Promise<SheetData> {
     }
   }
 
-  // Current-view hide: drop rows whose owner is explicitly inactive in the roster.
-  // Historical attribution is preserved at the source layer (teamNamesAll); this
-  // filter just keeps them out of the active dashboard until reactivated.
-  const dropInactive = (r: Row) => roster?.lookupByAnyName((r["Agent"] ?? "") as string)?.active !== false;
-  const merged = [...newRows, ...crossoverRows, ...idpRows, ...oldNsfRows].filter(dropInactive);
+  // Current-view hide is gated by hideInactive. Past-date views (includeInactive=true)
+  // keep deactivated agents' rows so historical totals stay intact.
+  const keep = (r: Row) => !hideInactive || roster?.lookupByAnyName((r["Agent"] ?? "") as string)?.active !== false;
+  const merged = [...newRows, ...crossoverRows, ...idpRows, ...oldNsfRows].filter(keep);
   return { headers: ["Agent", "Status", "Date"], rows: merged };
 }
 
@@ -929,9 +965,13 @@ async function fetchNSFCombinedSheet(roster?: RosterIndex): Promise<SheetData> {
 //   – Discord-bot gid=0 (Sheet 2) → Fixed
 //   – Old retention sheet (Sheet 1) → Fixed (retained only)
 //   – IDP-Handled tab (Sheet 3)    → IDP-Handled
-async function fetchCSCombinedSheet(roster?: RosterIndex): Promise<SheetData> {
-  // Historical attribution: include inactive roster agents in MEMBERSHIP for past-date routing.
-  const teamNames = roster ? unionTeamSet(CS_AGENT_NAMES, roster.teamNamesAll.cs) : CS_AGENT_NAMES;
+async function fetchCSCombinedSheet(
+  roster?: RosterIndex,
+  opts: { includeInactive?: boolean } = {},
+): Promise<SheetData> {
+  // Membership preserves history (active + inactive when roster authoritative).
+  const teamNames = rosterTeamMembers(CS_AGENT_NAMES, roster, "cs");
+  const hideInactive = !opts.includeInactive;
   // fetchNewSheetForTeam (gid=0) and fetchIDPSheetForTeam (gid=871007220) use the same
   // spreadsheet — serialize to avoid Google dropping the concurrent second request.
   const [newRows, crossoverRows] = await Promise.all([
@@ -939,9 +979,10 @@ async function fetchCSCombinedSheet(roster?: RosterIndex): Promise<SheetData> {
     fetchRetentionSheetCSCrossoverRows(roster),
   ]);
   const idpRows = await fetchIDPSheetForTeam(teamNames);
-  // Current-view hide: drop rows whose owner is explicitly inactive in the roster.
-  const dropInactive = (r: Row) => roster?.lookupByAnyName((r["Agent"] ?? "") as string)?.active !== false;
-  const merged = [...newRows, ...crossoverRows, ...idpRows].filter(dropInactive);
+  // Current-view hide is gated by hideInactive. Past-date views (includeInactive=true)
+  // keep deactivated agents' rows so historical totals stay intact.
+  const keep = (r: Row) => !hideInactive || roster?.lookupByAnyName((r["Agent"] ?? "") as string)?.active !== false;
+  const merged = [...newRows, ...crossoverRows, ...idpRows].filter(keep);
   return { headers: ["Agent", "Status", "Date"], rows: merged };
 }
 
