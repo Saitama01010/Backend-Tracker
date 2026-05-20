@@ -107,19 +107,33 @@ interface RosterAgent { id: number; name: string; arabicName: string | null; shi
 interface RosterIndex {
   agents: RosterAgent[];
   version: number; // bump on any roster mutation; included in React Query keys for invalidation
-  teamNames: Record<RosterTeam, Set<string>>;        // normalized name aliases per team (English + Arabic)
-  phoneAliases: Record<string, string>;              // normalized arabic name → normalized english name
-  allowlist: Record<RosterTeam, Set<string>>;        // normalized phone keys allowed per team
+  teamNames: Record<RosterTeam, Set<string>>;        // normalized name aliases per team (active only) — for "current visibility"
+  teamNamesAll: Record<RosterTeam, Set<string>>;     // normalized name aliases per team (active + inactive) — for historical attribution
+  phoneAliases: Record<string, string>;              // normalized arabic name → normalized english name (all agents)
+  allowlist: Record<RosterTeam, Set<string>>;        // normalized phone keys allowed per team (active only)
+  // Reverse lookup table: any normalized name (en or ar, full or compound segment) → roster agent.
+  // Includes inactive agents so historical sheet rows still attribute correctly.
+  byName: Map<string, RosterAgent>;
+  // Helpers (resolve undefined when the roster has no entry for that name).
+  lookupByAnyName(rawName: string): RosterAgent | null;
+  teamForAgent(rawName: string): RosterTeam | null;
+  agentsForTeam(team: RosterTeam, opts?: { includeInactive?: boolean }): RosterAgent[];
 }
 
 function emptyRosterIndex(): RosterIndex {
-  return {
+  const idx: RosterIndex = {
     agents: [],
     version: 0,
     teamNames: { retention: new Set(), nsf: new Set(), cs: new Set() },
+    teamNamesAll: { retention: new Set(), nsf: new Set(), cs: new Set() },
     phoneAliases: {},
     allowlist: { retention: new Set(), nsf: new Set(), cs: new Set() },
+    byName: new Map(),
+    lookupByAnyName: () => null,
+    teamForAgent: () => null,
+    agentsForTeam: () => [],
   };
+  return idx;
 }
 
 function buildRosterIndex(agents: RosterAgent[]): RosterIndex {
@@ -134,21 +148,51 @@ function buildRosterIndex(agents: RosterAgent[]): RosterIndex {
     return (acc + h) | 0;
   }, agents.length);
   for (const a of agents) {
-    if (!a.active) continue;
     const enNorm = a.name.replace(/\s+/g, " ").trim().toLowerCase();
+    const arNorm = a.arabicName ? a.arabicName.replace(/\s+/g, " ").trim().toLowerCase() : "";
+    // Identity mappings (used for historical attribution) include EVERY agent, active or not —
+    // so a deactivated person's past sheet rows still attribute to them and their team.
     if (enNorm) {
-      idx.teamNames[a.team].add(enNorm);
-      idx.allowlist[a.team].add(enNorm);
+      idx.teamNamesAll[a.team].add(enNorm);
+      idx.byName.set(enNorm, a);
     }
-    if (a.arabicName) {
-      const arNorm = a.arabicName.replace(/\s+/g, " ").trim().toLowerCase();
+    if (arNorm) {
+      idx.teamNamesAll[a.team].add(arNorm);
+      idx.byName.set(arNorm, a);
+      if (enNorm) idx.phoneAliases[arNorm] = enNorm;
+    }
+    // Active-only sets drive "current visibility" — which agents show up on tiles & phone allowlists.
+    if (a.active) {
+      if (enNorm) {
+        idx.teamNames[a.team].add(enNorm);
+        idx.allowlist[a.team].add(enNorm);
+      }
       if (arNorm) {
         idx.teamNames[a.team].add(arNorm);
         idx.allowlist[a.team].add(arNorm);
-        if (enNorm) idx.phoneAliases[arNorm] = enNorm;
       }
     }
   }
+
+  // Bind helpers (use Map closures so call sites get a clean API).
+  function norm(s: string): string { return s.replace(/\s+/g, " ").trim().toLowerCase(); }
+  idx.lookupByAnyName = (rawName: string): RosterAgent | null => {
+    if (!rawName) return null;
+    const n = norm(rawName);
+    const direct = idx.byName.get(n);
+    if (direct) return direct;
+    // Compound "Ahmed Ayman-Levi Miller-1234" → try each "-" segment.
+    for (const seg of n.split("-").map(s => s.trim()).filter(Boolean)) {
+      const hit = idx.byName.get(seg);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  idx.teamForAgent = (rawName: string): RosterTeam | null => idx.lookupByAnyName(rawName)?.team ?? null;
+  idx.agentsForTeam = (team: RosterTeam, opts?: { includeInactive?: boolean }): RosterAgent[] => {
+    const includeInactive = opts?.includeInactive ?? false;
+    return agents.filter(a => a.team === team && (includeInactive || a.active));
+  };
   return idx;
 }
 
@@ -268,15 +312,28 @@ const RETENTION_AGENTS_NORM_EARLY = new Set([
 const RETENTION_TEMP_NSF_AGENTS = new Set(["talia morgan", "tuqa hossam"]);
 
 async function fetchRetentionCombinedSheet(roster?: RosterIndex): Promise<SheetData> {
+  // When the roster has at least one Retention agent, it is authoritative for routing —
+  // only roster Retention agents (active or historical) flow into this panel, and
+  // non-roster names no longer leak through via a "catch-all minus NSF/CS" filter.
+  const rosterDrivesRetention = !!roster && roster.teamNamesAll.retention.size > 0;
   const retentionNames = roster
-    ? unionTeamSet(RETENTION_AGENTS_NORM_EARLY, roster.teamNames.retention)
+    ? unionTeamSet(RETENTION_AGENTS_NORM_EARLY, roster.teamNamesAll.retention)
     : RETENTION_AGENTS_NORM_EARLY;
   const nsfExcludeNames = roster
-    ? unionTeamSet(RETENTION_SHEET_NSF_AGENTS, roster.teamNames.nsf)
+    ? unionTeamSet(RETENTION_SHEET_NSF_AGENTS, roster.teamNamesAll.nsf)
     : RETENTION_SHEET_NSF_AGENTS;
   const csExcludeNames = roster
-    ? unionTeamSet(RETENTION_SHEET_CS_AGENTS, roster.teamNames.cs)
+    ? unionTeamSet(RETENTION_SHEET_CS_AGENTS, roster.teamNamesAll.cs)
     : RETENTION_SHEET_CS_AGENTS;
+  // Helper: should this raw "Agent Name" cell flow into the Retention panel?
+  // Roster-authoritative when populated; otherwise legacy "exclude NSF/CS" behaviour.
+  const includeForRetention = (agentRaw: string): boolean => {
+    if (rosterDrivesRetention) {
+      return roster!.teamForAgent(agentRaw) === "retention";
+    }
+    const n = normalizeAgent(agentRaw);
+    return !nsfExcludeNames.has(n) && !csExcludeNames.has(n);
+  };
   // Fetch the first four sheets in parallel (all from different spreadsheets).
   // IDP_RETENTION_URL shares the same spreadsheet as NEW_NSF_URL — fetching them
   // concurrently causes Google to silently drop one, so fetch IDP sequentially after.
@@ -301,8 +358,7 @@ async function fetchRetentionCombinedSheet(roster?: RosterIndex): Promise<SheetD
   if (oldAgentCol && oldStatusCol) {
     for (const r of oldSheet.rows) {
       const agentRaw = (r[oldAgentCol] ?? "").trim();
-      if (nsfExcludeNames.has(normalizeAgent(agentRaw))) continue;
-      if (csExcludeNames.has(normalizeAgent(agentRaw))) continue;
+      if (!includeForRetention(agentRaw)) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
       const d = oldDateCol ? parseDate(dateStr) : null;
       // Apply keyword override: Notes/other text fields containing retain/cancel
@@ -326,8 +382,7 @@ async function fetchRetentionCombinedSheet(roster?: RosterIndex): Promise<SheetD
     const caDate = toCaliforniaDateStr(d);
     if (caDate < "2026-05-04") continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
-    if (nsfExcludeNames.has(normalizeAgent(agentRaw))) continue;
-    if (csExcludeNames.has(normalizeAgent(agentRaw))) continue;
+    if (!includeForRetention(agentRaw)) continue;
     const kw = detectKeywordStatus(r);
     rows.push({
       Agent: agentRaw,
