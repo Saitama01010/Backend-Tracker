@@ -499,7 +499,8 @@ async function fetchRetentionCombinedSheet(roster?: RosterIndex): Promise<SheetD
 // Pulls Retention-sheet rows for NSF cross-over agents (e.g. Katie Miller) and maps
 // their *retained* submissions to "Fixed" so they count in the NSF panel.
 async function fetchRetentionSheetNSFCrossoverRows(roster?: RosterIndex): Promise<Row[]> {
-  const nsfNames = roster ? unionTeamSet(RETENTION_SHEET_NSF_AGENTS, roster.teamNames.nsf) : RETENTION_SHEET_NSF_AGENTS;
+  // Historical attribution: include inactive roster agents so past rows still route correctly.
+  const nsfNames = roster ? unionTeamSet(RETENTION_SHEET_NSF_AGENTS, roster.teamNamesAll.nsf) : RETENTION_SHEET_NSF_AGENTS;
   const [oldSheet, newSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status),
     fetchHeaderCsv(NEW_RETENTION_URL),
@@ -543,7 +544,8 @@ async function fetchRetentionSheetNSFCrossoverRows(roster?: RosterIndex): Promis
 // Pulls Retention-sheet rows for CS/NSF cross-over agents and maps their retained
 // submissions to "Retained". Cancelled rows are intentionally dropped.
 async function fetchRetentionSheetCSCrossoverRows(roster?: RosterIndex): Promise<Row[]> {
-  const csNames = roster ? unionTeamSet(RETENTION_SHEET_CS_AGENTS, roster.teamNames.cs) : RETENTION_SHEET_CS_AGENTS;
+  // Historical attribution: include inactive roster agents so past rows still route correctly.
+  const csNames = roster ? unionTeamSet(RETENTION_SHEET_CS_AGENTS, roster.teamNamesAll.cs) : RETENTION_SHEET_CS_AGENTS;
   const [oldSheet, newSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status),
     fetchHeaderCsv(NEW_RETENTION_URL),
@@ -742,8 +744,9 @@ type CancelViolation = {
 // Scans the retention sheets (Sheet 1 old + Sheet 1 new) for CS/NSF agents who submitted
 // a Cancelled row. Returns one entry per unique agent+date+fileId combination.
 async function fetchCancelViolations(roster?: RosterIndex): Promise<CancelViolation[]> {
-  const csNames = roster ? unionTeamSet(RETENTION_SHEET_CS_AGENTS, roster.teamNames.cs) : RETENTION_SHEET_CS_AGENTS;
-  const nsfNames = roster ? unionTeamSet(RETENTION_SHEET_NSF_AGENTS, roster.teamNames.nsf) : RETENTION_SHEET_NSF_AGENTS;
+  // Historical attribution: include inactive roster agents so past violation rows still route.
+  const csNames = roster ? unionTeamSet(RETENTION_SHEET_CS_AGENTS, roster.teamNamesAll.cs) : RETENTION_SHEET_CS_AGENTS;
+  const nsfNames = roster ? unionTeamSet(RETENTION_SHEET_NSF_AGENTS, roster.teamNamesAll.nsf) : RETENTION_SHEET_NSF_AGENTS;
   const [oldSheet, newSheet] = await Promise.all([
     fetchHeaderCsv(RETENTION.status).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
     fetchHeaderCsv(NEW_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
@@ -865,7 +868,8 @@ async function fetchIDPSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
 //   – Discord-bot gid=0 (Sheet 2)                  → Fixed
 //   – IDP-Handled tab (Sheet 3, gid=871007220)      → IDP-Handled
 async function fetchNSFCombinedSheet(roster?: RosterIndex): Promise<SheetData> {
-  const teamNames = roster ? unionTeamSet(NSF_AGENT_NAMES, roster.teamNames.nsf) : NSF_AGENT_NAMES;
+  // Historical attribution: include inactive roster agents so past sheet rows still route.
+  const teamNames = roster ? unionTeamSet(NSF_AGENT_NAMES, roster.teamNamesAll.nsf) : NSF_AGENT_NAMES;
   // fetchNewSheetForTeam (gid=0) and fetchIDPSheetForTeam (gid=871007220) use the same
   // spreadsheet — serialize to avoid Google dropping the concurrent second request.
   const [newRows, crossoverRows, oldNsfSheet] = await Promise.all([
@@ -905,7 +909,8 @@ async function fetchNSFCombinedSheet(roster?: RosterIndex): Promise<SheetData> {
 //   – Old retention sheet (Sheet 1) → Fixed (retained only)
 //   – IDP-Handled tab (Sheet 3)    → IDP-Handled
 async function fetchCSCombinedSheet(roster?: RosterIndex): Promise<SheetData> {
-  const teamNames = roster ? unionTeamSet(CS_AGENT_NAMES, roster.teamNames.cs) : CS_AGENT_NAMES;
+  // Historical attribution: include inactive roster agents so past sheet rows still route.
+  const teamNames = roster ? unionTeamSet(CS_AGENT_NAMES, roster.teamNamesAll.cs) : CS_AGENT_NAMES;
   // fetchNewSheetForTeam (gid=0) and fetchIDPSheetForTeam (gid=871007220) use the same
   // spreadsheet — serialize to avoid Google dropping the concurrent second request.
   const [newRows, crossoverRows] = await Promise.all([
@@ -1062,6 +1067,21 @@ const PHONE_ALIASES: Record<string, string> = {
 
 // Maps normalized SHEET agent name → normalized PBX (VoSLogic) agent name
 // Format: "QuoName-PBXAlias" sheet entries decode as QuoName=Quo key, PBXAlias=PBX key
+// Roster-aware PBX key resolver. Tries the roster first (English or Arabic name,
+// active or inactive — historical attribution included), then falls back to the
+// legacy SHEET_TO_PBX alias table for any name the roster doesn't know.
+function resolvePbxKey(rawAgent: string, roster: RosterIndex | null | undefined): string {
+  const norm = normalizeAgent(rawAgent);
+  if (roster) {
+    const hit = roster.lookupByAnyName(rawAgent);
+    if (hit) {
+      const enNorm = hit.name.replace(/\s+/g, " ").trim().toLowerCase();
+      return SHEET_TO_PBX[enNorm] ?? enNorm;
+    }
+  }
+  return SHEET_TO_PBX[norm] ?? norm;
+}
+
 const SHEET_TO_PBX: Record<string, string> = {
   "ahmed ayman-levi miller": "levi miller",       // PBX: Levi Miller = Ahmed Ayman
   "youssef nady-jacob xander": "jacob xander",    // PBX: Jacob Xander = Youssef Nady
@@ -3000,8 +3020,7 @@ function TeamPanel({
     if (!pbxData) return { calls: 0, answered: 0, seconds: 0 };
     let calls = 0, answered = 0, seconds = 0;
     for (const agent of callAgentList) {
-      const norm = normalizeAgent(agent);
-      const pbxKey = SHEET_TO_PBX[norm] ?? norm;
+      const pbxKey = resolvePbxKey(agent, roster);
       const px = pbxData.get(pbxKey);
       calls += px?.calls ?? 0;
       answered += px?.answered ?? 0;
@@ -3241,8 +3260,7 @@ function CSPanel() {
     if (!pbxData) return { calls: 0, answered: 0, seconds: 0 };
     let calls = 0, answered = 0, seconds = 0;
     for (const agent of allAgents) {
-      const norm = normalizeAgent(agent);
-      const pbxKey = SHEET_TO_PBX[norm] ?? norm;
+      const pbxKey = resolvePbxKey(agent, roster);
       const px = pbxData.get(pbxKey);
       calls += px?.calls ?? 0; answered += px?.answered ?? 0; seconds += px?.durationSeconds ?? 0;
     }
@@ -3390,8 +3408,7 @@ function RetentionPanel() {
     if (!pbxData) return { calls: 0, answered: 0, seconds: 0 };
     let calls = 0, answered = 0, seconds = 0;
     for (const agent of agentList) {
-      const norm = normalizeAgent(agent);
-      const pbxKey = SHEET_TO_PBX[norm] ?? norm;
+      const pbxKey = resolvePbxKey(agent, roster);
       const px = pbxData.get(pbxKey);
       calls += px?.calls ?? 0; answered += px?.answered ?? 0; seconds += px?.durationSeconds ?? 0;
     }
