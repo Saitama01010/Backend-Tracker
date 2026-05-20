@@ -3048,44 +3048,55 @@ function TeamPanel({
   const callAgentList = useMemo(() => {
     const result: string[] = [];
     const addedKeys = new Set<string>();
+    // When the roster drives this team, ONLY roster members appear; hardcoded
+    // seeds and PBX ring-group auto-adds are bypassed (roster is canonical).
+    const rosterDrives = rosterDrivesTeam(roster, mode as "retention" | "nsf" | "cs");
+    const inRoster = (rawKey: string) =>
+      !rosterDrives || (roster.allowlist[mode as RosterTeam]?.has(rawKey) ?? false);
 
     // Sheet agents — prefer their display names
     if (aggregated && !("error" in aggregated)) {
       for (const { agent } of aggregated.byAgent) {
         const key = sheetToPhoneKey(agent);
+        if (!inRoster(key)) continue;
         if (!addedKeys.has(key)) { result.push(agent); addedKeys.add(key); }
       }
     }
 
-    // Explicit extras (e.g. Youssef Nasser, Michael Ross)
-    for (const extra of TEAM_PHONE_EXTRAS[mode] ?? []) {
-      const key = normalizeAgent(extra);
-      if (!addedKeys.has(key)) { result.push(extra); addedKeys.add(key); }
+    // Explicit extras (e.g. Youssef Nasser, Michael Ross) — fallback only.
+    if (!rosterDrives) {
+      for (const extra of TEAM_PHONE_EXTRAS[mode] ?? []) {
+        const key = normalizeAgent(extra);
+        if (!addedKeys.has(key)) { result.push(extra); addedKeys.add(key); }
+      }
     }
 
     // Everyone else who made calls on this team's OpenPhone lines
     for (const key of phoneData.keys()) {
+      if (!inRoster(key)) continue;
       if (!addedKeys.has(key)) {
         result.push(key.replace(/\b\w/g, (c) => c.toUpperCase()));
         addedKeys.add(key);
       }
     }
 
-    // PBX-only agents: in the right ring group but not already listed or covered by a sheet alias
-    const pbxRingGroup = mode === "retention" ? "Retention" : mode === "nsf" ? "Back-end" : null;
-    // Don't add standalone rows for PBX names that are already covered as aliases via SHEET_TO_PBX
-    const coveredPbxKeys = new Set(Object.values(SHEET_TO_PBX));
-    if (pbxRingGroup && pbxData) {
-      for (const [pbxKey, pbxAgent] of pbxData.entries()) {
-        if (pbxAgent.groups.includes(pbxRingGroup) && !addedKeys.has(pbxKey) && !coveredPbxKeys.has(pbxKey)) {
-          result.push(pbxKey.replace(/\b\w/g, (c) => c.toUpperCase()));
-          addedKeys.add(pbxKey);
+    // PBX-only agents: in the right ring group but not already listed or covered by a sheet alias.
+    // Only auto-add when the roster does NOT drive this team (fallback behaviour).
+    if (!rosterDrives) {
+      const pbxRingGroup = mode === "retention" ? "Retention" : mode === "nsf" ? "Back-end" : null;
+      const coveredPbxKeys = new Set(Object.values(SHEET_TO_PBX));
+      if (pbxRingGroup && pbxData) {
+        for (const [pbxKey, pbxAgent] of pbxData.entries()) {
+          if (pbxAgent.groups.includes(pbxRingGroup) && !addedKeys.has(pbxKey) && !coveredPbxKeys.has(pbxKey)) {
+            result.push(pbxKey.replace(/\b\w/g, (c) => c.toUpperCase()));
+            addedKeys.add(pbxKey);
+          }
         }
       }
     }
 
     return result;
-  }, [aggregated, phoneData, mode, pbxData]);
+  }, [aggregated, phoneData, mode, pbxData, roster]);
 
   const pbxTotals = useMemo(() => {
     if (!pbxData) return { calls: 0, answered: 0, seconds: 0 };
@@ -3305,14 +3316,21 @@ function CSPanel() {
   const allAgents = useMemo(() => {
     const result: string[] = [];
     const addedKeys = new Set<string>();
-    for (const a of CS_AGENTS) {
-      const k = normalizeAgent(a);
-      if (!addedKeys.has(k)) { result.push(a); addedKeys.add(k); }
+    // Roster-driven mode: only active CS roster members appear; hardcoded
+    // CS_AGENTS and PBX "Customer Support" ring-group auto-adds are bypassed.
+    const rosterDrives = rosterDrivesTeam(roster, "cs");
+    const inRoster = (rawKey: string) => !rosterDrives || (roster.allowlist.cs?.has(rawKey) ?? false);
+    if (!rosterDrives) {
+      for (const a of CS_AGENTS) {
+        const k = normalizeAgent(a);
+        if (!addedKeys.has(k)) { result.push(a); addedKeys.add(k); }
+      }
     }
     for (const k of phoneData.keys()) {
+      if (!inRoster(k)) continue;
       if (!addedKeys.has(k)) { result.push(k.replace(/\b\w/g, (c) => c.toUpperCase())); addedKeys.add(k); }
     }
-    if (pbxData) {
+    if (!rosterDrives && pbxData) {
       for (const [pbxKey, pbxAgent] of pbxData.entries()) {
         if (pbxAgent.groups.includes("Customer Support") && !addedKeys.has(pbxKey)) {
           result.push(pbxKey.replace(/\b\w/g, (c) => c.toUpperCase()));
@@ -3323,7 +3341,7 @@ function CSPanel() {
     const aa = csUser.allowedAgents;
     if (!aa || aa.length === 0) return result;
     return result.filter((a) => aa.some((x) => normalizeAgent(x) === normalizeAgent(a)));
-  }, [phoneData, pbxData, csUser.allowedAgents]);
+  }, [phoneData, pbxData, csUser.allowedAgents, roster]);
 
   const totals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0, missed = 0, uniqueContacts = 0;
@@ -3460,21 +3478,29 @@ function RetentionPanel() {
   const agentList = useMemo(() => {
     const result: string[] = [];
     const addedKeys = new Set<string>();
-    for (const a of RETENTION_AGENTS) {
-      const k = normalizeAgent(a);
-      if (!addedKeys.has(k)) { result.push(a); addedKeys.add(k); }
-    }
-    for (const extra of TEAM_PHONE_EXTRAS["retention"] ?? []) {
-      const k = normalizeAgent(extra);
-      if (!addedKeys.has(k)) { result.push(extra); addedKeys.add(k); }
+    // Roster-driven mode: only active Retention roster members appear;
+    // hardcoded RETENTION_AGENTS + TEAM_PHONE_EXTRAS are bypassed.
+    const rosterDrives = rosterDrivesTeam(roster, "retention");
+    const inRoster = (rawKey: string) =>
+      !rosterDrives || (roster.allowlist.retention?.has(rawKey) ?? false);
+    if (!rosterDrives) {
+      for (const a of RETENTION_AGENTS) {
+        const k = normalizeAgent(a);
+        if (!addedKeys.has(k)) { result.push(a); addedKeys.add(k); }
+      }
+      for (const extra of TEAM_PHONE_EXTRAS["retention"] ?? []) {
+        const k = normalizeAgent(extra);
+        if (!addedKeys.has(k)) { result.push(extra); addedKeys.add(k); }
+      }
     }
     for (const k of phoneData.keys()) {
+      if (!inRoster(k)) continue;
       if (!addedKeys.has(k)) { result.push(k.replace(/\b\w/g, (c) => c.toUpperCase())); addedKeys.add(k); }
     }
     const aa = retUser.allowedAgents;
     if (!aa || aa.length === 0) return result;
     return result.filter((a) => aa.some((x) => normalizeAgent(x) === normalizeAgent(a)));
-  }, [phoneData, retUser.allowedAgents]);
+  }, [phoneData, retUser.allowedAgents, roster]);
 
   const totals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0, missed = 0;
