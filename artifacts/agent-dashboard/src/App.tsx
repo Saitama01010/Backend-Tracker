@@ -926,7 +926,7 @@ async function fetchNSFCombinedSheet(
   // spreadsheet — serialize to avoid Google dropping the concurrent second request.
   const [newRows, crossoverRows, oldNsfSheet] = await Promise.all([
     fetchNewSheetForTeam(teamNames),
-    fetchRetentionSheetNSFCrossoverRows(roster),
+    fetchRetentionSheetNSFCrossoverRows(roster, { includeInactive: opts.includeInactive }),
     fetchHeaderCsv(NSF.status).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
   ]);
   const idpRows = await fetchIDPSheetForTeam(teamNames);
@@ -976,7 +976,7 @@ async function fetchCSCombinedSheet(
   // spreadsheet — serialize to avoid Google dropping the concurrent second request.
   const [newRows, crossoverRows] = await Promise.all([
     fetchNewSheetForTeam(teamNames),
-    fetchRetentionSheetCSCrossoverRows(roster),
+    fetchRetentionSheetCSCrossoverRows(roster, { includeInactive: opts.includeInactive }),
   ]);
   const idpRows = await fetchIDPSheetForTeam(teamNames);
   // Current-view hide is gated by hideInactive. Past-date views (includeInactive=true)
