@@ -86,6 +86,7 @@ const LINE_TEAM_MAP: Record<string, "retention" | "nsf" | "cs"> = {
   "abdlrhman-jacob stephenson":      "retention",
   "zeiad fouad-zack ford":           "retention",
   "mohammed ayman-max francis-2268": "retention",
+  "max - ma":                        "retention",
 };
 
 function classifyLine(name: string): "retention" | "nsf" | "cs" | null {

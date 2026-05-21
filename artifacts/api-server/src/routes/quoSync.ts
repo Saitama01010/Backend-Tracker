@@ -43,6 +43,7 @@ const LINE_TEAM_MAP: Record<string, "retention" | "nsf" | "cs"> = {
   "abdlrhman-jacob stephenson":      "retention",
   "zeiad fouad-zack ford":           "retention",
   "mohammed ayman-max francis-2268": "retention",
+  "max - ma":                        "retention",
 };
 
 export function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
@@ -68,6 +69,7 @@ const LINE_AGENT_OVERRIDES: Record<string, string> = {
   "zeiad fouad-zack ford": "Zeiad Fouad",
   "nour-michael belfort-2900": "Michael Belfort",
   "mohammed ayman-max francis-2268": "Max Francis",
+  "max - ma":                        "Max Francis",
 };
 
 // Former employees no longer in the workspace — map by user ID directly
