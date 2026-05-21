@@ -1048,7 +1048,12 @@ async function fetchNSFCombinedSheet(
   // Current-view hide is gated by hideInactive. Past-date views (includeInactive=true)
   // keep deactivated agents' rows so historical totals stay intact.
   const keep = (r: Row) => !hideInactive || roster?.lookupByAnyName((r["Agent"] ?? "") as string)?.active !== false;
-  const merged = [...newRows, ...crossoverRows, ...idpRows, ...oldNsfRows].filter(keep);
+  // NSF agents are not allowed to cancel files — only the Retention team is.
+  // Any Cancelled row that bleeds in here (via keyword detection on Notes/Status)
+  // is a policy violation, surfaced separately by fetchCancelViolations. Drop it
+  // from the per-agent stats so non-Retention agents never get a "Cancelled" tally.
+  const notCancelled = (r: Row) => !/cancel/i.test(String(r["Status"] ?? ""));
+  const merged = [...newRows, ...crossoverRows, ...idpRows, ...oldNsfRows].filter(keep).filter(notCancelled);
   return { headers: ["Agent", "Status", "Date"], rows: merged };
 }
 
@@ -1073,7 +1078,10 @@ async function fetchCSCombinedSheet(
   // Current-view hide is gated by hideInactive. Past-date views (includeInactive=true)
   // keep deactivated agents' rows so historical totals stay intact.
   const keep = (r: Row) => !hideInactive || roster?.lookupByAnyName((r["Agent"] ?? "") as string)?.active !== false;
-  const merged = [...newRows, ...crossoverRows, ...idpRows].filter(keep);
+  // CS agents cannot cancel files — only Retention can. Cancelled rows are
+  // surfaced via fetchCancelViolations instead of counted in per-agent stats.
+  const notCancelled = (r: Row) => !/cancel/i.test(String(r["Status"] ?? ""));
+  const merged = [...newRows, ...crossoverRows, ...idpRows].filter(keep).filter(notCancelled);
   return { headers: ["Agent", "Status", "Date"], rows: merged };
 }
 
