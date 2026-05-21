@@ -110,6 +110,8 @@ const AGENT_TEAM: Record<string, "retention" | "nsf" | "cs"> = {
   "abdulrhman isawi":  "retention",
   "rick miller":       "retention",
   "zeiad fouad":       "retention",
+  "max francis":       "retention",
+  "mohammed ayman":    "retention",
   "leo carter":        "cs",
   "fares":             "cs",
   // NSF
