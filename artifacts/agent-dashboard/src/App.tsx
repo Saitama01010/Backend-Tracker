@@ -6938,10 +6938,36 @@ function ViolationsPanel() {
       {/* ── Unauthorized Cancels ───────────────────────────────────────── */}
       {sub === "cancels" && (
         <div className="rounded-xl border border-red-500/30 overflow-hidden">
-          <div className="px-4 py-2.5 bg-zinc-900/60 border-b border-red-500/20 flex items-center justify-between">
+          <div className="px-4 py-2.5 bg-zinc-900/60 border-b border-red-500/20 flex items-center justify-between gap-3">
             <p className="text-xs font-semibold text-red-300 flex items-center gap-1.5">
               <ShieldAlert className="h-3.5 w-3.5" />Unauthorized cancellations — CS/NSF agents are not allowed to cancel files
             </p>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={cancelLoading || cancelRows.length === 0}
+              onClick={() => {
+                const rows = cancelRows.map((r) => ({
+                  Date: r.date,
+                  Agent: r.agent,
+                  Team: r.team,
+                  "File ID": r.fileId,
+                  Status: r.rawStatus,
+                }));
+                const csv = Papa.unparse(rows);
+                const blob = new Blob([csv], { type: "text/csv" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `unauthorized_cancels_${new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" })}.csv`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              data-testid="button-export-unauthorized-cancels"
+            >
+              <Download className="h-3.5 w-3.5 mr-1.5" />
+              Export CSV
+            </Button>
           </div>
           {cancelLoading
             ? <div className="py-10 text-center text-sm text-zinc-500">Scanning sheets…</div>
