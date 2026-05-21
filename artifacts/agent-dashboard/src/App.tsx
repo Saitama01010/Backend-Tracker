@@ -571,6 +571,7 @@ async function fetchRetentionSheetNSFCrossoverRows(
   const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
   const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
   const oldDateCol = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
+  const oldFileCol = findColumn(oldSheet.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
 
   const rows: Row[] = [];
   // Roster-aware membership (segment-aware for compound names like "amr-katie miller-2900").
@@ -595,7 +596,7 @@ async function fetchRetentionSheetNSFCrossoverRows(
       if (!isRetainedStatus(rawStatus)) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
       const d = oldDateCol ? parseDate(dateStr) : null;
-      rows.push({ Agent: agentRaw, Status: "Retained", Date: d ? toIsoDate(d) : dateStr });
+      rows.push({ Agent: agentRaw, Status: "Retained", Date: d ? toIsoDate(d) : dateStr, "File ID": oldFileCol ? (r[oldFileCol] ?? "").trim() : "" });
     }
   }
 
@@ -610,7 +611,7 @@ async function fetchRetentionSheetNSFCrossoverRows(
     const kw = detectKeywordStatus(r);
     const derived = kw ?? deriveNewRetentionStatus(r["Cancel request update"] ?? "");
     if (!isRetainedStatus(derived)) continue;
-    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate });
+    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
   }
 
   // IDP Cancel Retained → every row counts as Retained for the routed team member.
@@ -622,7 +623,7 @@ async function fetchRetentionSheetNSFCrossoverRows(
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!matchesTeam(agentRaw)) continue;
     if (isInactive(agentRaw)) continue;
-    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate });
+    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
   }
 
   return rows;
@@ -649,6 +650,7 @@ async function fetchRetentionSheetCSCrossoverRows(
   const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
   const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
   const oldDateCol = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
+  const oldFileCol = findColumn(oldSheet.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
 
   const rows: Row[] = [];
   // Roster-aware CS membership with segment fallback for compound names.
@@ -672,7 +674,7 @@ async function fetchRetentionSheetCSCrossoverRows(
       if (!isRetainedStatus(rawStatus)) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
       const d = oldDateCol ? parseDate(dateStr) : null;
-      rows.push({ Agent: agentRaw, Status: "Retained", Date: d ? toIsoDate(d) : dateStr });
+      rows.push({ Agent: agentRaw, Status: "Retained", Date: d ? toIsoDate(d) : dateStr, "File ID": oldFileCol ? (r[oldFileCol] ?? "").trim() : "" });
     }
   }
 
@@ -687,7 +689,7 @@ async function fetchRetentionSheetCSCrossoverRows(
     const kw = detectKeywordStatus(r);
     const derived = kw ?? deriveNewRetentionStatus(r["Cancel request update"] ?? "");
     if (!isRetainedStatus(derived)) continue;
-    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate });
+    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
   }
 
   // IDP Cancel Retained → Retained for the routed CS team member.
@@ -699,7 +701,7 @@ async function fetchRetentionSheetCSCrossoverRows(
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!matchesTeam(agentRaw)) continue;
     if (isInactive(agentRaw)) continue;
-    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate });
+    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
   }
 
   return rows;
@@ -969,7 +971,7 @@ async function fetchNewSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
     if (!matches) continue;
     // Keyword override (retain/cancel) across all text fields, including Notes.
     const kw = detectKeywordStatus(r);
-    rows.push({ Agent: agentRaw, Status: kw ?? "Fixed", Date: caDate });
+    rows.push({ Agent: agentRaw, Status: kw ?? "Fixed", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
   }
   return rows;
 }
@@ -997,7 +999,7 @@ async function fetchIDPSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
     if (!matches) continue;
     // IDP-Handled tab is its own classification; keyword override does NOT apply here
     // (every submission to this sheet is by definition an IDP-Handled action).
-    rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate });
+    rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
   }
   return rows;
 }
@@ -1027,6 +1029,7 @@ async function fetchNSFCombinedSheet(
   const oldNsfRows: Row[] = [];
   const oldAgentCol = findColumn(oldNsfSheet.headers, ["Agent", "Agent Name", "Rep"]);
   const oldDateCol = findColumn(oldNsfSheet.headers, ["Date", "Day", "Call Date"]);
+  const oldNsfFileCol = findColumn(oldNsfSheet.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
   if (oldAgentCol) {
     for (const r of oldNsfSheet.rows) {
       const agentRaw = (r[oldAgentCol] ?? "").trim();
@@ -1041,7 +1044,7 @@ async function fetchNSFCombinedSheet(
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "").trim() : "";
       const d = parseDate(dateStr);
       const kw = detectKeywordStatus(r);
-      oldNsfRows.push({ Agent: agentRaw, Status: kw ?? "Fixed", Date: d ? toIsoDate(d) : dateStr });
+      oldNsfRows.push({ Agent: agentRaw, Status: kw ?? "Fixed", Date: d ? toIsoDate(d) : dateStr, "File ID": oldNsfFileCol ? (r[oldNsfFileCol] ?? "").trim() : "" });
     }
   }
 
@@ -1054,7 +1057,7 @@ async function fetchNSFCombinedSheet(
   // from the per-agent stats so non-Retention agents never get a "Cancelled" tally.
   const notCancelled = (r: Row) => !/cancel/i.test(String(r["Status"] ?? ""));
   const merged = [...newRows, ...crossoverRows, ...idpRows, ...oldNsfRows].filter(keep).filter(notCancelled);
-  return { headers: ["Agent", "Status", "Date"], rows: merged };
+  return { headers: ["Agent", "Status", "Date", "File ID"], rows: merged };
 }
 
 // Fetches CS submissions from all 3 sources:
@@ -1082,7 +1085,7 @@ async function fetchCSCombinedSheet(
   // surfaced via fetchCancelViolations instead of counted in per-agent stats.
   const notCancelled = (r: Row) => !/cancel/i.test(String(r["Status"] ?? ""));
   const merged = [...newRows, ...crossoverRows, ...idpRows].filter(keep).filter(notCancelled);
-  return { headers: ["Agent", "Status", "Date"], rows: merged };
+  return { headers: ["Agent", "Status", "Date", "File ID"], rows: merged };
 }
 
 function findColumn(headers: string[], candidates: string[]): string | null {
