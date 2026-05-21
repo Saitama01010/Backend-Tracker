@@ -2112,6 +2112,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
     const agentCol = findColumn(sheetData.headers, ["Agent", "Agent Name", "Rep"]);
     const statusCol = findColumn(sheetData.headers, ["Status", "Result", "Outcome", "Disposition"]);
     const dateCol = findColumn(sheetData.headers, ["Date", "Day", "Call Date"]);
+    const fileIdCol = findColumn(sheetData.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
     if (!agentCol || !statusCol) return;
 
     const rows = sheetData.rows.filter((r) => {
@@ -2130,7 +2131,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
       Agent: (r[agentCol] ?? "").trim(),
       Status: (r[statusCol] ?? "").trim(),
       Date: dateCol ? (r[dateCol] ?? "") : "",
-      "File ID": (r["File ID"] ?? "").trim(),
+      "File ID": fileIdCol ? (r[fileIdCol] ?? "").trim() : "",
     }));
 
     const csv = Papa.unparse(exportRows);
