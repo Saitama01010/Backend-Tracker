@@ -1523,6 +1523,7 @@ function aggregate(
   mode: TeamMode,
   fromDate: Date | null,
   toDate: Date | null,
+  roster?: RosterIndex,
 ): Aggregated | { error: string } {
   const agentColumn = findColumn(status.headers, ["Agent", "Agent Name", "Rep"]);
   const statusColumn = findColumn(status.headers, ["Status", "Result", "Outcome", "Disposition"]);
@@ -1583,11 +1584,21 @@ function aggregate(
     return dayMap.get(iso)!;
   };
   const ensureAgent = (a: string): AgentBreakdown => {
-    const key = normalizeAgent(a);
+    // Roster-aware identity: if the raw cell (or any "-" segment) matches a roster
+    // member by English OR Arabic name, roll the row up under that canonical English
+    // identity. This collapses compound Discord-bot submissions like
+    // "Saif Aziz-Henry Hart-2450" into the senior agent's row ("Henry Hart").
+    const rosterHit = roster?.lookupByAnyName(a) ?? null;
+    const key = rosterHit
+      ? normalizeAgent(rosterHit.name)
+      : normalizeAgent(a);
     if (!key) return { agent: "", calls: 0, seconds: 0, byStatus: new Map(), total: 0 };
     if (!agentMap.has(key)) {
+      const display = rosterHit
+        ? rosterHit.name
+        : NAME_DISPLAY[key] ?? a.replace(/\s+/g, " ").trim();
       agentMap.set(key, {
-        agent: NAME_DISPLAY[key] ?? a.replace(/\s+/g, " ").trim(),
+        agent: display,
         calls: 0,
         seconds: 0,
         byStatus: new Map(),
@@ -3125,8 +3136,8 @@ function TeamPanel({
 
   const aggregated = useMemo(() => {
     if (!statusQ.data) return null;
-    return aggregate(statusQ.data, mode, fromDate, toDate);
-  }, [statusQ.data, mode, from, to]);
+    return aggregate(statusQ.data, mode, fromDate, toDate, roster);
+  }, [statusQ.data, mode, from, to, roster]);
 
   const phoneTotals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0;
@@ -3366,8 +3377,8 @@ function CSPanel() {
 
   const aggregated = useMemo(() => {
     if (!statusQ.data) return null;
-    return aggregate(statusQ.data, "nsf", fromDate, toDate);
-  }, [statusQ.data, from, to]);
+    return aggregate(statusQ.data, "nsf", fromDate, toDate, roster);
+  }, [statusQ.data, from, to, roster]);
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
     const allowlist = unionTeamSet(TEAM_ALLOWLIST["cs"], roster.allowlist.cs, rosterHasAnyForTeam(roster, "cs"));
@@ -3563,8 +3574,8 @@ function RetentionPanel() {
 
   const aggregated = useMemo(() => {
     if (!statusQ.data) return null;
-    return aggregate(statusQ.data, "retention", fromDate, toDate);
-  }, [statusQ.data, from, to]);
+    return aggregate(statusQ.data, "retention", fromDate, toDate, roster);
+  }, [statusQ.data, from, to, roster]);
 
   const phoneData = useMemo(() => buildTeamPhoneData("retention", phoneQ.data, roster), [phoneQ.data, roster]);
 
