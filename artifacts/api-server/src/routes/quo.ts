@@ -530,25 +530,64 @@ async function runLivePoll(): Promise<void> {
       .filter((c) => lineIds.has(c.phoneNumberId) && c.participants?.length > 0)
       .map((c) => async () => {
         const participant = c.participants[0];
-        const callsRes = await quoFetch<{
-          data: { id: string; status: string; userId?: string | null; participants?: string[] }[];
-        }>(
+        type LiveCall = {
+          id: string;
+          status: string;
+          userId?: string | null;
+          participants?: string[];
+          users?: { id?: string; firstName?: string; lastName?: string; email?: string }[];
+          answeredBy?: string | null;
+          // OpenPhone occasionally returns an array of user ids that handled the call.
+          userIds?: string[];
+        };
+        const callsRes = await quoFetch<{ data: LiveCall[] }>(
           `/calls?phoneNumberId=${encodeURIComponent(c.phoneNumberId)}` +
           `&participants[]=${encodeURIComponent(participant)}` +
           `&createdAfter=${encodeURIComponent(fiveMinAgo)}` +
           `&createdBefore=${encodeURIComponent(now)}` +
           `&maxResults=5`,
-        ).catch(() => ({ data: [] as { id: string; status: string; userId?: string | null; participants?: string[] }[] }));
+        ).catch(() => ({ data: [] as LiveCall[] }));
 
         for (const call of callsRes.data ?? []) {
-          if (call.status === "in-progress" && call.userId) {
-            const agentName = userMap.get(call.userId) ?? call.userId;
-            newLive.add(agentName);
-            // Use the participant from the call record itself (not the conversation) — it reflects
-            // the actual live caller, not the last historical contact on that conversation.
-            const liveParticipant = call.participants?.[0] ?? participant;
-            newParticipants.set(agentName, liveParticipant);
+          if (call.status !== "in-progress") continue;
+
+          // Resolve user via every known shape OpenPhone returns:
+          //  - call.userId (single)
+          //  - call.answeredBy (sometimes used for inbound)
+          //  - call.userIds[0]
+          //  - call.users[0].id
+          const inlineUser = call.users?.[0];
+          if (inlineUser?.id) addToUserMap({
+            id: inlineUser.id,
+            firstName: inlineUser.firstName ?? "",
+            lastName: inlineUser.lastName ?? "",
+            email: inlineUser.email,
+          });
+          const resolvedUserId =
+            call.userId ??
+            call.answeredBy ??
+            call.userIds?.[0] ??
+            inlineUser?.id ??
+            null;
+
+          if (!resolvedUserId) {
+            logger.warn(
+              { callId: call.id, phoneNumberId: c.phoneNumberId, participant },
+              "quo livePoll: in-progress call with no resolvable user",
+            );
+            continue;
           }
+
+          const agentName = userMap.get(resolvedUserId) ?? resolvedUserId;
+          if (agentName === resolvedUserId) {
+            logger.warn(
+              { callId: call.id, userId: resolvedUserId, phoneNumberId: c.phoneNumberId },
+              "quo livePoll: in-progress user id not in userMap",
+            );
+          }
+          newLive.add(agentName);
+          const liveParticipant = call.participants?.[0] ?? participant;
+          newParticipants.set(agentName, liveParticipant);
         }
       });
 
