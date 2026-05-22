@@ -2442,7 +2442,7 @@ interface MissedNoCallbackItem {
   ringGroupId: number;
   ringGroupName: string;
   team: "retention" | "nsf" | "cs" | "other";
-  source?: "pbx" | "quo";
+  source?: "pbx" | "quo" | "readymode";
 }
 
 function useMissedNoCB() {
@@ -5547,7 +5547,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
   const items = lockedTeam ? allItems.filter((it) => it.team === lockedTeam) : allItems;
   const fetchedAt = q.data?.fetchedAt ?? 0;
   const [teamFilter, setTeamFilter] = useState<string>("all");
-  const [sourceFilter, setSourceFilter] = useState<"all" | "pbx" | "quo">("all");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "pbx" | "quo" | "readymode">("all");
   const [lineFilter, setLineFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [missedMode, setMissedMode] = useState<"times" | "numbers">("times");
@@ -5665,7 +5665,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-muted-foreground">Source:</span>
           </div>
-          {(["all", "pbx", "quo"] as const).map((s) => (
+          {(["all", "pbx", "quo", "readymode"] as const).map((s) => (
             <button
               key={s}
               onClick={() => setSourceFilter(s)}
@@ -5673,11 +5673,13 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                 sourceFilter === s
                   ? s === "quo"
                     ? "bg-sky-500/25 text-sky-200 border-sky-500/40"
+                    : s === "readymode"
+                    ? "bg-amber-500/25 text-amber-200 border-amber-500/40"
                     : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
                   : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"
               }`}
             >
-              {s === "all" ? "All" : s === "quo" ? "Quo" : "PBX"}
+              {s === "all" ? "All" : s === "quo" ? "Quo" : s === "readymode" ? "Readymode" : "PBX"}
             </button>
           ))}
           {lines.length > 0 && (
@@ -5726,6 +5728,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                   <TableHead className="text-xs w-20">Source</TableHead>
                   <TableHead className="text-xs">Ring Group</TableHead>
                   <TableHead className="text-xs">Line</TableHead>
+                  <TableHead className="text-xs w-16"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -5745,8 +5748,14 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                       </TableCell>
                     )}
                     <TableCell>
-                      <Badge className={`text-[10px] px-1.5 py-0 border ${it.source === "quo" ? "bg-sky-500/20 text-sky-300 border-sky-500/30" : "bg-zinc-700/40 text-zinc-300 border-zinc-600/30"}`}>
-                        {it.source === "quo" ? "Quo" : "PBX"}
+                      <Badge className={`text-[10px] px-1.5 py-0 border ${
+                        it.source === "quo"
+                          ? "bg-sky-500/20 text-sky-300 border-sky-500/30"
+                          : it.source === "readymode"
+                          ? "bg-amber-500/20 text-amber-300 border-amber-500/30"
+                          : "bg-zinc-700/40 text-zinc-300 border-zinc-600/30"
+                      }`}>
+                        {it.source === "quo" ? "Quo" : it.source === "readymode" ? "Readymode" : "PBX"}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
@@ -5754,6 +5763,25 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                     </TableCell>
                     <TableCell className="text-xs text-zinc-300">
                       {it.toNumber || "—"}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {it.source === "readymode" && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-2 text-[10px] text-emerald-300 hover:text-emerald-200 hover:bg-emerald-500/10"
+                          onClick={async () => {
+                            await fetch("/api/nsf/readymode-queue/done-by-number", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ number: it.fromNumber }),
+                            });
+                            await qc.invalidateQueries({ queryKey: ["missedNoCB"] });
+                          }}
+                        >
+                          Done
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}

@@ -4,6 +4,7 @@ import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Logger } from "pino";
 import { logger as rootLogger } from "../lib/logger";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
+import { getActiveReadymodeItems } from "./nsfReadymode.js";
 
 const router = Router();
 
@@ -113,7 +114,7 @@ export interface MissedNoCallbackItem {
   ringGroupId: number;
   ringGroupName: string;
   team: "retention" | "nsf" | "cs" | "other";
-  source: "pbx" | "quo";
+  source: "pbx" | "quo" | "readymode";
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -784,6 +785,14 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
         .onConflictDoNothing();
     }
 
+    // Merge NSF Readymode queue items (manual entries from Samia).
+    try {
+      const rm = await getActiveReadymodeItems();
+      for (const it of rm) missedNoCB.push(it);
+    } catch (e) {
+      log?.warn({ err: e }, "readymode queue merge failed");
+    }
+
     callHistoryCache = results;
     callHistoryFetchedAt = Date.now();
     ringGroupMissedCache = { ...cumulativeRingGroupMissed };
@@ -896,9 +905,17 @@ router.get("/vos/stats", async (req, res) => {
  * When the PBX scan is still warming up, returns Quo-DB-only results immediately.
  */
 router.get("/vos/missed-no-callback", async (req, res) => {
-  // Fast path: full cache is ready
+  // Fast path: full cache is ready. Merge Readymode queue live so newly added
+  // items appear immediately (cache only refreshes every ~15 min).
   if (callHistoryFetchedAt > 0) {
-    return res.json({ items: missedNoCallbackCache, fetchedAt: callHistoryFetchedAt });
+    let extra: MissedNoCallbackItem[] = [];
+    try { extra = await getActiveReadymodeItems(); } catch { /* best-effort */ }
+    const cacheIds = new Set(missedNoCallbackCache.map((i) => String(i.id)));
+    const merged = [
+      ...missedNoCallbackCache,
+      ...extra.filter((i) => !cacheIds.has(String(i.id))),
+    ];
+    return res.json({ items: merged, fetchedAt: callHistoryFetchedAt });
   }
   // PBX scan still in progress — serve Quo DB-only results so the page isn't empty
   try {
@@ -966,6 +983,13 @@ router.get("/vos/missed-no-callback", async (req, res) => {
           source: "quo",
         });
       }
+    }
+
+    try {
+      const rm = await getActiveReadymodeItems();
+      for (const it of rm) items.push(it);
+    } catch (e) {
+      req.log.warn({ err: e }, "readymode queue merge failed (fallback)");
     }
 
     return res.json({ items, fetchedAt: 0 });

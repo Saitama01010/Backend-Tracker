@@ -10,6 +10,7 @@ import samiaRouter from "./samia";
 import blockedNumbersRouter from "./blockedNumbers";
 import violationsRouter from "./violations";
 import readymodeRouter from "./readymode";
+import nsfReadymodeRouter from "./nsfReadymode";
 import csvProxyRouter from "./csvProxy";
 import breaksRouter from "./breaks";
 import teamAgentsRouter from "./teamAgents";
@@ -28,6 +29,7 @@ router.use(blockedNumbersRouter);
 router.use(violationsRouter);
 router.use(breaksRouter);
 router.use(readymodeRouter);
+router.use(nsfReadymodeRouter);
 router.use(csvProxyRouter);
 router.use(teamAgentsRouter);
 

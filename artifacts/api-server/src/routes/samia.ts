@@ -811,6 +811,24 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       {
         type: "function",
         function: {
+          name: "add_nsf_readymode_missed_calls",
+          description: "Add one or more phone numbers to the NSF Readymode missed-calls queue. These show up in the NSF 'Missed Calls — No Callback' table tagged as 'Readymode'. Each entry auto-clears when an outbound callback to that number is detected in OpenPhone. Use whenever the user gives you phone numbers and says they are NSF Readymode missed calls / no answers / need callback.",
+          parameters: {
+            type: "object",
+            properties: {
+              numbers: {
+                type: "array",
+                description: "List of phone numbers to add. Any format accepted: '(866) 314-0788', '866-314-0788', '+18663140788', '8663140788'.",
+                items: { type: "string" },
+              },
+            },
+            required: ["numbers"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
           name: "set_attendance",
           description: "Write attendance records for specific agents on specific dates. Use for manual corrections or when auto_mark misses someone. Pass force=true to overwrite existing records.",
           parameters: {
@@ -866,7 +884,9 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       currentMessages.push(choice.message);
 
       // Execute all tool calls in this round (may be parallel)
-      for (const toolCall of choice.message.tool_calls) {
+      for (const tc of choice.message.tool_calls) {
+        if (tc.type !== "function") continue;
+        const toolCall = tc;
         const fnName = toolCall.function.name;
         let toolResult: string;
 
@@ -941,6 +961,15 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
             } else {
               toolResult = JSON.stringify({ number: data.number, found: true, openPhone: data.openPhone, pbx: data.pbx });
             }
+
+          } else if (fnName === "add_nsf_readymode_missed_calls") {
+            const args = JSON.parse(toolCall.function.arguments || "{}") as { numbers: string[] };
+            const r = await fetch(`${base}/api/nsf/readymode-queue`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ numbers: args.numbers ?? [], addedBy: `samia:${username}` }),
+            });
+            toolResult = JSON.stringify(await r.json());
 
           } else if (fnName === "set_attendance") {
             const args = JSON.parse(toolCall.function.arguments || "{}");
