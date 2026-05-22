@@ -910,11 +910,13 @@ router.get("/vos/missed-no-callback", async (req, res) => {
   if (callHistoryFetchedAt > 0) {
     let extra: MissedNoCallbackItem[] = [];
     try { extra = await getActiveReadymodeItems(); } catch { /* best-effort */ }
-    const cacheIds = new Set(missedNoCallbackCache.map((i) => String(i.id)));
-    const merged = [
-      ...missedNoCallbackCache,
-      ...extra.filter((i) => !cacheIds.has(String(i.id))),
-    ];
+    // Strip readymode items from the cache so Done clicks take effect immediately
+    // instead of waiting for the 15-min cache refresh. Then append fresh active
+    // readymode items (which already excludes anything marked done).
+    const cacheWithoutReadymode = missedNoCallbackCache.filter(
+      (i) => i.source !== "readymode",
+    );
+    const merged = [...cacheWithoutReadymode, ...extra];
     return res.json({ items: merged, fetchedAt: callHistoryFetchedAt });
   }
   // PBX scan still in progress — serve Quo DB-only results so the page isn't empty
