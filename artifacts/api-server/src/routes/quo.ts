@@ -500,9 +500,28 @@ async function runLivePoll(): Promise<void> {
 
     // Build userId → agentName map AND collect line IDs in one call
     type OPUser = { id: string; firstName: string; lastName: string; email?: string };
-    const [usersRes, linesRes] = await Promise.all([
-      quoFetch<{ data: OPUser[] }>("/users").catch(() => ({ data: [] as OPUser[] })),
-      quoFetch<{ data: { id: string; users?: OPUser[] }[] }>("/phone-numbers").catch(() => ({ data: [] as { id: string; users?: OPUser[] }[] })),
+    // Paginate /users and /phone-numbers fully — defaults return only first page,
+    // which previously caused some agents (e.g. Levi/Ahmed Ayman) and shared lines
+    // to be missing from the livePoll resolution.
+    async function fetchAllPages<T>(basePath: string): Promise<T[]> {
+      const out: T[] = [];
+      let pageToken: string | null = null;
+      let page = 0;
+      do {
+        const sep = basePath.includes("?") ? "&" : "?";
+        const url = `${basePath}${sep}maxResults=50${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`;
+        const res = await quoFetch<{ data: T[]; nextPageToken?: string | null }>(url).catch(
+          () => ({ data: [] as T[], nextPageToken: null }),
+        );
+        out.push(...(res.data ?? []));
+        pageToken = res.nextPageToken ?? null;
+        page++;
+      } while (pageToken && page < 20);
+      return out;
+    }
+    const [usersAll, linesAll] = await Promise.all([
+      fetchAllPages<OPUser>("/users"),
+      fetchAllPages<{ id: string; users?: OPUser[] }>("/phone-numbers"),
     ]);
     const userMap = new Map<string, string>();
     function addToUserMap(u: OPUser) {
@@ -511,10 +530,10 @@ async function runLivePoll(): Promise<void> {
       const override = USER_ID_OVERRIDES[u.id] ?? (emailKey && USER_EMAIL_OVERRIDES[emailKey]);
       userMap.set(u.id, override || `${u.firstName} ${u.lastName}`.trim());
     }
-    for (const u of usersRes.data ?? []) addToUserMap(u);
-    for (const line of linesRes.data ?? []) for (const u of line.users ?? []) addToUserMap(u);
+    for (const u of usersAll) addToUserMap(u);
+    for (const line of linesAll) for (const u of line.users ?? []) addToUserMap(u);
 
-    const lineIds = new Set(linesRes.data.map((l) => l.id));
+    const lineIds = new Set<string>(linesAll.map((l) => l.id));
 
     // Conversations updated in last 5 minutes = potentially active calls
     const convRes = await quoFetch<{
@@ -551,11 +570,11 @@ async function runLivePoll(): Promise<void> {
         for (const call of callsRes.data ?? []) {
           if (call.status !== "in-progress") continue;
 
-          // Resolve user via every known shape OpenPhone returns:
-          //  - call.userId (single)
-          //  - call.answeredBy (sometimes used for inbound)
-          //  - call.userIds[0]
-          //  - call.users[0].id
+          // Resolve user via every known shape OpenPhone returns.
+          // For INBOUND calls, `userId` is the line owner (often a manager) while
+          // `answeredBy` is the agent who actually picked up — same pattern used
+          // in quoSync.ts. Prefer answeredBy so we attribute the live call to
+          // the agent on the phone, not the line's owner.
           const inlineUser = call.users?.[0];
           if (inlineUser?.id) addToUserMap({
             id: inlineUser.id,
@@ -564,8 +583,8 @@ async function runLivePoll(): Promise<void> {
             email: inlineUser.email,
           });
           const resolvedUserId =
-            call.userId ??
             call.answeredBy ??
+            call.userId ??
             call.userIds?.[0] ??
             inlineUser?.id ??
             null;
