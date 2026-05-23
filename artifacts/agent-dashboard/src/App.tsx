@@ -718,6 +718,13 @@ const NAME_ALIASES: Record<string, string> = {
   "omar badr-kevin micheal-3140":  "kevin micheal",
   "yousef taher-raymond reed-2977":"raymond reed",
   "engy-ellie moser-2046":         "ellie moser",
+  "abdelrahman-tyler grant-3139":  "tyler grant",
+  "omar-otto klein-3239":          "otto klein",
+  "seif eslam-alex miller-3210":   "alex miller",
+  "ziad-zach carter-2917":         "zach carter",
+  "ayaat ahmed":                   "jenny morgan",
+  "bassant emad- carla bennet-2098":"carla bennet",
+  "bassant emad-carla bennet-2098":"carla bennet",
   // Retention: Arabic OpenPhone / Discord names → compound display name
   // Needed so submissions using the Arabic name merge into the same agent row as the compound name.
   "ahmed ayman":       "ahmed ayman-levi miller",
@@ -730,11 +737,17 @@ const NAME_ALIASES: Record<string, string> = {
   "youssef-john marcus":       "john marcus",
   // Haythem → Dean Lewis
   "haythem":                   "dean lewis",
+  "haythem-dean lewis-2089":   "dean lewis",
   "zeiad fouad":       "rick miller",
   "karma farouk":      "katherine adams",
+  "karma":             "katherine adams",
+  "karma-katherine adams-3195":"katherine adams",
   "muhamed walid":     "ryan henderson",
+  "muhamed":           "ryan henderson",
+  "muhamed-ryan henderson":    "ryan henderson",
   "nouralden":         "michael belfort",
   "saif aziz":         "henry hart",
+  "saif aziz-henry hart-2450": "henry hart",
 };
 
 // Egypt shift number → label (Egypt local time)
