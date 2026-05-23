@@ -85,7 +85,7 @@ const ALL_TABS: { value: string; label: string }[] = [
 ];
 
 type TeamAccess = "retention" | "nsf" | "cs";
-interface AuthUser { id: number; username: string; role: "admin" | "edit" | "view"; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; }
+interface AuthUser { id: number; username: string; role: "admin" | "edit" | "view"; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; allowedSubTabs?: string[] | null; lockToToday?: boolean; }
 interface AuthCtx { user: AuthUser; token: string; logout: () => void; can: (p: Permission) => boolean; canSeeTab: (tab: string) => boolean; }
 const UserContext = createContext<AuthCtx | null>(null);
 function useUser() {
@@ -3155,6 +3155,10 @@ function TeamPanel({
 }) {
   const { user: panelUser } = useUser();
   const isRestricted = !!(panelUser.allowedAgents?.length);
+  const lockToToday = !!panelUser.lockToToday;
+  const allowedSubTabs = panelUser.allowedSubTabs ?? null;
+  const subTabAllowed = (t: string) => !allowedSubTabs || allowedSubTabs.includes(t);
+  const defaultSubTab = (allowedSubTabs?.[0] ?? "call");
   const pbxData = useVosCalls();
   const ringGroupMissed = useVosRingGroupMissed();
   // Retention ring group = 2, Back-end (NSF) ring group = 3 in VoSLogic
@@ -3165,6 +3169,10 @@ function TeamPanel({
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
+  // If the user is locked to today, force the range even after midnight rollover.
+  useEffect(() => {
+    if (lockToToday) { setFrom(todayIso); setTo(todayIso); }
+  }, [lockToToday, todayIso]);
   // Past-date view: when the selected range ends before today, include inactive
   // agents so historical attribution stays intact even after deactivation.
   const includeInactive = to < todayIso;
@@ -3354,7 +3362,7 @@ function TeamPanel({
             {aggregated.error}
           </div>
         )}
-        <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
+        {!lockToToday && <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />}
 
         {(aggregated && !("error" in aggregated)) || callAgentList.length > 0 ? (
           <>
@@ -3398,31 +3406,33 @@ function TeamPanel({
               ))}
             </div>}
 
-            <Tabs defaultValue="call" className="space-y-4">
+            <Tabs defaultValue={defaultSubTab} className="space-y-4">
               <TabsList>
-                <TabsTrigger value="call" data-testid="subtab-call">By call</TabsTrigger>
+                {subTabAllowed("call") && <TabsTrigger value="call" data-testid="subtab-call">By call</TabsTrigger>}
                 {aggregated && !("error" in aggregated) && (
                   <>
-                    <TabsTrigger value="files" data-testid="subtab-agent">By files</TabsTrigger>
-                    <TabsTrigger value="day" data-testid="subtab-day">By day</TabsTrigger>
+                    {subTabAllowed("files") && <TabsTrigger value="files" data-testid="subtab-agent">By files</TabsTrigger>}
+                    {subTabAllowed("day") && <TabsTrigger value="day" data-testid="subtab-day">By day</TabsTrigger>}
                   </>
                 )}
               </TabsList>
-              <TabsContent value="call">
-                <ByCallStatsView agentList={callAgentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={isRestricted} />
-              </TabsContent>
+              {subTabAllowed("call") && (
+                <TabsContent value="call">
+                  <ByCallStatsView agentList={callAgentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={isRestricted} />
+                </TabsContent>
+              )}
               {aggregated && !("error" in aggregated) && (
                 <>
-                  <TabsContent value="files">
-                    {aggregated && !("error" in aggregated) && (
+                  {subTabAllowed("files") && (
+                    <TabsContent value="files">
                       <ByFilesView data={aggregated} hideTeamRow={isRestricted} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
-                    )}
-                  </TabsContent>
-                  <TabsContent value="day">
-                    {aggregated && !("error" in aggregated) && (
+                    </TabsContent>
+                  )}
+                  {subTabAllowed("day") && (
+                    <TabsContent value="day">
                       <ByDayView data={aggregated} />
-                    )}
-                  </TabsContent>
+                    </TabsContent>
+                  )}
                 </>
               )}
             </Tabs>
@@ -3518,6 +3528,13 @@ function CSPanel() {
   }, [phoneQ.data]);
 
   const { user: csUser } = useUser();
+  const csLockToToday = !!csUser.lockToToday;
+  const csAllowedSubTabs = csUser.allowedSubTabs ?? null;
+  const csSubTabAllowed = (t: string) => !csAllowedSubTabs || csAllowedSubTabs.includes(t);
+  const csDefaultSubTab = (csAllowedSubTabs?.[0] ?? "call");
+  useEffect(() => {
+    if (csLockToToday) { setFrom(todayPDT()); setTo(todayPDT()); }
+  }, [csLockToToday, todayIso]);
   const allAgents = useMemo(() => {
     const result: string[] = [];
     const addedKeys = new Set<string>();
@@ -3584,7 +3601,7 @@ function CSPanel() {
       <CardContent className="space-y-6">
         {(phoneQ.isLoading || statusQ.isLoading) && <TableSkeleton />}
 
-        <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
+        {!csLockToToday && <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />}
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <StatTile label="Agents" value={allAgents.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
@@ -3602,27 +3619,33 @@ function CSPanel() {
           )}
         </div>
 
-        <Tabs defaultValue="call" className="space-y-4">
+        <Tabs defaultValue={csDefaultSubTab} className="space-y-4">
           <TabsList>
-            <TabsTrigger value="call">By call</TabsTrigger>
+            {csSubTabAllowed("call") && <TabsTrigger value="call">By call</TabsTrigger>}
             {aggregated && !("error" in aggregated) && (
               <>
-                <TabsTrigger value="files">By files</TabsTrigger>
-                <TabsTrigger value="day">By day</TabsTrigger>
+                {csSubTabAllowed("files") && <TabsTrigger value="files">By files</TabsTrigger>}
+                {csSubTabAllowed("day") && <TabsTrigger value="day">By day</TabsTrigger>}
               </>
             )}
           </TabsList>
-          <TabsContent value="call">
-            <ByCallStatsView agentList={allAgents} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} />
-          </TabsContent>
+          {csSubTabAllowed("call") && (
+            <TabsContent value="call">
+              <ByCallStatsView agentList={allAgents} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} />
+            </TabsContent>
+          )}
           {aggregated && !("error" in aggregated) && (
             <>
-              <TabsContent value="files">
-                <ByFilesView data={aggregated} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
-              </TabsContent>
-              <TabsContent value="day">
-                <ByDayView data={aggregated} />
-              </TabsContent>
+              {csSubTabAllowed("files") && (
+                <TabsContent value="files">
+                  <ByFilesView data={aggregated} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
+                </TabsContent>
+              )}
+              {csSubTabAllowed("day") && (
+                <TabsContent value="day">
+                  <ByDayView data={aggregated} />
+                </TabsContent>
+              )}
             </>
           )}
         </Tabs>
@@ -3633,6 +3656,10 @@ function CSPanel() {
 
 function RetentionPanel() {
   const { user: retUser } = useUser();
+  const retLockToToday = !!retUser.lockToToday;
+  const retAllowedSubTabs = retUser.allowedSubTabs ?? null;
+  const retSubTabAllowed = (t: string) => !retAllowedSubTabs || retAllowedSubTabs.includes(t);
+  const retDefaultSubTab = (retAllowedSubTabs?.[0] ?? "call");
   const pbxData = useVosCalls();
   const ringGroupMissed = useVosRingGroupMissed();
   // Retention ring group ID = 2 in VoSLogic
@@ -3642,6 +3669,9 @@ function RetentionPanel() {
   const thisMonthStart = todayIso.slice(0, 7) + "-01";
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
+  useEffect(() => {
+    if (retLockToToday) { setFrom(todayIso); setTo(todayIso); }
+  }, [retLockToToday, todayIso]);
   const roster = useRoster();
 
   const fromDate = from ? parseDate(from) : null;
@@ -3747,7 +3777,7 @@ function RetentionPanel() {
             {aggregated.error}
           </div>
         )}
-        <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
+        {!retLockToToday && <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />}
 
         {!retUser.allowedAgents?.length && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -3770,27 +3800,33 @@ function RetentionPanel() {
           </div>
         )}
 
-        <Tabs defaultValue="call" className="space-y-4">
+        <Tabs defaultValue={retDefaultSubTab} className="space-y-4">
           <TabsList>
-            <TabsTrigger value="call">By call</TabsTrigger>
+            {retSubTabAllowed("call") && <TabsTrigger value="call">By call</TabsTrigger>}
             {aggregated && !("error" in aggregated) && (
               <>
-                <TabsTrigger value="files">By files</TabsTrigger>
-                <TabsTrigger value="day">By day</TabsTrigger>
+                {retSubTabAllowed("files") && <TabsTrigger value="files">By files</TabsTrigger>}
+                {retSubTabAllowed("day") && <TabsTrigger value="day">By day</TabsTrigger>}
               </>
             )}
           </TabsList>
-          <TabsContent value="call">
-            <ByCallStatsView agentList={agentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={!!(retUser.allowedAgents?.length)} />
-          </TabsContent>
+          {retSubTabAllowed("call") && (
+            <TabsContent value="call">
+              <ByCallStatsView agentList={agentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={!!(retUser.allowedAgents?.length)} />
+            </TabsContent>
+          )}
           {aggregated && !("error" in aggregated) && (
             <>
-              <TabsContent value="files">
-                <ByFilesView data={aggregated} hideTeamRow={!!(retUser.allowedAgents?.length)} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
-              </TabsContent>
-              <TabsContent value="day">
-                <ByDayView data={aggregated} />
-              </TabsContent>
+              {retSubTabAllowed("files") && (
+                <TabsContent value="files">
+                  <ByFilesView data={aggregated} hideTeamRow={!!(retUser.allowedAgents?.length)} phoneData={phoneData} sheetData={statusQ.data} fromDate={fromDate} toDate={toDate} />
+                </TabsContent>
+              )}
+              {retSubTabAllowed("day") && (
+                <TabsContent value="day">
+                  <ByDayView data={aggregated} />
+                </TabsContent>
+              )}
             </>
           )}
         </Tabs>
@@ -4084,7 +4120,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
 
 // ─── User Management Panel (Admin only) ──────────────────────────────────────
 
-interface PortalUser { id: number; username: string; role: string; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; active: boolean; }
+interface PortalUser { id: number; username: string; role: string; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; allowedSubTabs?: string[] | null; lockToToday?: boolean; active: boolean; }
 
 const DEFAULT_PERMS: Record<string, Permission[]> = {
   admin: ["view_metrics", "view_attendance", "edit_attendance", "manage_members", "view_missed_tables"],
@@ -4120,6 +4156,31 @@ const TEAM_ACCESS_COLORS: Record<string, string> = {
   nsf:       "bg-sky-500/20 text-sky-300 border-sky-500/30",
   cs:        "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
 };
+
+const ALL_SUB_TABS: { value: string; label: string }[] = [
+  { value: "call",  label: "By call" },
+  { value: "files", label: "By files" },
+  { value: "day",   label: "By day" },
+];
+
+function SubTabCheckboxes({ tabs, onChange }: { tabs: string[]; onChange: (t: string[]) => void }) {
+  return (
+    <div className="grid grid-cols-3 gap-1.5 mt-1">
+      {ALL_SUB_TABS.map(({ value, label }) => {
+        const checked = tabs.includes(value);
+        return (
+          <label key={value} className={`flex items-center gap-2 rounded-md px-2.5 py-1.5 cursor-pointer transition-colors ${checked ? "bg-emerald-500/10 border border-emerald-500/20" : "bg-zinc-900/60 border border-white/5 hover:border-white/10"}`}
+            onClick={() => onChange(checked ? tabs.filter((t) => t !== value) : [...tabs, value])}>
+            <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${checked ? "bg-emerald-500 border-emerald-500" : "border-zinc-600"}`}>
+              {checked && <span className="text-white text-[9px] font-bold leading-none">✓</span>}
+            </div>
+            <span className={`text-xs font-medium ${checked ? "text-emerald-200" : "text-zinc-400"}`}>{label}</span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
 
 function TabCheckboxes({ tabs, onChange }: { tabs: string[]; onChange: (t: string[]) => void }) {
   return (
@@ -4411,6 +4472,8 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   const [newTeamAccess, setNewTeamAccess] = useState<TeamAccess | "">("");
   const [newAllowedTabs, setNewAllowedTabs] = useState<string[]>([]);
   const [newAllowedAgents, setNewAllowedAgents] = useState("");
+  const [newAllowedSubTabs, setNewAllowedSubTabs] = useState<string[]>([]);
+  const [newLockToToday, setNewLockToToday] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editPw, setEditPw] = useState("");
@@ -4419,6 +4482,8 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   const [editTeamAccess, setEditTeamAccess] = useState<TeamAccess | "">("");
   const [editAllowedTabs, setEditAllowedTabs] = useState<string[]>([]);
   const [editAllowedAgents, setEditAllowedAgents] = useState("");
+  const [editAllowedSubTabs, setEditAllowedSubTabs] = useState<string[]>([]);
+  const [editLockToToday, setEditLockToToday] = useState(false);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -4448,12 +4513,15 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
       teamAccess: newTeamAccess || null,
       allowedTabs: newAllowedTabs.length > 0 ? newAllowedTabs : null,
       allowedAgents: parseAgentInput(newAllowedAgents),
+      allowedSubTabs: newAllowedSubTabs.length > 0 ? newAllowedSubTabs : null,
+      lockToToday: newLockToToday,
     };
     const r = await fetch("/api/users", { method: "POST", headers: authHeaders(token), body: JSON.stringify(body) });
     if (r.ok) {
       setNewUsername(""); setNewPassword(""); setNewRole("view");
       setNewPerms(DEFAULT_PERMS["view"]); setNewTeamAccess("");
       setNewAllowedTabs([]); setNewAllowedAgents("");
+      setNewAllowedSubTabs([]); setNewLockToToday(false);
       await load();
     } else { const d = await r.json() as { error?: string }; setError(d.error ?? "Failed to add user"); }
     setSaving(false);
@@ -4473,6 +4541,8 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
     setEditTeamAccess((u.teamAccess ?? "") as TeamAccess | "");
     setEditAllowedTabs(u.allowedTabs ?? []);
     setEditAllowedAgents((u.allowedAgents ?? []).join(", "));
+    setEditAllowedSubTabs(u.allowedSubTabs ?? []);
+    setEditLockToToday(!!u.lockToToday);
   }
 
   const roleBadge = (role: string) =>
@@ -4533,6 +4603,17 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                   <Input placeholder="e.g. Levi Miller, Henry Hart, Ryan Henderson" value={newAllowedAgents} onChange={(e) => setNewAllowedAgents(e.target.value)} className="h-8 text-xs" />
                   <p className="text-[10px] text-zinc-600 mt-1">Comma-separated agent names. Only these agents' stats will be visible.</p>
                 </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-[11px] font-medium text-zinc-400">Sub-tab visibility <span className="text-zinc-600 font-normal">(unchecked = all)</span></p>
+                    {newAllowedSubTabs.length > 0 && <button onClick={() => setNewAllowedSubTabs([])} className="text-[10px] text-zinc-500 hover:text-zinc-300 underline">Clear</button>}
+                  </div>
+                  <SubTabCheckboxes tabs={newAllowedSubTabs} onChange={setNewAllowedSubTabs} />
+                </div>
+                <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer">
+                  <input type="checkbox" checked={newLockToToday} onChange={(e) => setNewLockToToday(e.target.checked)} className="h-3.5 w-3.5 accent-violet-500" />
+                  Lock date to today (hide date range picker)
+                </label>
               </div>
             )}
             {newRole === "admin" && (
@@ -4617,6 +4698,17 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                           <p className="text-[11px] font-medium text-zinc-400 mb-1">Agent allowlist <span className="text-zinc-600 font-normal">(blank = all agents)</span></p>
                           <Input placeholder="e.g. Levi Miller, Henry Hart" value={editAllowedAgents} onChange={(e) => setEditAllowedAgents(e.target.value)} className="h-7 text-xs" />
                         </div>
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <p className="text-[11px] font-medium text-zinc-400">Sub-tab visibility <span className="text-zinc-600 font-normal">(unchecked = all)</span></p>
+                            {editAllowedSubTabs.length > 0 && <button onClick={() => setEditAllowedSubTabs([])} className="text-[10px] text-zinc-500 hover:text-zinc-300 underline">Clear</button>}
+                          </div>
+                          <SubTabCheckboxes tabs={editAllowedSubTabs} onChange={setEditAllowedSubTabs} />
+                        </div>
+                        <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer">
+                          <input type="checkbox" checked={editLockToToday} onChange={(e) => setEditLockToToday(e.target.checked)} className="h-3.5 w-3.5 accent-violet-500" />
+                          Lock date to today (hide date range picker)
+                        </label>
                       </div>
                     )}
                     {editRole === "admin" && <p className="text-[11px] text-zinc-500">Admins always have full access.</p>}
@@ -4628,6 +4720,8 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                         teamAccess: editTeamAccess || null,
                         allowedTabs: editRole === "admin" ? null : (editAllowedTabs.length > 0 ? editAllowedTabs : null),
                         allowedAgents: editRole === "admin" ? null : parseAgentInput(editAllowedAgents),
+                        allowedSubTabs: editRole === "admin" ? null : (editAllowedSubTabs.length > 0 ? editAllowedSubTabs : null),
+                        lockToToday: editRole === "admin" ? false : editLockToToday,
                         ...(editPw ? { password: editPw } : {}),
                       })}>
                         <KeyRound className="h-3 w-3 mr-1" />Save

@@ -20,6 +20,10 @@ export const portalUsersTable = pgTable("portal_users", {
   allowedTabs: text("allowed_tabs"),
   // null = all agents; JSON string[] = explicit allowlist of agent display names
   allowedAgents: text("allowed_agents"),
+  // null = all sub-tabs; JSON string[] subset of {"call","files","day"}
+  allowedSubTabs: text("allowed_sub_tabs"),
+  // true = date pickers locked to today (no PresetFilter, no history)
+  lockToToday: boolean("lock_to_today").notNull().default(false),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

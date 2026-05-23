@@ -10,6 +10,8 @@ export interface AuthPayload {
   teamAccess?: "retention" | "nsf" | "cs" | null;
   allowedTabs?: string[] | null;
   allowedAgents?: string[] | null;
+  allowedSubTabs?: string[] | null;
+  lockToToday?: boolean;
 }
 
 declare global {

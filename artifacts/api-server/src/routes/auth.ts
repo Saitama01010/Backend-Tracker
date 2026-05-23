@@ -50,8 +50,10 @@ router.post("/auth/login", async (req, res) => {
   const teamAccess = (user.teamAccess ?? null) as "retention" | "nsf" | "cs" | null;
   const allowedTabs = parseJsonArray(user.allowedTabs);
   const allowedAgents = parseJsonArray(user.allowedAgents);
-  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess, allowedTabs, allowedAgents });
-  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess, allowedTabs, allowedAgents } });
+  const allowedSubTabs = parseJsonArray(user.allowedSubTabs);
+  const lockToToday = !!user.lockToToday;
+  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday });
+  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday } });
 });
 
 router.get("/auth/me", requireAuth, async (req, res) => {
@@ -68,8 +70,10 @@ router.get("/auth/me", requireAuth, async (req, res) => {
   const teamAccess = (user.teamAccess ?? null) as "retention" | "nsf" | "cs" | null;
   const allowedTabs = parseJsonArray(user.allowedTabs);
   const allowedAgents = parseJsonArray(user.allowedAgents);
-  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess, allowedTabs, allowedAgents });
-  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess, allowedTabs, allowedAgents } });
+  const allowedSubTabs = parseJsonArray(user.allowedSubTabs);
+  const lockToToday = !!user.lockToToday;
+  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday });
+  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday } });
 });
 
 export default router;
