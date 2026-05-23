@@ -7745,6 +7745,11 @@ function AttendancePanel() {
     return cols;
   }, [monthOff]);
 
+  const saturdayCount = useMemo(
+    () => dateCols.filter((d) => new Date(d + "T12:00:00").getDay() === 6).length,
+    [dateCols],
+  );
+
   const qc = useQueryClient();
   const { data, isLoading } = useQuery<AttData>({
     queryKey: ["attendance", fromStr, toStr, showInactive],
@@ -7950,7 +7955,7 @@ function AttendancePanel() {
       {showTodaySummary && (
         <div className="space-y-3">
           {/* Overall breakdown */}
-          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 sm:gap-3">
+          <div className="grid grid-cols-3 sm:grid-cols-7 gap-2 sm:gap-3">
             {[
               { label: "Present", value: todaySummary.in,     color: "text-emerald-400" },
               { label: "Off",     value: todaySummary.off,    color: "text-amber-400" },
@@ -7964,6 +7969,10 @@ function AttendancePanel() {
                 <div className={`text-2xl font-bold tabular-nums ${color}`}>{value}</div>
               </Card>
             ))}
+            <Card className="bg-zinc-900/60 border-white/10 p-3">
+              <div className="text-xs text-muted-foreground mb-1">Saturdays — {monthLabel.split(" ")[0]}</div>
+              <div className="text-2xl font-bold tabular-nums text-amber-400/90">{saturdayCount}</div>
+            </Card>
           </div>
 
           {/* Per-team present breakdown */}
