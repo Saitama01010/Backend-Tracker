@@ -1479,6 +1479,9 @@ type Aggregated = {
   retainedStatuses: Set<string>;
   byDay: DayBreakdown[];
   byAgent: AgentBreakdown[];
+  // agent display name → per-day breakdown for that agent (used by ByDayView's
+  // per-agent filter). Days are keyed by ISO date string.
+  byAgentDay: Map<string, DayBreakdown[]>;
   totals: {
     calls: number;
     seconds: number;
@@ -1580,6 +1583,8 @@ function aggregate(
   const dayMap = new Map<string, DayBreakdown>();
   const agentMap = new Map<string, AgentBreakdown>();
   const totalsByStatus = new Map<string, number>();
+  // agent display name → (iso date → DayBreakdown) for the per-agent ByDay filter
+  const agentDayMap = new Map<string, Map<string, DayBreakdown>>();
 
   const ensureDay = (iso: string, d: Date): DayBreakdown => {
     if (!dayMap.has(iso)) {
@@ -1631,11 +1636,35 @@ function aggregate(
     if (dateColumn) {
       const d = parseDate(r[dateColumn] ?? "");
       if (d) {
-        const day = ensureDay(toIsoDate(d), d);
+        const iso = toIsoDate(d);
+        const day = ensureDay(iso, d);
         day.byStatus.set(status, (day.byStatus.get(status) ?? 0) + 1);
         day.total += 1;
+        // Per-agent-per-day accumulator
+        if (ag.agent) {
+          let perAgent = agentDayMap.get(ag.agent);
+          if (!perAgent) {
+            perAgent = new Map();
+            agentDayMap.set(ag.agent, perAgent);
+          }
+          let aDay = perAgent.get(iso);
+          if (!aDay) {
+            aDay = { iso, date: d, calls: 0, seconds: 0, byStatus: new Map(), total: 0 };
+            perAgent.set(iso, aDay);
+          }
+          aDay.byStatus.set(status, (aDay.byStatus.get(status) ?? 0) + 1);
+          aDay.total += 1;
+        }
       }
     }
+  }
+
+  const byAgentDay = new Map<string, DayBreakdown[]>();
+  for (const [agent, days] of agentDayMap) {
+    byAgentDay.set(
+      agent,
+      Array.from(days.values()).sort((a, b) => a.date.getTime() - b.date.getTime()),
+    );
   }
 
   const statuses = Array.from(allStatuses).sort((a, b) => {
@@ -1707,6 +1736,7 @@ function aggregate(
     retainedStatuses,
     byDay,
     byAgent,
+    byAgentDay,
     totals: {
       calls: totalCalls,
       seconds: totalSeconds,
@@ -1860,10 +1890,15 @@ function sumRetained(byStatus: Map<string, number>, retained: Set<string>): numb
 
 function ByDayView({ data }: { data: Aggregated }) {
   const showRate = data.mode === "retention";
+  const [agentFilter, setAgentFilter] = useState<string>("");
+  const sourceDays: DayBreakdown[] =
+    agentFilter && data.byAgentDay.has(agentFilter)
+      ? data.byAgentDay.get(agentFilter)!
+      : data.byDay;
   // Group days into weeks (Mon–Sun) and emit a subtotal row at the end of each week
   type WeekGroup = { weekStart: Date; days: DayBreakdown[] };
   const weeks: WeekGroup[] = [];
-  for (const day of data.byDay) {
+  for (const day of sourceDays) {
     const ws = startOfWeek(day.date);
     const wsTime = ws.getTime();
     let group = weeks[weeks.length - 1];
@@ -1874,7 +1909,60 @@ function ByDayView({ data }: { data: Aggregated }) {
     group.days.push(day);
   }
 
+  const agentOptions = useMemo(
+    () => data.byAgent.map((a) => a.agent).filter(Boolean).sort((a, b) => a.localeCompare(b)),
+    [data.byAgent],
+  );
+
+  const footerTotals = useMemo(() => {
+    if (!agentFilter) {
+      return {
+        calls: data.totals.calls,
+        seconds: data.totals.seconds,
+        byStatus: data.totals.byStatus,
+        grand: data.totals.grand,
+        retained: data.totals.retained,
+      };
+    }
+    const byStatus = new Map<string, number>();
+    let calls = 0, seconds = 0, grand = 0;
+    for (const d of sourceDays) {
+      calls += d.calls;
+      seconds += d.seconds;
+      grand += d.total;
+      for (const [s, n] of d.byStatus) {
+        byStatus.set(s, (byStatus.get(s) ?? 0) + n);
+      }
+    }
+    let retained = 0;
+    for (const s of data.retainedStatuses) retained += byStatus.get(s) ?? 0;
+    return { calls, seconds, byStatus, grand, retained };
+  }, [agentFilter, sourceDays, data.totals, data.retainedStatuses]);
+
   return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-muted-foreground">Filter by agent:</span>
+        <select
+          value={agentFilter}
+          onChange={(e) => setAgentFilter(e.target.value)}
+          className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
+        >
+          <option value="">All agents</option>
+          {agentOptions.map((n) => (
+            <option key={n} value={n}>{n}</option>
+          ))}
+        </select>
+        {agentFilter && (
+          <button
+            type="button"
+            onClick={() => setAgentFilter("")}
+            className="text-xs text-muted-foreground hover:text-foreground underline"
+          >
+            Clear
+          </button>
+        )}
+      </div>
     <div className="rounded-lg border bg-card overflow-hidden">
       <div className="overflow-x-auto max-h-[65vh]">
         <Table>
@@ -1992,31 +2080,31 @@ function ByDayView({ data }: { data: Aggregated }) {
               );
             })}
           </TableBody>
-          {data.byDay.length > 0 && (
+          {sourceDays.length > 0 && (
             <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
               <TableRow>
                 <TableCell className="font-bold">Total</TableCell>
                 <TableCell></TableCell>
                 <TableCell className="text-right tabular-nums font-mono font-bold">
-                  {data.totals.calls}
+                  {footerTotals.calls}
                 </TableCell>
                 <TableCell className="text-right tabular-nums font-mono font-bold">
-                  {formatDuration(data.totals.seconds)}
+                  {formatDuration(footerTotals.seconds)}
                 </TableCell>
                 {data.statuses.map((s) => (
                   <TableCell
                     key={s}
                     className="text-right tabular-nums font-mono font-bold"
                   >
-                    {data.totals.byStatus.get(s) ?? 0}
+                    {footerTotals.byStatus.get(s) ?? 0}
                   </TableCell>
                 ))}
                 <TableCell className="text-right tabular-nums font-mono font-bold bg-primary/10">
-                  {data.totals.grand}
+                  {footerTotals.grand}
                 </TableCell>
                 {showRate && (
                   <TableCell className="text-right tabular-nums font-mono font-bold bg-primary/10">
-                    {retentionRate(data.totals.retained, data.totals.grand)}
+                    {retentionRate(footerTotals.retained, footerTotals.grand)}
                   </TableCell>
                 )}
               </TableRow>
@@ -2024,6 +2112,7 @@ function ByDayView({ data }: { data: Aggregated }) {
           )}
         </Table>
       </div>
+    </div>
     </div>
   );
 }
