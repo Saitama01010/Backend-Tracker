@@ -3367,30 +3367,32 @@ function TeamPanel({
         {(aggregated && !("error" in aggregated)) || callAgentList.length > 0 ? (
           <>
             {!isRestricted && <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <StatTile label="Agents" value={callAgentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
-              <StatTile
-                label="Total calls"
-                value={(phoneTotals.calls + pbxTotals.calls).toLocaleString()}
-                icon={<Phone className="h-3.5 w-3.5" />}
-                tone="sky"
-              />
-              <StatTile
-                label="Answered"
-                value={(phoneTotals.answered + pbxTotals.answered).toLocaleString()}
-                tone="emerald"
-              />
-              <StatTile
-                label="Time on calls"
-                value={formatHours(phoneTotals.seconds + pbxTotals.seconds)}
-                icon={<Clock className="h-3.5 w-3.5" />}
-                tone="amber"
-              />
-              <StatTile
-                label="Response rate"
-                value={responseRate(phoneTotals.answered + pbxTotals.answered, phoneTotals.calls + pbxTotals.calls)}
-                tone="amber"
-              />
-              {aggregated && !("error" in aggregated) && (mode === "nsf" ? (
+              {subTabAllowed("call") && <>
+                <StatTile label="Agents" value={callAgentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+                <StatTile
+                  label="Total calls"
+                  value={(phoneTotals.calls + pbxTotals.calls).toLocaleString()}
+                  icon={<Phone className="h-3.5 w-3.5" />}
+                  tone="sky"
+                />
+                <StatTile
+                  label="Answered"
+                  value={(phoneTotals.answered + pbxTotals.answered).toLocaleString()}
+                  tone="emerald"
+                />
+                <StatTile
+                  label="Time on calls"
+                  value={formatHours(phoneTotals.seconds + pbxTotals.seconds)}
+                  icon={<Clock className="h-3.5 w-3.5" />}
+                  tone="amber"
+                />
+                <StatTile
+                  label="Response rate"
+                  value={responseRate(phoneTotals.answered + pbxTotals.answered, phoneTotals.calls + pbxTotals.calls)}
+                  tone="amber"
+                />
+              </>}
+              {aggregated && !("error" in aggregated) && subTabAllowed("files") && (mode === "nsf" ? (
                 <>
                   <StatTile label="Today's fixed" value={aggregated.todayCount.toLocaleString()} tone="emerald" />
                   <StatTile label="This month's fixed" value={aggregated.monthCount.toLocaleString()} tone="emerald" />
@@ -3604,13 +3606,15 @@ function CSPanel() {
         {!csLockToToday && <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />}
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <StatTile label="Agents" value={allAgents.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
-          <StatTile label="Total calls" value={(totals.calls + pbxTotals.calls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
-          <StatTile label="Answered" value={(totals.answered + pbxTotals.answered).toLocaleString()} tone="emerald" />
-          <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
-          <StatTile label="Time on calls" value={formatHours(totals.seconds + pbxTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
-          <StatTile label="Response rate" value={responseRate(totals.answered + pbxTotals.answered, totals.calls + pbxTotals.calls)} tone="amber" />
-          {aggregated && !("error" in aggregated) && (
+          {csSubTabAllowed("call") && <>
+            <StatTile label="Agents" value={allAgents.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+            <StatTile label="Total calls" value={(totals.calls + pbxTotals.calls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
+            <StatTile label="Answered" value={(totals.answered + pbxTotals.answered).toLocaleString()} tone="emerald" />
+            <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
+            <StatTile label="Time on calls" value={formatHours(totals.seconds + pbxTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
+            <StatTile label="Response rate" value={responseRate(totals.answered + pbxTotals.answered, totals.calls + pbxTotals.calls)} tone="amber" />
+          </>}
+          {aggregated && !("error" in aggregated) && csSubTabAllowed("files") && (
             <>
               <StatTile label="Today's files" value={aggregated.todayCount.toLocaleString()} tone="emerald" />
               <StatTile label="This month's files" value={aggregated.monthCount.toLocaleString()} tone="emerald" />
@@ -3781,13 +3785,15 @@ function RetentionPanel() {
 
         {!retUser.allowedAgents?.length && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <StatTile label="Agents" value={agentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
-            <StatTile label="Total calls" value={(totals.calls + pbxTotals.calls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
-            <StatTile label="Answered" value={(totals.answered + pbxTotals.answered).toLocaleString()} tone="emerald" />
-            <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
-            <StatTile label="Time on calls" value={formatHours(totals.seconds + pbxTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
-            <StatTile label="Response rate" value={responseRate(totals.answered + pbxTotals.answered, totals.calls + pbxTotals.calls)} tone="amber" />
-            {aggregated && !("error" in aggregated) && (
+            {retSubTabAllowed("call") && <>
+              <StatTile label="Agents" value={agentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+              <StatTile label="Total calls" value={(totals.calls + pbxTotals.calls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
+              <StatTile label="Answered" value={(totals.answered + pbxTotals.answered).toLocaleString()} tone="emerald" />
+              <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
+              <StatTile label="Time on calls" value={formatHours(totals.seconds + pbxTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
+              <StatTile label="Response rate" value={responseRate(totals.answered + pbxTotals.answered, totals.calls + pbxTotals.calls)} tone="amber" />
+            </>}
+            {aggregated && !("error" in aggregated) && retSubTabAllowed("files") && (
               <>
                 <StatTile label="Today's retains" value={aggregated.todayRetained.toLocaleString()} tone="emerald" />
                 <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />
