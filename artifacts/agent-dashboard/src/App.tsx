@@ -7539,24 +7539,26 @@ function SamiaChat() {
         inputRef.current?.focus();
       }, 80);
       if (!historyLoaded) {
-        setHistoryLoading(true);
-        fetch("/api/samia/history", { headers: { Authorization: `Bearer ${token}` } })
-          .then((r) => r.ok ? r.json() : [])
-          .then((rows: Array<{ role: string; content: string; images?: string[] | null }>) => {
-            if (rows.length > 0) {
-              setMessages(rows.map((r) => ({ role: r.role as "user" | "assistant", content: r.content, images: r.images ?? undefined })));
-            } else {
-              const hr = new Date().getHours();
-              const timeGreet = hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
-              setMessages([{ role: "assistant", content: `${timeGreet}. I'm Samia — I know every number in this dashboard cold. What do you need?` }]);
-            }
-          })
-          .catch(() => {
-            const hr = new Date().getHours();
-            const timeGreet = hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
-            setMessages([{ role: "assistant", content: `${timeGreet}. I'm Samia — I know every number in this dashboard cold. What do you need?` }]);
-          })
-          .finally(() => { setHistoryLoading(false); setHistoryLoaded(true); });
+        const hr = new Date().getHours();
+        const timeGreet = hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
+        const greeting = { role: "assistant" as const, content: `${timeGreet}. I'm Samia — I know every number in this dashboard cold. What do you need?` };
+        if (!isAdmin) {
+          setMessages([greeting]);
+          setHistoryLoaded(true);
+        } else {
+          setHistoryLoading(true);
+          fetch("/api/samia/history", { headers: { Authorization: `Bearer ${token}` } })
+            .then((r) => r.ok ? r.json() : [])
+            .then((rows: Array<{ role: string; content: string; images?: string[] | null }>) => {
+              if (rows.length > 0) {
+                setMessages(rows.map((r) => ({ role: r.role as "user" | "assistant", content: r.content, images: r.images ?? undefined })));
+              } else {
+                setMessages([greeting]);
+              }
+            })
+            .catch(() => { setMessages([greeting]); })
+            .finally(() => { setHistoryLoading(false); setHistoryLoaded(true); });
+        }
       }
     }
   }, [open]);
