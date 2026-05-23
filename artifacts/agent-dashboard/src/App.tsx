@@ -3396,15 +3396,15 @@ function TeamPanel({
               {aggregated && !("error" in aggregated) && subTabAllowed("files") && (mode === "nsf" ? (
                 <>
                   <StatTile label="Today's fixed" value={aggregated.todayCount.toLocaleString()} tone="emerald" />
-                  <StatTile label="This month's fixed" value={aggregated.monthCount.toLocaleString()} tone="emerald" />
-                  <StatTile label="Total fixed" value={aggregated.totals.grand.toLocaleString()} tone="violet" />
+                  {!lockToToday && <StatTile label="This month's fixed" value={aggregated.monthCount.toLocaleString()} tone="emerald" />}
+                  {!lockToToday && <StatTile label="Total fixed" value={aggregated.totals.grand.toLocaleString()} tone="violet" />}
                 </>
               ) : (
                 <>
                   <StatTile label="Today's retains" value={aggregated.todayRetained.toLocaleString()} tone="emerald" />
-                  <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />
-                  <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />
-                  <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />
+                  {!lockToToday && <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />}
+                  {!lockToToday && <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />}
+                  {!lockToToday && <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />}
                 </>
               ))}
             </div>}
@@ -3618,8 +3618,8 @@ function CSPanel() {
           {aggregated && !("error" in aggregated) && csSubTabAllowed("files") && (
             <>
               <StatTile label="Today's files" value={aggregated.todayCount.toLocaleString()} tone="emerald" />
-              <StatTile label="This month's files" value={aggregated.monthCount.toLocaleString()} tone="emerald" />
-              <StatTile label="Total files" value={aggregated.totals.grand.toLocaleString()} tone="violet" />
+              {!csLockToToday && <StatTile label="This month's files" value={aggregated.monthCount.toLocaleString()} tone="emerald" />}
+              {!csLockToToday && <StatTile label="Total files" value={aggregated.totals.grand.toLocaleString()} tone="violet" />}
             </>
           )}
         </div>
@@ -3797,11 +3797,11 @@ function RetentionPanel() {
             {aggregated && !("error" in aggregated) && retSubTabAllowed("files") && (
               <>
                 <StatTile label="Today's retains" value={aggregated.todayRetained.toLocaleString()} tone="emerald" />
-                <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />
-                <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />
+                {!retLockToToday && <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />}
+                {!retLockToToday && <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />}
                 <StatTile label="Today's fixed" value={aggregated.todayFixed.toLocaleString()} tone="sky" />
-                <StatTile label="This month's fixed" value={aggregated.monthFixed.toLocaleString()} tone="sky" />
-                <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />
+                {!retLockToToday && <StatTile label="This month's fixed" value={aggregated.monthFixed.toLocaleString()} tone="sky" />}
+                {!retLockToToday && <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />}
               </>
             )}
           </div>
