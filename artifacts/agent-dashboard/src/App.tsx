@@ -50,6 +50,7 @@ import {
   KeyRound,
   UserCheck,
   UserX,
+  Trash2,
   PhoneOff,
   Filter,
   MessageCircle,
@@ -4538,6 +4539,13 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
     setEditingId(null); await load();
   }
 
+  async function deleteUser(u: PortalUser) {
+    if (!confirm(`Permanently delete user "${u.username}"? This cannot be undone.`)) return;
+    const r = await fetch(`/api/users/${u.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) { const d = await r.json().catch(() => ({})) as { error?: string }; setError(d.error ?? "Failed to delete user"); return; }
+    setEditingId(null); await load();
+  }
+
   function startEdit(u: PortalUser) {
     if (editingId === u.id) { setEditingId(null); return; }
     setEditingId(u.id);
@@ -4667,6 +4675,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                       ? <button onClick={() => patchUser(u.id, { active: false })} className="p-1 rounded text-zinc-500 hover:text-red-400 transition-colors" title="Disable"><UserX className="h-3.5 w-3.5" /></button>
                       : <button onClick={() => patchUser(u.id, { active: true })} className="p-1 rounded text-zinc-500 hover:text-emerald-400 transition-colors" title="Enable"><UserCheck className="h-3.5 w-3.5" /></button>
                     }
+                    <button onClick={() => deleteUser(u)} className="p-1 rounded text-zinc-500 hover:text-red-500 transition-colors" title="Delete permanently"><Trash2 className="h-3.5 w-3.5" /></button>
                   </div>
                 </div>
 

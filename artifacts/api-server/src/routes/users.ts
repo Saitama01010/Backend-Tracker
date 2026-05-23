@@ -113,4 +113,12 @@ router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) =
   res.json({ ...user, permissions: parsePermissions(user.permissions, user.role), allowedTabs: parseJsonArray(user.allowedTabs), allowedAgents: parseJsonArray(user.allowedAgents), allowedSubTabs: parseJsonArray(user.allowedSubTabs) });
 });
 
+router.delete("/users/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (req.user?.userId === id) { res.status(400).json({ error: "Cannot delete your own account" }); return; }
+  await db.delete(portalUsersTable).where(eq(portalUsersTable.id, id));
+  res.json({ ok: true });
+});
+
 export default router;
