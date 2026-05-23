@@ -7745,11 +7745,6 @@ function AttendancePanel() {
     return cols;
   }, [monthOff]);
 
-  const saturdayCount = useMemo(
-    () => dateCols.filter((d) => new Date(d + "T12:00:00").getDay() === 6).length,
-    [dateCols],
-  );
-
   const qc = useQueryClient();
   const { data, isLoading } = useQuery<AttData>({
     queryKey: ["attendance", fromStr, toStr, showInactive],
@@ -7955,7 +7950,7 @@ function AttendancePanel() {
       {showTodaySummary && (
         <div className="space-y-3">
           {/* Overall breakdown */}
-          <div className="grid grid-cols-3 sm:grid-cols-7 gap-2 sm:gap-3">
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 sm:gap-3">
             {[
               { label: "Present", value: todaySummary.in,     color: "text-emerald-400" },
               { label: "Off",     value: todaySummary.off,    color: "text-amber-400" },
@@ -7969,10 +7964,6 @@ function AttendancePanel() {
                 <div className={`text-2xl font-bold tabular-nums ${color}`}>{value}</div>
               </Card>
             ))}
-            <Card className="bg-zinc-900/60 border-white/10 p-3">
-              <div className="text-xs text-muted-foreground mb-1">Saturdays — {monthLabel.split(" ")[0]}</div>
-              <div className="text-2xl font-bold tabular-nums text-amber-400/90">{saturdayCount}</div>
-            </Card>
           </div>
 
           {/* Per-team present breakdown */}
@@ -8053,17 +8044,19 @@ function AttendancePanel() {
                 <th className="text-center text-xs text-yellow-400/70 font-medium px-2 py-2 border-b border-white/10 w-8">Late</th>
                 <th className="text-center text-xs text-blue-400/70 font-medium px-2 py-2 border-b border-white/10 w-8">PTO</th>
                 <th className="text-center text-xs text-red-400/70 font-medium px-2 py-2 border-b border-white/10 w-10">NSNC</th>
+                <th className="text-center text-xs text-amber-300/70 font-medium px-2 py-2 border-b border-white/10 w-8" title="Saturdays present this month">Sat</th>
                 {canManage && <th className="text-center text-xs text-muted-foreground/50 font-medium px-1 py-2 border-b border-white/10 w-6" title="Edit member">⋯</th>}
               </tr>
             </thead>
             <tbody>
               {visible.map((member, mi) => {
-                let cIn = 0, cOff = 0, cLate = 0, cPto = 0, cNsnc = 0;
+                let cIn = 0, cOff = 0, cLate = 0, cPto = 0, cNsnc = 0, cSat = 0;
                 for (const d of dateCols) {
                   const s = recordMap.get(`${member.id}_${d}`)?.status ?? "";
                   if (s === "in") cIn++; else if (s === "off") cOff++;
                   else if (s === "late") cLate++; else if (s === "pto") cPto++;
                   else if (s === "nsnc") cNsnc++;
+                  if ((s === "in" || s === "late") && new Date(d + "T12:00:00").getDay() === 6) cSat++;
                 }
                 const rowBg = mi % 2 === 0 ? "bg-zinc-900/20" : "bg-zinc-900/50";
                 return (
@@ -8109,6 +8102,7 @@ function AttendancePanel() {
                     <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-yellow-400">{cLate || "—"}</td>
                     <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-blue-400">{cPto || "—"}</td>
                     <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-red-400">{cNsnc || "—"}</td>
+                    <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-amber-300" title="Saturdays present (In or Late) this month">{cSat || "—"}</td>
                     <td className="text-center border-b border-white/5">
                       {canManage && <button onClick={() => setEditingMember(member)} className="text-zinc-600 hover:text-zinc-300 transition-colors px-1 text-base leading-none">⋯</button>}
                     </td>
