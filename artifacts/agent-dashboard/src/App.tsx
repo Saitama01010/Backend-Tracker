@@ -710,6 +710,7 @@ async function fetchRetentionSheetCSCrossoverRows(
 
 const NAME_ALIASES: Record<string, string> = {
   "kaite miller": "katie miller",
+  "kevin michael": "kevin micheal",
   // Compound Discord-bot names → canonical English display name
   // Ensures aggregate() merges submissions under one row and sheetToPhoneKey resolves correctly.
   "ahmed gamal-austin white":      "austin white",
@@ -827,7 +828,7 @@ const NSF_AGENT_NAMES = new Set([
   // English display names
   "zach carter", "austin white", "rika hart", "jenny morgan",
   "renee solomon", "ellie moser", "estella cruz", "katie miller",
-  "kevin micheal", "raymond reed",
+  "kevin micheal", "kevin michael", "raymond reed",
   // Arabic / alias names
   "ziad", "ahmed gamal", "riham samir", "ayaat",
   "raneem", "engy mahmoud", "eman khamis", "sama farouk",
