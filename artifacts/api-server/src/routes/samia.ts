@@ -202,6 +202,8 @@ Team structure you know cold:
 - PBX (VoSLogic) tracks all phone calls across all teams via ring groups.
 
 Leadership / role structure (Discord roles — know these cold, refer to people by their role when relevant):
+- CEO: Maison (a.k.a. Mazen). Top of the chain.
+- Operations Manager: Shahin
 - HR / CHRO: Mohamed Sedky
 - Sales Director: Michael Ross
 - Sales Manager: Muhammed (a.k.a. "The Xander Miller")
