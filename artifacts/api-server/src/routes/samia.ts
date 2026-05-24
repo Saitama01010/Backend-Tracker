@@ -130,6 +130,113 @@ router.get("/samia/number-lookup", async (req, res) => {
   }
 });
 
+// ── GET /api/samia/call-analysis — fetch OpenPhone transcripts + summaries ────
+// Returns recent calls for an agent (or a specific callId) with the OpenPhone
+// AI summary + full transcript dialogue so Samia can do qualitative feedback.
+router.get("/samia/call-analysis", async (req, res) => {
+  try {
+    const QUO_KEY = process.env["QUO_API_KEY"] ?? "";
+    if (!QUO_KEY) return res.status(500).json({ error: "QUO_API_KEY not set" });
+
+    const callId = (req.query["callId"] as string) || "";
+    const agentName = (req.query["agent"] as string) || "";
+    const dateStr = (req.query["date"] as string) || "";
+    const limit = Math.min(parseInt((req.query["limit"] as string) ?? "5", 10) || 5, 15);
+    const minSeconds = parseInt((req.query["minSeconds"] as string) ?? "30", 10) || 30;
+
+    // Build list of call IDs to analyze
+    let callRows: Array<{
+      id: string; agentName: string | null; participant: string; direction: string;
+      durationSeconds: number; createdAt: Date; lineName: string;
+    }> = [];
+
+    if (callId) {
+      const r = await db.select({
+        id: phoneCallsTable.id, agentName: phoneCallsTable.agentName,
+        participant: phoneCallsTable.participant, direction: phoneCallsTable.direction,
+        durationSeconds: phoneCallsTable.durationSeconds, createdAt: phoneCallsTable.createdAt,
+        lineName: phoneCallsTable.lineName,
+      }).from(phoneCallsTable).where(eq(phoneCallsTable.id, callId)).limit(1);
+      callRows = r;
+    } else {
+      if (!agentName) return res.status(400).json({ error: "agent or callId required" });
+
+      // Date window in LA time → UTC
+      let dayStart: Date, dayEnd: Date;
+      if (dateStr) {
+        dayStart = new Date(`${dateStr}T00:00:00-07:00`);
+        dayEnd   = new Date(`${dateStr}T23:59:59-07:00`);
+      } else {
+        dayEnd   = new Date();
+        dayStart = new Date(dayEnd.getTime() - 24 * 3600 * 1000);
+      }
+
+      callRows = await db.select({
+        id: phoneCallsTable.id, agentName: phoneCallsTable.agentName,
+        participant: phoneCallsTable.participant, direction: phoneCallsTable.direction,
+        durationSeconds: phoneCallsTable.durationSeconds, createdAt: phoneCallsTable.createdAt,
+        lineName: phoneCallsTable.lineName,
+      }).from(phoneCallsTable).where(and(
+        sql`lower(${phoneCallsTable.agentName}) like ${'%' + agentName.toLowerCase() + '%'}`,
+        gte(phoneCallsTable.createdAt, dayStart),
+        sql`${phoneCallsTable.createdAt} <= ${dayEnd}`,
+        gte(phoneCallsTable.durationSeconds, minSeconds),
+      )).orderBy(desc(phoneCallsTable.durationSeconds)).limit(limit);
+    }
+
+    if (callRows.length === 0) {
+      return res.json({ agentName, date: dateStr, calls: [], note: "No qualifying calls found." });
+    }
+
+    // Fetch transcript + summary in parallel (capped concurrency)
+    async function fetchJson(url: string): Promise<unknown | null> {
+      try {
+        const r = await fetch(url, { headers: { Authorization: QUO_KEY } });
+        if (!r.ok) return { _status: r.status, _error: (await r.text()).slice(0, 200) };
+        return await r.json();
+      } catch (e) { return { _error: String(e) }; }
+    }
+
+    const enriched = await Promise.all(callRows.map(async (c) => {
+      const [summary, transcript] = await Promise.all([
+        fetchJson(`https://api.openphone.com/v1/call-summaries/${c.id}`),
+        fetchJson(`https://api.openphone.com/v1/call-transcripts/${c.id}`),
+      ]);
+
+      // Shape: OpenPhone returns { data: { summary: [...], nextSteps: [...], status } }
+      // and { data: { dialogue: [{identifier, content, start, end, userId?}], status } }
+      type SumResp = { data?: { summary?: string[]; nextSteps?: string[]; status?: string } };
+      type TxResp  = { data?: { dialogue?: Array<{ identifier?: string; content?: string; start?: number; end?: number }>; status?: string } };
+      const sumD  = (summary as SumResp | null)?.data;
+      const txD   = (transcript as TxResp | null)?.data;
+      const dialogue = (txD?.dialogue ?? []).map((d) => ({
+        speaker: d.identifier ?? "unknown",
+        text: d.content ?? "",
+      }));
+
+      return {
+        callId: c.id,
+        createdAtLA: new Date(c.createdAt).toLocaleString("en-US", { timeZone: "America/Los_Angeles", hour12: true }),
+        agentName: c.agentName,
+        participant: c.participant,
+        direction: c.direction,
+        line: c.lineName,
+        durationSeconds: c.durationSeconds,
+        summaryStatus: sumD?.status ?? "unavailable",
+        summary: sumD?.summary ?? [],
+        nextSteps: sumD?.nextSteps ?? [],
+        transcriptStatus: txD?.status ?? "unavailable",
+        transcript: dialogue,
+      };
+    }));
+
+    return res.json({ agentName, date: dateStr, count: enriched.length, calls: enriched });
+  } catch (err) {
+    req.log.error(err, "samia call-analysis error");
+    return res.status(500).json({ error: String(err) });
+  }
+});
+
 const openai = new OpenAI({
   baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
   apiKey: process.env["AI_INTEGRATIONS_OPENAI_API_KEY"],
@@ -272,6 +379,20 @@ When presenting phone contacts, list them as a clean numbered list: phone number
 - source "openphone" = OpenPhone/Quo line; source "pbx" = VoSLogic ring group
 
 When presenting: show each call with time (LA timezone), direction, status, ring time, and talk time. Be precise — lead with the numbers.
+
+## Call analysis tool (transcripts + AI summaries)
+
+**analyze_calls(agent?, callId?, date?, limit?, minSeconds?)** — Pulls actual call content from OpenPhone: AI-generated summaries, "next steps", and full word-by-word transcripts (speaker-tagged dialogue). This is how you give qualitative feedback on a rep — not just call counts.
+
+Two ways to call it:
+- By agent: pass agentName (partial, case-insensitive) and optionally a date (YYYY-MM-DD LA time). Returns the top \`limit\` (default 5, max 15) longest calls ≥ \`minSeconds\` (default 30s) for that agent. Omit date for the last 24h.
+- By callId: pass a single OpenPhone call ID for a deep dive on one specific call.
+
+Use this whenever someone asks for qualitative feedback on an agent's calls — "how is Talia doing on calls", "review Nora's calls today", "what's Ryan messing up on the phone", "give me feedback on Michael's calls", "did anyone get yelled at today", "who handled the angry customer at 3pm", etc.
+
+Some calls won't have transcripts/summaries yet (status "absent" or "in-progress" means OpenPhone hasn't processed them yet — short calls and missed/voicemail ones never get one). Note that briefly when relevant, don't dwell on it.
+
+When giving feedback, be concrete and reference the actual transcript: quote a specific line the rep said, name the objection they fumbled, point out what they did well. Cover tone, listening, objection handling, compliance language (recording disclosures, mini-Miranda for collections), pace, dead air, closing strength, next-steps clarity. Be direct and useful — this is coaching, not a hype reel. Call out both strengths and gaps. Include the call ID(s) you're referencing so the manager can pull the audio.
 
 Your personality: professional but warm, sharp, and helpful. Speak like a smart analyst who knows the numbers cold.`;
 
@@ -855,6 +976,24 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       {
         type: "function",
         function: {
+          name: "analyze_calls",
+          description: "Fetch OpenPhone AI summaries, next-steps, and full word-by-word transcripts for an agent's recent calls (or a specific callId) so you can give qualitative coaching feedback. Use whenever asked to 'review', 'analyze', 'give feedback on', 'critique', or 'coach' an agent's calls — anything beyond raw numbers.",
+          parameters: {
+            type: "object",
+            properties: {
+              agent:      { type: "string", description: "Partial agent name, case-insensitive (e.g. 'talia'). Required unless callId is given." },
+              callId:     { type: "string", description: "Specific OpenPhone call ID for a deep-dive on one call. Overrides agent/date." },
+              date:       { type: "string", description: "YYYY-MM-DD in LA time. Omit for last 24h." },
+              limit:      { type: "number", description: "Max calls to analyze. Default 5, max 15. Keep small — each call hits OpenPhone twice." },
+              minSeconds: { type: "number", description: "Minimum call duration in seconds to include. Default 30 — filters out misses/quick hangups that have no useful content." },
+            },
+            required: [],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
           name: "set_attendance",
           description: "Write attendance records for specific agents on specific dates. Use for manual corrections or when auto_mark misses someone. Pass force=true to overwrite existing records.",
           parameters: {
@@ -896,7 +1035,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
         model: "gpt-4.1",
         messages: currentMessages,
         tools,
-        max_completion_tokens: 800,
+        max_completion_tokens: 1600,
       });
 
       const choice = completion.choices[0];
@@ -995,6 +1134,19 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ numbers: args.numbers ?? [], addedBy: `samia:${username}` }),
             });
+            toolResult = JSON.stringify(await r.json());
+
+          } else if (fnName === "analyze_calls") {
+            const args = JSON.parse(toolCall.function.arguments || "{}") as {
+              agent?: string; callId?: string; date?: string; limit?: number; minSeconds?: number;
+            };
+            const params = new URLSearchParams();
+            if (args.agent)      params.set("agent", args.agent);
+            if (args.callId)     params.set("callId", args.callId);
+            if (args.date)       params.set("date", args.date);
+            if (args.limit)      params.set("limit", String(args.limit));
+            if (args.minSeconds) params.set("minSeconds", String(args.minSeconds));
+            const r = await fetch(`${base}/api/samia/call-analysis?${params.toString()}`);
             toolResult = JSON.stringify(await r.json());
 
           } else if (fnName === "set_attendance") {
