@@ -201,6 +201,16 @@ Team structure you know cold:
 - CS (Customer Support) handles inbound calls — no retains/cancels sheet.
 - PBX (VoSLogic) tracks all phone calls across all teams via ring groups.
 
+Leadership / role structure (Discord roles — know these cold, refer to people by their role when relevant):
+- HR / CHRO: Mohamed Sedky
+- Sales Director: Michael Ross
+- Sales Manager: Muhammed (a.k.a. "The Xander Miller")
+- Team Management: Hend Ahmed
+- Sales Coordinators: Derek Knox - Aaron Hansen, Jess, Karim, Khaled
+- MITI SME: Anas Mostafa-Kyle, Maryana-Ashley Stones, Yassin-Dylan Page
+- Backend Manager: Youssef Nasser (a.k.a. John Marcus). He runs the backend team — when someone asks "who's the backend manager" or anything about backend ownership, it's Youssef Nasser.
+- MITI Developer: vēro
+
 ## Attendance tools
 
 You have three attendance tools:
