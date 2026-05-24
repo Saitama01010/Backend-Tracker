@@ -1,0 +1,150 @@
+MISSION CRITICAL - DO NOT REFACTOR UNRELATED CODE.
+
+Build an MVP AI QA system for retention calls.
+
+OBJECTIVE
+
+Every completed call from Quo/OpenPhone must be automatically evaluated against our Retention QA scorecard.
+
+The system must:
+
+1. Receive a call transcript.
+2. Analyze the transcript using OpenAI.
+3. Score the call from 0-100.
+4. Identify missed retention steps.
+5. Flag failed calls.
+6. Create a Manager QA task.
+7. Display results in the QA dashboard.
+
+DO NOT redesign the UI.
+DO NOT change authentication.
+DO NOT modify unrelated pages.
+
+ONLY implement the QA workflow.
+
+---
+
+## DATA FLOW
+
+Webhook/Event
+→ Transcript Available
+
+Store:
+
+* callId
+* agentName
+* phoneNumber
+* callDate
+* transcript
+* aiSummary
+
+Then run AI QA.
+
+---
+
+## RETENTION QA SCORECARD
+
+Score each category:
+
+Greeting = 10
+Empathy/Acknowledgement = 10
+Asked reason for cancellation = 10
+Attempted retention = 20
+Used retention framework = 20
+Handled objection = 10
+Presented solution/concession = 10
+Proper close = 10
+
+TOTAL = 100
+
+CRITICAL FAIL CONDITIONS:
+
+* No retention attempt
+* Customer requested cancellation and agent made no save attempt
+* Rude behavior
+* Call ended without addressing cancellation reason
+
+---
+
+## AI OUTPUT FORMAT
+
+Return JSON ONLY:
+
+{
+"score": 85,
+"pass": true,
+"criticalFail": false,
+"strengths": [
+"Built rapport",
+"Handled objection"
+],
+"missedItems": [
+"No concession offered"
+],
+"managerReviewRequired": false
+}
+
+---
+
+## MANAGER REVIEW RULES
+
+Automatically create manager review task when:
+
+score < 80
+
+OR
+
+criticalFail = true
+
+Task fields:
+
+* Agent Name
+* Call ID
+* AI Score
+* Reason
+* Date
+
+---
+
+## DASHBOARD
+
+Create QA dashboard widgets:
+
+Total Calls Reviewed
+Average QA Score
+Failed Calls
+Pending Manager Reviews
+
+Table:
+
+Agent
+Call ID
+Score
+Status
+Critical Fail
+Review Required
+
+---
+
+## IMPORTANT
+
+Do NOT create placeholder code.
+
+Do NOT stop after creating the UI.
+
+Implement the complete backend workflow.
+
+Verify every API route works.
+
+Verify OpenAI evaluation works.
+
+Verify QA records save to database.
+
+Verify failed calls generate manager review tasks.
+
+After implementation:
+
+1. Show every file modified.
+2. Show every new API endpoint.
+3. Show database schema changes.
+4. Show a successful test example from transcript → QA result.

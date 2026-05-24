@@ -83,6 +83,7 @@ const ALL_TABS: { value: string; label: string }[] = [
   { value: "missed-no-cb",    label: "Missed / No CB" },
   { value: "callback-review", label: "CB Review" },
   { value: "violations",      label: "Violations" },
+  { value: "qa",              label: "Retention QA" },
 ];
 
 type TeamAccess = "retention" | "nsf" | "cs";
@@ -6653,6 +6654,267 @@ function fmtMins(m: number): string {
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Retention QA Panel (AI-scored call reviews)
+// ─────────────────────────────────────────────────────────────────────────────
+interface QAStats { reviewed: number; avgScore: number; failed: number; criticalFails: number; pendingReviews: number; }
+interface QAReview {
+  id: string; agentName: string; phoneNumber: string | null; callDate: string;
+  score: number; pass: boolean; criticalFail: boolean; managerReviewRequired: boolean;
+  strengths: string[]; missedItems: string[]; reason: string | null;
+  categoryScores: Record<string, number>; aiSummary: string | null; transcript: string | null;
+}
+interface QATask {
+  id: string; agentName: string; score: number; reason: string;
+  criticalFail: boolean; status: string; createdAt: string;
+  resolvedBy: string | null; resolvedAt: string | null; notes: string | null;
+}
+
+function QAPanel() {
+  const { token, user } = useUser();
+  const qc = useQueryClient();
+  const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  const monthAgo = new Date(Date.now() - 29 * 86400000).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  const [from, setFrom] = useState(monthAgo);
+  const [to, setTo] = useState(todayLA);
+  const [sub, setSub] = useState<"reviews" | "tasks">("reviews");
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [processing, setProcessing] = useState(false);
+
+  const range = useMemo(() => {
+    const fromISO = new Date(`${from}T00:00:00-07:00`).toISOString();
+    const toISO   = new Date(`${to}T23:59:59-07:00`).toISOString();
+    return { fromISO, toISO };
+  }, [from, to]);
+
+  const stats = useQuery<QAStats>({
+    queryKey: ["qa-stats", range.fromISO, range.toISO, token],
+    queryFn: async () => {
+      const r = await fetch(`/api/qa/stats?from=${range.fromISO}&to=${range.toISO}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json() as Promise<QAStats>;
+    },
+    refetchInterval: 60_000,
+  });
+
+  const reviews = useQuery<{ reviews: QAReview[] }>({
+    queryKey: ["qa-reviews", range.fromISO, range.toISO, token],
+    queryFn: async () => {
+      const r = await fetch(`/api/qa/reviews?from=${range.fromISO}&to=${range.toISO}&limit=200`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json() as Promise<{ reviews: QAReview[] }>;
+    },
+    refetchInterval: 60_000,
+    enabled: sub === "reviews",
+  });
+
+  const tasks = useQuery<{ tasks: QATask[] }>({
+    queryKey: ["qa-tasks", token],
+    queryFn: async () => {
+      const r = await fetch(`/api/qa/tasks?status=open&limit=200`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json() as Promise<{ tasks: QATask[] }>;
+    },
+    refetchInterval: 60_000,
+    enabled: sub === "tasks",
+  });
+
+  const runProcessor = useCallback(async () => {
+    setProcessing(true);
+    try {
+      await fetch("/api/qa/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ batchSize: 10 }),
+      });
+      await Promise.all([stats.refetch(), reviews.refetch(), tasks.refetch()]);
+    } finally { setProcessing(false); }
+  }, [token, stats, reviews, tasks]);
+
+  const resolveTask = useCallback(async (id: string) => {
+    await fetch(`/api/qa/tasks/${id}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ resolvedBy: user.username }),
+    });
+    void qc.invalidateQueries({ queryKey: ["qa-tasks"] });
+    void qc.invalidateQueries({ queryKey: ["qa-stats"] });
+  }, [token, user.username, qc]);
+
+  const reviewRows = reviews.data?.reviews ?? [];
+  const taskRows = tasks.data?.tasks ?? [];
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          <Label htmlFor="qa-from" className="text-xs text-zinc-400">From</Label>
+          <Input id="qa-from" type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 w-36 bg-zinc-900/70 border-zinc-800" />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Label htmlFor="qa-to" className="text-xs text-zinc-400">To</Label>
+          <Input id="qa-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 w-36 bg-zinc-900/70 border-zinc-800" />
+        </div>
+        <Button onClick={runProcessor} disabled={processing} size="sm" className="ml-auto bg-violet-600 hover:bg-violet-500">
+          <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${processing ? "animate-spin" : ""}`} />
+          {processing ? "Evaluating…" : "Run QA now"}
+        </Button>
+      </div>
+
+      {/* Stat tiles */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-2">
+        <QATile label="Reviewed" value={stats.data?.reviewed ?? 0} />
+        <QATile label="Avg score" value={`${stats.data?.avgScore ?? 0}/100`} accent={stats.data && stats.data.avgScore >= 80 ? "good" : "warn"} />
+        <QATile label="Failed" value={stats.data?.failed ?? 0} accent={stats.data && stats.data.failed > 0 ? "bad" : undefined} />
+        <QATile label="Critical fails" value={stats.data?.criticalFails ?? 0} accent={stats.data && stats.data.criticalFails > 0 ? "bad" : undefined} />
+        <QATile label="Open reviews" value={stats.data?.pendingReviews ?? 0} accent={stats.data && stats.data.pendingReviews > 0 ? "warn" : undefined} />
+      </div>
+
+      <Tabs value={sub} onValueChange={(v) => setSub(v as "reviews" | "tasks")}>
+        <TabsList className="bg-zinc-900/60">
+          <TabsTrigger value="reviews">All reviews</TabsTrigger>
+          <TabsTrigger value="tasks">Manager queue</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="reviews" className="pt-3">
+          <Card className="bg-zinc-950/40 border-zinc-800/60">
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-zinc-800 hover:bg-transparent">
+                    <TableHead className="text-zinc-400">Agent</TableHead>
+                    <TableHead className="text-zinc-400">When</TableHead>
+                    <TableHead className="text-zinc-400">Customer</TableHead>
+                    <TableHead className="text-zinc-400 text-right">Score</TableHead>
+                    <TableHead className="text-zinc-400">Status</TableHead>
+                    <TableHead className="text-zinc-400">Review</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {reviews.isLoading ? (
+                    <TableRow><TableCell colSpan={6}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
+                  ) : reviewRows.length === 0 ? (
+                    <TableRow><TableCell colSpan={6} className="text-center text-zinc-500 py-8">No QA reviews in this date range yet. Click "Run QA now" to evaluate recent retention calls.</TableCell></TableRow>
+                  ) : reviewRows.map((r) => {
+                    const isOpen = expanded === r.id;
+                    return (
+                      <Fragment key={r.id}>
+                        <TableRow className="border-zinc-800/60 hover:bg-zinc-900/40 cursor-pointer" onClick={() => setExpanded(isOpen ? null : r.id)}>
+                          <TableCell className="font-medium">{r.agentName}</TableCell>
+                          <TableCell className="text-xs text-zinc-400">{new Date(r.callDate).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</TableCell>
+                          <TableCell className="text-xs text-zinc-400 font-mono">{r.phoneNumber ?? "—"}</TableCell>
+                          <TableCell className="text-right">
+                            <span className={`font-semibold ${r.score >= 80 ? "text-emerald-400" : r.score >= 60 ? "text-amber-400" : "text-rose-400"}`}>{r.score}</span>
+                            <span className="text-xs text-zinc-500">/100</span>
+                          </TableCell>
+                          <TableCell>
+                            {r.criticalFail
+                              ? <Badge className="bg-rose-600/20 text-rose-300 border-rose-700/50">Critical fail</Badge>
+                              : r.pass
+                                ? <Badge className="bg-emerald-600/20 text-emerald-300 border-emerald-700/50">Pass</Badge>
+                                : <Badge className="bg-amber-600/20 text-amber-300 border-amber-700/50">Fail</Badge>}
+                          </TableCell>
+                          <TableCell>
+                            {r.managerReviewRequired
+                              ? <Badge variant="outline" className="border-violet-700/60 text-violet-300">Manager</Badge>
+                              : <span className="text-xs text-zinc-500">—</span>}
+                          </TableCell>
+                        </TableRow>
+                        {isOpen && (
+                          <TableRow className="border-zinc-800/60 bg-zinc-950/60">
+                            <TableCell colSpan={6} className="p-4">
+                              <div className="grid md:grid-cols-2 gap-4 text-sm">
+                                <div>
+                                  <div className="text-xs font-medium text-zinc-400 mb-1">Strengths</div>
+                                  {r.strengths.length ? (
+                                    <ul className="list-disc list-inside text-emerald-300 space-y-0.5">{r.strengths.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                                  ) : <div className="text-zinc-500 italic">None noted</div>}
+                                </div>
+                                <div>
+                                  <div className="text-xs font-medium text-zinc-400 mb-1">Missed</div>
+                                  {r.missedItems.length ? (
+                                    <ul className="list-disc list-inside text-rose-300 space-y-0.5">{r.missedItems.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                                  ) : <div className="text-zinc-500 italic">Nothing flagged</div>}
+                                </div>
+                              </div>
+                              {r.reason && <div className="text-sm mt-3 text-zinc-300"><span className="text-zinc-500">Summary: </span>{r.reason}</div>}
+                              {Object.keys(r.categoryScores).length > 0 && (
+                                <div className="flex flex-wrap gap-1.5 mt-3">
+                                  {Object.entries(r.categoryScores).map(([k, v]) => (
+                                    <Badge key={k} variant="outline" className="border-zinc-700 text-zinc-300 text-[10px]">{k}: {v}</Badge>
+                                  ))}
+                                </div>
+                              )}
+                              {r.aiSummary && <div className="text-xs mt-3 text-zinc-500"><span className="font-medium text-zinc-400">OpenPhone summary: </span>{r.aiSummary}</div>}
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="tasks" className="pt-3">
+          <Card className="bg-zinc-950/40 border-zinc-800/60">
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-zinc-800 hover:bg-transparent">
+                    <TableHead className="text-zinc-400">Agent</TableHead>
+                    <TableHead className="text-zinc-400 text-right">Score</TableHead>
+                    <TableHead className="text-zinc-400">Reason</TableHead>
+                    <TableHead className="text-zinc-400">Created</TableHead>
+                    <TableHead className="text-zinc-400 text-right">Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {tasks.isLoading ? (
+                    <TableRow><TableCell colSpan={5}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
+                  ) : taskRows.length === 0 ? (
+                    <TableRow><TableCell colSpan={5} className="text-center text-zinc-500 py-8">No open manager reviews. Nice.</TableCell></TableRow>
+                  ) : taskRows.map((t) => (
+                    <TableRow key={t.id} className="border-zinc-800/60">
+                      <TableCell className="font-medium">{t.agentName}</TableCell>
+                      <TableCell className="text-right">
+                        <span className={`font-semibold ${t.criticalFail ? "text-rose-400" : t.score < 60 ? "text-rose-400" : "text-amber-400"}`}>{t.score}</span>
+                      </TableCell>
+                      <TableCell className="text-sm text-zinc-300 max-w-md">
+                        {t.criticalFail && <Badge className="bg-rose-600/20 text-rose-300 border-rose-700/50 mr-2">Critical</Badge>}
+                        {t.reason}
+                      </TableCell>
+                      <TableCell className="text-xs text-zinc-400">{new Date(t.createdAt).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</TableCell>
+                      <TableCell className="text-right">
+                        <Button size="sm" variant="outline" className="border-zinc-700 h-7" onClick={() => resolveTask(t.id)}>Mark resolved</Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function QATile({ label, value, accent }: { label: string; value: number | string; accent?: "good" | "warn" | "bad" }) {
+  const color = accent === "good" ? "text-emerald-400" : accent === "warn" ? "text-amber-400" : accent === "bad" ? "text-rose-400" : "text-zinc-100";
+  return (
+    <Card className="bg-zinc-950/40 border-zinc-800/60">
+      <CardContent className="p-3">
+        <div className="text-[11px] uppercase tracking-wide text-zinc-500">{label}</div>
+        <div className={`text-xl font-semibold mt-0.5 ${color}`}>{value}</div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function ViolationsPanel() {
   const { token, user } = useUser();
   const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
@@ -7492,6 +7754,11 @@ function Dashboard() {
             {canSeeTab("violations") && (
               <TabsContent value="violations">
                 <ViolationsPanel />
+              </TabsContent>
+            )}
+            {canSeeTab("qa") && (
+              <TabsContent value="qa">
+                <QAPanel />
               </TabsContent>
             )}
           </Tabs>

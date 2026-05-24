@@ -14,6 +14,7 @@ import nsfReadymodeRouter from "./nsfReadymode";
 import csvProxyRouter from "./csvProxy";
 import breaksRouter from "./breaks";
 import teamAgentsRouter from "./teamAgents";
+import qaRouter, { startQaBackgroundProcessor } from "./qa";
 
 const router: IRouter = Router();
 
@@ -31,6 +32,10 @@ router.use(breaksRouter);
 router.use(readymodeRouter);
 router.use(nsfReadymodeRouter);
 router.use(csvProxyRouter);
+router.use(qaRouter);
+
+// Kick off background QA processor (evaluates new retention calls every 5 min).
+startQaBackgroundProcessor();
 router.use(teamAgentsRouter);
 
 export default router;
