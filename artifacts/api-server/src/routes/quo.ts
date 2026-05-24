@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db, phoneCallsTable } from "@workspace/db";
 import { and, eq, gte, lte, desc, ne } from "drizzle-orm";
-import { runSync, startBackgroundSync, getSyncState, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES } from "./quoSync.js";
+import { runSync, startBackgroundSync, getSyncState, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES, canonicalAgentName } from "./quoSync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { logger } from "../lib/logger.js";
 import { liveWebhookCalls } from "./quoWebhook.js";
@@ -217,7 +217,7 @@ router.get("/quo/line-stats", async (req, res) => {
         else lineInbounds.missed++;
       }
 
-      const agentName = row.agentName ?? "Unknown";
+      const agentName = canonicalAgentName(row.agentName) ?? "Unknown";
       const date = toCaDate(row.createdAt);
 
       if (!agentStats[agentName]) agentStats[agentName] = {};
@@ -347,7 +347,7 @@ router.get("/quo/stats", async (req, res) => {
     const blocklist = await getBlockedNumbers();
     for (const row of rows) {
       if (row.participant && blocklist.has(row.participant)) continue;
-      const agentName = row.agentName ?? "Unknown";
+      const agentName = canonicalAgentName(row.agentName) ?? "Unknown";
       // Agent-based team takes priority over line-based; skip calls from unknown agents
       const team = agentTeam(agentName) ?? row.lineTeam;
       if (!team || !(team in teamStats)) continue;

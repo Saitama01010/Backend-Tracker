@@ -730,6 +730,8 @@ const NAME_ALIASES: Record<string, string> = {
   "ahmed ayman":       "ahmed ayman-levi miller",
   "tuqa hossam":       "talia morgan",
   "abdulrhman isawi":          "jacob stephenson",
+  "abdlrhman":                 "jacob stephenson",
+  "adam maxwell":              "jacob stephenson",
   "abdlrhman-adam maxwell":    "jacob stephenson",
   "abdlrhman-jacob stephenson":"jacob stephenson",
   // Youssef Nasser / Youssef-John Marcus → John Marcus

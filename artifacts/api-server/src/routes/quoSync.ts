@@ -72,6 +72,58 @@ const LINE_AGENT_OVERRIDES: Record<string, string> = {
   "max - ma":                        "Max Francis",
 };
 
+// Canonical display-name rollup — one person, many OpenPhone identities.
+// Keyed by lowercased agent name as it comes out of OpenPhone; value is the
+// canonical English display name shown on the dashboard. Applied both at sync
+// time (going forward) and at query time in quo.ts (covers historical rows).
+export const AGENT_DISPLAY_ALIASES: Record<string, string> = {
+  // Retention
+  "abdulrhman isawi": "Jacob Stephenson",
+  "adam maxwell":     "Jacob Stephenson",
+  "abdlrhman":        "Jacob Stephenson",
+  "ahmed ayman":      "Levi Miller",
+  "saif aziz":        "Henry Hart",
+  "muhamed walid":    "Ryan Henderson",
+  "muhamed":          "Ryan Henderson",
+  "zeiad fouad":      "Rick Miller",
+  "nouralden":        "Michael Belfort",
+  "nour":             "Michael Belfort",
+  "karma farouk":     "Katherine Adams",
+  "karma":            "Katherine Adams",
+  "tuqa hossam":      "Talia Morgan",
+  "haythem":          "Dean Lewis",
+  "youssef nasser":   "John Marcus",
+  // CS
+  "hiba kamil":       "Ella Monroe",
+  "nour eldin atef":  "Chase Miller",
+  "fares":            "Leo Carter",
+  "nourhan ame":      "Nora Adam",
+  "youssef nady":     "Jacob Xander",
+  "bassant emad":     "Carla Bennet",
+  "anisa":            "Anna Stone",
+  // NSF
+  "ziad":             "Zach Carter",
+  "ahmed gamal":      "Austin White",
+  "riham samir":      "Rika Hart",
+  "ayaat":            "Jenny Morgan",
+  "raneem":           "Renee Solomon",
+  "engy mahmoud":     "Ellie Moser",
+  "eman khamis":      "Estella Cruz",
+  "sama farouk":      "Katie Miller",
+  "omar badr":        "Kevin Micheal",
+  "yousef taher":     "Raymond Reed",
+  "jana":             "Kayla Navarro",
+  "seif eslam":       "Alex Miller",
+  "abdelrahman":      "Tyler Grant",
+  "omar":             "Otto Klein",
+};
+
+export function canonicalAgentName(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const k = raw.toLowerCase().trim();
+  return AGENT_DISPLAY_ALIASES[k] ?? raw;
+}
+
 // Former employees no longer in the workspace — map by user ID directly
 export const USER_ID_OVERRIDES: Record<string, string> = {
   USahWqOQpm: "Unknown Agent",
@@ -363,13 +415,14 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
           ? call.answeredBy
           : call.userId;
 
-      const agentName =
+      const rawAgentName =
         overrideName ??
         (effectiveUserId
           ? (userMap.get(effectiveUserId) ??
              USER_ID_OVERRIDES[effectiveUserId] ??
              effectiveUserId)
           : null);
+      const agentName = canonicalAgentName(rawAgentName);
 
       // Use the participant from the conversation query (the customer's number).
       // call.participants[0] is the line's own number, NOT the customer.
