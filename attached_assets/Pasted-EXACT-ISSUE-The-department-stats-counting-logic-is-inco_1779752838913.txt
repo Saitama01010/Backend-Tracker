@@ -1,0 +1,146 @@
+EXACT ISSUE
+
+The department stats/counting logic is inconsistent between Retention and Customer Support (CS).
+
+Retention calculations are working correctly.
+
+CS calculations are NOT counting handled-retains the same way.
+
+======================================================
+EXPECTED BEHAVIOR
+=================
+
+ALL departments must follow the SAME counting logic structure.
+
+The ONLY difference between departments should be:
+
+* which submission sheet/source is being filtered
+* which users belong to that department
+
+The metrics themselves must calculate consistently across all departments.
+
+Example:
+
+If a user handles:
+
+* 2 IDP cancel handled (retained)
+* 1 IDP handled
+* 1 fixed
+
+Then the dashboard should count:
+
+Retained = 2
+IDP-Handled = 1
+Fixed = 1
+Total = 4
+
+regardless of department.
+
+======================================================
+CURRENT BEHAVIOR
+================
+
+Retention department counts correctly.
+
+But in the Customer Support (CS) department dashboard, some handled-retains are not being included properly in totals/stat calculations.
+
+Example:
+
+User:
+Jacob Xander
+
+Today he completed:
+
+* 2 IDP cancel handled (retained)
+* 1 IDP handled
+* 1 fixed
+
+Expected Total:
+4
+
+But the current CS dashboard logic is not counting all categories consistently like the Retention dashboard.
+
+======================================================
+IMPORTANT BUSINESS RULE
+=======================
+
+The counting engine should be UNIVERSAL.
+
+Meaning:
+
+ALL departments use the same aggregation logic.
+
+ONLY these should differ:
+
+* submission sheet source
+* user filtering
+* department assignment
+
+DO NOT create separate counting formulas for every department.
+
+======================================================
+EXPECTED LOGIC
+==============
+
+Retention:
+count retained
+count cancelled
+count idp-handled
+count fixed
+count totals
+
+CS:
+count retained
+count cancelled
+count idp-handled
+count fixed
+count totals
+
+NSF:
+count retained
+count cancelled
+count idp-handled
+count fixed
+count totals
+
+Same engine everywhere.
+
+======================================================
+SPECIFIC FILES / SYSTEMS TO INSPECT
+===================================
+
+Please inspect:
+
+1. Department dashboard aggregation logic
+2. Submission sheet parsing logic
+3. Stats calculation service
+4. User filtering logic
+5. Total counter calculation
+6. Department mapping logic
+7. "By files" tab aggregation
+8. Any backend API returning department stats
+
+Most likely issue:
+CS aggregation is filtering categories differently than Retention.
+
+======================================================
+WHAT I NEED YOU TO DO
+=====================
+
+1. Trace how Retention stats are calculated.
+2. Compare that logic with CS stats.
+3. Identify where handled-retains are excluded or categorized incorrectly.
+4. Refactor into ONE universal aggregation engine for all departments.
+5. Make department-specific filtering happen BEFORE aggregation, not during calculation.
+
+======================================================
+AFTER FIXING
+============
+
+Show me:
+
+1. Root cause
+2. Files modified
+3. Old logic vs new logic
+4. Test example using Jacob Xander
+5. Proof totals now calculate consistently across departments

@@ -1470,7 +1470,7 @@ function TimeSince({ isoStr }: { isoStr?: string }) {
 
 // ---------- Aggregation ----------
 
-type TeamMode = "retention" | "nsf";
+type TeamMode = "retention" | "nsf" | "cs";
 
 type DayBreakdown = {
   iso: string;
@@ -3510,7 +3510,7 @@ function CSPanel() {
 
   const aggregated = useMemo(() => {
     if (!statusQ.data) return null;
-    return aggregate(statusQ.data, "nsf", fromDate, toDate, roster);
+    return aggregate(statusQ.data, "cs", fromDate, toDate, roster);
   }, [statusQ.data, from, to, roster]);
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
@@ -3636,9 +3636,10 @@ function CSPanel() {
           </>}
           {aggregated && !("error" in aggregated) && csSubTabAllowed("files") && (
             <>
-              <StatTile label="Today's files" value={aggregated.todayCount.toLocaleString()} tone="emerald" />
-              {!csLockToToday && <StatTile label="This month's files" value={aggregated.monthCount.toLocaleString()} tone="emerald" />}
-              {!csLockToToday && <StatTile label="Total files" value={aggregated.totals.grand.toLocaleString()} tone="violet" />}
+              <StatTile label="Today's retains" value={aggregated.todayRetained.toLocaleString()} tone="emerald" />
+              {!csLockToToday && <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />}
+              {!csLockToToday && <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />}
+              {!csLockToToday && <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />}
             </>
           )}
         </div>
