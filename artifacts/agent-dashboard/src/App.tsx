@@ -16,6 +16,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import Papa from "papaparse";
 import { createContext, useContext, Fragment, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
@@ -6658,18 +6659,28 @@ function fmtMins(m: number): string {
 // ─────────────────────────────────────────────────────────────────────────────
 // Retention QA Panel (AI-scored call reviews)
 // ─────────────────────────────────────────────────────────────────────────────
-interface QAStats { reviewed: number; avgScore: number; failed: number; criticalFails: number; pendingReviews: number; }
+interface QAStats {
+  reviewed: number; avgScore: number; avgProtocol: number; avgSoftSkills: number;
+  failed: number; criticalFails: number; pendingReviews: number; avgVariance: number;
+  byDept: Record<string, { reviewed: number; avgScore: number; criticalFails: number; failed: number }>;
+}
 interface QAReview {
   id: string; agentName: string; phoneNumber: string | null; callDate: string;
-  score: number; pass: boolean; criticalFail: boolean; managerReviewRequired: boolean;
-  strengths: string[]; missedItems: string[]; reason: string | null;
+  department: string;
+  score: number; softSkillsScore: number; protocolScore: number;
+  pass: boolean; criticalFail: boolean; managerReviewRequired: boolean;
+  strengths: string[]; missedItems: string[]; criticalIssues: string[]; reason: string | null;
   categoryScores: Record<string, number>; aiSummary: string | null; transcript: string | null;
 }
 interface QATask {
-  id: string; agentName: string; score: number; reason: string;
-  criticalFail: boolean; status: string; createdAt: string;
+  id: string; agentName: string; department: string;
+  aiScore: number; score: number; reason: string;
+  criticalFail: boolean; source: string; status: string; createdAt: string;
+  managerScore: number | null; variance: number | null; finalScore: number | null;
+  comments: string | null; coachingComplete: boolean;
   resolvedBy: string | null; resolvedAt: string | null; notes: string | null;
 }
+type QADept = "all" | "Retention" | "CS" | "NSF";
 
 function QAPanel() {
   const { token, user } = useUser();
@@ -6679,8 +6690,10 @@ function QAPanel() {
   const [from, setFrom] = useState(monthAgo);
   const [to, setTo] = useState(todayLA);
   const [sub, setSub] = useState<"reviews" | "tasks">("reviews");
+  const [dept, setDept] = useState<QADept>("all");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
+  const [reviewingTask, setReviewingTask] = useState<QATask | null>(null);
 
   const range = useMemo(() => {
     const fromISO = new Date(`${from}T00:00:00-07:00`).toISOString();
@@ -6688,10 +6701,12 @@ function QAPanel() {
     return { fromISO, toISO };
   }, [from, to]);
 
+  const deptParam = dept === "all" ? "" : `&department=${dept}`;
+
   const stats = useQuery<QAStats>({
-    queryKey: ["qa-stats", range.fromISO, range.toISO, token],
+    queryKey: ["qa-stats", range.fromISO, range.toISO, dept, token],
     queryFn: async () => {
-      const r = await fetch(`/api/qa/stats?from=${range.fromISO}&to=${range.toISO}`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await fetch(`/api/qa/stats?from=${range.fromISO}&to=${range.toISO}${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<QAStats>;
     },
@@ -6699,9 +6714,9 @@ function QAPanel() {
   });
 
   const reviews = useQuery<{ reviews: QAReview[] }>({
-    queryKey: ["qa-reviews", range.fromISO, range.toISO, token],
+    queryKey: ["qa-reviews", range.fromISO, range.toISO, dept, token],
     queryFn: async () => {
-      const r = await fetch(`/api/qa/reviews?from=${range.fromISO}&to=${range.toISO}&limit=200`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await fetch(`/api/qa/reviews?from=${range.fromISO}&to=${range.toISO}&limit=200${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<{ reviews: QAReview[] }>;
     },
@@ -6710,9 +6725,9 @@ function QAPanel() {
   });
 
   const tasks = useQuery<{ tasks: QATask[] }>({
-    queryKey: ["qa-tasks", token],
+    queryKey: ["qa-tasks", dept, token],
     queryFn: async () => {
-      const r = await fetch(`/api/qa/tasks?status=open&limit=200`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await fetch(`/api/qa/tasks?status=open&limit=200${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<{ tasks: QATask[] }>;
     },
@@ -6732,11 +6747,14 @@ function QAPanel() {
     } finally { setProcessing(false); }
   }, [token, stats, reviews, tasks]);
 
-  const resolveTask = useCallback(async (id: string) => {
+  const resolveTask = useCallback(async (
+    id: string,
+    body: { managerScore?: number | null; comments?: string; coachingComplete?: boolean } = {},
+  ) => {
     await fetch(`/api/qa/tasks/${id}/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ resolvedBy: user.username }),
+      body: JSON.stringify({ resolvedBy: user.username, ...body }),
     });
     void qc.invalidateQueries({ queryKey: ["qa-tasks"] });
     void qc.invalidateQueries({ queryKey: ["qa-stats"] });
@@ -6757,6 +6775,17 @@ function QAPanel() {
           <Label htmlFor="qa-to" className="text-xs text-zinc-400">To</Label>
           <Input id="qa-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 w-36 bg-zinc-900/70 border-zinc-800" />
         </div>
+        <div className="flex items-center gap-1 ml-2">
+          {(["all", "Retention", "CS", "NSF"] as QADept[]).map((d) => (
+            <button
+              key={d}
+              onClick={() => setDept(d)}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${dept === d ? "bg-violet-600 text-white" : "bg-zinc-900/60 text-zinc-400 hover:text-white"}`}
+            >
+              {d === "all" ? "All depts" : d}
+            </button>
+          ))}
+        </div>
         <Button onClick={runProcessor} disabled={processing} size="sm" className="ml-auto bg-violet-600 hover:bg-violet-500">
           <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${processing ? "animate-spin" : ""}`} />
           {processing ? "Evaluating…" : "Run QA now"}
@@ -6764,13 +6793,38 @@ function QAPanel() {
       </div>
 
       {/* Stat tiles */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
         <QATile label="Reviewed" value={stats.data?.reviewed ?? 0} />
         <QATile label="Avg score" value={`${stats.data?.avgScore ?? 0}/100`} accent={stats.data && stats.data.avgScore >= 80 ? "good" : "warn"} />
+        <QATile label="Protocol %" value={`${stats.data?.avgProtocol ?? 0}`} accent={stats.data && stats.data.avgProtocol >= 70 ? "good" : "bad"} />
+        <QATile label="Soft skills" value={`${stats.data?.avgSoftSkills ?? 0}`} accent={stats.data && stats.data.avgSoftSkills >= 70 ? "good" : "warn"} />
         <QATile label="Failed" value={stats.data?.failed ?? 0} accent={stats.data && stats.data.failed > 0 ? "bad" : undefined} />
         <QATile label="Critical fails" value={stats.data?.criticalFails ?? 0} accent={stats.data && stats.data.criticalFails > 0 ? "bad" : undefined} />
-        <QATile label="Open reviews" value={stats.data?.pendingReviews ?? 0} accent={stats.data && stats.data.pendingReviews > 0 ? "warn" : undefined} />
+        <QATile label="Manager queue" value={stats.data?.pendingReviews ?? 0} accent={stats.data && stats.data.pendingReviews > 0 ? "warn" : undefined} />
       </div>
+
+      {/* Per-department breakdown */}
+      {stats.data?.byDept && Object.keys(stats.data.byDept).length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          {(["Retention", "CS", "NSF"] as const).map((d) => {
+            const b = stats.data!.byDept[d] ?? { reviewed: 0, avgScore: 0, criticalFails: 0, failed: 0 };
+            return (
+              <Card key={d} className="bg-zinc-950/40 border-zinc-800/60">
+                <CardContent className="p-3 flex items-center justify-between">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-zinc-500">{d}</div>
+                    <div className="text-lg font-semibold text-zinc-100">{b.reviewed} reviewed · avg {b.avgScore}</div>
+                  </div>
+                  <div className="text-right text-xs">
+                    <div className={b.criticalFails > 0 ? "text-rose-400" : "text-zinc-500"}>{b.criticalFails} crit</div>
+                    <div className={b.failed > 0 ? "text-amber-400" : "text-zinc-500"}>{b.failed} fail</div>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
 
       <Tabs value={sub} onValueChange={(v) => setSub(v as "reviews" | "tasks")}>
         <TabsList className="bg-zinc-900/60">
@@ -6785,29 +6839,38 @@ function QAPanel() {
                 <TableHeader>
                   <TableRow className="border-zinc-800 hover:bg-transparent">
                     <TableHead className="text-zinc-400">Agent</TableHead>
+                    <TableHead className="text-zinc-400">Dept</TableHead>
                     <TableHead className="text-zinc-400">When</TableHead>
                     <TableHead className="text-zinc-400">Customer</TableHead>
                     <TableHead className="text-zinc-400 text-right">Score</TableHead>
+                    <TableHead className="text-zinc-400 text-right">Proto</TableHead>
                     <TableHead className="text-zinc-400">Status</TableHead>
                     <TableHead className="text-zinc-400">Review</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {reviews.isLoading ? (
-                    <TableRow><TableCell colSpan={6}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={8}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
                   ) : reviewRows.length === 0 ? (
-                    <TableRow><TableCell colSpan={6} className="text-center text-zinc-500 py-8">No QA reviews in this date range yet. Click "Run QA now" to evaluate recent retention calls.</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={8} className="text-center text-zinc-500 py-8">No QA reviews in this date range yet. Click "Run QA now" to evaluate recent calls.</TableCell></TableRow>
                   ) : reviewRows.map((r) => {
                     const isOpen = expanded === r.id;
+                    const deptColor = r.department === "Retention" ? "border-violet-700/60 text-violet-300"
+                      : r.department === "CS" ? "border-sky-700/60 text-sky-300"
+                      : "border-amber-700/60 text-amber-300";
                     return (
                       <Fragment key={r.id}>
                         <TableRow className="border-zinc-800/60 hover:bg-zinc-900/40 cursor-pointer" onClick={() => setExpanded(isOpen ? null : r.id)}>
                           <TableCell className="font-medium">{r.agentName}</TableCell>
+                          <TableCell><Badge variant="outline" className={`${deptColor} text-[10px]`}>{r.department}</Badge></TableCell>
                           <TableCell className="text-xs text-zinc-400">{new Date(r.callDate).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</TableCell>
                           <TableCell className="text-xs text-zinc-400 font-mono">{r.phoneNumber ?? "—"}</TableCell>
                           <TableCell className="text-right">
                             <span className={`font-semibold ${r.score >= 80 ? "text-emerald-400" : r.score >= 60 ? "text-amber-400" : "text-rose-400"}`}>{r.score}</span>
                             <span className="text-xs text-zinc-500">/100</span>
+                          </TableCell>
+                          <TableCell className="text-right text-xs">
+                            <span className={r.protocolScore >= 70 ? "text-emerald-400" : "text-rose-400"}>{r.protocolScore}</span>
                           </TableCell>
                           <TableCell>
                             {r.criticalFail
@@ -6824,7 +6887,7 @@ function QAPanel() {
                         </TableRow>
                         {isOpen && (
                           <TableRow className="border-zinc-800/60 bg-zinc-950/60">
-                            <TableCell colSpan={6} className="p-4">
+                            <TableCell colSpan={8} className="p-4">
                               <div className="grid md:grid-cols-2 gap-4 text-sm">
                                 <div>
                                   <div className="text-xs font-medium text-zinc-400 mb-1">Strengths</div>
@@ -6839,6 +6902,12 @@ function QAPanel() {
                                   ) : <div className="text-zinc-500 italic">Nothing flagged</div>}
                                 </div>
                               </div>
+                              {r.criticalIssues && r.criticalIssues.length > 0 && (
+                                <div className="mt-3">
+                                  <div className="text-xs font-medium text-rose-400 mb-1">Critical issues</div>
+                                  <ul className="list-disc list-inside text-rose-300 space-y-0.5 text-sm">{r.criticalIssues.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                                </div>
+                              )}
                               {r.reason && <div className="text-sm mt-3 text-zinc-300"><span className="text-zinc-500">Summary: </span>{r.reason}</div>}
                               {Object.keys(r.categoryScores).length > 0 && (
                                 <div className="flex flex-wrap gap-1.5 mt-3">
@@ -6867,7 +6936,9 @@ function QAPanel() {
                 <TableHeader>
                   <TableRow className="border-zinc-800 hover:bg-transparent">
                     <TableHead className="text-zinc-400">Agent</TableHead>
-                    <TableHead className="text-zinc-400 text-right">Score</TableHead>
+                    <TableHead className="text-zinc-400">Dept</TableHead>
+                    <TableHead className="text-zinc-400 text-right">AI</TableHead>
+                    <TableHead className="text-zinc-400">Source</TableHead>
                     <TableHead className="text-zinc-400">Reason</TableHead>
                     <TableHead className="text-zinc-400">Created</TableHead>
                     <TableHead className="text-zinc-400 text-right">Action</TableHead>
@@ -6875,32 +6946,169 @@ function QAPanel() {
                 </TableHeader>
                 <TableBody>
                   {tasks.isLoading ? (
-                    <TableRow><TableCell colSpan={5}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={7}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
                   ) : taskRows.length === 0 ? (
-                    <TableRow><TableCell colSpan={5} className="text-center text-zinc-500 py-8">No open manager reviews. Nice.</TableCell></TableRow>
-                  ) : taskRows.map((t) => (
-                    <TableRow key={t.id} className="border-zinc-800/60">
-                      <TableCell className="font-medium">{t.agentName}</TableCell>
-                      <TableCell className="text-right">
-                        <span className={`font-semibold ${t.criticalFail ? "text-rose-400" : t.score < 60 ? "text-rose-400" : "text-amber-400"}`}>{t.score}</span>
-                      </TableCell>
-                      <TableCell className="text-sm text-zinc-300 max-w-md">
-                        {t.criticalFail && <Badge className="bg-rose-600/20 text-rose-300 border-rose-700/50 mr-2">Critical</Badge>}
-                        {t.reason}
-                      </TableCell>
-                      <TableCell className="text-xs text-zinc-400">{new Date(t.createdAt).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</TableCell>
-                      <TableCell className="text-right">
-                        <Button size="sm" variant="outline" className="border-zinc-700 h-7" onClick={() => resolveTask(t.id)}>Mark resolved</Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                    <TableRow><TableCell colSpan={7} className="text-center text-zinc-500 py-8">No open manager reviews. Nice.</TableCell></TableRow>
+                  ) : taskRows.map((t) => {
+                    const deptColor = t.department === "Retention" ? "border-violet-700/60 text-violet-300"
+                      : t.department === "CS" ? "border-sky-700/60 text-sky-300"
+                      : "border-amber-700/60 text-amber-300";
+                    const srcLabel = t.source === "weekly_lowest" ? "Weekly · lowest"
+                      : t.source === "weekly_random" ? "Weekly · random"
+                      : t.source === "manual" ? "Manual"
+                      : "Auto flag";
+                    return (
+                      <TableRow key={t.id} className="border-zinc-800/60">
+                        <TableCell className="font-medium">{t.agentName}</TableCell>
+                        <TableCell><Badge variant="outline" className={`${deptColor} text-[10px]`}>{t.department}</Badge></TableCell>
+                        <TableCell className="text-right">
+                          <span className={`font-semibold ${t.criticalFail ? "text-rose-400" : t.aiScore < 60 ? "text-rose-400" : "text-amber-400"}`}>{t.aiScore}</span>
+                        </TableCell>
+                        <TableCell className="text-[11px] text-zinc-400">{srcLabel}</TableCell>
+                        <TableCell className="text-sm text-zinc-300 max-w-md">
+                          {t.criticalFail && <Badge className="bg-rose-600/20 text-rose-300 border-rose-700/50 mr-2">Critical</Badge>}
+                          {t.reason}
+                        </TableCell>
+                        <TableCell className="text-xs text-zinc-400">{new Date(t.createdAt).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</TableCell>
+                        <TableCell className="text-right space-x-1">
+                          <Button size="sm" variant="outline" className="border-violet-700/60 text-violet-300 h-7" onClick={() => setReviewingTask(t)}>Review</Button>
+                          <Button size="sm" variant="ghost" className="text-zinc-400 h-7 px-2" onClick={() => resolveTask(t.id)}>Skip</Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </CardContent>
           </Card>
         </TabsContent>
       </Tabs>
+
+      {reviewingTask && (
+        <ManagerReviewDialog
+          task={reviewingTask}
+          token={token}
+          onClose={() => setReviewingTask(null)}
+          onSubmit={async (body) => {
+            await resolveTask(reviewingTask.id, body);
+            setReviewingTask(null);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function ManagerReviewDialog({
+  task, token, onClose, onSubmit,
+}: {
+  task: QATask; token: string; onClose: () => void;
+  onSubmit: (body: { managerScore: number | null; comments: string; coachingComplete: boolean }) => Promise<void>;
+}) {
+  const [managerScore, setManagerScore] = useState<string>(String(task.aiScore));
+  const [comments, setComments] = useState("");
+  const [coachingComplete, setCoachingComplete] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const review = useQuery<QAReview>({
+    queryKey: ["qa-review-detail", task.id, token],
+    queryFn: async () => {
+      const r = await fetch(`/api/qa/reviews/${task.id}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json() as Promise<QAReview>;
+    },
+  });
+
+  const ms = managerScore === "" ? null : Math.max(0, Math.min(100, Number(managerScore) || 0));
+  const variance = ms !== null ? ms - task.aiScore : null;
+
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-3xl bg-zinc-950 border-zinc-800 text-zinc-100 max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Manager review · {task.agentName} · {task.department}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 text-sm">
+          <div className="grid grid-cols-3 gap-3">
+            <div className="rounded-md bg-zinc-900/60 p-3">
+              <div className="text-[11px] uppercase tracking-wide text-zinc-500">AI score</div>
+              <div className="text-2xl font-semibold text-zinc-100">{task.aiScore}<span className="text-xs text-zinc-500">/100</span></div>
+            </div>
+            <div className="rounded-md bg-zinc-900/60 p-3">
+              <div className="text-[11px] uppercase tracking-wide text-zinc-500">Your score</div>
+              <Input
+                type="number" min={0} max={100}
+                value={managerScore}
+                onChange={(e) => setManagerScore(e.target.value)}
+                className="h-8 mt-1 bg-zinc-950 border-zinc-800"
+              />
+            </div>
+            <div className="rounded-md bg-zinc-900/60 p-3">
+              <div className="text-[11px] uppercase tracking-wide text-zinc-500">Variance</div>
+              <div className={`text-2xl font-semibold ${variance === null ? "text-zinc-500" : variance === 0 ? "text-zinc-300" : variance > 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                {variance === null ? "—" : (variance > 0 ? `+${variance}` : variance)}
+              </div>
+            </div>
+          </div>
+
+          {review.data && (
+            <div className="rounded-md border border-zinc-800 p-3 space-y-2">
+              <div className="text-xs text-zinc-400">AI assessment</div>
+              {review.data.reason && <div className="text-zinc-200">{review.data.reason}</div>}
+              {review.data.criticalIssues && review.data.criticalIssues.length > 0 && (
+                <div>
+                  <div className="text-[11px] text-rose-400 font-medium">Critical issues</div>
+                  <ul className="list-disc list-inside text-rose-300 text-xs space-y-0.5">{review.data.criticalIssues.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                </div>
+              )}
+              <div className="grid md:grid-cols-2 gap-3">
+                <div>
+                  <div className="text-[11px] text-emerald-400 font-medium">Strengths</div>
+                  <ul className="list-disc list-inside text-emerald-300 text-xs space-y-0.5">{review.data.strengths.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                </div>
+                <div>
+                  <div className="text-[11px] text-amber-400 font-medium">Missed</div>
+                  <ul className="list-disc list-inside text-amber-300 text-xs space-y-0.5">{review.data.missedItems.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                </div>
+              </div>
+              {review.data.transcript && (
+                <details className="text-xs">
+                  <summary className="text-zinc-400 cursor-pointer">Show transcript</summary>
+                  <pre className="whitespace-pre-wrap text-zinc-400 mt-2 max-h-64 overflow-y-auto">{review.data.transcript}</pre>
+                </details>
+              )}
+            </div>
+          )}
+
+          <div>
+            <Label className="text-xs text-zinc-400">Manager comments</Label>
+            <textarea
+              value={comments}
+              onChange={(e) => setComments(e.target.value)}
+              rows={3}
+              placeholder="What did the agent do well or poorly? Coaching notes for the agent…"
+              className="w-full mt-1 rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+            />
+          </div>
+
+          <label className="flex items-center gap-2 text-sm text-zinc-300">
+            <input type="checkbox" checked={coachingComplete} onChange={(e) => setCoachingComplete(e.target.checked)} className="h-4 w-4" />
+            Coaching delivered to agent
+          </label>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} className="border-zinc-700">Cancel</Button>
+          <Button
+            disabled={saving}
+            onClick={async () => {
+              setSaving(true);
+              try { await onSubmit({ managerScore: ms, comments, coachingComplete }); }
+              finally { setSaving(false); }
+            }}
+            className="bg-violet-600 hover:bg-violet-500"
+          >{saving ? "Saving…" : "Submit review"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

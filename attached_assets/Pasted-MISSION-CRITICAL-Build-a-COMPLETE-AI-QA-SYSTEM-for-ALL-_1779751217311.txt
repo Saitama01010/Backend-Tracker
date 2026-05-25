@@ -1,0 +1,261 @@
+MISSION CRITICAL
+
+Build a COMPLETE AI QA SYSTEM for ALL Dial Expert departments.
+
+This is NOT a simple call scoring system.
+
+The AI must evaluate every call against the actual department SOP and protocol.
+
+Departments:
+
+* Retention
+* Customer Support (CS)
+* NSF
+
+Future departments must be easy to add.
+
+DO NOT redesign the application.
+
+DO NOT refactor unrelated code.
+
+DO NOT create placeholder logic.
+
+Implement the actual backend workflow.
+
+======================================================
+DEPARTMENT DETECTION
+====================
+
+For every transcript:
+
+Step 1:
+Automatically determine:
+
+* Retention
+* Customer Support
+* NSF
+
+using transcript content, call outcome, tags, disposition, notes, and metadata.
+
+Store department on QA record.
+
+======================================================
+AI QA ENGINE
+============
+
+The AI must evaluate:
+
+1. Soft Skills
+2. Protocol Compliance
+3. Required Process Compliance
+4. Call Outcome Handling
+5. Documentation Compliance
+6. Escalation Compliance
+
+The AI must explain WHY points were lost.
+
+======================================================
+RETENTION QA RULES
+==================
+
+Evaluate if agent:
+
+* Pulled customer information
+* Took ownership
+* Acknowledged concerns
+* Asked cancellation reason
+* Used retention framework
+* Attempted save
+* Used objection handling
+* Offered solutions when appropriate
+* Attempted retention before cancellation
+* Followed retention process
+* Closed correctly
+
+Critical Fail:
+
+* No retention attempt
+* Immediate cancellation without save attempt
+* Ignoring cancellation concern
+* Rude behavior
+* Major protocol violation
+
+======================================================
+CUSTOMER SUPPORT QA RULES
+=========================
+
+Evaluate if agent:
+
+* Attempted to resolve issue first
+* Did not unnecessarily transfer
+* Handled cancellation concerns before escalation
+* Used proper warm transfer process
+* Gave correct callback expectations
+* Provided accurate information
+* Maintained ownership of call
+* Followed support workflow
+
+Critical Fail:
+
+* Immediate transfer without attempting resolution
+* Incorrect escalation
+* Failure to explain next steps
+* Rude behavior
+
+======================================================
+NSF QA RULES
+============
+
+Evaluate if agent:
+
+* Reviewed account status
+* Attempted resolution
+* Collected required information
+* Explained payment issue
+* Followed NSF process
+* Attempted save before transfer
+* Used proper warm transfer
+* Verified required documentation
+* Logged proper notes
+
+Critical Fail:
+
+* Failure to address NSF issue
+* Transfer without attempt
+* Missing critical documentation discussion
+* Rude behavior
+
+======================================================
+UNIVERSAL QA RULES
+==================
+
+Every call should also be scored for:
+
+Greeting
+Empathy
+Ownership
+Listening
+Communication
+Compliance
+Problem Resolution
+Call Control
+Professionalism
+Closing
+
+======================================================
+SCORING
+=======
+
+Return:
+
+{
+"department":"Retention",
+"score":88,
+"pass":true,
+"criticalFail":false,
+"softSkillsScore":90,
+"protocolScore":85,
+"strengths":[...],
+"missedSteps":[...],
+"criticalIssues":[...],
+"managerReviewRequired":false
+}
+
+======================================================
+MANAGER QA
+==========
+
+Create second review layer.
+
+AI QA = Review #1
+
+Manager QA = Review #2
+
+Manager can:
+
+* Listen to recording
+* Override score
+* Add comments
+* Mark coaching complete
+
+Store:
+
+AI Score
+Manager Score
+Variance
+Final Score
+
+======================================================
+AUTOMATIC REVIEW ASSIGNMENT
+===========================
+
+Every week:
+
+For each employee:
+
+Assign 2 calls minimum for manager review.
+
+Selection logic:
+
+1 lowest AI score
+1 random call
+
+Create manager review tasks automatically.
+
+======================================================
+FLAGGED CALLS
+=============
+
+Automatically flag:
+
+Score below 80
+
+OR
+
+Critical Fail
+
+OR
+
+Protocol compliance below 70%
+
+OR
+
+Customer requested cancellation and process not followed
+
+======================================================
+DASHBOARD
+=========
+
+Create dashboards:
+
+Executive Dashboard
+Manager Dashboard
+Agent Dashboard
+
+Metrics:
+
+Average QA Score
+Protocol Compliance %
+Critical Fails
+Retention Attempts
+Transfers
+Manager Reviews Pending
+AI vs Manager Variance
+
+======================================================
+REQUIRED OUTPUT
+===============
+
+When finished show:
+
+1. Files modified
+2. Database schema changes
+3. API endpoints created
+4. AI prompts implemented
+5. Example transcript evaluation
+6. Example manager review workflow
+7. Confirmation that scoring is working end-to-end
+
+Do not stop after UI creation.
+
+The feature is complete only when a transcript can be submitted and a QA score is successfully generated and saved to the database.
