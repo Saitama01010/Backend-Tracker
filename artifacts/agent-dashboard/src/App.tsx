@@ -1598,8 +1598,17 @@ function aggregate(
     return true;
   });
 
-  // Build status counts — statuses pass through as-is for all modes
+  // Build status counts — statuses pass through as-is for all modes.
+  // For retention/cs, seed the canonical column set so layout stays consistent
+  // (zero-value columns still render) even when a status is absent in the
+  // current date window.
   const allStatuses = new Set<string>();
+  if (mode === "retention" || mode === "cs") {
+    allStatuses.add("Retained");
+    allStatuses.add("Cancelled");
+    allStatuses.add("IDP-Handled");
+    allStatuses.add("Fixed");
+  }
   const dayMap = new Map<string, DayBreakdown>();
   const agentMap = new Map<string, AgentBreakdown>();
   const totalsByStatus = new Map<string, number>();
