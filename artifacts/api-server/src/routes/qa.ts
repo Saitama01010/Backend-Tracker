@@ -421,16 +421,16 @@ async function runWeeklyAssignment(): Promise<{ created: number; agents: number 
 }
 
 export function startQaBackgroundProcessor() {
-  const intervalMs = 5 * 60 * 1000;
+  const intervalMs = 60 * 1000; // every minute
   const tick = async () => {
     try {
-      const r = await runProcessor(5);
+      const r = await runProcessor(25); // 25 calls/minute → ~1500/hour
       if (r.evaluated > 0 || r.errors > 0) logger.info(r, "qa: processor tick");
     } catch (err) {
       logger.error({ err }, "qa: processor tick failed");
     }
   };
-  setTimeout(tick, 30_000);
+  setTimeout(tick, 10_000);
   setInterval(tick, intervalMs);
 
   // Weekly assignment: every 6h check if we should run (Monday in LA)
@@ -473,7 +473,7 @@ router.post("/qa/evaluate", requireAuth, requireRole("admin"), async (req, res) 
 
 router.post("/qa/process", requireAuth, requireRole("admin"), async (req, res) => {
   try {
-    const batch = Math.min(parseInt(String(req.body?.batchSize ?? "5"), 10) || 5, 20);
+    const batch = Math.min(parseInt(String(req.body?.batchSize ?? "25"), 10) || 25, 100);
     const r = await runProcessor(batch);
     return res.json(r);
   } catch (err) {
