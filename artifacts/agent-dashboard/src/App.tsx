@@ -331,8 +331,8 @@ function detectKeywordStatus(r: Row): "Retained" | "Cancelled" | null {
   for (const v of fields) {
     if (!v) continue;
     const s = v.toLowerCase();
-    if (/retain|retention form/.test(s)) hasRetain = true;
-    if (/\bcancel(?:l?ed|ling)?\b|revok/.test(s)) hasCancel = true;
+    if (/retain|retention form|stopped\s*payment|revok/.test(s)) hasRetain = true;
+    if (/\bcancel(?:l?ed|ling)?\b/.test(s)) hasCancel = true;
   }
   // Retain wins over cancel — an ultimately retained file overrides a cancel-flagged note.
   if (hasRetain) return "Retained";
@@ -1523,14 +1523,15 @@ type Aggregated = {
 
 function isRetainedStatus(s: string): boolean {
   const lower = s.toLowerCase();
-  return /retain/.test(lower) || /\bidp\b/.test(lower);
+  return /retain/.test(lower) || /\bidp\b/.test(lower) || /stopped\s*payment/.test(lower) || /revok/.test(lower);
 }
 
 // For counts (daily / monthly / all-time tiles): IDP is excluded.
 // IDP still counts toward retention RATE via isRetainedStatus above.
 function isPureRetainedStatus(s: string): boolean {
   const lower = s.toLowerCase();
-  return /retain/.test(lower) && !/\bidp\b/.test(lower);
+  if (/\bidp\b/.test(lower)) return false;
+  return /retain/.test(lower) || /stopped\s*payment/.test(lower) || /revok/.test(lower);
 }
 
 // Collapse legacy/inconsistent status spellings from old sheets into
