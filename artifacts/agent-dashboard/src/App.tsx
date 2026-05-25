@@ -1633,7 +1633,16 @@ function aggregate(
     // member by English OR Arabic name, roll the row up under that canonical English
     // identity. This collapses compound Discord-bot submissions like
     // "Saif Aziz-Henry Hart-2450" into the senior agent's row ("Henry Hart").
-    const rosterHit = roster?.lookupByAnyName(a) ?? null;
+    let rosterHit = roster?.lookupByAnyName(a) ?? null;
+    if (!rosterHit && roster) {
+      // Try each dash-separated segment so compound forms like
+      // "Youssef Nady-Jacob Xander" resolve to "Jacob Xander".
+      const segs = a.split("-").map(s => s.trim()).filter(Boolean);
+      for (const seg of segs) {
+        const hit = roster.lookupByAnyName(seg);
+        if (hit) { rosterHit = hit; break; }
+      }
+    }
     const key = rosterHit
       ? normalizeAgent(rosterHit.name)
       : normalizeAgent(a);
