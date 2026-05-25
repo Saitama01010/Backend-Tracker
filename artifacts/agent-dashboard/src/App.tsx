@@ -8190,14 +8190,17 @@ function AttCell({ status, note, coaching, weekend }: { status: string; note?: s
 const WDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
 function AttendancePanel() {
-  const { token, can } = useUser();
+  const { token, can, user } = useUser();
   const canEdit = can("edit_attendance");
   const canManage = can("manage_members");
+  // Lock attendance view to the user's team when teamAccess is set (admins/unrestricted = null → see all).
+  const TEAM_TO_DEPT: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "CS" };
+  const lockedDept = user.teamAccess ? TEAM_TO_DEPT[user.teamAccess] : null;
   const today = new Date();
   const todayStr = today.toISOString().slice(0, 10);
   const tomorrowStr = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).toISOString().slice(0, 10);
   const [monthOff, setMonthOff] = useState(0);
-  const [deptFilter, setDeptFilter] = useState("All");
+  const [deptFilter, setDeptFilter] = useState<string>(lockedDept ?? "All");
   const [editCell, setEditCell] = useState<{ memberId: number; date: string; name: string } | null>(null);
   const [editStatus, setEditStatus] = useState("");
   const [editNote, setEditNote] = useState("");
@@ -8249,36 +8252,42 @@ function AttendancePanel() {
     return m;
   }, [data]);
 
+  // Members the current user is allowed to see at all (team-lock).
+  const scopedMembers = useMemo(
+    () => (data?.members ?? []).filter((m) => !lockedDept || m.department === lockedDept),
+    [data, lockedDept],
+  );
+
   const departments = useMemo(() => {
     const s = new Set<string>(["All"]);
-    for (const m of data?.members ?? []) if (m.department) s.add(m.department);
+    for (const m of scopedMembers) if (m.department) s.add(m.department);
     return [...s];
-  }, [data]);
+  }, [scopedMembers]);
 
   const visible = useMemo(
-    () => (data?.members ?? [])
+    () => scopedMembers
       .filter((m) => deptFilter === "All" || m.department === deptFilter)
       .sort((a, b) => {
         if (a.active !== b.active) return a.active ? -1 : 1;
         return parseFloat(a.shift || "0") - parseFloat(b.shift || "0");
       }),
-    [data, deptFilter],
+    [scopedMembers, deptFilter],
   );
 
   const todaySummary = useMemo(() => {
     const c = { in: 0, off: 0, late: 0, pto: 0, nsnc: 0, absent: 0 };
-    for (const m of data?.members ?? []) {
+    for (const m of scopedMembers) {
       const s = recordMap.get(`${m.id}_${todayStr}`)?.status ?? "";
       if (s === "in") c.in++; else if (s === "off") c.off++;
       else if (s === "late") c.late++; else if (s === "pto") c.pto++;
       else if (s === "nsnc") c.nsnc++; else c.absent++;
     }
     return c;
-  }, [data, recordMap, todayStr]);
+  }, [scopedMembers, recordMap, todayStr]);
 
   const teamSummary = useMemo(() => {
     const map = new Map<string, { present: number; total: number }>();
-    for (const m of data?.members ?? []) {
+    for (const m of scopedMembers) {
       const dept = m.department || "Other";
       if (!map.has(dept)) map.set(dept, { present: 0, total: 0 });
       const entry = map.get(dept)!;
@@ -8289,7 +8298,7 @@ function AttendancePanel() {
     return [...map.entries()]
       .map(([dept, { present, total }]) => ({ dept, present, total }))
       .sort((a, b) => a.dept.localeCompare(b.dept));
-  }, [data, recordMap, todayStr]);
+  }, [scopedMembers, recordMap, todayStr]);
 
   async function upsert(memberId: number, date: string, status: string, note: string, coaching: boolean) {
     await fetch("/api/attendance/record", {
@@ -8471,7 +8480,11 @@ function AttendancePanel() {
       {/* Dept filter + month navigation */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex gap-1.5 flex-wrap items-center">
-          {departments.map((d) => (
+          {lockedDept ? (
+            <div className="px-3 py-1 rounded-md text-sm font-medium bg-violet-600/30 text-violet-200 border border-violet-700/40">
+              {lockedDept} team
+            </div>
+          ) : departments.map((d) => (
             <button
               key={d}
               onClick={() => setDeptFilter(d)}
