@@ -250,9 +250,17 @@ function rosterTeamMembers(
   roster: RosterIndex | null | undefined,
   team: "retention" | "nsf" | "cs",
 ): Set<string> {
-  if (!roster) return new Set(hardcoded);
-  if (!rosterHasAnyForTeam(roster, team)) return new Set(hardcoded);
-  return new Set(roster.teamNames[team] ?? []);
+  // Union of roster + hardcoded. The roster is the source of truth for
+  // active membership, but hardcoded sets carry historical English/Arabic
+  // aliases and compound Discord-bot submission names (e.g.
+  // "youssef nady-jacob xander") that the roster does not enumerate. Bypassing
+  // hardcoded names when the roster is populated caused team submissions made
+  // under compound aliases to silently drop out of stats.
+  const out = new Set<string>(hardcoded);
+  if (roster) {
+    for (const n of roster.teamNames[team] ?? []) out.add(n);
+  }
+  return out;
 }
 
 // Per-team check: does the roster have ANY entries (active or inactive)?
