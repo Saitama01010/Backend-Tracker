@@ -514,10 +514,20 @@ async function fetchRetentionCombinedSheet(
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
     // Roster-aware retention gate + inactive hide (segment-aware for compound names).
+    // Permissive segment-aware retention match: resolves Discord-bot compound
+    // names like "Mohammed Ayman-Max Francis-22" (max francis → henry hart) or
+    // "Abdulrhman-Adam Maxwell" (adam maxwell → jacob stephenson) by normalizing
+    // each "-"-separated segment through NAME_ALIASES and also checking the
+    // roster's team mapping per segment. Without this, IDP-Cancel-Retained rows
+    // submitted under compound names are silently dropped from the dashboard.
     if (!includeForRetention(agentRaw)) {
-      const agentNorm = normalizeAgent(agentRaw);
-      const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
-      if (!segments.some(seg => retentionNames.has(seg))) continue;
+      const wholeNorm = normalizeAgent(agentRaw);
+      const rawSegments = wholeNorm.split("-").map(s => s.trim()).filter(Boolean);
+      const normSegments = rawSegments.map(seg => normalizeAgent(seg));
+      const matched =
+        normSegments.some(seg => retentionNames.has(seg)) ||
+        normSegments.some(seg => roster?.teamForAgent(seg) === "retention");
+      if (!matched) continue;
     }
     // Per task plan: every row from the IDP Cancel Retained tab counts as Retained
     // on the dashboard, but is tagged so Export Rows can surface it as IDP-Cancel-Handled.
@@ -594,7 +604,9 @@ async function fetchRetentionSheetNSFCrossoverRows(
     if (rosterTeam === "nsf") return true;
     const n = normalizeAgent(agentRaw);
     if (nsfNames.has(n)) return true;
-    const segs = n.split("-").map(s => s.trim()).filter(Boolean);
+    // Per-segment alias resolution: catches Discord-bot compound names where
+    // the Egyptian-name segment is itself an alias (resolves via NAME_ALIASES).
+    const segs = n.split("-").map(s => normalizeAgent(s.trim())).filter(Boolean);
     return segs.some(s => nsfNames.has(s)) || segs.some(s => roster?.teamForAgent(s) === "nsf");
   };
 
@@ -673,7 +685,9 @@ async function fetchRetentionSheetCSCrossoverRows(
     if (rosterTeam === "cs") return true;
     const n = normalizeAgent(agentRaw);
     if (csNames.has(n)) return true;
-    const segs = n.split("-").map(s => s.trim()).filter(Boolean);
+    // Per-segment alias resolution: catches Discord-bot compound names where
+    // the Egyptian-name segment is an alias (e.g. "abdulrhman" → jacob stephenson).
+    const segs = n.split("-").map(s => normalizeAgent(s.trim())).filter(Boolean);
     return segs.some(s => csNames.has(s)) || segs.some(s => roster?.teamForAgent(s) === "cs");
   };
 
