@@ -519,8 +519,9 @@ async function fetchRetentionCombinedSheet(
       const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
       if (!segments.some(seg => retentionNames.has(seg))) continue;
     }
-    // Per task plan: every row from the IDP Cancel Retained tab counts as Retained.
-    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
+    // Per task plan: every row from the IDP Cancel Retained tab counts as Retained
+    // on the dashboard, but is tagged so Export Rows can surface it as IDP-Cancel-Handled.
+    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim(), __sourceTab: "IDP-Cancel-Retained" });
   }
 
   // Pull Talia Morgan / Tuqa Hossam rows from the old NSF sheet.
@@ -626,6 +627,7 @@ async function fetchRetentionSheetNSFCrossoverRows(
   }
 
   // IDP Cancel Retained → every row counts as Retained for the routed team member.
+  // Tagged for Export Rows to surface as IDP-Cancel-Handled.
   for (const r of idpCancelSheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
     const d = parseEgyptTimestamp(tsRaw);
@@ -634,7 +636,7 @@ async function fetchRetentionSheetNSFCrossoverRows(
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!matchesTeam(agentRaw)) continue;
     if (isInactive(agentRaw)) continue;
-    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
+    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim(), __sourceTab: "IDP-Cancel-Retained" });
   }
 
   return rows;
@@ -704,6 +706,7 @@ async function fetchRetentionSheetCSCrossoverRows(
   }
 
   // IDP Cancel Retained → Retained for the routed CS team member.
+  // Tagged for Export Rows to surface as IDP-Cancel-Handled.
   for (const r of idpCancelSheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
     const d = parseEgyptTimestamp(tsRaw);
@@ -712,7 +715,7 @@ async function fetchRetentionSheetCSCrossoverRows(
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!matchesTeam(agentRaw)) continue;
     if (isInactive(agentRaw)) continue;
-    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
+    rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim(), __sourceTab: "IDP-Cancel-Retained" });
   }
 
   return rows;
@@ -2289,12 +2292,18 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
       return true;
     });
 
-    const exportRows = rows.map((r) => ({
-      Agent: (r[agentCol] ?? "").trim(),
-      Status: (r[statusCol] ?? "").trim(),
-      Date: dateCol ? (r[dateCol] ?? "") : "",
-      "File ID": fileIdCol ? (r[fileIdCol] ?? "").trim() : "",
-    }));
+    const exportRows = rows.map((r) => {
+      // IDP-Cancel-Retained rows are stored as "Retained" so the dashboard tiles
+      // count them, but the user wants the raw export to differentiate them as
+      // IDP-Cancel-Handled so they can audit which retains came via that path.
+      const isIdpCancel = r["__sourceTab"] === "IDP-Cancel-Retained";
+      return {
+        Agent: (r[agentCol] ?? "").trim(),
+        Status: isIdpCancel ? "IDP-Cancel-Handled" : (r[statusCol] ?? "").trim(),
+        Date: dateCol ? (r[dateCol] ?? "") : "",
+        "File ID": fileIdCol ? (r[fileIdCol] ?? "").trim() : "",
+      };
+    });
 
     const csv = Papa.unparse(exportRows);
     const blob = new Blob([csv], { type: "text/csv" });
