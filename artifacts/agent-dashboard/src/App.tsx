@@ -1259,6 +1259,22 @@ const PHONE_ALIASES: Record<string, string> = {
   "omar": "otto klein",
 };
 
+// ReadyMode CSV-side aliases: CSV name spelling → canonical dashboard key.
+// Applied before PHONE_ALIASES when folding ReadyMode dialer calls in.
+const RM_CSV_ALIASES: Record<string, string> = {
+  "kevin michael": "kevin micheal", // dashboard uses the misspelled form
+  "jacob stephenson": "jacob stephenson", // already canonical (Retention; AKA Adam Maxwell)
+};
+
+// ReadyMode CSV rows to ignore — not real agents.
+const RM_CSV_SKIP: Set<string> = new Set([
+  "m.johnson",
+  "manager",
+  "summary",
+  "test",
+  "tester",
+]);
+
 // Maps normalized SHEET agent name → normalized PBX (VoSLogic) agent name
 // Format: "QuoName-PBXAlias" sheet entries decode as QuoName=Quo key, PBXAlias=PBX key
 // Roster-aware PBX key resolver. Tries the roster first (English or Arabic name,
@@ -3253,8 +3269,9 @@ function TeamPanel({
   });
 
   // ReadyMode (Google Sheet CSV) per-agent dialer call counts. Merged into the
-  // NSF "By call" totals so each agent's Calls column = OpenPhone + ReadyMode.
-  // Only meaningful for NSF; other modes still fetch a no-op to keep hook order stable.
+  // Retention, NSF, and CS "By call" totals so each agent's Calls column
+  // = OpenPhone + ReadyMode. Skipped for other modes to avoid a wasted fetch.
+  const readymodeEnabled = mode === "nsf" || mode === "retention" || mode === "cs";
   const readymodeQ = useQuery<{ agents?: { agentName: string; dialed: number; talkTimeSecs: number }[] } | null>({
     queryKey: ["readymodeStats", from, to],
     queryFn: async () => {
@@ -3263,7 +3280,7 @@ function TeamPanel({
       if (!res.ok) return null;
       return res.json();
     },
-    enabled: mode === "nsf",
+    enabled: readymodeEnabled,
     staleTime: 1000 * 30,
     refetchOnWindowFocus: true,
     refetchInterval: 60 * 1000,
@@ -3271,15 +3288,19 @@ function TeamPanel({
 
   const readymodeByKey = useMemo<Map<string, { calls: number; seconds: number }>>(() => {
     const m = new Map<string, { calls: number; seconds: number }>();
-    if (mode !== "nsf") return m;
+    if (!readymodeEnabled) return m;
     for (const a of readymodeQ.data?.agents ?? []) {
       const rawKey = normalizeAgent(a.agentName);
-      const aliased = roster.phoneAliases[rawKey] ?? PHONE_ALIASES[rawKey] ?? rawKey;
+      // Skip non-agent CSV rows the user flagged.
+      if (RM_CSV_SKIP.has(rawKey)) continue;
+      // CSV spelling → canonical dashboard key (e.g. "kevin michael" → "kevin micheal").
+      const csvAliased = RM_CSV_ALIASES[rawKey] ?? rawKey;
+      const aliased = roster.phoneAliases[csvAliased] ?? PHONE_ALIASES[csvAliased] ?? csvAliased;
       const prev = m.get(aliased) ?? { calls: 0, seconds: 0 };
       m.set(aliased, { calls: prev.calls + (a.dialed ?? 0), seconds: prev.seconds + (a.talkTimeSecs ?? 0) });
     }
     return m;
-  }, [readymodeQ.data, mode, roster]);
+  }, [readymodeQ.data, readymodeEnabled, roster]);
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
     const allowlist = unionTeamSet(TEAM_ALLOWLIST[mode], roster.allowlist[mode as RosterTeam] ?? new Set(), rosterHasAnyForTeam(roster, mode as RosterTeam));
