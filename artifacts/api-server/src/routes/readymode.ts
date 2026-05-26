@@ -319,19 +319,48 @@ router.get("/readymode/stats", async (req, res) => {
   const fromIso = typeof req.query["from"] === "string" ? req.query["from"] : undefined;
   const toIso = typeof req.query["to"] === "string" ? req.query["to"] : undefined;
   try {
-    let text = "";
-    let source = "google-sheet";
-    try {
-      const csvRes = await fetch(READYMODE_CSV_URL, { redirect: "follow" });
-      if (csvRes.ok) text = await csvRes.text();
-    } catch (e) {
-      log.warn({ err: e }, "readymode google sheet fetch threw");
-    }
-    if (!text.trim()) {
-      // Fallback: newest Agent_report_*.csv operator dropped into attached_assets/.
-      // Keeps the dashboard working until the Google Sheet is published publicly.
-      // Try several candidate roots — dev runs from the api-server dir
-      // (cwd/../../attached_assets), prod bundles may run from elsewhere.
+    // Two data sources, both contributing rows:
+    //   1. attached_assets/Agent_report_*.csv — historical baseline
+    //      (operator-uploaded one-time export from ReadyMode).
+    //   2. Google Sheet CSV — live, updated daily by the operator going
+    //      forward. Wins on (agent, day) collisions so corrections in the
+    //      sheet override the static CSV.
+    type DayRow = { name: string; iso: string; dialed: number; talkSecs: number };
+    const sources: { source: string; rows: DayRow[] }[] = [];
+
+    const ingest = (text: string, source: string) => {
+      const parsed = parseCsv(text);
+      if (parsed.length < 2) return;
+      const header = parsed[0]!.map((h) => h.trim().toLowerCase());
+      const idx = {
+        day:   header.findIndex((h) => h.includes("day") || h.includes("date")),
+        name:  header.findIndex((h) => h === "name" || h.includes("agent")),
+        calls: header.findIndex((h) => h.includes("logged call") || h === "calls"),
+        talk:  header.findIndex((h) => h.includes("talk time")),
+      };
+      if (idx.name < 0 || idx.calls < 0) {
+        log.warn({ source, header }, "readymode source missing required columns");
+        return;
+      }
+      const out: DayRow[] = [];
+      for (const r of parsed.slice(1)) {
+        const name = (r[idx.name] ?? "").trim();
+        if (!name) continue;
+        const dayRaw = idx.day >= 0 ? (r[idx.day] ?? "") : "";
+        const iso = dayToIso(dayRaw);
+        if (!iso) continue;
+        out.push({
+          name,
+          iso,
+          dialed: parseIntSafe(r[idx.calls]),
+          talkSecs: idx.talk >= 0 ? parseDurationToSecs(r[idx.talk] ?? "") : 0,
+        });
+      }
+      sources.push({ source, rows: out });
+    };
+
+    // (1) Historical CSV bundled in attached_assets/.
+    {
       const fs = await import("node:fs/promises");
       const path = await import("node:path");
       const candidates = [
@@ -348,23 +377,28 @@ router.get("/readymode/stats", async (req, res) => {
             .reverse();
           if (csvFiles.length > 0) {
             const picked = path.join(root, csvFiles[0]!);
-            text = await fs.readFile(picked, "utf8");
-            source = `attached-asset:${csvFiles[0]}`;
+            const text = await fs.readFile(picked, "utf8");
+            ingest(text, `attached-asset:${csvFiles[0]}`);
             break;
           }
         } catch {
           // try next candidate
         }
       }
-      if (!text.trim()) {
-        log.warn({ candidates }, "readymode attached_assets fallback found nothing");
-      }
     }
-    // Graceful empty response: when neither the Google Sheet nor the bundled
-    // CSV is available, return 200 with no agents so the frontend simply
-    // shows "—" in the ReadyMode column instead of throwing/erroring out
-    // the whole By-call table.
-    if (!text.trim()) {
+
+    // (2) Live Google Sheet — overrides historical CSV on overlapping days.
+    try {
+      const csvRes = await fetch(READYMODE_CSV_URL, { redirect: "follow" });
+      if (csvRes.ok) {
+        const text = await csvRes.text();
+        if (text.trim()) ingest(text, "google-sheet");
+      }
+    } catch (e) {
+      log.warn({ err: e }, "readymode google sheet fetch threw");
+    }
+
+    if (sources.length === 0) {
       const empty: RmStatsResponse = {
         agents: [],
         totals: { dialed: 0, connected: 0, talkTimeSecs: 0, connectRate: 0 },
@@ -373,25 +407,15 @@ router.get("/readymode/stats", async (req, res) => {
       };
       return res.json(empty);
     }
-    const rows = parseCsv(text);
-    if (rows.length < 2) {
-      const empty: RmStatsResponse = {
-        agents: [],
-        totals: { dialed: 0, connected: 0, talkTimeSecs: 0, connectRate: 0 },
-        updatedAt: new Date().toISOString(),
-        raw: `ReadyMode CSV from ${source} is empty.`,
-      };
-      return res.json(empty);
-    }
-    const header = rows[0]!.map((h) => h.trim().toLowerCase());
-    const idx = {
-      day:   header.findIndex((h) => h.includes("day") || h.includes("date")),
-      name:  header.findIndex((h) => h === "name" || h.includes("agent")),
-      calls: header.findIndex((h) => h.includes("logged call") || h === "calls"),
-      talk:  header.findIndex((h) => h.includes("talk time")),
-    };
-    if (idx.name < 0 || idx.calls < 0) {
-      return res.status(502).json({ error: "ReadyMode CSV missing required columns (Name, Logged calls)" });
+
+    // Merge sources, deduping on (name, day). Later sources win — Google
+    // Sheet is ingested second so any day the operator updates there
+    // overrides the historical CSV for that same (agent, day).
+    const byKey = new Map<string, DayRow>();
+    for (const { rows } of sources) {
+      for (const r of rows) {
+        byKey.set(`${r.name.trim().toLowerCase().replace(/\s+/g, " ")}|${r.iso}`, r);
+      }
     }
 
     // Aggregate per agent. Skip non-date rows ("Monday"/"Sunday" weekday
@@ -400,21 +424,14 @@ router.get("/readymode/stats", async (req, res) => {
     const agg = new Map<string, Agg>();
     let included = 0;
     let skipped = 0;
-    for (const r of rows.slice(1)) {
-      const name = (r[idx.name] ?? "").trim();
-      if (!name) { skipped++; continue; }
-      const dayRaw = idx.day >= 0 ? (r[idx.day] ?? "") : "";
-      const iso = dayToIso(dayRaw);
-      if (!iso) { skipped++; continue; }
-      if (fromIso && iso < fromIso) { skipped++; continue; }
-      if (toIso && iso > toIso) { skipped++; continue; }
-      const dialed = parseIntSafe(r[idx.calls]);
-      const talkSecs = idx.talk >= 0 ? parseDurationToSecs(r[idx.talk] ?? "") : 0;
-      const e = agg.get(name) ?? { dialed: 0, talkTimeSecs: 0, days: new Set<string>() };
-      e.dialed += dialed;
-      e.talkTimeSecs += talkSecs;
-      e.days.add(iso);
-      agg.set(name, e);
+    for (const r of byKey.values()) {
+      if (fromIso && r.iso < fromIso) { skipped++; continue; }
+      if (toIso && r.iso > toIso) { skipped++; continue; }
+      const e = agg.get(r.name) ?? { dialed: 0, talkTimeSecs: 0, days: new Set<string>() };
+      e.dialed += r.dialed;
+      e.talkTimeSecs += r.talkSecs;
+      e.days.add(r.iso);
+      agg.set(r.name, e);
       included++;
     }
 
@@ -436,12 +453,13 @@ router.get("/readymode/stats", async (req, res) => {
       connectRate: 100,
     };
 
-    log.info({ included, skipped, agents: agents.length, fromIso, toIso, source }, "readymode/stats from CSV");
+    const sourceSummary = sources.map((s) => `${s.source}(${s.rows.length})`).join(" + ");
+    log.info({ included, skipped, agents: agents.length, fromIso, toIso, sources: sourceSummary }, "readymode/stats merged");
     const response: RmStatsResponse = {
       agents,
       totals,
       updatedAt: new Date().toISOString(),
-      raw: `Source: ${source} (${rows.length - 1} rows, ${included} included, ${skipped} skipped non-date/empty)`,
+      raw: `Sources: ${sourceSummary} → ${byKey.size} unique (agent,day) rows · ${included} in range · ${skipped} out of range`,
     };
     return res.json(response);
   } catch (err) {
