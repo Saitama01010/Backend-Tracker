@@ -330,30 +330,58 @@ router.get("/readymode/stats", async (req, res) => {
     if (!text.trim()) {
       // Fallback: newest Agent_report_*.csv operator dropped into attached_assets/.
       // Keeps the dashboard working until the Google Sheet is published publicly.
+      // Try several candidate roots — dev runs from the api-server dir
+      // (cwd/../../attached_assets), prod bundles may run from elsewhere.
       const fs = await import("node:fs/promises");
       const path = await import("node:path");
-      const root = path.resolve(process.cwd(), "..", "..", "attached_assets");
-      try {
-        const files = await fs.readdir(root);
-        const csvFiles = files
-          .filter((f) => /^Agent_report.*\.csv$/i.test(f))
-          .sort()
-          .reverse();
-        if (csvFiles.length > 0) {
-          const picked = path.join(root, csvFiles[0]!);
-          text = await fs.readFile(picked, "utf8");
-          source = `attached-asset:${csvFiles[0]}`;
+      const candidates = [
+        path.resolve(process.cwd(), "..", "..", "attached_assets"),
+        path.resolve(process.cwd(), "attached_assets"),
+        "/home/runner/workspace/attached_assets",
+      ];
+      for (const root of candidates) {
+        try {
+          const files = await fs.readdir(root);
+          const csvFiles = files
+            .filter((f) => /^Agent_report.*\.csv$/i.test(f))
+            .sort()
+            .reverse();
+          if (csvFiles.length > 0) {
+            const picked = path.join(root, csvFiles[0]!);
+            text = await fs.readFile(picked, "utf8");
+            source = `attached-asset:${csvFiles[0]}`;
+            break;
+          }
+        } catch {
+          // try next candidate
         }
-      } catch (e) {
-        log.warn({ err: e, root }, "readymode attached_assets fallback failed");
+      }
+      if (!text.trim()) {
+        log.warn({ candidates }, "readymode attached_assets fallback found nothing");
       }
     }
+    // Graceful empty response: when neither the Google Sheet nor the bundled
+    // CSV is available, return 200 with no agents so the frontend simply
+    // shows "—" in the ReadyMode column instead of throwing/erroring out
+    // the whole By-call table.
     if (!text.trim()) {
-      return res.status(502).json({ error: "ReadyMode CSV unavailable (Google Sheet is private and no attached_assets/Agent_report_*.csv found)" });
+      const empty: RmStatsResponse = {
+        agents: [],
+        totals: { dialed: 0, connected: 0, talkTimeSecs: 0, connectRate: 0 },
+        updatedAt: new Date().toISOString(),
+        raw: "ReadyMode CSV unavailable — publish the Google Sheet (File → Share → Anyone with link → Viewer) or drop Agent_report_*.csv into attached_assets/.",
+      };
+      return res.json(empty);
     }
     const rows = parseCsv(text);
     if (rows.length < 2) {
-      return res.status(502).json({ error: "ReadyMode CSV is empty" });
+      const empty: RmStatsResponse = {
+        agents: [],
+        totals: { dialed: 0, connected: 0, talkTimeSecs: 0, connectRate: 0 },
+        updatedAt: new Date().toISOString(),
+        raw: `ReadyMode CSV from ${source} is empty.`,
+      };
+      return res.json(empty);
     }
     const header = rows[0]!.map((h) => h.trim().toLowerCase());
     const idx = {
