@@ -2694,7 +2694,19 @@ function buildTeamPhoneData(teamMode: string, data: PhoneStatsResponse | null | 
   return map;
 }
 
-function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMissed, agentDept, hideTeamRow }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics>; directKeys?: boolean; pbxData?: PbxCalls; extraMissed?: number; agentDept?: Map<string, "Retention" | "CS">; hideTeamRow?: boolean }) {
+function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMissed, agentDept, hideTeamRow, readymodeByKey, rosterPhoneAliases }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics>; directKeys?: boolean; pbxData?: PbxCalls; extraMissed?: number; agentDept?: Map<string, "Retention" | "CS">; hideTeamRow?: boolean; readymodeByKey?: Map<string, { calls: number; seconds: number }>; rosterPhoneAliases?: Record<string, string> }) {
+  // Mirror the canonicalization the panels use when merging ReadyMode into
+  // phoneData (see useReadymodeByKey + merge loops in TeamPanel/CSPanel/
+  // RetentionPanel). Without the roster + CSV alias passes, aliased agents
+  // (e.g. "kevin michael" → "kevin micheal") get folded into Calls totals but
+  // show "—" in the ReadyMode column, making the column disagree with totals.
+  const getRm = (agent: string) => {
+    if (!readymodeByKey) return undefined;
+    const norm = normalizeAgent(agent);
+    const csvAliased = RM_CSV_ALIASES[norm] ?? norm;
+    const aliased = (rosterPhoneAliases?.[csvAliased]) ?? PHONE_ALIASES[csvAliased] ?? csvAliased;
+    return readymodeByKey.get(aliased) ?? readymodeByKey.get(csvAliased) ?? readymodeByKey.get(norm);
+  };
   const liveAgents = useLiveCalls();
 
   // Share the ["vosLive"] query key so React Query deduplicates the request.
@@ -2849,8 +2861,9 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
               <TableRow>
                 <Th id="__agent__" label="Agent" align="left" />
                 <TableHead className="whitespace-nowrap text-right text-violet-400">Last call</TableHead>
-                <Th id="__calls__" label="Calls" tip="Total calls across all phone systems (Quo + PBX) in the selected period." />
+                <Th id="__calls__" label="Calls" tip="Total calls across all phone systems (Quo + PBX + ReadyMode) in the selected period." />
                 {pbxData && <Th id="__pbx__" label="PBX" tone="text-blue-400" tip="Calls via the PBX phone system only." />}
+                {readymodeByKey && <Th id="__readymode__" label="ReadyMode" tone="text-pink-400" tip="Outbound dialer calls from the ReadyMode CSV (operator-uploaded Google Sheet)." />}
                 <Th id="__outbound__" label="Outbound" tone="text-fuchsia-400" tip="Calls the agent placed to customers (all systems)." />
                 <Th id="__inbound__" label="Inbound" tone="text-cyan-400" tip="Calls received from customers (all systems)." />
                 <Th id="__answered__" label="Answered" tone="text-emerald-400" tip="Calls where a real conversation happened. Inbound: agent picked up. Outbound: customer stayed on for 60+ seconds." />
@@ -2865,7 +2878,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
             <TableBody>
               {visible.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={pbxData ? 13 : 12} className="text-center py-12 text-muted-foreground">No agents match the current filters.</TableCell>
+                  <TableCell colSpan={12 + (pbxData ? 1 : 0) + (readymodeByKey ? 1 : 0)} className="text-center py-12 text-muted-foreground">No agents match the current filters.</TableCell>
                 </TableRow>
               )}
               {visible.map((agent) => {
@@ -2941,6 +2954,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                     </TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!combinedCalls ? "text-muted-foreground/40" : ""}`}>{combinedCalls || "—"}</TableCell>
                     {pbxData && <TableCell className={`text-right tabular-nums font-mono ${px?.calls ? "text-blue-400" : "text-muted-foreground/40"}`}>{px?.calls || "—"}</TableCell>}
+                    {readymodeByKey && (() => { const rm = getRm(agent); return <TableCell className={`text-right tabular-nums font-mono ${rm?.calls ? "text-pink-400" : "text-muted-foreground/40"}`}>{rm?.calls || "—"}</TableCell>; })()}
                     <TableCell className={`text-right tabular-nums font-mono ${combinedOut ? "text-fuchsia-400" : "text-muted-foreground/40"}`}>{combinedOut || "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${combinedIn ? "text-cyan-400" : "text-muted-foreground/40"}`}>{combinedIn || "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${combinedAns ? "text-emerald-400" : "text-muted-foreground/40"}`}>{combinedAns || "—"}</TableCell>
@@ -2961,6 +2975,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                   <TableCell />
                   <TableCell className="text-right tabular-nums font-mono font-bold">{totCalls || "—"}</TableCell>
                   {pbxData && <TableCell className="text-right tabular-nums font-mono font-bold text-blue-400">{totPbxCalls || "—"}</TableCell>}
+                  {readymodeByKey && <TableCell className="text-right tabular-nums font-mono font-bold text-pink-400">{visible.reduce((s, a) => s + (getRm(a)?.calls ?? 0), 0) || "—"}</TableCell>}
                   <TableCell className="text-right tabular-nums font-mono font-bold text-fuchsia-400">{totOut || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{totIn || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totAns || "—"}</TableCell>
@@ -3202,6 +3217,39 @@ interface PhoneStatsResponse {
   agentLastCall?: Record<string, Record<string, string>>;
 }
 
+/**
+ * Fetch ReadyMode dialer per-agent call totals (CSV-backed) and resolve each
+ * CSV name to its canonical dashboard key via RM_CSV_SKIP/RM_CSV_ALIASES,
+ * roster phone aliases, and PHONE_ALIASES. Shared by every team panel so the
+ * NSF / Retention / CS "By call" tables agree on the same merge rules.
+ */
+function useReadymodeByKey(from: string, to: string, roster: RosterIndex): Map<string, { calls: number; seconds: number }> {
+  const readymodeQ = useQuery<{ agents?: { agentName: string; dialed: number; talkTimeSecs: number }[] } | null>({
+    queryKey: ["readymodeStats", from, to],
+    queryFn: async () => {
+      const qs = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+      const res = await fetch(`/api/readymode/stats${qs}`);
+      if (!res.ok) return null;
+      return res.json();
+    },
+    staleTime: 1000 * 30,
+    refetchOnWindowFocus: true,
+    refetchInterval: 60 * 1000,
+  });
+  return useMemo<Map<string, { calls: number; seconds: number }>>(() => {
+    const m = new Map<string, { calls: number; seconds: number }>();
+    for (const a of readymodeQ.data?.agents ?? []) {
+      const rawKey = normalizeAgent(a.agentName);
+      if (RM_CSV_SKIP.has(rawKey)) continue;
+      const csvAliased = RM_CSV_ALIASES[rawKey] ?? rawKey;
+      const aliased = roster.phoneAliases[csvAliased] ?? PHONE_ALIASES[csvAliased] ?? csvAliased;
+      const prev = m.get(aliased) ?? { calls: 0, seconds: 0 };
+      m.set(aliased, { calls: prev.calls + (a.dialed ?? 0), seconds: prev.seconds + (a.talkTimeSecs ?? 0) });
+    }
+    return m;
+  }, [readymodeQ.data, roster]);
+}
+
 function TeamPanel({
   urls,
   sheetKey,
@@ -3268,39 +3316,7 @@ function TeamPanel({
     refetchInterval: 15 * 1000,
   });
 
-  // ReadyMode (Google Sheet CSV) per-agent dialer call counts. Merged into the
-  // Retention, NSF, and CS "By call" totals so each agent's Calls column
-  // = OpenPhone + ReadyMode. Skipped for other modes to avoid a wasted fetch.
-  const readymodeEnabled = mode === "nsf" || mode === "retention" || mode === "cs";
-  const readymodeQ = useQuery<{ agents?: { agentName: string; dialed: number; talkTimeSecs: number }[] } | null>({
-    queryKey: ["readymodeStats", from, to],
-    queryFn: async () => {
-      const qs = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-      const res = await fetch(`/api/readymode/stats${qs}`);
-      if (!res.ok) return null;
-      return res.json();
-    },
-    enabled: readymodeEnabled,
-    staleTime: 1000 * 30,
-    refetchOnWindowFocus: true,
-    refetchInterval: 60 * 1000,
-  });
-
-  const readymodeByKey = useMemo<Map<string, { calls: number; seconds: number }>>(() => {
-    const m = new Map<string, { calls: number; seconds: number }>();
-    if (!readymodeEnabled) return m;
-    for (const a of readymodeQ.data?.agents ?? []) {
-      const rawKey = normalizeAgent(a.agentName);
-      // Skip non-agent CSV rows the user flagged.
-      if (RM_CSV_SKIP.has(rawKey)) continue;
-      // CSV spelling → canonical dashboard key (e.g. "kevin michael" → "kevin micheal").
-      const csvAliased = RM_CSV_ALIASES[rawKey] ?? rawKey;
-      const aliased = roster.phoneAliases[csvAliased] ?? PHONE_ALIASES[csvAliased] ?? csvAliased;
-      const prev = m.get(aliased) ?? { calls: 0, seconds: 0 };
-      m.set(aliased, { calls: prev.calls + (a.dialed ?? 0), seconds: prev.seconds + (a.talkTimeSecs ?? 0) });
-    }
-    return m;
-  }, [readymodeQ.data, readymodeEnabled, roster]);
+  const readymodeByKey = useReadymodeByKey(from, to, roster);
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
     const allowlist = unionTeamSet(TEAM_ALLOWLIST[mode], roster.allowlist[mode as RosterTeam] ?? new Set(), rosterHasAnyForTeam(roster, mode as RosterTeam));
@@ -3528,7 +3544,7 @@ function TeamPanel({
               </TabsList>
               {subTabAllowed("call") && (
                 <TabsContent value="call">
-                  <ByCallStatsView agentList={callAgentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={isRestricted} />
+                  <ByCallStatsView agentList={callAgentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={isRestricted} readymodeByKey={readymodeByKey} rosterPhoneAliases={roster.phoneAliases} />
                 </TabsContent>
               )}
               {aggregated && !("error" in aggregated) && (
@@ -3596,6 +3612,8 @@ function CSPanel() {
     refetchInterval: 15 * 1000,
   });
 
+  const readymodeByKey = useReadymodeByKey(from, to, roster);
+
   const aggregated = useMemo(() => {
     if (!statusQ.data) return null;
     return aggregate(statusQ.data, "cs", fromDate, toDate, roster);
@@ -3634,8 +3652,17 @@ function CSPanel() {
         }
       }
     }
+    for (const [rmKey, rm] of readymodeByKey.entries()) {
+      if (allowlist && !allowlist.has(rmKey)) continue;
+      const e = map.get(rmKey);
+      if (e) {
+        map.set(rmKey, { ...e, calls: e.calls + rm.calls, seconds: e.seconds + rm.seconds, outbound: e.outbound + rm.calls });
+      } else {
+        map.set(rmKey, { calls: rm.calls, seconds: rm.seconds, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: rm.calls, uniqueContacts: 0 });
+      }
+    }
     return map;
-  }, [phoneQ.data]);
+  }, [phoneQ.data, readymodeByKey, roster]);
 
   const { user: csUser } = useUser();
   const csLockToToday = !!csUser.lockToToday;
@@ -3744,7 +3771,7 @@ function CSPanel() {
           </TabsList>
           {csSubTabAllowed("call") && (
             <TabsContent value="call">
-              <ByCallStatsView agentList={allAgents} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} />
+              <ByCallStatsView agentList={allAgents} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} readymodeByKey={readymodeByKey} rosterPhoneAliases={roster.phoneAliases} />
             </TabsContent>
           )}
           {aggregated && !("error" in aggregated) && (
@@ -3821,7 +3848,22 @@ function RetentionPanel() {
     return aggregate(statusQ.data, "retention", fromDate, toDate, roster);
   }, [statusQ.data, from, to, roster]);
 
-  const phoneData = useMemo(() => buildTeamPhoneData("retention", phoneQ.data, roster), [phoneQ.data, roster]);
+  const readymodeByKey = useReadymodeByKey(from, to, roster);
+
+  const phoneData = useMemo(() => {
+    const base = buildTeamPhoneData("retention", phoneQ.data, roster);
+    const allowlist = unionTeamSet(TEAM_ALLOWLIST["retention"], roster.allowlist.retention, rosterHasAnyForTeam(roster, "retention"));
+    for (const [rmKey, rm] of readymodeByKey.entries()) {
+      if (allowlist && !allowlist.has(rmKey)) continue;
+      const e = base.get(rmKey);
+      if (e) {
+        base.set(rmKey, { ...e, calls: e.calls + rm.calls, seconds: e.seconds + rm.seconds, outbound: e.outbound + rm.calls });
+      } else {
+        base.set(rmKey, { calls: rm.calls, seconds: rm.seconds, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: rm.calls, uniqueContacts: 0 });
+      }
+    }
+    return base;
+  }, [phoneQ.data, roster, readymodeByKey]);
 
   const agentList = useMemo(() => {
     const result: string[] = [];
@@ -3927,7 +3969,7 @@ function RetentionPanel() {
           </TabsList>
           {retSubTabAllowed("call") && (
             <TabsContent value="call">
-              <ByCallStatsView agentList={agentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={!!(retUser.allowedAgents?.length)} />
+              <ByCallStatsView agentList={agentList} phoneData={phoneData} pbxData={pbxData} extraMissed={pbxMissed} hideTeamRow={!!(retUser.allowedAgents?.length)} readymodeByKey={readymodeByKey} rosterPhoneAliases={roster.phoneAliases} />
             </TabsContent>
           )}
           {aggregated && !("error" in aggregated) && (

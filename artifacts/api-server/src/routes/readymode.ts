@@ -319,12 +319,38 @@ router.get("/readymode/stats", async (req, res) => {
   const fromIso = typeof req.query["from"] === "string" ? req.query["from"] : undefined;
   const toIso = typeof req.query["to"] === "string" ? req.query["to"] : undefined;
   try {
-    const csvRes = await fetch(READYMODE_CSV_URL, { redirect: "follow" });
-    if (!csvRes.ok) {
-      log.error({ status: csvRes.status }, "readymode CSV fetch failed");
-      return res.status(502).json({ error: `Google Sheet fetch failed: HTTP ${csvRes.status}` });
+    let text = "";
+    let source = "google-sheet";
+    try {
+      const csvRes = await fetch(READYMODE_CSV_URL, { redirect: "follow" });
+      if (csvRes.ok) text = await csvRes.text();
+    } catch (e) {
+      log.warn({ err: e }, "readymode google sheet fetch threw");
     }
-    const text = await csvRes.text();
+    if (!text.trim()) {
+      // Fallback: newest Agent_report_*.csv operator dropped into attached_assets/.
+      // Keeps the dashboard working until the Google Sheet is published publicly.
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const root = path.resolve(process.cwd(), "..", "..", "attached_assets");
+      try {
+        const files = await fs.readdir(root);
+        const csvFiles = files
+          .filter((f) => /^Agent_report.*\.csv$/i.test(f))
+          .sort()
+          .reverse();
+        if (csvFiles.length > 0) {
+          const picked = path.join(root, csvFiles[0]!);
+          text = await fs.readFile(picked, "utf8");
+          source = `attached-asset:${csvFiles[0]}`;
+        }
+      } catch (e) {
+        log.warn({ err: e, root }, "readymode attached_assets fallback failed");
+      }
+    }
+    if (!text.trim()) {
+      return res.status(502).json({ error: "ReadyMode CSV unavailable (Google Sheet is private and no attached_assets/Agent_report_*.csv found)" });
+    }
     const rows = parseCsv(text);
     if (rows.length < 2) {
       return res.status(502).json({ error: "ReadyMode CSV is empty" });
@@ -382,12 +408,12 @@ router.get("/readymode/stats", async (req, res) => {
       connectRate: 100,
     };
 
-    log.info({ included, skipped, agents: agents.length, fromIso, toIso }, "readymode/stats from CSV");
+    log.info({ included, skipped, agents: agents.length, fromIso, toIso, source }, "readymode/stats from CSV");
     const response: RmStatsResponse = {
       agents,
       totals,
       updatedAt: new Date().toISOString(),
-      raw: `Source: Google Sheet CSV (${rows.length - 1} rows, ${included} included, ${skipped} skipped non-date/empty)`,
+      raw: `Source: ${source} (${rows.length - 1} rows, ${included} included, ${skipped} skipped non-date/empty)`,
     };
     return res.json(response);
   } catch (err) {
