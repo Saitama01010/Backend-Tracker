@@ -3252,6 +3252,35 @@ function TeamPanel({
     refetchInterval: 15 * 1000,
   });
 
+  // ReadyMode (Google Sheet CSV) per-agent dialer call counts. Merged into the
+  // NSF "By call" totals so each agent's Calls column = OpenPhone + ReadyMode.
+  // Only meaningful for NSF; other modes still fetch a no-op to keep hook order stable.
+  const readymodeQ = useQuery<{ agents?: { agentName: string; dialed: number; talkTimeSecs: number }[] } | null>({
+    queryKey: ["readymodeStats", from, to],
+    queryFn: async () => {
+      const qs = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+      const res = await fetch(`/api/readymode/stats${qs}`);
+      if (!res.ok) return null;
+      return res.json();
+    },
+    enabled: mode === "nsf",
+    staleTime: 1000 * 30,
+    refetchOnWindowFocus: true,
+    refetchInterval: 60 * 1000,
+  });
+
+  const readymodeByKey = useMemo<Map<string, { calls: number; seconds: number }>>(() => {
+    const m = new Map<string, { calls: number; seconds: number }>();
+    if (mode !== "nsf") return m;
+    for (const a of readymodeQ.data?.agents ?? []) {
+      const rawKey = normalizeAgent(a.agentName);
+      const aliased = roster.phoneAliases[rawKey] ?? PHONE_ALIASES[rawKey] ?? rawKey;
+      const prev = m.get(aliased) ?? { calls: 0, seconds: 0 };
+      m.set(aliased, { calls: prev.calls + (a.dialed ?? 0), seconds: prev.seconds + (a.talkTimeSecs ?? 0) });
+    }
+    return m;
+  }, [readymodeQ.data, mode, roster]);
+
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
     const allowlist = unionTeamSet(TEAM_ALLOWLIST[mode], roster.allowlist[mode as RosterTeam] ?? new Set(), rosterHasAnyForTeam(roster, mode as RosterTeam));
     const map = new Map<string, PhoneAgentMetrics>();
@@ -3286,8 +3315,20 @@ function TeamPanel({
         }
       }
     }
+    // Fold ReadyMode dialer calls (per agent) into the same map so the Calls
+    // column on NSF = OpenPhone + ReadyMode. ReadyMode rows become outbound
+    // for tallying purposes; ReadyMode doesn't expose answered/missed split.
+    for (const [rmKey, rm] of readymodeByKey.entries()) {
+      if (allowlist && !allowlist.has(rmKey)) continue;
+      const e = map.get(rmKey);
+      if (e) {
+        map.set(rmKey, { ...e, calls: e.calls + rm.calls, seconds: e.seconds + rm.seconds, outbound: e.outbound + rm.calls });
+      } else {
+        map.set(rmKey, { calls: rm.calls, seconds: rm.seconds, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: rm.calls, uniqueContacts: 0 });
+      }
+    }
     return map;
-  }, [phoneQ.data, mode]);
+  }, [phoneQ.data, mode, readymodeByKey, roster]);
 
   const aggregated = useMemo(() => {
     if (!statusQ.data) return null;
