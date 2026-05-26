@@ -232,10 +232,18 @@ router.get("/violations", async (req, res) => {
     }
 
     // ── Missed While Available ──────────────────────────────────────────────────
+    // Suppress very-recent misses: give OpenPhone / VoSLogic 2 h to finish
+    // recording the calls of all teammates before deciding who was "available".
+    // Without this, a teammate still on a long call may be wrongly flagged as
+    // available because their call hasn't been synced (or hasn't ended) yet.
+    const MISSED_GRACE_MS = 2 * 3600 * 1000;
+    const missedCutoffMs  = nowUtc.getTime() - MISSED_GRACE_MS;
+
     const missedWhileAvail: MissedCallEntry[] = [];
 
     for (const missed of missedRows) {
       const missedMs   = new Date(missed.createdAt).getTime();
+      if (missedMs > missedCutoffMs) continue;
       const missedDate = new Date(missed.createdAt).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
       const dayStart   = laStartOfDay(missedDate);
 
@@ -281,6 +289,7 @@ router.get("/violations", async (req, res) => {
       if (isGhost) continue;
 
       const missedMs   = new Date(r.createdAt).getTime();
+      if (missedMs > missedCutoffMs) continue;
       const missedDate = new Date(r.createdAt).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
       const dayStart   = laStartOfDay(missedDate);
 
