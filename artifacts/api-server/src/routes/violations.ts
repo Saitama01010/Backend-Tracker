@@ -132,8 +132,14 @@ router.get("/violations", async (req, res) => {
       callsByAgentDate.set(dateKey, dateArr);
 
       // spans map for busy check
-      // in-progress calls have duration=0; use 30-min fallback so they register as busy
-      const INPROGRESS_FALLBACK_S = 1800;
+      // in-progress calls have duration=0 — use a generous 3-hour fallback.
+      // OpenPhone leaves warm-transfer/coaching call legs as "in-progress" long
+      // after they end (sometimes indefinitely). A short fallback caused agents
+      // who were genuinely on a long call to be wrongly flagged "available" for
+      // missed calls landing >30 min after the call began. 3 h covers realistic
+      // long retention/coaching calls without obscuring real availability the
+      // following shift.
+      const INPROGRESS_FALLBACK_S = 3 * 3600;
       const dur = (row.durationSeconds && row.durationSeconds > 0)
         ? row.durationSeconds
         : (row.status === "in-progress" ? INPROGRESS_FALLBACK_S : 0);

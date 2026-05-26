@@ -234,8 +234,11 @@ async function fetchAgentCallsForDate(
       if (call.status === "active" || call.status === "ringing") continue;
 
       // Track call span for busy detection (used by violations.ts).
-      // In-progress calls use a 30-min fallback so they register as busy.
-      const INPROGRESS_FALLBACK_VOS = 1800;
+      // In-progress calls use a 3-hour fallback so they register as busy.
+      // Matches violations.ts INPROGRESS_FALLBACK_S — see the comment there
+      // (warm-transfer/coaching call legs can stay "in-progress" in upstream
+      // dialer APIs long after they actually end).
+      const INPROGRESS_FALLBACK_VOS = 3 * 3600;
       const spanDur = (call.duration && call.duration > 0)
         ? call.duration
         : (call.status === "in-progress" ? INPROGRESS_FALLBACK_VOS : 0);
