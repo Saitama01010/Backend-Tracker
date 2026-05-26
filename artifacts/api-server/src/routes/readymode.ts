@@ -230,43 +230,166 @@ const REPORT_PROBE_PATHS = [
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
+// ─── CSV source (Google Sheet) ────────────────────────────────────────────────
+// Operator-maintained Google Sheet exported as CSV. Replaces the broken HTML
+// scraper. The sheet is published with daily ReadyMode agent reports
+// (Day/date, Name, Ready (t), Break (t), Logged calls, Transfers,
+//  Ready:Avg wait, Ready:Avg wrap, Ready:Talk Time).
+const READYMODE_CSV_URL =
+  "https://docs.google.com/spreadsheets/d/1wjOupcSaJMl7uSvZEQsoVl2J-US-62HamjVLvKHl-fM/export?format=csv&gid=0";
+
+const MONTHS: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+function parseCsv(text: string): string[][] {
+  // Handles quoted fields with embedded commas/newlines.
+  const rows: string[][] = [];
+  let cur: string[] = [];
+  let field = "";
+  let inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQ = false;
+      } else field += c;
+    } else {
+      if (c === '"') inQ = true;
+      else if (c === ",") { cur.push(field); field = ""; }
+      else if (c === "\n" || c === "\r") {
+        if (c === "\r" && text[i + 1] === "\n") i++;
+        cur.push(field); field = "";
+        rows.push(cur); cur = [];
+      } else field += c;
+    }
+  }
+  if (field.length > 0 || cur.length > 0) { cur.push(field); rows.push(cur); }
+  return rows.filter(r => r.length > 1 || (r.length === 1 && r[0]!.trim()));
+}
+
+function parseDurationToSecs(s: string): number {
+  if (!s || s === "-") return 0;
+  let total = 0;
+  const h = s.match(/(\d+)\s*hours?/i);
+  const m = s.match(/(\d+)\s*min\./i);
+  const sec = s.match(/([\d.]+)\s*s\./i);
+  if (h?.[1]) total += parseInt(h[1], 10) * 3600;
+  if (m?.[1]) total += parseInt(m[1], 10) * 60;
+  if (sec?.[1]) total += parseFloat(sec[1]);
+  return Math.round(total);
+}
+
+function parseIntSafe(s: string | undefined): number {
+  if (!s || s === "-") return 0;
+  const n = parseInt(s.replace(/[^0-9-]/g, ""), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * Parse a "Day/date" cell like "May 14" → ISO "YYYY-MM-DD" using the current
+ * year (sheet doesn't carry a year). Returns null for non-date rows like
+ * "Monday", "Sunday", "-" so callers can skip those (weekday labels and
+ * agent-totals rows must not be double-counted on top of per-day rows).
+ */
+function dayToIso(day: string, yearHint?: number): string | null {
+  const trimmed = day.trim();
+  if (!trimmed || trimmed === "-") return null;
+  const m = trimmed.match(/^([A-Za-z]+)\s+(\d{1,2})$/);
+  if (!m) return null;
+  const mon = MONTHS[m[1]!.slice(0, 3).toLowerCase()];
+  if (!mon) return null;
+  const d = parseInt(m[2]!, 10);
+  if (!d) return null;
+  const yr = yearHint ?? new Date().getFullYear();
+  return `${yr}-${String(mon).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
 /**
  * GET /api/readymode/stats
- * Returns per-agent dialer stats from ReadyMode.
+ * Returns per-agent dialer stats from the operator-maintained Google Sheet
+ * (CSV export). Supports optional date filtering via ?from=YYYY-MM-DD&to=YYYY-MM-DD.
+ * The legacy HTML scraper (rmFetch, parseAgentTable, REPORT_PROBE_PATHS) is
+ * kept available via /api/readymode/probe for future re-enablement.
  */
 router.get("/readymode/stats", async (req, res) => {
   const log = req.log ?? rootLogger;
+  const fromIso = typeof req.query["from"] === "string" ? req.query["from"] : undefined;
+  const toIso = typeof req.query["to"] === "string" ? req.query["to"] : undefined;
   try {
-    for (const path of REPORT_PROBE_PATHS) {
-      const result = await rmFetch(path);
-      log.info({ path, status: result.status, bodyLen: result.body.length }, "ReadyMode probe");
-
-      if (result.status !== 200) continue;
-      if (result.body.includes("login_new") || result.body.includes("login-form")) continue;
-
-      const agents = parseAgentTable(result.body);
-      const totals = {
-        dialed: agents.reduce((s, a) => s + a.dialed, 0),
-        connected: agents.reduce((s, a) => s + a.connected, 0),
-        talkTimeSecs: agents.reduce((s, a) => s + a.talkTimeSecs, 0),
-        connectRate: 0,
-      };
-      if (totals.dialed > 0) {
-        totals.connectRate = Math.round((totals.connected / totals.dialed) * 1000) / 10;
-      }
-
-      const response: RmStatsResponse = {
-        agents,
-        totals,
-        updatedAt: new Date().toISOString(),
-        // Return first 3000 chars of body for debugging until endpoints are confirmed
-        raw: result.body.slice(0, 3000),
-      };
-      return res.json(response);
+    const csvRes = await fetch(READYMODE_CSV_URL, { redirect: "follow" });
+    if (!csvRes.ok) {
+      log.error({ status: csvRes.status }, "readymode CSV fetch failed");
+      return res.status(502).json({ error: `Google Sheet fetch failed: HTTP ${csvRes.status}` });
+    }
+    const text = await csvRes.text();
+    const rows = parseCsv(text);
+    if (rows.length < 2) {
+      return res.status(502).json({ error: "ReadyMode CSV is empty" });
+    }
+    const header = rows[0]!.map((h) => h.trim().toLowerCase());
+    const idx = {
+      day:   header.findIndex((h) => h.includes("day") || h.includes("date")),
+      name:  header.findIndex((h) => h === "name" || h.includes("agent")),
+      calls: header.findIndex((h) => h.includes("logged call") || h === "calls"),
+      talk:  header.findIndex((h) => h.includes("talk time")),
+    };
+    if (idx.name < 0 || idx.calls < 0) {
+      return res.status(502).json({ error: "ReadyMode CSV missing required columns (Name, Logged calls)" });
     }
 
-    // All paths redirected to login or returned non-data
-    return res.status(503).json({ error: "ReadyMode data unavailable — session established but no parseable report found. Use /api/readymode/probe to inspect available pages." });
+    // Aggregate per agent. Skip non-date rows ("Monday"/"Sunday" weekday
+    // aggregates and "-" agent-total rows) to avoid double-counting.
+    type Agg = { dialed: number; talkTimeSecs: number; days: Set<string> };
+    const agg = new Map<string, Agg>();
+    let included = 0;
+    let skipped = 0;
+    for (const r of rows.slice(1)) {
+      const name = (r[idx.name] ?? "").trim();
+      if (!name) { skipped++; continue; }
+      const dayRaw = idx.day >= 0 ? (r[idx.day] ?? "") : "";
+      const iso = dayToIso(dayRaw);
+      if (!iso) { skipped++; continue; }
+      if (fromIso && iso < fromIso) { skipped++; continue; }
+      if (toIso && iso > toIso) { skipped++; continue; }
+      const dialed = parseIntSafe(r[idx.calls]);
+      const talkSecs = idx.talk >= 0 ? parseDurationToSecs(r[idx.talk] ?? "") : 0;
+      const e = agg.get(name) ?? { dialed: 0, talkTimeSecs: 0, days: new Set<string>() };
+      e.dialed += dialed;
+      e.talkTimeSecs += talkSecs;
+      e.days.add(iso);
+      agg.set(name, e);
+      included++;
+    }
+
+    const agents: RmAgentStat[] = [...agg.entries()]
+      .filter(([, v]) => v.dialed > 0 || v.talkTimeSecs > 0)
+      .map(([agentName, v]) => ({
+        agentName,
+        dialed: v.dialed,
+        connected: v.dialed, // CSV does not separate dialed vs connected
+        talkTimeSecs: v.talkTimeSecs,
+        avgTalkSecs: v.dialed > 0 ? Math.round(v.talkTimeSecs / v.dialed) : 0,
+        connectRate: 100,
+      }));
+
+    const totals = {
+      dialed: agents.reduce((s, a) => s + a.dialed, 0),
+      connected: agents.reduce((s, a) => s + a.connected, 0),
+      talkTimeSecs: agents.reduce((s, a) => s + a.talkTimeSecs, 0),
+      connectRate: 100,
+    };
+
+    log.info({ included, skipped, agents: agents.length, fromIso, toIso }, "readymode/stats from CSV");
+    const response: RmStatsResponse = {
+      agents,
+      totals,
+      updatedAt: new Date().toISOString(),
+      raw: `Source: Google Sheet CSV (${rows.length - 1} rows, ${included} included, ${skipped} skipped non-date/empty)`,
+    };
+    return res.json(response);
   } catch (err) {
     log.error({ err }, "readymode/stats error");
     return res.status(500).json({ error: String(err) });
