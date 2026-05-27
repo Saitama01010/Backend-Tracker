@@ -518,12 +518,19 @@ async function fetchRetentionCombinedSheet(
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
-    // Use the same retention-eligibility predicate the other loaders use so the
-    // roster (authoritative) decides team membership — not the legacy
-    // RETENTION_SHEET_CS_AGENTS list, which still classifies agents like
-    // Jacob Xander / Ella Monroe / Leo Carter / Carla Bennet as CS even though
-    // the roster now puts them on Retention.
-    if (!includeForRetention(agentRaw)) continue;
+    // Use the same retention-eligibility predicate the other loaders use, with
+    // the same segment fallback as the Discord/IDP loaders: even if the
+    // compound name is in a legacy CS/NSF exclude list, if ANY "-" segment is
+    // a known retention agent (e.g. "Youssef Nady-Jacob Xander" → "jacob
+    // xander" ∈ retentionNames), the row counts here. Without this, retains
+    // for agents like Jacob Xander, Ella Monroe, Leo Carter, Carla Bennet
+    // silently disappear because their compound forms live in
+    // RETENTION_SHEET_CS_AGENTS.
+    if (!includeForRetention(agentRaw)) {
+      const agentNorm = normalizeAgent(agentRaw);
+      const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
+      if (!segments.some(seg => retentionNames.has(seg))) continue;
+    }
     rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim(), __sourceTab: "IDP-Cancel-Retained" });
   }
 
