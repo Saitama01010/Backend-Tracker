@@ -3909,6 +3909,13 @@ function RetentionPanel() {
         const k = normalizeAgent(extra);
         if (!addedKeys.has(k)) { result.push(extra); addedKeys.add(k); }
       }
+    } else {
+      // Seed with every active retention roster member so agents who have
+      // retain submissions but no phone calls today still show up.
+      for (const a of roster!.agentsForTeam("retention")) {
+        const k = normalizeAgent(a.name);
+        if (!addedKeys.has(k)) { result.push(a.name); addedKeys.add(k); }
+      }
     }
     for (const k of phoneData.keys()) {
       if (!inRoster(k)) continue;
