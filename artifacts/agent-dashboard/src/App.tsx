@@ -503,9 +503,14 @@ async function fetchRetentionCombinedSheet(
     rows.push({ Agent: agentRaw, Status: "IDP-Handled", Date: caDate, "File ID": (r["File ID"] ?? "").trim() });
   }
 
-  // Add IDP Cancel Retained tab rows (gid=1018337469) — every row counts as "Retained"
-  // (folded into the regular Retained metric). Routed by roster team so NSF/CS rows
-  // do NOT leak into the Retention panel.
+  // Add IDP Cancel Retained tab rows (gid=1018337469) — EVERY row counts as a
+  // Retained for the submitting agent. No matter what.
+  //
+  // Per user: any file submitted on this tab is a retain for the agent. The only
+  // routing we do here is "is this row clearly an NSF or CS crossover agent's row"
+  // — if so, skip it because the NSF/CS crossover loaders below will pick it up.
+  // Otherwise the row lands in the Retention panel even if the agent isn't in any
+  // roster (so unknown / new / typo'd names don't silently disappear).
   for (const r of idpCancelSheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
     const d = parseEgyptTimestamp(tsRaw);
@@ -513,24 +518,23 @@ async function fetchRetentionCombinedSheet(
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
-    // Roster-aware retention gate + inactive hide (segment-aware for compound names).
-    // Permissive segment-aware retention match: resolves Discord-bot compound
-    // names like "Mohammed Ayman-Max Francis-22" (max francis → henry hart) or
-    // "Abdulrhman-Adam Maxwell" (adam maxwell → jacob stephenson) by normalizing
-    // each "-"-separated segment through NAME_ALIASES and also checking the
-    // roster's team mapping per segment. Without this, IDP-Cancel-Retained rows
-    // submitted under compound names are silently dropped from the dashboard.
-    if (!includeForRetention(agentRaw)) {
-      const wholeNorm = normalizeAgent(agentRaw);
-      const rawSegments = wholeNorm.split("-").map(s => s.trim()).filter(Boolean);
-      const normSegments = rawSegments.map(seg => normalizeAgent(seg));
-      const matched =
-        normSegments.some(seg => retentionNames.has(seg)) ||
-        normSegments.some(seg => roster?.teamForAgent(seg) === "retention");
-      if (!matched) continue;
-    }
-    // Per task plan: every row from the IDP Cancel Retained tab counts as Retained
-    // on the dashboard, but is tagged so Export Rows can surface it as IDP-Cancel-Handled.
+    // Inactive-agent hide (current view only).
+    const hit = roster?.lookupByAnyName(agentRaw);
+    if (hideInactive && hit && hit.active === false) continue;
+    // Skip ONLY when the row clearly belongs to NSF or CS (so it shows up in
+    // their crossover loaders, not here). Everything else falls through to
+    // Retained — including agents not in any roster.
+    const wholeNorm = normalizeAgent(agentRaw);
+    const normSegments = wholeNorm.split("-").map(s => normalizeAgent(s.trim())).filter(Boolean);
+    const isNsf =
+      roster?.teamForAgent(agentRaw) === "nsf" ||
+      nsfExcludeNames.has(wholeNorm) ||
+      normSegments.some(seg => nsfExcludeNames.has(seg) || roster?.teamForAgent(seg) === "nsf");
+    const isCs =
+      roster?.teamForAgent(agentRaw) === "cs" ||
+      csExcludeNames.has(wholeNorm) ||
+      normSegments.some(seg => csExcludeNames.has(seg) || roster?.teamForAgent(seg) === "cs");
+    if (isNsf || isCs) continue;
     rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim(), __sourceTab: "IDP-Cancel-Retained" });
   }
 
