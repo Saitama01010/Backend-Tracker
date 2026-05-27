@@ -518,23 +518,12 @@ async function fetchRetentionCombinedSheet(
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
-    // Inactive-agent hide (current view only).
-    const hit = roster?.lookupByAnyName(agentRaw);
-    if (hideInactive && hit && hit.active === false) continue;
-    // Skip ONLY when the row clearly belongs to NSF or CS (so it shows up in
-    // their crossover loaders, not here). Everything else falls through to
-    // Retained — including agents not in any roster.
-    const wholeNorm = normalizeAgent(agentRaw);
-    const normSegments = wholeNorm.split("-").map(s => normalizeAgent(s.trim())).filter(Boolean);
-    const isNsf =
-      roster?.teamForAgent(agentRaw) === "nsf" ||
-      nsfExcludeNames.has(wholeNorm) ||
-      normSegments.some(seg => nsfExcludeNames.has(seg) || roster?.teamForAgent(seg) === "nsf");
-    const isCs =
-      roster?.teamForAgent(agentRaw) === "cs" ||
-      csExcludeNames.has(wholeNorm) ||
-      normSegments.some(seg => csExcludeNames.has(seg) || roster?.teamForAgent(seg) === "cs");
-    if (isNsf || isCs) continue;
+    // Use the same retention-eligibility predicate the other loaders use so the
+    // roster (authoritative) decides team membership — not the legacy
+    // RETENTION_SHEET_CS_AGENTS list, which still classifies agents like
+    // Jacob Xander / Ella Monroe / Leo Carter / Carla Bennet as CS even though
+    // the roster now puts them on Retention.
+    if (!includeForRetention(agentRaw)) continue;
     rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim(), __sourceTab: "IDP-Cancel-Retained" });
   }
 
