@@ -8,10 +8,12 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router: IRouter = Router();
 
-const QA_MODEL = process.env["QA_MODEL"] ?? "gpt-4.1-mini";
+// QA scoring runs through OpenRouter on DeepSeek (much cheaper than GPT-4.1).
+// Override with QA_MODEL if a different model is ever needed.
+const QA_MODEL = process.env["QA_MODEL"] ?? "deepseek/deepseek-chat";
 const openai = new OpenAI({
-  baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
-  apiKey: process.env["AI_INTEGRATIONS_OPENAI_API_KEY"],
+  baseURL: process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"],
+  apiKey: process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"],
 });
 
 // ── Departments ─────────────────────────────────────────────────────────────

@@ -259,12 +259,14 @@ const openai = new OpenAI({
   apiKey: process.env["AI_INTEGRATIONS_OPENAI_API_KEY"],
 });
 
-// OpenRouter client — used for Samia. Llama 4 has no content filtering,
-// so it actually follows the swearing instructions.
+// OpenRouter client — used for Samia. Runs on DeepSeek (much cheaper than
+// GPT-4.1) and has no content filtering, so it follows the personality
+// instructions. Override the model with SAMIA_MODEL if needed.
 const openrouter = new OpenAI({
   baseURL: process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"],
   apiKey: process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"],
 });
+const SAMIA_MODEL = process.env["SAMIA_MODEL"] ?? "deepseek/deepseek-chat";
 
 // ── One-swear-per-message post-processor ─────────────────────────────────────
 // If the model output contains no heavy word at all, slip one in naturally
@@ -1062,11 +1064,11 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
     let attendanceMarked = false;
 
     for (let round = 0; round < 4; round++) {
-      const completion = await openai.chat.completions.create({
-        model: "gpt-4.1",
+      const completion = await openrouter.chat.completions.create({
+        model: SAMIA_MODEL,
         messages: currentMessages,
         tools,
-        max_completion_tokens: 1600,
+        max_tokens: 1600,
       });
 
       const choice = completion.choices[0];
