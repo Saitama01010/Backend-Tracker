@@ -1,7 +1,14 @@
 import { Router } from "express";
+import { db, readymodeUploadsTable } from "@workspace/db";
+import { and, gte, lte, sql } from "drizzle-orm";
+import type { Logger } from "pino";
 import { logger as rootLogger } from "../lib/logger";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
+
+// One parsed ReadyMode report row, keyed per (agent, day).
+type DayRow = { name: string; iso: string; dialed: number; talkSecs: number };
 const RM_BASE = "https://icydeals.readymode.com";
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -308,6 +315,43 @@ function dayToIso(day: string, yearHint?: number): string | null {
 }
 
 /**
+ * Parse a ReadyMode daily-report CSV into per-(agent, day) rows. Returns an
+ * empty array when required columns ("Name" + "Logged calls") are missing so
+ * callers can skip a bad source gracefully. Shared by /readymode/stats and the
+ * /readymode/upload endpoint.
+ */
+function parseReadymodeRows(text: string, log: Logger, source: string): DayRow[] {
+  const parsed = parseCsv(text);
+  if (parsed.length < 2) return [];
+  const header = parsed[0]!.map((h) => h.trim().toLowerCase());
+  const idx = {
+    day:   header.findIndex((h) => h.includes("day") || h.includes("date")),
+    name:  header.findIndex((h) => h === "name" || h.includes("agent")),
+    calls: header.findIndex((h) => h.includes("logged call") || h === "calls"),
+    talk:  header.findIndex((h) => h.includes("talk time")),
+  };
+  if (idx.name < 0 || idx.calls < 0) {
+    log.warn({ source, header }, "readymode source missing required columns");
+    return [];
+  }
+  const out: DayRow[] = [];
+  for (const r of parsed.slice(1)) {
+    const name = (r[idx.name] ?? "").trim();
+    if (!name) continue;
+    const dayRaw = idx.day >= 0 ? (r[idx.day] ?? "") : "";
+    const iso = dayToIso(dayRaw);
+    if (!iso) continue;
+    out.push({
+      name,
+      iso,
+      dialed: parseIntSafe(r[idx.calls]),
+      talkSecs: idx.talk >= 0 ? parseDurationToSecs(r[idx.talk] ?? "") : 0,
+    });
+  }
+  return out;
+}
+
+/**
  * GET /api/readymode/stats
  * Returns per-agent dialer stats from the operator-maintained Google Sheet
  * (CSV export). Supports optional date filtering via ?from=YYYY-MM-DD&to=YYYY-MM-DD.
@@ -319,44 +363,15 @@ router.get("/readymode/stats", async (req, res) => {
   const fromIso = typeof req.query["from"] === "string" ? req.query["from"] : undefined;
   const toIso = typeof req.query["to"] === "string" ? req.query["to"] : undefined;
   try {
-    // Two data sources, both contributing rows:
-    //   1. attached_assets/Agent_report_*.csv — historical baseline
-    //      (operator-uploaded one-time export from ReadyMode).
-    //   2. Google Sheet CSV — live, updated daily by the operator going
-    //      forward. Wins on (agent, day) collisions so corrections in the
-    //      sheet override the static CSV.
-    type DayRow = { name: string; iso: string; dialed: number; talkSecs: number };
+    // Three data sources, in increasing priority (later wins on (agent, day)):
+    //   1. attached_assets/Agent_report_*.csv — historical baseline.
+    //   2. Google Sheet CSV — live, operator-maintained.
+    //   3. DB uploads (readymode_uploads) — operator-uploaded via the portal.
     const sources: { source: string; rows: DayRow[] }[] = [];
 
     const ingest = (text: string, source: string) => {
-      const parsed = parseCsv(text);
-      if (parsed.length < 2) return;
-      const header = parsed[0]!.map((h) => h.trim().toLowerCase());
-      const idx = {
-        day:   header.findIndex((h) => h.includes("day") || h.includes("date")),
-        name:  header.findIndex((h) => h === "name" || h.includes("agent")),
-        calls: header.findIndex((h) => h.includes("logged call") || h === "calls"),
-        talk:  header.findIndex((h) => h.includes("talk time")),
-      };
-      if (idx.name < 0 || idx.calls < 0) {
-        log.warn({ source, header }, "readymode source missing required columns");
-        return;
-      }
-      const out: DayRow[] = [];
-      for (const r of parsed.slice(1)) {
-        const name = (r[idx.name] ?? "").trim();
-        if (!name) continue;
-        const dayRaw = idx.day >= 0 ? (r[idx.day] ?? "") : "";
-        const iso = dayToIso(dayRaw);
-        if (!iso) continue;
-        out.push({
-          name,
-          iso,
-          dialed: parseIntSafe(r[idx.calls]),
-          talkSecs: idx.talk >= 0 ? parseDurationToSecs(r[idx.talk] ?? "") : 0,
-        });
-      }
-      sources.push({ source, rows: out });
+      const rows = parseReadymodeRows(text, log, source);
+      sources.push({ source, rows });
     };
 
     // (1) Historical CSV bundled in attached_assets/.
@@ -396,6 +411,31 @@ router.get("/readymode/stats", async (req, res) => {
       }
     } catch (e) {
       log.warn({ err: e }, "readymode google sheet fetch threw");
+    }
+
+    // (3) Operator uploads stored in the DB — highest priority. Scoped to the
+    // requested range so a wide history doesn't bloat the merge.
+    try {
+      const conds = [];
+      if (fromIso) conds.push(gte(readymodeUploadsTable.statDate, fromIso));
+      if (toIso) conds.push(lte(readymodeUploadsTable.statDate, toIso));
+      const dbRows = await db
+        .select()
+        .from(readymodeUploadsTable)
+        .where(conds.length ? and(...conds) : undefined);
+      if (dbRows.length) {
+        sources.push({
+          source: "db-upload",
+          rows: dbRows.map((r) => ({
+            name: r.agentName,
+            iso: r.statDate,
+            dialed: r.dialed,
+            talkSecs: r.talkSecs,
+          })),
+        });
+      }
+    } catch (e) {
+      log.warn({ err: e }, "readymode db uploads query threw");
     }
 
     if (sources.length === 0) {
@@ -490,6 +530,77 @@ router.get("/readymode/probe", async (req, res) => {
   } catch (err) {
     log.error({ err }, "readymode/probe error");
     res.status(500).json({ error: String(err) });
+  }
+});
+
+/**
+ * POST /api/readymode/upload
+ * Body: { csv: string, filename?: string }
+ * Parses an uploaded ReadyMode daily-report CSV and upserts its per-(agent, day)
+ * rows into readymode_uploads. These rows are the highest-priority source for
+ * /readymode/stats, so re-uploading a day overwrites it. Admin/edit only.
+ */
+router.post("/readymode/upload", requireAuth, requireRole("admin", "edit"), async (req, res) => {
+  const log = req.log ?? rootLogger;
+  try {
+    const { csv, filename } = req.body as { csv?: unknown; filename?: unknown };
+    if (typeof csv !== "string" || !csv.trim()) {
+      return res.status(400).json({ error: "Missing csv text in request body." });
+    }
+    const source = typeof filename === "string" && filename.trim() ? filename.trim() : "upload";
+    const rows = parseReadymodeRows(csv, log, source);
+    if (rows.length === 0) {
+      return res.status(400).json({
+        error: "No valid rows found. Expected a ReadyMode report with Name, Day/date and Logged calls columns.",
+      });
+    }
+
+    // Canonicalize the agent name (trim + collapse internal whitespace) so the
+    // stored value is stable across uploads. The DB unique key is
+    // (agent_name, stat_date); ReadyMode exports a consistent name per agent,
+    // so this guarantees same-day re-uploads upsert the same row rather than
+    // inserting a near-duplicate.
+    const canonName = (s: string) => s.trim().replace(/\s+/g, " ");
+    // Dedupe within the file on (canonical agent, day), keeping the last
+    // occurrence so a file with both per-day and total rows doesn't double-insert.
+    const byKey = new Map<string, DayRow>();
+    for (const r of rows) {
+      const name = canonName(r.name);
+      byKey.set(`${name.toLowerCase()}|${r.iso}`, { ...r, name });
+    }
+    const uploadedBy = req.user?.username ?? "unknown";
+    const values = [...byKey.values()].map((r) => ({
+      agentName: r.name,
+      statDate: r.iso,
+      dialed: r.dialed,
+      talkSecs: r.talkSecs,
+      uploadedBy,
+    }));
+
+    await db
+      .insert(readymodeUploadsTable)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [readymodeUploadsTable.agentName, readymodeUploadsTable.statDate],
+        set: {
+          dialed: sql`excluded.dialed`,
+          talkSecs: sql`excluded.talk_secs`,
+          uploadedBy: sql`excluded.uploaded_by`,
+          uploadedAt: sql`now()`,
+        },
+      });
+
+    const dates = [...new Set(values.map((v) => v.statDate))].sort();
+    log.info({ rows: values.length, dates: dates.length, uploadedBy, source }, "readymode/upload stored");
+    return res.json({
+      ok: true,
+      rowsStored: values.length,
+      dateRange: dates.length ? { from: dates[0], to: dates[dates.length - 1] } : null,
+      days: dates.length,
+    });
+  } catch (err) {
+    log.error({ err }, "readymode/upload error");
+    return res.status(500).json({ error: String(err) });
   }
 });
 

@@ -41,6 +41,7 @@ import {
   ChevronRight,
   PhoneCall,
   LogOut,
+  Upload,
   ShieldCheck,
   UserCog,
   Eye,
@@ -7980,10 +7981,39 @@ function ViolationsPanel() {
 type DashView = "metrics" | "attendance" | "phones";
 
 function Dashboard() {
-  const { user, logout, can, canSeeTab } = useUser();
+  const { user, token, logout, can, canSeeTab } = useUser();
+  const qc = useQueryClient();
   const [showUsers, setShowUsers] = useState(false);
   const [showBlocked, setShowBlocked] = useState(false);
   const [showAgents, setShowAgents] = useState(false);
+  const rmFileRef = useRef<HTMLInputElement>(null);
+  const [rmUploading, setRmUploading] = useState(false);
+  const canUploadRm = user.role === "admin" || user.role === "edit";
+
+  async function handleRmUpload(file: File) {
+    setRmUploading(true);
+    try {
+      const csv = await file.text();
+      const r = await fetch("/api/readymode/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ csv, filename: file.name }),
+      });
+      const data = (await r.json().catch(() => ({}))) as {
+        ok?: boolean; rowsStored?: number; days?: number; error?: string;
+      };
+      if (!r.ok || !data.ok) {
+        window.alert(`Upload failed: ${data.error ?? `HTTP ${r.status}`}`);
+        return;
+      }
+      qc.invalidateQueries({ queryKey: ["readymodeStats"] });
+      window.alert(`ReadyMode CSV uploaded: ${data.rowsStored ?? 0} rows across ${data.days ?? 0} day(s).`);
+    } catch (e) {
+      window.alert(`Upload failed: ${String(e)}`);
+    } finally {
+      setRmUploading(false);
+    }
+  }
   const defaultView: DashView = can("view_metrics") ? "metrics" : "attendance";
   const [view, setView] = useState<DashView>(defaultView);
 
@@ -8045,6 +8075,33 @@ function Dashboard() {
                 <RoleIcon className="h-2.5 w-2.5" />{user.role}
               </Badge>
             </div>
+            {canUploadRm && (
+              <>
+                <input
+                  ref={rmFileRef}
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) handleRmUpload(f);
+                    e.target.value = "";
+                  }}
+                />
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      onClick={() => rmFileRef.current?.click()}
+                      disabled={rmUploading}
+                      className="p-2 rounded-lg text-zinc-400 hover:text-pink-300 hover:bg-pink-500/10 transition-colors disabled:opacity-50"
+                    >
+                      <Upload className={`h-4 w-4 ${rmUploading ? "animate-pulse" : ""}`} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>{rmUploading ? "Uploading…" : "Upload ReadyMode CSV"}</TooltipContent>
+                </Tooltip>
+              </>
+            )}
             {user.role === "admin" && (
               <>
                 <Tooltip>
