@@ -14,10 +14,18 @@ Source priority (highest wins on conflict):
 2. Google Sheet CSV
 3. **DB uploads** (`readymode_uploads` table) — range-scoped by `stat_date`
 
-`parseReadymodeRows(text, log, source)` is the single shared parser used by both
-the stats ingest and the upload route. Required columns: Name, Day/date, Logged
-calls; talk time optional. `dayToIso` only parses "May 14"-style dates and skips
-weekday/separator rows.
+`parseReadymodeRows(text, log, source, fallbackIso?)` is the single shared parser
+used by both the stats ingest and the upload route. Required columns: Name, Logged
+calls; Day/date and talk time optional. `dayToIso` only parses "May 14"-style
+dates and returns null for weekday/separator rows.
+
+**Daily reports carry no calendar date.** The "Day/date" column is a weekday name
+("Thursday") or "-", not a date. So the parser falls back to `fallbackIso` (the
+date the operator picks at upload time) when a row's day cell isn't a parseable
+date. Each agent appears twice (a weekday row + a "-" total row with identical
+values); the (agent, day) dedup collapses them. The grand-total **"Summary"**
+(and "Total") row carries the sum of all agents' calls (e.g. 999) and is skipped
+by name — never store it as an agent.
 
 ## Portal upload
 `POST /api/readymode/upload` (auth-gated: `requireAuth` + `requireRole("admin","edit")`)

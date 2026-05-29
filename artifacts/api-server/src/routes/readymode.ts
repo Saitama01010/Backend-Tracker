@@ -320,7 +320,12 @@ function dayToIso(day: string, yearHint?: number): string | null {
  * callers can skip a bad source gracefully. Shared by /readymode/stats and the
  * /readymode/upload endpoint.
  */
-function parseReadymodeRows(text: string, log: Logger, source: string): DayRow[] {
+function parseReadymodeRows(
+  text: string,
+  log: Logger,
+  source: string,
+  fallbackIso?: string,
+): DayRow[] {
   const parsed = parseCsv(text);
   if (parsed.length < 2) return [];
   const header = parsed[0]!.map((h) => h.trim().toLowerCase());
@@ -338,8 +343,14 @@ function parseReadymodeRows(text: string, log: Logger, source: string): DayRow[]
   for (const r of parsed.slice(1)) {
     const name = (r[idx.name] ?? "").trim();
     if (!name) continue;
+    // Skip non-agent aggregate rows. The grand-total "Summary" row carries the
+    // sum of all agents' calls and must never be stored as an agent.
+    if (/^(summary|total)$/i.test(name)) continue;
     const dayRaw = idx.day >= 0 ? (r[idx.day] ?? "") : "";
-    const iso = dayToIso(dayRaw);
+    // Daily reports label the day column with a weekday name ("Thursday") or
+    // "-" instead of a calendar date. When the cell isn't a parseable date,
+    // fall back to the caller-supplied ISO date (the day the report covers).
+    const iso = dayToIso(dayRaw) ?? fallbackIso ?? null;
     if (!iso) continue;
     out.push({
       name,
@@ -543,15 +554,33 @@ router.get("/readymode/probe", async (req, res) => {
 router.post("/readymode/upload", requireAuth, requireRole("admin", "edit"), async (req, res) => {
   const log = req.log ?? rootLogger;
   try {
-    const { csv, filename } = req.body as { csv?: unknown; filename?: unknown };
+    const { csv, filename, date } = req.body as {
+      csv?: unknown;
+      filename?: unknown;
+      date?: unknown;
+    };
     if (typeof csv !== "string" || !csv.trim()) {
       return res.status(400).json({ error: "Missing csv text in request body." });
     }
+    let fallbackIso: string | undefined;
+    if (date !== undefined && date !== null && date !== "") {
+      if (
+        typeof date !== "string" ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+        // Reject format-valid but non-existent dates (e.g. 2026-02-30): round-trip
+        // through Date and confirm it normalizes back to the same string.
+        new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) !== date
+      ) {
+        return res.status(400).json({ error: "Invalid date; expected a real YYYY-MM-DD date." });
+      }
+      fallbackIso = date;
+    }
     const source = typeof filename === "string" && filename.trim() ? filename.trim() : "upload";
-    const rows = parseReadymodeRows(csv, log, source);
+    const rows = parseReadymodeRows(csv, log, source, fallbackIso);
     if (rows.length === 0) {
       return res.status(400).json({
-        error: "No valid rows found. Expected a ReadyMode report with Name, Day/date and Logged calls columns.",
+        error:
+          "No valid rows found. Daily reports have no calendar date — pick the report date when uploading. Expected a ReadyMode report with Name and Logged calls columns.",
       });
     }
 

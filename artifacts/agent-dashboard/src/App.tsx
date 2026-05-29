@@ -7991,13 +7991,27 @@ function Dashboard() {
   const canUploadRm = user.role === "admin" || user.role === "edit";
 
   async function handleRmUpload(file: File) {
+    // Daily reports label the day as a weekday ("Thursday"), not a calendar
+    // date, so ask which day this report covers. Default to yesterday.
+    const y = new Date();
+    y.setDate(y.getDate() - 1);
+    const yIso = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, "0")}-${String(y.getDate()).padStart(2, "0")}`;
+    const date = window.prompt(
+      "Which day does this report cover? (YYYY-MM-DD)",
+      yIso,
+    );
+    if (date === null) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) {
+      window.alert("Please enter the date as YYYY-MM-DD (e.g. 2026-05-28).");
+      return;
+    }
     setRmUploading(true);
     try {
       const csv = await file.text();
       const r = await fetch("/api/readymode/upload", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ csv, filename: file.name }),
+        body: JSON.stringify({ csv, filename: file.name, date: date.trim() }),
       });
       const data = (await r.json().catch(() => ({}))) as {
         ok?: boolean; rowsStored?: number; days?: number; error?: string;
