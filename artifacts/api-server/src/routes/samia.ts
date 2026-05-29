@@ -267,6 +267,10 @@ const openrouter = new OpenAI({
   apiKey: process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"],
 });
 const SAMIA_MODEL = process.env["SAMIA_MODEL"] ?? "deepseek/deepseek-chat";
+// DeepSeek runs flat/literal at its default temperature, which strips Samia's
+// wit. DeepSeek recommends ~1.3 for conversational personality. Tunable via
+// SAMIA_TEMPERATURE if it ever gets too loose for reliable tool calling.
+const SAMIA_TEMPERATURE = Number(process.env["SAMIA_TEMPERATURE"] ?? "1.3");
 
 // ── One-swear-per-message post-processor ─────────────────────────────────────
 // If the model output contains no heavy word at all, slip one in naturally
@@ -1068,6 +1072,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
         model: SAMIA_MODEL,
         messages: currentMessages,
         tools,
+        temperature: SAMIA_TEMPERATURE,
         max_tokens: 1600,
       });
 
