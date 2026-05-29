@@ -8222,6 +8222,7 @@ function Dashboard() {
 // ─── Samia AI Chat ─────────────────────────────────────────────────────────────
 
 interface SamiaMessage { role: "user" | "assistant"; content: string; images?: string[] }
+interface HistoryGroup { key: string; label: string; preview: string; messages: SamiaMessage[] }
 
 type ChatSize = "normal" | "minimized" | "maximized";
 
@@ -8239,11 +8240,14 @@ function SamiaChat() {
   const [nameInput, setNameInput] = useState("");
   const nameRef = useRef<HTMLInputElement>(null);
   // Admin "All chats" state
-  const [adminView, setAdminView] = useState<"chat" | "users" | "viewUser">("chat");
+  const [adminView, setAdminView] = useState<"chat" | "users" | "viewUser" | "history" | "viewDate">("chat");
   const [adminUsers, setAdminUsers] = useState<{ userId: number; username: string }[]>([]);
   const [adminViewUser, setAdminViewUser] = useState<{ userId: number; username: string } | null>(null);
   const [adminMessages, setAdminMessages] = useState<SamiaMessage[]>([]);
   const [adminLoading, setAdminLoading] = useState(false);
+  // Personal chat history (grouped by date)
+  const [historyGroups, setHistoryGroups] = useState<HistoryGroup[]>([]);
+  const [historyGroup, setHistoryGroup] = useState<HistoryGroup | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -8267,23 +8271,9 @@ function SamiaChat() {
         const hr = new Date().getHours();
         const timeGreet = hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
         const greeting = { role: "assistant" as const, content: `${timeGreet}. I'm Samia — I know every number in this dashboard cold. What do you need?` };
-        if (!isAdmin) {
-          setMessages([greeting]);
-          setHistoryLoaded(true);
-        } else {
-          setHistoryLoading(true);
-          fetch("/api/samia/history", { headers: { Authorization: `Bearer ${token}` } })
-            .then((r) => r.ok ? r.json() : [])
-            .then((rows: Array<{ role: string; content: string; images?: string[] | null }>) => {
-              if (rows.length > 0) {
-                setMessages(rows.map((r) => ({ role: r.role as "user" | "assistant", content: r.content, images: r.images ?? undefined })));
-              } else {
-                setMessages([greeting]);
-              }
-            })
-            .catch(() => { setMessages([greeting]); })
-            .finally(() => { setHistoryLoading(false); setHistoryLoaded(true); });
-        }
+        // Start each session clean — past conversations live behind the History button.
+        setMessages([greeting]);
+        setHistoryLoaded(true);
       }
     }
   }, [open]);
@@ -8309,6 +8299,47 @@ function SamiaChat() {
       )
       .catch(() => setAdminMessages([]))
       .finally(() => setAdminLoading(false));
+  }
+
+  function openHistory() {
+    setAdminView("history");
+    setHistoryLoading(true);
+    fetch("/api/samia/history", { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.ok ? r.json() : [])
+      .then((rows: Array<{ role: string; content: string; images?: string[] | null; createdAt: string }>) => {
+        const byKey = new Map<string, HistoryGroup>();
+        const order: string[] = [];
+        const today = new Date().toLocaleDateString("en-CA");
+        const yesterday = new Date(Date.now() - 86400000).toLocaleDateString("en-CA");
+        for (const r of rows) {
+          const d = new Date(r.createdAt);
+          const key = d.toLocaleDateString("en-CA");
+          let g = byKey.get(key);
+          if (!g) {
+            const label = key === today ? "Today" : key === yesterday ? "Yesterday"
+              : d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+            g = { key, label, preview: "", messages: [] };
+            byKey.set(key, g);
+            order.push(key);
+          }
+          g.messages.push({ role: r.role as "user" | "assistant", content: r.content, images: r.images ?? undefined });
+        }
+        // Preview = first user line of the day (fallback to first message)
+        for (const g of byKey.values()) {
+          const firstUser = g.messages.find((m) => m.role === "user" && m.content.trim());
+          const src = (firstUser ?? g.messages[0])?.content ?? "";
+          g.preview = src.length > 60 ? src.slice(0, 60) + "…" : src || "(image only)";
+        }
+        // Newest day first
+        setHistoryGroups(order.map((k) => byKey.get(k)!).reverse());
+      })
+      .catch(() => setHistoryGroups([]))
+      .finally(() => setHistoryLoading(false));
+  }
+
+  function viewHistoryDate(g: HistoryGroup) {
+    setHistoryGroup(g);
+    setAdminView("viewDate");
   }
 
   useEffect(() => {
@@ -8383,8 +8414,8 @@ function SamiaChat() {
         }`}>
           {/* Header */}
           <div className="flex items-center gap-3 px-4 py-3 border-b border-white/8 bg-gradient-to-r from-violet-600/20 to-fuchsia-600/20 flex-shrink-0">
-            {(adminView === "users" || adminView === "viewUser") ? (
-              <button onClick={() => adminView === "viewUser" ? setAdminView("users") : setAdminView("chat")} className="text-zinc-400 hover:text-white transition-colors p-1 -ml-1">
+            {(adminView === "users" || adminView === "viewUser" || adminView === "history" || adminView === "viewDate") ? (
+              <button onClick={() => adminView === "viewUser" ? setAdminView("users") : adminView === "viewDate" ? setAdminView("history") : setAdminView("chat")} className="text-zinc-400 hover:text-white transition-colors p-1 -ml-1">
                 <ChevronLeft className="h-4 w-4" />
               </button>
             ) : (
@@ -8392,15 +8423,23 @@ function SamiaChat() {
             )}
             <div>
               <p className="text-sm font-semibold text-white leading-none">
-                {adminView === "users" ? "All Chats" : adminView === "viewUser" ? adminViewUser?.username ?? "User" : "Samia"}
+                {adminView === "users" ? "All Chats" : adminView === "viewUser" ? adminViewUser?.username ?? "User" : adminView === "history" ? "Chat History" : adminView === "viewDate" ? historyGroup?.label ?? "Chat" : "Samia"}
               </p>
               <p className="text-[10px] text-violet-300 mt-0.5 flex items-center gap-1">
                 {adminView === "chat" && <><span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />AI Analyst · Live data</>}
                 {adminView === "users" && "Select a user to view their chat"}
                 {adminView === "viewUser" && "Read-only · Admin view"}
+                {adminView === "history" && "Your past conversations by date"}
+                {adminView === "viewDate" && "Read-only · Past conversation"}
               </p>
             </div>
             <div className="ml-auto flex items-center gap-1">
+              {/* Personal chat history button */}
+              {adminView === "chat" && (
+                <button onClick={openHistory} title="Chat history" className="text-zinc-500 hover:text-violet-300 transition-colors p-1">
+                  <Clock className="h-4 w-4" />
+                </button>
+              )}
               {/* Admin all-chats button */}
               {isAdmin && adminView === "chat" && (
                 <button onClick={openAdminUsers} title="View all user chats" className="text-zinc-500 hover:text-violet-300 transition-colors p-1">
@@ -8424,7 +8463,7 @@ function SamiaChat() {
                 {size === "maximized" ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
               </button>
               {/* Close */}
-              <button onClick={() => { setOpen(false); setSize("normal"); setAdminView("chat"); }} className="text-zinc-500 hover:text-white transition-colors p-1">
+              <button onClick={() => { setOpen(false); setSize("normal"); setAdminView("chat"); setHistoryGroup(null); }} className="text-zinc-500 hover:text-white transition-colors p-1">
                 <X className="h-4 w-4" />
               </button>
             </div>
@@ -8493,6 +8532,51 @@ function SamiaChat() {
                 <p className="text-center text-xs text-zinc-500 py-6">No messages yet.</p>
               )}
               {adminMessages.map((m, i) => (
+                <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                  {m.role === "assistant" && (
+                    <div className="h-6 w-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
+                  )}
+                  <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
+                    m.role === "user" ? "bg-violet-600/70 text-white rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
+                  }`}>{m.content}</div>
+                </div>
+              ))}
+            </div>
+          ) : adminView === "history" ? (
+            <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1 min-h-0">
+              {historyLoading && (
+                <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-6">
+                  <div className="h-3 w-3 rounded-full border-2 border-violet-400 border-t-transparent animate-spin" />
+                  Loading…
+                </div>
+              )}
+              {!historyLoading && historyGroups.length === 0 && (
+                <p className="text-center text-xs text-zinc-500 py-6">No past conversations yet.</p>
+              )}
+              {historyGroups.map((g) => (
+                <button
+                  key={g.key}
+                  onClick={() => viewHistoryDate(g)}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white/5 transition-colors text-left"
+                >
+                  <div className="h-8 w-8 rounded-full bg-zinc-700 flex items-center justify-center text-violet-300 flex-shrink-0">
+                    <Clock className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-white leading-tight">{g.label}</p>
+                    <p className="text-[11px] text-zinc-500 truncate">{g.preview}</p>
+                  </div>
+                  <span className="text-[10px] text-zinc-600 flex-shrink-0">{g.messages.length} msg</span>
+                  <ChevronRight className="h-4 w-4 text-zinc-600 flex-shrink-0" />
+                </button>
+              ))}
+            </div>
+          ) : adminView === "viewDate" ? (
+            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
+              {(historyGroup?.messages ?? []).length === 0 && (
+                <p className="text-center text-xs text-zinc-500 py-6">No messages.</p>
+              )}
+              {(historyGroup?.messages ?? []).map((m, i) => (
                 <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                   {m.role === "assistant" && (
                     <div className="h-6 w-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
