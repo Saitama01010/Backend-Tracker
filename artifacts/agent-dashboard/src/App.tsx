@@ -302,20 +302,21 @@ const NSF = {
 type Row = Record<string, string>;
 type SheetData = { headers: string[]; rows: Row[] };
 
+// Reads a Google Sheet tab through the API server's authenticated Sheets
+// endpoint (/api/sheet), so the source spreadsheets can stay private. Accepts
+// any Google Sheets URL (or the legacy /api/csv-proxy?url=... wrapper) and
+// extracts the spreadsheet id + gid from it.
 async function fetchHeaderCsv(url: string): Promise<SheetData> {
-  const res = await fetch(url);
+  const decoded = decodeURIComponent(url);
+  const idMatch = decoded.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  const gidMatch = decoded.match(/[?&]gid=(\d+)/);
+  if (!idMatch) throw new Error("Unrecognized Google Sheets URL.");
+  const id = idMatch[1];
+  const gid = gidMatch?.[1] ?? "0";
+  const res = await fetch(`/api/sheet?id=${encodeURIComponent(id)}&gid=${encodeURIComponent(gid)}`);
   if (!res.ok) throw new Error(`Failed to load sheet (HTTP ${res.status}).`);
-  const text = await res.text();
-  const parsed = Papa.parse<Row>(text, {
-    header: true,
-    skipEmptyLines: true,
-    transformHeader: (h) => h.trim(),
-  });
-  const headers = (parsed.meta.fields ?? []).filter((h) => h && h.length > 0);
-  const rows = (parsed.data ?? []).filter((r) =>
-    headers.some((h) => (r[h] ?? "").toString().trim() !== ""),
-  );
-  return { headers, rows };
+  const data = (await res.json()) as SheetData;
+  return { headers: data.headers ?? [], rows: data.rows ?? [] };
 }
 
 

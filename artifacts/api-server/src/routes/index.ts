@@ -12,6 +12,7 @@ import violationsRouter from "./violations";
 import readymodeRouter from "./readymode";
 import nsfReadymodeRouter from "./nsfReadymode";
 import csvProxyRouter from "./csvProxy";
+import sheetsRouter from "./sheets";
 import breaksRouter from "./breaks";
 import teamAgentsRouter from "./teamAgents";
 import qaRouter, { startQaBackgroundProcessor } from "./qa";
@@ -32,6 +33,7 @@ router.use(breaksRouter);
 router.use(readymodeRouter);
 router.use(nsfReadymodeRouter);
 router.use(csvProxyRouter);
+router.use(sheetsRouter);
 router.use(qaRouter);
 
 // Kick off background QA processor (evaluates new retention calls every 5 min).

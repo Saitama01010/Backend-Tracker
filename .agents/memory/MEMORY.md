@@ -1,0 +1,1 @@
+- [Google Sheets data path](google-sheets-private.md) — dashboard reads sheets via authenticated /api/sheet (connector), not public CSV; sheets can be private.
