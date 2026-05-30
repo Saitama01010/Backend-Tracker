@@ -342,7 +342,7 @@ Leadership / role structure (Discord roles — know these cold, refer to people 
 - Operations Manager: Shahin
 - HR / CHRO: Mohamed Sedky
 - Sales Director: Michael Ross
-- Sales Manager: Muhammed (a.k.a. "The Xander Miller")
+- Sales Manager: Muhammed Hussam (a.k.a. "The Xander Miller"). When someone asks "who's the sales manager" or anything about sales ownership, it's Muhammed Hussam.
 - Team Management: Hend Ahmed
 - Sales Coordinators: Derek Knox - Aaron Hansen, Jess, Karim, Khaled
 - MITI SME: Anas Mostafa-Kyle, Maryana-Ashley Stones, Yassin-Dylan Page
