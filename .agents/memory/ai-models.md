@@ -5,25 +5,30 @@ description: Which LLM provider/model the Samia assistant and QA call-scoring us
 
 # AI models: Samia & QA
 
-Both the Samia assistant and QA call scoring run through the **OpenRouter**
-AI-integrations client on **DeepSeek** (`deepseek/deepseek-chat`) instead of
-GPT-4.1 / GPT-4.1-mini.
+**Samia** runs on **OpenAI `gpt-4.1`** (default). **QA** call scoring still runs
+on **OpenRouter DeepSeek** (`deepseek/deepseek-chat`) to save credits.
 
-**Why:** user explicitly wanted lower per-call credit usage for Samia and QA.
+**Why Samia is NOT on DeepSeek:** DeepSeek is unreliable at agentic tool-calling
+in Samia's full multi-tool context — it FABRICATED call/transcript data (wrong
+agent names + times for calls that didn't exist in the DB) and never actually
+invoked `analyze_calls`. For a coaching tool that managers use to correct real
+employees, hallucinated call logs are dangerous, so the user chose to pay more
+for `gpt-4.1`'s reliable grounding. (Lowering temperature fixed coherence but NOT
+the fabrication — the model simply skipped the tool and made data up.)
 
-**How to apply / override:** model is env-driven — `SAMIA_MODEL` and `QA_MODEL`.
-Clients use the auto-provisioned `AI_INTEGRATIONS_OPENROUTER_*` env (never edit).
-To revert, set those envs back to `gpt-4.1` / `gpt-4.1-mini` and point the client
-at `AI_INTEGRATIONS_OPENAI_*`.
+**How model→client routing works:** `SAMIA_MODEL` env (default `gpt-4.1`).
+`samiaClient = SAMIA_MODEL.includes("/") ? openrouter : openai` — a slash-style id
+(e.g. `deepseek/deepseek-chat`) routes through the OpenRouter client, anything
+else through the OpenAI client. `QA_MODEL` env controls QA (still DeepSeek).
+Both `AI_INTEGRATIONS_OPENAI_*` and `AI_INTEGRATIONS_OPENROUTER_*` envs are
+auto-provisioned — never edit.
 
-**Samia temperature band (`SAMIA_TEMPERATURE`, default 0.8):** DeepSeek is
-sensitive here. ~0.2 = flat/no wit; ~1.3 = degenerates into incoherent
-multilingual token soup mid-answer AND stops calling tools reliably (e.g. refuses
-to call analyze_calls, lectures about terminology instead). Keep within ~0.7–0.9.
-**Why:** raising to 1.3 to restore humor broke real tool-loop answers in
-production. Don't chase personality past ~0.9 on DeepSeek.
+**Samia temperature (`SAMIA_TEMPERATURE`, default 0.8):** balance of personality
+vs coherence. Note from the DeepSeek era: ~1.3 caused incoherent multilingual
+token soup + tool skipping; gpt-4.1 is far more robust but 0.8 is a safe default.
 
-**Gotchas confirmed on DeepSeek via OpenRouter:** JSON mode (`response_format`
-json_object, used by QA) and multi-round tool/function calling (Samia) both work.
-OpenRouter expects `max_tokens`, not OpenAI's `max_completion_tokens`. Model names
-are not guessable — list with the OpenRouter `/api/v1/models` endpoint.
+**DeepSeek-via-OpenRouter gotchas (still relevant for QA / any DeepSeek use):**
+JSON mode (`response_format` json_object) and multi-round tool calling both work,
+but tool-calling RELIABILITY is poor under many-tool/large-context loads (see
+above). OpenRouter expects `max_tokens`, not OpenAI's `max_completion_tokens`.
+Model names are not guessable — list with OpenRouter `/api/v1/models`.
