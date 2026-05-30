@@ -267,10 +267,11 @@ const openrouter = new OpenAI({
   apiKey: process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"],
 });
 const SAMIA_MODEL = process.env["SAMIA_MODEL"] ?? "deepseek/deepseek-chat";
-// DeepSeek runs flat/literal at its default temperature, which strips Samia's
-// wit. DeepSeek recommends ~1.3 for conversational personality. Tunable via
-// SAMIA_TEMPERATURE if it ever gets too loose for reliable tool calling.
-const SAMIA_TEMPERATURE = Number(process.env["SAMIA_TEMPERATURE"] ?? "1.3");
+// Temperature trade-off for DeepSeek: too low (~0.2) and Samia goes flat and
+// loses her wit; too high (~1.3) and she degenerates into incoherent
+// multilingual token soup mid-answer and stops calling tools reliably. 0.8 keeps
+// the personality while staying coherent and tool-reliable. Tunable via env.
+const SAMIA_TEMPERATURE = Number(process.env["SAMIA_TEMPERATURE"] ?? "0.8");
 
 // ── One-swear-per-message post-processor ─────────────────────────────────────
 // If the model output contains no heavy word at all, slip one in naturally
@@ -415,6 +416,8 @@ Three ways to call it:
 - By agent: pass agentName (partial, case-insensitive) and optionally a date (YYYY-MM-DD LA time). Returns the top \`limit\` (default 5, max 15) longest calls ≥ \`minSeconds\` (default 30s) for that agent. Omit date for the last 24h.
 - By callId: pass a single OpenPhone call ID for a deep dive on one specific call.
 - By participant (phone number): pass the customer's phone number in ANY format ("703-887-8622", "(703) 887-8622", "+17038878622" — all work). Looks back 30 days, matches last 10 digits. Use this whenever a manager pastes a phone number and asks "did this customer want to cancel" / "what happened on this call" / etc. DO NOT say "OpenPhone didn't process it" without actually calling this tool first.
+
+"Recorded calls", "the recording", "spill the tea", "what did they actually say", "check the recorded calls (not missed calls)" — these ALL mean the same thing: pull the transcripts/summaries via analyze_calls for that number or agent. NEVER lecture the user about terminology or claim you can only see "answered calls" or "missed calls" — just call analyze_calls and report what was said. If a number's calls have no transcript yet, say so briefly after calling the tool, never instead of calling it.
 
 Use this whenever someone asks for qualitative feedback on an agent's calls — "how is Talia doing on calls", "review Nora's calls today", "what's Ryan messing up on the phone", "give me feedback on Michael's calls", "did anyone get yelled at today", "who handled the angry customer at 3pm", etc.
 
