@@ -63,7 +63,28 @@ import {
   Maximize2,
   ChevronDown,
   Activity,
+  BarChart3,
+  TrendingUp,
+  CheckCircle2,
+  Wrench,
+  Layers,
+  XCircle,
 } from "lucide-react";
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  BarChart,
+  Bar,
+  PieChart,
+  Pie,
+  Cell,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip as RTooltip,
+  Legend as RLegend,
+} from "recharts";
 
 const queryClient = new QueryClient();
 
@@ -79,6 +100,7 @@ const ALL_PERMISSIONS: { key: Permission; label: string; desc: string }[] = [
 ];
 
 const ALL_TABS: { value: string; label: string }[] = [
+  { value: "backend-stats",   label: "Backend Statistics" },
   { value: "retention",       label: "Retention" },
   { value: "cs",              label: "Internal CS" },
   { value: "nsf",             label: "NSF" },
@@ -4240,6 +4262,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
       // Fallback: teamAccess-based visibility
       const ta = auth.user.teamAccess ?? null;
       const allTeams = ta === null;
+      if (tab === "backend-stats") return allTeams;
       if (tab === "violations" || tab === "callback-review") return allTeams;
       if (tab === "missed-no-cb") return true;
       if (tab === "retention") return allTeams || ta === "retention";
@@ -7978,6 +8001,345 @@ function ViolationsPanel() {
   );
 }
 
+// ─── Backend Statistics ──────────────────────────────────────────────────────
+// A single, filter-free overview of EVERY file submitted across all three teams
+// (Retention, NSF, Internal CS). Anyone who submits any file shows up here.
+
+const BSTAT_STATUS_COLORS: Record<string, string> = {
+  Retained: "#34d399",
+  Fixed: "#38bdf8",
+  "IDP-Handled": "#fbbf24",
+  Cancelled: "#fb7185",
+};
+const BSTAT_TEAM_META: Record<TeamMode, { label: string; color: string }> = {
+  retention: { label: "Retention", color: "#a78bfa" },
+  nsf: { label: "NSF", color: "#f0abfc" },
+  cs: { label: "Internal CS", color: "#38bdf8" },
+};
+const bstatChartTooltip = {
+  contentStyle: {
+    background: "rgba(24,24,27,0.95)",
+    border: "1px solid rgba(255,255,255,0.1)",
+    borderRadius: 10,
+    fontSize: 12,
+    color: "#e4e4e7",
+    boxShadow: "0 10px 40px -10px rgba(0,0,0,0.6)",
+  },
+  labelStyle: { color: "#a1a1aa" },
+  itemStyle: { color: "#e4e4e7" },
+} as const;
+
+type BStatRow = { agent: string; team: TeamMode; status: string; date: string; fileId: string };
+
+function BStatKpi({ icon: Icon, label, value, accent }: { icon: typeof Activity; label: string; value: number; accent: string }) {
+  return (
+    <div className="relative overflow-hidden rounded-xl border border-white/5 bg-card/60 backdrop-blur-xl p-4">
+      <div className={`pointer-events-none absolute -right-6 -top-6 h-20 w-20 rounded-full blur-2xl ${accent}`} />
+      <div className="relative flex items-center gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/5 text-white/80">
+          <Icon className="h-4 w-4" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground truncate">{label}</p>
+          <p className="text-xl font-bold tabular-nums text-white">{value.toLocaleString()}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BackendStatsPanel() {
+  const roster = useRoster();
+  const { data: rows, isLoading, isError, refetch, isFetching } = useQuery<BStatRow[]>({
+    queryKey: ["backend-stats-all", roster.version],
+    queryFn: async () => {
+      const [ret, nsf, cs] = await Promise.all([
+        fetchRetentionCombinedSheet(roster, { includeInactive: true }),
+        fetchNSFCombinedSheet(roster, { includeInactive: true }),
+        fetchCSCombinedSheet(roster, { includeInactive: true }),
+      ]);
+      const out: BStatRow[] = [];
+      // Dedupe true duplicates that can bleed across overlapping loaders/shared
+      // tabs (crossover, IDP). A submission is uniquely identified by its File ID
+      // within a team+date; rows without a File ID are always kept (can't dedupe
+      // reliably, and dropping them would undercount).
+      const seen = new Set<string>();
+      const add = (sd: SheetData, team: TeamMode) => {
+        for (const r of sd.rows) {
+          const raw = String(r["Agent"] ?? "").trim();
+          if (!raw) continue;
+          const hit = roster.lookupByAnyName(raw);
+          const resolvedTeam = hit?.team ?? team;
+          const date = String(r["Date"] ?? "").trim();
+          const fileId = String(r["File ID"] ?? "").trim();
+          if (fileId) {
+            const key = `${resolvedTeam}|${date}|${fileId}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+          }
+          out.push({
+            agent: hit?.name ?? raw,
+            team: resolvedTeam,
+            status: normalizeStatus(String(r["Status"] ?? "")),
+            date,
+            fileId,
+          });
+        }
+      };
+      add(ret, "retention");
+      add(nsf, "nsf");
+      add(cs, "cs");
+      return out;
+    },
+    staleTime: 60_000,
+  });
+
+  const stats = useMemo(() => {
+    const rs = rows ?? [];
+    const byDay = new Map<string, number>();
+    const byStatus = new Map<string, number>();
+    const byTeam = new Map<TeamMode, number>();
+    const byAgent = new Map<string, { agent: string; team: TeamMode; total: number; retained: number; fixed: number; idp: number; cancelled: number }>();
+    for (const r of rs) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(r.date)) byDay.set(r.date, (byDay.get(r.date) ?? 0) + 1);
+      byStatus.set(r.status, (byStatus.get(r.status) ?? 0) + 1);
+      byTeam.set(r.team, (byTeam.get(r.team) ?? 0) + 1);
+      const a = byAgent.get(r.agent) ?? { agent: r.agent, team: r.team, total: 0, retained: 0, fixed: 0, idp: 0, cancelled: 0 };
+      a.total++;
+      if (r.status === "Retained") a.retained++;
+      else if (r.status === "Fixed") a.fixed++;
+      else if (r.status === "IDP-Handled") a.idp++;
+      else if (r.status === "Cancelled") a.cancelled++;
+      byAgent.set(r.agent, a);
+    }
+    const dayData = [...byDay.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, count]) => ({ date, label: date.slice(5), count }));
+    const statusOrder = ["Retained", "Fixed", "IDP-Handled", "Cancelled"];
+    const statusData = [...byStatus.entries()]
+      .sort((a, b) => (statusOrder.indexOf(a[0]) + 1 || 99) - (statusOrder.indexOf(b[0]) + 1 || 99))
+      .map(([name, value]) => ({ name, value, color: BSTAT_STATUS_COLORS[name] ?? "#a1a1aa" }));
+    const teamData = (["retention", "nsf", "cs"] as TeamMode[])
+      .filter((t) => byTeam.get(t))
+      .map((t) => ({ name: BSTAT_TEAM_META[t].label, value: byTeam.get(t) ?? 0, color: BSTAT_TEAM_META[t].color }));
+    const agents = [...byAgent.values()].sort((a, b) => b.total - a.total);
+    const topAgents = agents.slice(0, 12).map((a) => ({ name: a.agent, value: a.total, color: BSTAT_TEAM_META[a.team].color })).reverse();
+    return {
+      dayData,
+      statusData,
+      teamData,
+      agents,
+      topAgents,
+      totalFiles: rs.length,
+      contributors: agents.length,
+      retained: byStatus.get("Retained") ?? 0,
+      fixed: byStatus.get("Fixed") ?? 0,
+      idp: byStatus.get("IDP-Handled") ?? 0,
+      cancelled: byStatus.get("Cancelled") ?? 0,
+    };
+  }, [rows]);
+
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-[72px] rounded-xl" />)}
+        </div>
+        <Skeleton className="h-72 rounded-xl" />
+        <div className="grid lg:grid-cols-2 gap-4">
+          <Skeleton className="h-72 rounded-xl" />
+          <Skeleton className="h-72 rounded-xl" />
+        </div>
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
+        <CardContent className="flex flex-col items-center gap-3 py-16 text-zinc-400">
+          <ShieldAlert className="h-8 w-8 text-rose-400/70" />
+          <p className="text-sm">Couldn't load file submissions.</p>
+          <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* Title row */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white shadow-[0_0_24px_-6px_rgba(168,85,247,0.7)]">
+            <BarChart3 className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold tracking-tight bg-gradient-to-r from-violet-300 via-fuchsia-300 to-sky-300 bg-clip-text text-transparent">
+              Backend Statistics
+            </h2>
+            <p className="text-xs text-muted-foreground">Every file submitted across all teams — no filters.</p>
+          </div>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching} className="gap-2">
+          <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
+          Refresh
+        </Button>
+      </div>
+
+      {/* KPI cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <BStatKpi icon={Layers} label="Total Files" value={stats.totalFiles} accent="bg-violet-500/30" />
+        <BStatKpi icon={Users} label="Contributors" value={stats.contributors} accent="bg-fuchsia-500/30" />
+        <BStatKpi icon={CheckCircle2} label="Retained" value={stats.retained} accent="bg-emerald-500/30" />
+        <BStatKpi icon={Wrench} label="Fixed" value={stats.fixed} accent="bg-sky-500/30" />
+        <BStatKpi icon={TrendingUp} label="IDP-Handled" value={stats.idp} accent="bg-amber-500/30" />
+        <BStatKpi icon={XCircle} label="Cancelled" value={stats.cancelled} accent="bg-rose-500/30" />
+      </div>
+
+      {stats.totalFiles === 0 ? (
+        <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
+          <CardContent className="flex flex-col items-center gap-2 py-16 text-zinc-500">
+            <Layers className="h-8 w-8 opacity-30" />
+            <p className="text-sm">No file submissions found yet.</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <>
+          {/* Submissions over time */}
+          <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
+                <Activity className="h-4 w-4 text-violet-300" /> Files submitted over time
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ResponsiveContainer width="100%" height={280}>
+                <AreaChart data={stats.dayData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="bstatArea" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#a78bfa" stopOpacity={0.5} />
+                      <stop offset="100%" stopColor="#a78bfa" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+                  <XAxis dataKey="label" tick={{ fill: "#71717a", fontSize: 11 }} tickLine={false} axisLine={false} minTickGap={24} />
+                  <YAxis tick={{ fill: "#71717a", fontSize: 11 }} tickLine={false} axisLine={false} width={36} allowDecimals={false} />
+                  <RTooltip {...bstatChartTooltip} />
+                  <Area type="monotone" dataKey="count" name="Files" stroke="#c4b5fd" strokeWidth={2} fill="url(#bstatArea)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+
+          {/* Status + Team breakdowns */}
+          <div className="grid lg:grid-cols-2 gap-4">
+            <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-semibold text-zinc-200">By status</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={280}>
+                  <PieChart>
+                    <Pie data={stats.statusData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={2} stroke="none">
+                      {stats.statusData.map((s) => <Cell key={s.name} fill={s.color} />)}
+                    </Pie>
+                    <RTooltip {...bstatChartTooltip} />
+                    <RLegend wrapperStyle={{ fontSize: 12, color: "#a1a1aa" }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+
+            <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-semibold text-zinc-200">By team</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={280}>
+                  <BarChart data={stats.teamData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fill: "#a1a1aa", fontSize: 12 }} tickLine={false} axisLine={false} />
+                    <YAxis tick={{ fill: "#71717a", fontSize: 11 }} tickLine={false} axisLine={false} width={36} allowDecimals={false} />
+                    <RTooltip {...bstatChartTooltip} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
+                    <Bar dataKey="value" name="Files" radius={[6, 6, 0, 0]} maxBarSize={90}>
+                      {stats.teamData.map((t) => <Cell key={t.name} fill={t.color} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Top contributors */}
+          <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-semibold text-zinc-200">Top contributors</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ResponsiveContainer width="100%" height={Math.max(220, stats.topAgents.length * 30)}>
+                <BarChart data={stats.topAgents} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} />
+                  <XAxis type="number" tick={{ fill: "#71717a", fontSize: 11 }} tickLine={false} axisLine={false} allowDecimals={false} />
+                  <YAxis type="category" dataKey="name" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickLine={false} axisLine={false} width={130} />
+                  <RTooltip {...bstatChartTooltip} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
+                  <Bar dataKey="value" name="Files" radius={[0, 6, 6, 0]} maxBarSize={20}>
+                    {stats.topAgents.map((a) => <Cell key={a.name} fill={a.color} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+
+          {/* Full leaderboard */}
+          <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-semibold text-zinc-200">All contributors ({stats.agents.length})</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-white/5 hover:bg-transparent">
+                      <TableHead className="w-10 text-zinc-400">#</TableHead>
+                      <TableHead className="text-zinc-400">Agent</TableHead>
+                      <TableHead className="text-zinc-400">Team</TableHead>
+                      <TableHead className="text-right text-zinc-400">Total</TableHead>
+                      <TableHead className="text-right text-zinc-400">Retained</TableHead>
+                      <TableHead className="text-right text-zinc-400">Fixed</TableHead>
+                      <TableHead className="text-right text-zinc-400">IDP</TableHead>
+                      <TableHead className="text-right text-zinc-400">Cancelled</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {stats.agents.map((a, i) => (
+                      <TableRow key={a.agent} className="border-white/5">
+                        <TableCell className="text-zinc-500 tabular-nums">{i + 1}</TableCell>
+                        <TableCell className="font-medium text-zinc-100">{a.agent}</TableCell>
+                        <TableCell>
+                          <span className="inline-flex items-center gap-1.5 text-xs text-zinc-300">
+                            <span className="h-2 w-2 rounded-full" style={{ background: BSTAT_TEAM_META[a.team].color }} />
+                            {BSTAT_TEAM_META[a.team].label}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right font-semibold tabular-nums text-white">{a.total.toLocaleString()}</TableCell>
+                        <TableCell className="text-right tabular-nums text-emerald-300/90">{a.retained || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums text-sky-300/90">{a.fixed || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums text-amber-300/90">{a.idp || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums text-rose-300/90">{a.cancelled || "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
 type DashView = "metrics" | "attendance" | "phones";
 
 function Dashboard() {
@@ -8162,12 +8524,17 @@ function Dashboard() {
         ) : view === "metrics" && can("view_metrics") ? (
           <Tabs defaultValue={metricsTabs[0]?.value ?? defaultTab} className="space-y-6">
             <div className="overflow-x-auto pb-1 -mx-1 px-1">
-              <TabsList className="flex w-max sm:w-full sm:max-w-3xl">
+              <TabsList className="flex w-max sm:w-full sm:max-w-4xl">
                 {metricsTabs.map((t) => (
                   <TabsTrigger key={t.value} value={t.value} data-testid={`tab-${t.value}`} className="whitespace-nowrap px-3 sm:px-4">{t.label}</TabsTrigger>
                 ))}
               </TabsList>
             </div>
+            {canSeeTab("backend-stats") && (
+              <TabsContent value="backend-stats">
+                <BackendStatsPanel />
+              </TabsContent>
+            )}
             {canSeeTab("retention") && (
               <TabsContent value="retention">
                 <RetentionPanel />
