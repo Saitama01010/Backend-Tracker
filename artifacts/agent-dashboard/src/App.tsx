@@ -8411,7 +8411,7 @@ function BackendStatsPanel() {
   );
 }
 
-type DashView = "metrics" | "attendance" | "phones";
+type DashView = "metrics" | "attendance" | "phones" | "backend-stats";
 
 function Dashboard() {
   const { user, token, logout, can, canSeeTab } = useUser();
@@ -8461,11 +8461,12 @@ function Dashboard() {
       setRmUploading(false);
     }
   }
-  const defaultView: DashView = can("view_metrics") ? "metrics" : "attendance";
+  const defaultView: DashView = can("view_metrics") ? "metrics" : canSeeTab("backend-stats") ? "backend-stats" : "attendance";
   const [view, setView] = useState<DashView>(defaultView);
 
   const ta = user.teamAccess ?? null;
-  const metricsTabs = ALL_TABS.filter((t) => canSeeTab(t.value));
+  // Backend Statistics is its own top-level view (header dropdown), not a metrics subtab.
+  const metricsTabs = ALL_TABS.filter((t) => t.value !== "backend-stats" && canSeeTab(t.value));
   const defaultTab = ta ?? "retention";
 
   const roleBadgeCls =
@@ -8499,14 +8500,15 @@ function Dashboard() {
           </div>
 
           {/* View switcher — only show tabs user has access to */}
-          {(can("view_metrics") || can("view_attendance")) && (
+          {(can("view_metrics") || can("view_attendance") || canSeeTab("backend-stats")) && (
             <div className="relative">
               <select
                 value={view}
                 onChange={(e) => setView(e.target.value as DashView)}
                 className="appearance-none pl-4 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500/50"
               >
-                {can("view_metrics") && <option value="metrics">📊 Metrics</option>}
+                {canSeeTab("backend-stats") && <option value="backend-stats">📊 Backend Statistics</option>}
+                {can("view_metrics") && <option value="metrics">📈 Metrics</option>}
                 {can("view_metrics") && user.role === "admin" && <option value="phones">📞 Phones</option>}
                 {can("view_attendance") && <option value="attendance">🗓 Attendance</option>}
               </select>
@@ -8592,6 +8594,8 @@ function Dashboard() {
       <main className="max-w-[1400px] mx-auto px-3 py-4 sm:px-6 sm:py-8">
         {view === "phones" && user.role === "admin" ? (
           <PhonesPanel />
+        ) : view === "backend-stats" && canSeeTab("backend-stats") ? (
+          <BackendStatsPanel />
         ) : view === "metrics" && can("view_metrics") ? (
           <Tabs defaultValue={metricsTabs[0]?.value ?? defaultTab} className="space-y-6">
             <div className="overflow-x-auto pb-1 -mx-1 px-1">
@@ -8601,11 +8605,6 @@ function Dashboard() {
                 ))}
               </TabsList>
             </div>
-            {canSeeTab("backend-stats") && (
-              <TabsContent value="backend-stats">
-                <BackendStatsPanel />
-              </TabsContent>
-            )}
             {canSeeTab("retention") && (
               <TabsContent value="retention">
                 <RetentionPanel />
