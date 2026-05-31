@@ -8029,7 +8029,32 @@ const bstatChartTooltip = {
   itemStyle: { color: "#e4e4e7" },
 } as const;
 
-type BStatRow = { agent: string; team: TeamMode; status: string; date: string; fileId: string };
+type BStatRow = { agent: string; agentKey: string; team: TeamMode; status: string; date: string; fileId: string; idpCancel: boolean };
+
+// Resolve a raw submission name to a single canonical agent identity. Mirrors
+// aggregate()'s roster-aware resolution but ALSO applies NAME_ALIASES, so Arabic
+// and compound Discord-bot names collapse onto one agent (e.g. "Ahmed Ayman" +
+// "Ahmed Ayman-Levi Miller" → Levi Miller; "Kevin Michael" + "Kevin Micheal").
+function bstatResolveAgent(raw: string, roster: RosterIndex, fallbackTeam: TeamMode): { key: string; display: string; team: TeamMode } {
+  const aliased = normalizeAgent(raw); // NAME_ALIASES[norm] ?? norm
+  let hit = roster.lookupByAnyName(aliased) ?? roster.lookupByAnyName(raw);
+  if (!hit) {
+    for (const seg of raw.split("-").map((s) => s.trim()).filter(Boolean)) {
+      hit = roster.lookupByAnyName(normalizeAgent(seg)) ?? roster.lookupByAnyName(seg);
+      if (hit) break;
+    }
+  }
+  if (hit) return { key: normalizeAgent(hit.name), display: hit.name, team: hit.team };
+  const key = aliased;
+  const display = NAME_DISPLAY[key] ?? key.replace(/\b\w/g, (c) => c.toUpperCase());
+  return { key, display, team: fallbackTeam };
+}
+
+function bstatMonthLabel(ym: string): string {
+  const m = /^(\d{4})-(\d{2})$/.exec(ym);
+  if (!m) return ym;
+  return new Date(Number(m[1]), Number(m[2]) - 1, 1).toLocaleString("en-US", { month: "long", year: "numeric" });
+}
 
 function BStatKpi({ icon: Icon, label, value, accent }: { icon: typeof Activity; label: string; value: number; accent: string }) {
   return (
@@ -8062,28 +8087,37 @@ function BackendStatsPanel() {
       // Dedupe true duplicates that can bleed across overlapping loaders/shared
       // tabs (crossover, IDP). A submission is uniquely identified by its File ID
       // within a team+date; rows without a File ID are always kept (can't dedupe
-      // reliably, and dropping them would undercount).
-      const seen = new Set<string>();
+      // reliably, and dropping them would undercount). On collision we keep the
+      // first row, but if a later duplicate is an IDP-Cancel-Retained row we
+      // upgrade the kept row's flag — that tab is authoritative for the
+      // IDP-Cancel classification, so it must win the split column.
+      const seen = new Map<string, BStatRow>();
       const add = (sd: SheetData, team: TeamMode) => {
         for (const r of sd.rows) {
           const raw = String(r["Agent"] ?? "").trim();
           if (!raw) continue;
-          const hit = roster.lookupByAnyName(raw);
-          const resolvedTeam = hit?.team ?? team;
+          const resolved = bstatResolveAgent(raw, roster, team);
           const date = String(r["Date"] ?? "").trim();
           const fileId = String(r["File ID"] ?? "").trim();
-          if (fileId) {
-            const key = `${resolvedTeam}|${date}|${fileId}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-          }
-          out.push({
-            agent: hit?.name ?? raw,
-            team: resolvedTeam,
+          const row: BStatRow = {
+            agent: resolved.display,
+            agentKey: resolved.key,
+            team: resolved.team,
             status: normalizeStatus(String(r["Status"] ?? "")),
             date,
             fileId,
-          });
+            idpCancel: r["__sourceTab"] === "IDP-Cancel-Retained",
+          };
+          if (fileId) {
+            const key = `${resolved.team}|${date}|${fileId}`;
+            const existing = seen.get(key);
+            if (existing) {
+              if (row.idpCancel && !existing.idpCancel) existing.idpCancel = true;
+              continue;
+            }
+            seen.set(key, row);
+          }
+          out.push(row);
         }
       };
       add(ret, "retention");
@@ -8094,23 +8128,42 @@ function BackendStatsPanel() {
     staleTime: 60_000,
   });
 
-  const stats = useMemo(() => {
+  const [month, setMonth] = useState<string>("all");
+  const months = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of rows ?? []) {
+      const m = /^(\d{4}-\d{2})/.exec(r.date);
+      if (m) set.add(m[1]!);
+    }
+    return [...set].sort((a, b) => b.localeCompare(a));
+  }, [rows]);
+  const filtered = useMemo(() => {
     const rs = rows ?? [];
+    return month === "all" ? rs : rs.filter((r) => r.date.startsWith(month));
+  }, [rows, month]);
+  // If the selected month disappears after a refresh, fall back to All time
+  // instead of silently showing an empty view.
+  useEffect(() => {
+    if (month !== "all" && months.length > 0 && !months.includes(month)) setMonth("all");
+  }, [months, month]);
+
+  const stats = useMemo(() => {
+    const rs = filtered;
     const byDay = new Map<string, number>();
     const byStatus = new Map<string, number>();
     const byTeam = new Map<TeamMode, number>();
-    const byAgent = new Map<string, { agent: string; team: TeamMode; total: number; retained: number; fixed: number; idp: number; cancelled: number }>();
+    const byAgent = new Map<string, { agent: string; team: TeamMode; total: number; retained: number; idpCancelRetained: number; fixed: number; idp: number; cancelled: number }>();
     for (const r of rs) {
       if (/^\d{4}-\d{2}-\d{2}$/.test(r.date)) byDay.set(r.date, (byDay.get(r.date) ?? 0) + 1);
       byStatus.set(r.status, (byStatus.get(r.status) ?? 0) + 1);
       byTeam.set(r.team, (byTeam.get(r.team) ?? 0) + 1);
-      const a = byAgent.get(r.agent) ?? { agent: r.agent, team: r.team, total: 0, retained: 0, fixed: 0, idp: 0, cancelled: 0 };
+      const a = byAgent.get(r.agentKey) ?? { agent: r.agent, team: r.team, total: 0, retained: 0, idpCancelRetained: 0, fixed: 0, idp: 0, cancelled: 0 };
       a.total++;
-      if (r.status === "Retained") a.retained++;
+      if (r.status === "Retained") { if (r.idpCancel) a.idpCancelRetained++; else a.retained++; }
       else if (r.status === "Fixed") a.fixed++;
       else if (r.status === "IDP-Handled") a.idp++;
       else if (r.status === "Cancelled") a.cancelled++;
-      byAgent.set(r.agent, a);
+      byAgent.set(r.agentKey, a);
     }
     const dayData = [...byDay.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
@@ -8137,7 +8190,7 @@ function BackendStatsPanel() {
       idp: byStatus.get("IDP-Handled") ?? 0,
       cancelled: byStatus.get("Cancelled") ?? 0,
     };
-  }, [rows]);
+  }, [filtered]);
 
   if (isLoading) {
     return (
@@ -8178,13 +8231,27 @@ function BackendStatsPanel() {
             <h2 className="text-lg font-bold tracking-tight bg-gradient-to-r from-violet-300 via-fuchsia-300 to-sky-300 bg-clip-text text-transparent">
               Backend Statistics
             </h2>
-            <p className="text-xs text-muted-foreground">Every file submitted across all teams — no filters.</p>
+            <p className="text-xs text-muted-foreground">Every file submitted across all teams.</p>
           </div>
         </div>
-        <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching} className="gap-2">
-          <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <select
+              value={month}
+              onChange={(e) => setMonth(e.target.value)}
+              className="appearance-none pl-9 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+            >
+              <option value="all">All time</option>
+              {months.map((m) => <option key={m} value={m}>{bstatMonthLabel(m)}</option>)}
+            </select>
+            <Calendar className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs">▾</span>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching} className="gap-2">
+            <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {/* KPI cards */}
@@ -8305,7 +8372,9 @@ function BackendStatsPanel() {
                       <TableHead className="text-zinc-400">Agent</TableHead>
                       <TableHead className="text-zinc-400">Team</TableHead>
                       <TableHead className="text-right text-zinc-400">Total</TableHead>
+                      <TableHead className="text-right text-zinc-400">IDP-Cancel-Retained</TableHead>
                       <TableHead className="text-right text-zinc-400">Retained</TableHead>
+                      <TableHead className="text-right text-zinc-400">Total Retained</TableHead>
                       <TableHead className="text-right text-zinc-400">Fixed</TableHead>
                       <TableHead className="text-right text-zinc-400">IDP</TableHead>
                       <TableHead className="text-right text-zinc-400">Cancelled</TableHead>
@@ -8323,7 +8392,9 @@ function BackendStatsPanel() {
                           </span>
                         </TableCell>
                         <TableCell className="text-right font-semibold tabular-nums text-white">{a.total.toLocaleString()}</TableCell>
+                        <TableCell className="text-right tabular-nums text-teal-300/90">{a.idpCancelRetained || "—"}</TableCell>
                         <TableCell className="text-right tabular-nums text-emerald-300/90">{a.retained || "—"}</TableCell>
+                        <TableCell className="text-right font-semibold tabular-nums text-emerald-200">{(a.retained + a.idpCancelRetained) || "—"}</TableCell>
                         <TableCell className="text-right tabular-nums text-sky-300/90">{a.fixed || "—"}</TableCell>
                         <TableCell className="text-right tabular-nums text-amber-300/90">{a.idp || "—"}</TableCell>
                         <TableCell className="text-right tabular-nums text-rose-300/90">{a.cancelled || "—"}</TableCell>

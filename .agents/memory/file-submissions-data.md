@@ -23,6 +23,24 @@ can't be deduped reliably and dropping them would undercount.
 Statistics tab) must dedupe; the per-team panels don't hit this because each only
 reads its own team's combined sheet.
 
+**Name canonicalization gotcha:** roster `lookupByAnyName` does NOT apply the
+module-level `NAME_ALIASES` map — it only matches roster DB names + "-" segments.
+Any consumer that aggregates per-agent must ALSO run names through
+`normalizeAgent` (which applies `NAME_ALIASES`) on the whole name and each
+segment, the way `aggregate()`'s `ensureAgent` / the fetchers do. Skipping this
+makes Arabic/compound aliases (e.g. "Ahmed Ayman" vs "Ahmed Ayman-Levi Miller",
+"Kevin Michael" vs "Kevin Micheal") split into duplicate rows.
+**Why:** alias collapsing lives in `NAME_ALIASES` + `normalizeAgent`, not in the
+roster index. **How to apply:** when adding a new per-agent rollup, resolve via
+alias-first then roster (see `bstatResolveAgent`), and key the aggregation map on
+the canonical key, not the display string.
+
+**IDP-Cancel-Retained:** rows from the "IDP Cancel Retained" sheet tab are stored
+as Status "Retained" but tagged `__sourceTab === "IDP-Cancel-Retained"`. To split
+them out, read that tag (it survives into the combined SheetData). When deduping,
+make the IDP-Cancel tab authoritative on a key collision (upgrade the kept row's
+flag) or the split column undercounts.
+
 **Membership caveat:** NSF/CS row→team matching leans on active-only roster name
 sets, so `includeInactive:true` does not make matching fully inclusive of every
 historical name. Changing that lives in the shared fetchers and would affect all
