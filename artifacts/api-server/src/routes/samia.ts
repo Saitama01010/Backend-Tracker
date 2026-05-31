@@ -674,9 +674,12 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       fetchSheetSummary(OLD_NSF_URL, NEW_NSF_URL, "File Status", CUTOVER, todayStr, monthStr).catch(() => null),
     ]);
 
+    type DayStat = { totalCalls?: number; answered?: number; missed?: number; talkSeconds?: number; outbound?: number; inbound?: number; voicemail?: number; vmBrief?: number; uniqueContacts?: number };
+    type QuoStatsResp = { teamStats?: Record<string, Record<string, Record<string, DayStat>>> };
+
     const vos     = vosRes.status === "fulfilled" ? vosRes.value : null;
-    const quoToday = quoTodayRes.status === "fulfilled" ? quoTodayRes.value : null;
-    const quoMonth = quoMonthRes.status === "fulfilled" ? quoMonthRes.value : null;
+    const quoToday = (quoTodayRes.status === "fulfilled" ? quoTodayRes.value : null) as QuoStatsResp | null;
+    const quoMonth = (quoMonthRes.status === "fulfilled" ? quoMonthRes.value : null) as QuoStatsResp | null;
     const missedHourly = missedHourlyRes.status === "fulfilled" ? missedHourlyRes.value : null;
     const missedDaily  = missedDailyRes.status === "fulfilled" ? missedDailyRes.value : null;
     const missedNoCB   = missedNoCBRes.status === "fulfilled" ? missedNoCBRes.value : null;
@@ -741,10 +744,44 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
     }
 
     // ── OpenPhone (Quo) stats — today ──────────────────────────────────────────
-    type DayStat = { totalCalls?: number; answered?: number; missed?: number; talkSeconds?: number; outbound?: number; inbound?: number; voicemail?: number; vmBrief?: number; uniqueContacts?: number };
+    // Authoritative per-agent totals across EVERY line/team (incl. "other" =
+    // onboarding / unclassified lines). The per-team sections below skip "other"
+    // to stay readable, but agents who work mainly on unclassified lines (e.g.
+    // onboarding staff) would otherwise be invisible or wildly undercounted.
+    // These totals are what Samia must use when asked about an individual agent.
+    const renderAgentTotals = (
+      header: string,
+      stats: Record<string, Record<string, Record<string, DayStat>>> | null | undefined,
+    ) => {
+      if (!stats) return;
+      const totals: Record<string, { calls: number; ans: number; miss: number; secs: number; cx: number; out: number; inn: number }> = {};
+      for (const agentMap of Object.values(stats)) {
+        for (const [agent, days] of Object.entries(agentMap)) {
+          const t = totals[agent] ?? (totals[agent] = { calls: 0, ans: 0, miss: 0, secs: 0, cx: 0, out: 0, inn: 0 });
+          for (const day of Object.values(days)) {
+            t.calls += day.totalCalls ?? 0;
+            t.ans += day.answered ?? 0;
+            t.miss += day.missed ?? 0;
+            t.secs += day.talkSeconds ?? 0;
+            t.cx += day.uniqueContacts ?? 0;
+            t.out += day.outbound ?? 0;
+            t.inn += day.inbound ?? 0;
+          }
+        }
+      }
+      const sorted = Object.entries(totals).filter(([, t]) => t.calls > 0).sort(([, a], [, b]) => b.calls - a.calls);
+      if (!sorted.length) return;
+      L(header);
+      for (const [agent, t] of sorted) {
+        const ar = t.calls > 0 ? Math.round((t.ans / t.calls) * 100) : 0;
+        L(`  ${agent}: ${t.calls} calls (${t.out} out/${t.inn} in) | answered: ${t.ans} (${ar}%) | missed: ${t.miss} | CX reached (sum of daily uniques, not month-deduped): ${t.cx} | talk: ${Math.round(t.secs / 60)}min`);
+      }
+    };
+
     if (quoToday?.teamStats) {
       L("\n=== OpenPhone (Quo) Stats — Today ===");
       for (const [team, agentMap] of Object.entries(quoToday.teamStats as Record<string, Record<string, Record<string, DayStat>>>)) {
+        if (team === "other") continue; // covered by the per-agent totals section
         let tc = 0, ta = 0, tm = 0, ts = 0, tout = 0, tin = 0;
         const agentLines: string[] = [];
         for (const [agent, days] of Object.entries(agentMap)) {
@@ -771,10 +808,16 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       }
     }
 
+    renderAgentTotals(
+      `\n=== OpenPhone Per-Agent TOTALS — Today (${todayStr}, ALL lines combined) ===\n(Authoritative per-agent totals across every line incl. onboarding/unclassified. Use these when asked about an individual agent's calls today.)`,
+      quoToday?.teamStats as Record<string, Record<string, Record<string, DayStat>>> | null | undefined,
+    );
+
     // ── OpenPhone stats — this month ───────────────────────────────────────────
     if (quoMonth?.teamStats) {
       L(`\n=== OpenPhone (Quo) Stats — This Month (${monthStr}) ===`);
       for (const [team, agentMap] of Object.entries(quoMonth.teamStats as Record<string, Record<string, Record<string, DayStat>>>)) {
+        if (team === "other") continue; // covered by the per-agent totals section
         let tc = 0, ta = 0, tm = 0, ts = 0;
         const agentLines: string[] = [];
         for (const [agent, days] of Object.entries(agentMap)) {
@@ -797,6 +840,11 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
         for (const l of agentLines) L(l);
       }
     }
+
+    renderAgentTotals(
+      `\n=== OpenPhone Per-Agent TOTALS — This Month (${monthStr}, ALL lines combined) ===\n(Authoritative per-agent totals across every line incl. onboarding/unclassified. Use these when asked about an individual agent's monthly calls.)`,
+      quoMonth?.teamStats as Record<string, Record<string, Record<string, DayStat>>> | null | undefined,
+    );
 
     // ── Google Sheets retains / cancels ────────────────────────────────────────
     if (retSheet) {

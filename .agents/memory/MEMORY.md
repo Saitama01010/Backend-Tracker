@@ -1,3 +1,4 @@
 - [Google Sheets data path](google-sheets-private.md) — dashboard reads sheets via authenticated /api/sheet (connector), not public CSV; sheets can be private.
 - [ReadyMode stats pipeline](readymode-stats-pipeline.md) — /api/readymode/stats merges asset/sheet/DB-upload sources deduped by (norm agent, day); portal CSV upsert canonicalizes name.
 - [AI models: Samia & QA](ai-models.md) — Samia on OpenAI gpt-4.1 (DeepSeek fabricated call data); QA still on OpenRouter DeepSeek; SAMIA_MODEL/QA_MODEL env overrides.
+- [Quo stats team bucketing](quo-stats-team-buckets.md) — /api/quo/stats dropped calls on unclassified lines (now an "other" bucket); sum all teams for an agent's true total.

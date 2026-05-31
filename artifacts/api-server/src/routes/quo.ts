@@ -335,7 +335,7 @@ router.get("/quo/stats", async (req, res) => {
           }
         >
       >
-    > = { retention: {}, nsf: {}, cs: {} };
+    > = { retention: {}, nsf: {}, cs: {}, other: {} };
 
     const agentLastCall: Record<string, Record<string, Date>> = {};
 
@@ -348,9 +348,14 @@ router.get("/quo/stats", async (req, res) => {
     for (const row of rows) {
       if (row.participant && blocklist.has(row.participant)) continue;
       const agentName = canonicalAgentName(row.agentName) ?? "Unknown";
-      // Agent-based team takes priority over line-based; skip calls from unknown agents
-      const team = agentTeam(agentName) ?? row.lineTeam;
-      if (!team || !(team in teamStats)) continue;
+      // Agent-based team takes priority over line-based. Calls that don't map to a
+      // tracked team (e.g. Onboarding / unclassified lines) fall into "other" so
+      // they are still counted and visible to Samia, instead of being silently
+      // dropped (which made per-agent totals wildly undercount agents who work
+      // mainly on unclassified lines). The dashboard reads fixed team keys
+      // (retention/nsf/cs), so the extra "other" bucket does not affect it.
+      let team = agentTeam(agentName) ?? row.lineTeam ?? "other";
+      if (!(team in teamStats)) team = "other";
       const date = toCaDate(row.createdAt);
 
       if (!teamStats[team]) teamStats[team] = {};
