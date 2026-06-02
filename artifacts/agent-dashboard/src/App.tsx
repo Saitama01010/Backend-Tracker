@@ -6841,6 +6841,24 @@ function fmtMins(m: number): string {
   if (m < 60) return `${m}m`;
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
+// LA-local hour-of-day (0–23) for an ISO timestamp.
+function laHourOf(iso: string): number {
+  return parseInt(
+    new Intl.DateTimeFormat("en-US", { hour: "numeric", hourCycle: "h23", timeZone: "America/Los_Angeles" }).format(new Date(iso)),
+    10,
+  );
+}
+// "Jun 2, 9:14 AM" in LA time.
+function fmtDateTimeLA(iso: string): string {
+  return new Date(iso).toLocaleString("en-US", {
+    timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
+  });
+}
+function fmtHourLabel(h: number): string {
+  if (h === 0 || h === 24) return "12 AM";
+  if (h === 12) return "12 PM";
+  return h < 12 ? `${h} AM` : `${h - 12} PM`;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Retention QA Panel (AI-scored call reviews)
@@ -7321,6 +7339,8 @@ function ViolationsPanel() {
   const [deptFilter, setDeptFilter] = useState<string>("all");
   const [sortLate, setSortLate]     = useState<"date" | "mins">("date");
   const [sortGaps, setSortGaps]     = useState<"date" | "count">("count");
+  const [gapHourFrom, setGapHourFrom] = useState(0);
+  const [gapHourTo, setGapHourTo]     = useState(24);
   const [sortMissed, setSortMissed] = useState<"date" | "avail">("date");
   const [localVerified, setLocalVerified] = useState<Set<string>>(new Set());
   const [pending, setPending] = useState<Set<string>>(new Set());
@@ -7435,6 +7455,54 @@ function ViolationsPanel() {
     else rows = [...rows].sort((a, b) => b.date.localeCompare(a.date) || b.gapCount - a.gapCount);
     return rows;
   }, [data, deptFilter, sortGaps, localDismissed]);
+
+  // Whole-day window (0→24) means "no filter".
+  const gapHourActive = !(gapHourFrom === 0 && gapHourTo === 24);
+  const inGapHourWindow = (iso: string) => {
+    if (!gapHourActive) return true;
+    const h = laHourOf(iso);
+    return gapHourFrom <= gapHourTo
+      ? h >= gapHourFrom && h < gapHourTo
+      : h >= gapHourFrom || h < gapHourTo; // wrap-around (e.g. 10 PM → 4 AM)
+  };
+  // Rows with gaps filtered to the selected hour-of-day window; empty rows dropped.
+  const displayGapRows = useMemo(() => {
+    if (!gapHourActive) return gapRows;
+    const filtered = gapRows
+      .map(r => ({ ...r, gaps: r.gaps.filter(g => inGapHourWindow(g.start)) }))
+      .filter(r => r.gaps.length > 0)
+      .map(r => ({ ...r, gapCount: r.gaps.length }));
+    // Re-sort using the recomputed (filtered) gapCount so "By Count" stays accurate.
+    const longest = (r: AvailGapRow) => Math.max(...r.gaps.map(g => g.minutes));
+    if (sortGaps === "count") filtered.sort((a, b) => b.gapCount - a.gapCount || longest(b) - longest(a));
+    else filtered.sort((a, b) => b.date.localeCompare(a.date) || b.gapCount - a.gapCount);
+    return filtered;
+  }, [gapRows, gapHourActive, gapHourFrom, gapHourTo, sortGaps]);
+
+  const exportGapsCsv = () => {
+    const rows: Record<string, string | number>[] = [];
+    for (const r of displayGapRows) {
+      for (const g of r.gaps) {
+        rows.push({
+          Date: r.date,
+          Agent: r.member,
+          Dept: r.department,
+          "Gap Start (LA)": fmtDateTimeLA(g.start),
+          "Gap End (LA)": fmtDateTimeLA(g.end),
+          "Duration (min)": g.minutes,
+        });
+      }
+    }
+    const csv = Papa.unparse(rows);
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const win = gapHourActive ? `_${fmtHourLabel(gapHourFrom)}-${fmtHourLabel(gapHourTo)}`.replace(/\s/g, "") : "";
+    a.download = `availability_gaps${win}_${new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" })}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const missedRows = useMemo(() => {
     let rows = (data?.missedWhileAvail ?? []).filter(r =>
@@ -7687,17 +7755,59 @@ function ViolationsPanel() {
             <p className="text-xs font-semibold text-rose-300 flex items-center gap-1.5">
               <ShieldAlert className="h-3.5 w-3.5" />Availability — gaps {">"} 5 min between consecutive calls
             </p>
-            <div className="flex gap-1">
-              {(["count","date"] as const).map(s => (
-                <button key={s} onClick={() => setSortGaps(s)}
-                  className={`text-[10px] px-2 py-0.5 rounded ${sortGaps === s ? "bg-zinc-700 text-white" : "text-zinc-500 hover:text-zinc-300"}`}>
-                  {s === "count" ? "By Count" : "By Date"}
-                </button>
-              ))}
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1 text-[10px] text-zinc-400">
+                <span>Hours</span>
+                <select
+                  value={gapHourFrom}
+                  onChange={(e) => setGapHourFrom(Number(e.target.value))}
+                  className="bg-zinc-800 border border-white/10 rounded px-1 py-0.5 text-[10px] text-zinc-200"
+                >
+                  {Array.from({ length: 24 }, (_, h) => (
+                    <option key={h} value={h}>{fmtHourLabel(h)}</option>
+                  ))}
+                </select>
+                <span>→</span>
+                <select
+                  value={gapHourTo}
+                  onChange={(e) => setGapHourTo(Number(e.target.value))}
+                  className="bg-zinc-800 border border-white/10 rounded px-1 py-0.5 text-[10px] text-zinc-200"
+                >
+                  {Array.from({ length: 24 }, (_, h) => h + 1).map((h) => (
+                    <option key={h} value={h}>{fmtHourLabel(h)}</option>
+                  ))}
+                </select>
+                {gapHourActive && (
+                  <button
+                    onClick={() => { setGapHourFrom(0); setGapHourTo(24); }}
+                    className="text-zinc-500 hover:text-zinc-300 underline"
+                  >
+                    clear
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-1">
+                {(["count","date"] as const).map(s => (
+                  <button key={s} onClick={() => setSortGaps(s)}
+                    className={`text-[10px] px-2 py-0.5 rounded ${sortGaps === s ? "bg-zinc-700 text-white" : "text-zinc-500 hover:text-zinc-300"}`}>
+                    {s === "count" ? "By Count" : "By Date"}
+                  </button>
+                ))}
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={displayGapRows.length === 0}
+                onClick={exportGapsCsv}
+                data-testid="button-export-availability-gaps"
+              >
+                <Download className="h-3.5 w-3.5 mr-1.5" />
+                Export CSV
+              </Button>
             </div>
           </div>
-          {gapRows.length === 0
-            ? <div className="py-10 text-center text-sm text-zinc-500">No availability violations for this range.</div>
+          {displayGapRows.length === 0
+            ? <div className="py-10 text-center text-sm text-zinc-500">{gapHourActive ? "No gaps in the selected hours." : "No availability violations for this range."}</div>
             : <Table>
                 <TableHeader>
                   <TableRow className="border-white/8 bg-zinc-900/40">
@@ -7711,7 +7821,7 @@ function ViolationsPanel() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {gapRows.map((r, i) => (
+                  {displayGapRows.map((r, i) => (
                     <TableRow key={i} className={`border-white/5 transition-colors group ${localVerified.has(r.key) ? "bg-emerald-950/20" : "hover:bg-zinc-800/20"}`}>
                       <TableCell className="pl-3 pr-1">
                         <Checkbox vkey={r.key} type="availability_gap" member={r.member} department={r.department} date={r.date} details={r} />
