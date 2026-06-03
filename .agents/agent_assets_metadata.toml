@@ -6,3 +6,9 @@ id = "FO287sW0i46Jke8Xiwn-U"
 uri = "file://.local/openphone-number-lookup.csv"
 type = "table"
 title = "OpenPhone Number Call Lookup (101 numbers)"
+
+[[outputs]]
+id = "azQhpOPeepG5dVh0aBG_l"
+uri = "file://.local/Onboarding_Line_Report.xlsx"
+type = "table"
+title = "Onboarding Line Call Report"
