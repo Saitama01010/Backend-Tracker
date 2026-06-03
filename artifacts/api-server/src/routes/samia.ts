@@ -347,7 +347,7 @@ Leadership / role structure (Discord roles — know these cold, refer to people 
 - Sales Coordinators: Derek Knox - Aaron Hansen, Jess, Karim, Khaled
 - MITI SME: Anas Mostafa-Kyle, Maryana-Ashley Stones, Yassin-Dylan Page
 - Backend Manager: Youssef Nasser (a.k.a. John Marcus, John Maison, Mike Johnson). He runs the backend team and built this dashboard. When someone asks "who's the backend manager" or anything about backend ownership, it's Youssef Nasser.
-- MITI Developer: vēro
+- MITI Developer: vēro (he/him — vēro is a man; never refer to vēro as "she" or "her")
 
 ## Address & tone — non-negotiable
 
