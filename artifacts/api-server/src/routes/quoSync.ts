@@ -307,10 +307,14 @@ async function fetchCallsForParticipant(
   return all;
 }
 
-export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted: number; errors: number }> {
+export async function runSync(
+  fromDate: Date,
+  toDate: Date,
+  opts?: { onlyLineId?: string },
+): Promise<{ inserted: number; errors: number }> {
   const from = fromDate.toISOString();
   const to = toDate.toISOString();
-  logger.info({ from, to }, "quoSync: starting sync");
+  logger.info({ from, to, onlyLineId: opts?.onlyLineId ?? null }, "quoSync: starting sync");
 
   const linesRes = await quoFetch<{ data: PhoneNumber[] }>("/phone-numbers");
   const allLines = linesRes.data ?? [];
@@ -353,8 +357,11 @@ export async function runSync(fromDate: Date, toDate: Date): Promise<{ inserted:
   }
   logger.info({ lineCount: lines.length, userCount: userMap.size, internalLines: internalNumberToName.size }, "quoSync: got lines");
 
-  // Step 1: collect all (lineId → participants) from conversations
-  const byLine = await fetchConversationsByLine(from, to, knownLineIds);
+  // Step 1: collect all (lineId → participants) from conversations.
+  // When scoped to a single line, only that line's participants are retained,
+  // which dramatically reduces the per-participant call fetches in step 3.
+  const targetLineIds = opts?.onlyLineId ? new Set([opts.onlyLineId]) : knownLineIds;
+  const byLine = await fetchConversationsByLine(from, to, targetLineIds);
   const totalParticipants = [...byLine.values()].reduce((s, v) => s + v.size, 0);
   logger.info(
     { linesWithConversations: byLine.size, totalParticipants },

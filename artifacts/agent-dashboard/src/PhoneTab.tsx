@@ -7,7 +7,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, Phone, PhoneIncoming, PhoneMissed, Clock, Users, Database, CheckCircle, Loader2 } from "lucide-react";
+import { RefreshCw, Phone, PhoneIncoming, PhoneMissed, Clock, Users, Database, CheckCircle, Loader2, FileSpreadsheet, Download, Sparkles, Receipt } from "lucide-react";
 
 const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
 
@@ -131,6 +131,158 @@ function StatPill({ label, value, icon: Icon, tone }: { label: string; value: st
         {Icon && <Icon className="h-3 w-3" />}{label}
       </p>
       <p className="text-2xl font-bold tabular-nums">{value}</p>
+    </div>
+  );
+}
+
+interface ObStatus {
+  running: boolean;
+  progressDone: number;
+  progressTotal: number;
+  lastRunAt: string | null;
+  lastError: string | null;
+  totalCalls: number;
+  classified: number;
+  typeCounts: Record<string, number>;
+  taxYes: number;
+  taxNo: number;
+}
+
+function OnboardingReportCard() {
+  const [downloading, setDownloading] = useState(false);
+
+  const { data: status, refetch } = useQuery<ObStatus>({
+    queryKey: ["obReportStatus"],
+    queryFn: async () => {
+      const res = await fetch(`${BASE}/api/ob-report/status`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
+    refetchInterval: (q) => (q.state.data?.running ? 3000 : false),
+    refetchOnWindowFocus: false,
+  });
+
+  const refreshMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`${BASE}/api/ob-report/refresh`, { method: "POST" });
+      if (!res.ok && res.status !== 409) throw new Error(`HTTP ${res.status}`);
+      return res.json().catch(() => ({}));
+    },
+    onSuccess: () => {
+      setTimeout(() => refetch(), 800);
+    },
+  });
+
+  const download = async () => {
+    setDownloading(true);
+    try {
+      const res = await fetch(`${BASE}/api/ob-report/download`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Onboarding_Line_Report_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const running = status?.running ?? refreshMutation.isPending;
+  const onboarded = status?.typeCounts?.onboarded ?? 0;
+  const connection = status?.typeCounts?.connection ?? 0;
+  const lastRun = status?.lastRunAt
+    ? new Date(status.lastRunAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : null;
+  const progressPct =
+    running && status && status.progressTotal > 0
+      ? Math.round((status.progressDone / status.progressTotal) * 100)
+      : 0;
+
+  return (
+    <div className="rounded-xl border border-violet-700/30 bg-gradient-to-br from-violet-950/40 to-fuchsia-950/20 backdrop-blur p-5 space-y-4">
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <FileSpreadsheet className="h-5 w-5 text-violet-300" />
+            Onboarding Line Report
+          </h2>
+          <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
+            <span>(949) 315-7441 · Connection vs Onboarded + tax mentions</span>
+            <span className="flex items-center gap-1 text-violet-300/80">
+              <Sparkles className="h-3 w-3" />
+              AI-classified from call transcripts
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => refreshMutation.mutate()}
+            disabled={running}
+            title="Pull the newest calls and classify any new transcripts, then refresh the report"
+          >
+            {running
+              ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Refreshing…</>
+              : <><RefreshCw className="h-4 w-4 mr-1" />Refresh</>}
+          </Button>
+          <Button
+            size="sm"
+            onClick={download}
+            disabled={downloading || !status || status.totalCalls === 0}
+            title="Download the latest report as an Excel file"
+          >
+            {downloading
+              ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Preparing…</>
+              : <><Download className="h-4 w-4 mr-1" />Download Excel</>}
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatPill label="Total Calls" value={status?.totalCalls?.toLocaleString() ?? "—"} icon={Phone} tone="violet" />
+        <StatPill label="Onboarded" value={onboarded.toLocaleString()} icon={CheckCircle} tone="emerald" />
+        <StatPill label="Connection" value={connection.toLocaleString()} icon={PhoneIncoming} tone="sky" />
+        <StatPill label="Mention Tax" value={(status?.taxYes ?? 0).toLocaleString()} icon={Receipt} tone="amber" />
+      </div>
+
+      {running && status && status.progressTotal > 0 && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>Classifying new transcripts…</span>
+            <span className="tabular-nums">{status.progressDone}/{status.progressTotal} ({progressPct}%)</span>
+          </div>
+          <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+            <div className="h-full bg-violet-500 transition-all" style={{ width: `${progressPct}%` }} />
+          </div>
+        </div>
+      )}
+      {running && status && status.progressTotal === 0 && (
+        <p className="text-xs text-muted-foreground flex items-center gap-1">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          Pulling newest calls from OpenPhone…
+        </p>
+      )}
+
+      <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+        {lastRun && !running && (
+          <span className="flex items-center gap-1 text-emerald-400">
+            <CheckCircle className="h-3 w-3" />
+            Last refreshed {lastRun}
+          </span>
+        )}
+        {status && (
+          <span>{status.classified.toLocaleString()} calls classified</span>
+        )}
+        {status?.lastError && (
+          <span className="text-rose-400">Last error: {status.lastError.slice(0, 120)}</span>
+        )}
+      </div>
     </div>
   );
 }
@@ -322,6 +474,7 @@ export function PhoneTab() {
 
   return (
     <div className="space-y-6">
+      <OnboardingReportCard />
       <div className="rounded-xl border border-white/5 bg-card/60 backdrop-blur p-5 space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>

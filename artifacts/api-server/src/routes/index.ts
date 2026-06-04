@@ -16,6 +16,7 @@ import sheetsRouter from "./sheets";
 import breaksRouter from "./breaks";
 import teamAgentsRouter from "./teamAgents";
 import qaRouter, { startQaBackgroundProcessor } from "./qa";
+import obReportRouter from "./obReport";
 
 const router: IRouter = Router();
 
@@ -35,6 +36,7 @@ router.use(nsfReadymodeRouter);
 router.use(csvProxyRouter);
 router.use(sheetsRouter);
 router.use(qaRouter);
+router.use(obReportRouter);
 
 // Kick off background QA processor (evaluates new retention calls every 5 min).
 startQaBackgroundProcessor();

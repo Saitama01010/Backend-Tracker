@@ -29,3 +29,4 @@ export * from "./teamAgents";
 export * from "./nsfReadymodeQueue";
 export * from "./qaReviews";
 export * from "./readymodeUploads";
+export * from "./onboardingReport";

@@ -17,6 +17,7 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2",
     "drizzle-orm": "catalog:",
+    "exceljs": "^4.4.0",
     "express": "^5",
     "jsonwebtoken": "^9.0.3",
     "openai": "^6.36.0",
