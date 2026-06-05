@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import ExcelJS from "exceljs";
 import OpenAI from "openai";
 import { db, phoneCallsTable, onboardingClassificationsTable, onboardingReportStateTable } from "@workspace/db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { runSync } from "./quoSync.js";
 import { logger } from "../lib/logger.js";
 
@@ -15,6 +15,37 @@ const LINE_LABEL = "(949) 315-7441";
 const MODEL = process.env["OB_MODEL"] ?? "gpt-4.1-mini";
 const CONCURRENCY = Number(process.env["OB_CONC"] ?? 4);
 const TAX_RE = /\btaxes?\b/i;
+
+// ─── Date range helpers (LA timezone, mirrors obAnalytics) ────────────────────
+const TZ = "America/Los_Angeles";
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function caDate(d: Date): string {
+  return d.toLocaleDateString("en-CA", { timeZone: TZ });
+}
+/** Midnight (California) for a YYYY-MM-DD string → UTC bounds for that CA day. */
+function caDateBounds(dateStr: string): { from: Date; to: Date } {
+  const pdtMidnight = new Date(`${dateStr}T07:00:00Z`);
+  const fromMs =
+    caDate(pdtMidnight) === dateStr ? pdtMidnight.getTime() : pdtMidnight.getTime() + 60 * 60 * 1000;
+  return { from: new Date(fromMs), to: new Date(fromMs + 24 * 60 * 60 * 1000) };
+}
+function parseRange(from?: string, to?: string): { fromDate: Date; toDate: Date } {
+  let fromDate = !from
+    ? new Date("2000-01-01T00:00:00Z")
+    : DATE_RE.test(from)
+      ? caDateBounds(from).from
+      : new Date(from);
+  let toDate = !to ? new Date() : DATE_RE.test(to) ? caDateBounds(to).to : new Date(to);
+  // Guard against malformed input so bad query strings can't reach the DB filter.
+  if (Number.isNaN(fromDate.getTime())) fromDate = new Date("2000-01-01T00:00:00Z");
+  if (Number.isNaN(toDate.getTime())) toDate = new Date();
+  return { fromDate, toDate };
+}
+function rangeFromQuery(req: { query: Record<string, unknown> }): { fromDate: Date; toDate: Date } {
+  const from = typeof req.query["from"] === "string" ? req.query["from"] : undefined;
+  const to = typeof req.query["to"] === "string" ? req.query["to"] : undefined;
+  return parseRange(from, to);
+}
 
 const QUO_BASE = "https://api.openphone.com/v1";
 function quoHeaders(): Record<string, string> {
@@ -180,9 +211,14 @@ async function runReport(): Promise<void> {
     logger.info("obReport: refresh started");
 
     // 1) Pull the newest calls (extend the range up to today). The background
-    //    sync covers all lines on a 15-min cycle; here we force a recent-window
-    //    sync so a manual refresh always reflects calls right up to now.
-    const syncFrom = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000); // last 4 days
+    //    sync covers all lines on a 15-min cycle; here we only need a small
+    //    top-up window to catch anything since the last background sync.
+    //    NOTE: the OpenPhone /conversations endpoint ignores the phoneNumberId
+    //    filter, so every sync pages *all* lines' conversations in the window.
+    //    A wide window therefore triggers heavy rate-limiting and makes a manual
+    //    refresh take many minutes — keep this window small. Override via OB_SYNC_HOURS.
+    const syncHours = Number(process.env["OB_SYNC_HOURS"] ?? 6);
+    const syncFrom = new Date(Date.now() - syncHours * 60 * 60 * 1000);
     try {
       await runSync(syncFrom, new Date(), { onlyLineId: LINE_ID });
     } catch (err) {
@@ -305,7 +341,8 @@ interface ReportRow {
   callId: string;
 }
 
-async function loadReportRows(): Promise<ReportRow[]> {
+async function loadReportRows(from?: string, to?: string): Promise<ReportRow[]> {
+  const { fromDate, toDate } = parseRange(from, to);
   const rows = await db
     .select({
       id: phoneCallsTable.id,
@@ -322,7 +359,13 @@ async function loadReportRows(): Promise<ReportRow[]> {
     })
     .from(phoneCallsTable)
     .leftJoin(onboardingClassificationsTable, eq(onboardingClassificationsTable.callId, phoneCallsTable.id))
-    .where(eq(phoneCallsTable.lineId, LINE_ID))
+    .where(
+      and(
+        eq(phoneCallsTable.lineId, LINE_ID),
+        gte(phoneCallsTable.createdAt, fromDate),
+        lte(phoneCallsTable.createdAt, toDate),
+      ),
+    )
     .orderBy(phoneCallsTable.createdAt);
 
   return rows.map((c) => ({
@@ -571,18 +614,28 @@ router.post("/ob-report/refresh", async (req, res) => {
 router.get("/ob-report/status", async (req, res) => {
   try {
     const state = await readState();
+    const { fromDate, toDate } = rangeFromQuery(req);
+    const rangeWhere = and(
+      eq(phoneCallsTable.lineId, LINE_ID),
+      gte(phoneCallsTable.createdAt, fromDate),
+      lte(phoneCallsTable.createdAt, toDate),
+    );
     const counts = await db
       .select({ callType: onboardingClassificationsTable.callType, n: sql<number>`count(*)::int` })
       .from(onboardingClassificationsTable)
+      .innerJoin(phoneCallsTable, eq(phoneCallsTable.id, onboardingClassificationsTable.callId))
+      .where(rangeWhere)
       .groupBy(onboardingClassificationsTable.callType);
     const tax = await db
       .select({ mentionsTax: onboardingClassificationsTable.mentionsTax, n: sql<number>`count(*)::int` })
       .from(onboardingClassificationsTable)
+      .innerJoin(phoneCallsTable, eq(phoneCallsTable.id, onboardingClassificationsTable.callId))
+      .where(rangeWhere)
       .groupBy(onboardingClassificationsTable.mentionsTax);
     const totalCallsRow = await db
       .select({ n: sql<number>`count(*)::int` })
       .from(phoneCallsTable)
-      .where(eq(phoneCallsTable.lineId, LINE_ID));
+      .where(rangeWhere);
 
     const typeCounts: Record<string, number> = {};
     for (const c of counts) typeCounts[c.callType] = c.n;
@@ -617,7 +670,9 @@ router.get("/ob-report/status", async (req, res) => {
 // GET /api/ob-report/download — stream the latest Excel workbook
 router.get("/ob-report/download", async (req, res) => {
   try {
-    const rows = await loadReportRows();
+    const from = typeof req.query["from"] === "string" ? req.query["from"] : undefined;
+    const to = typeof req.query["to"] === "string" ? req.query["to"] : undefined;
+    const rows = await loadReportRows(from, to);
     const wb = await buildWorkbook(rows);
     const stamp = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
     res.setHeader(
@@ -631,6 +686,75 @@ router.get("/ob-report/download", async (req, res) => {
   } catch (err) {
     req.log.error(err, "ob-report download error");
     res.status(500).json({ error: "Failed to generate report" });
+    return;
+  }
+});
+
+// ─── POST /api/ob-report/import — one-time bulk seed of classifications ────────
+// Guarded by OB_IMPORT_SECRET. Lets an already-classified environment (dev) seed a
+// fresh one (production) without re-running thousands of rate-limited transcript
+// fetches + LLM calls. Idempotent: existing rows are left untouched.
+interface ImportRow {
+  callId: string;
+  callType: string;
+  customerName?: string | null;
+  closerAgent?: string | null;
+  mentionsTax?: boolean | null;
+  txStatus?: string | null;
+  notes?: string | null;
+}
+
+router.post("/ob-report/import", async (req, res) => {
+  const secret = process.env["OB_IMPORT_SECRET"];
+  if (!secret) {
+    res.status(403).json({ error: "import disabled" });
+    return;
+  }
+  if (req.header("x-import-secret") !== secret) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  const rows: unknown = req.body?.rows;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    res.status(400).json({ error: "rows[] required" });
+    return;
+  }
+  if (rows.length > 5000) {
+    res.status(400).json({ error: "too many rows in one request (max 5000)" });
+    return;
+  }
+  const values: ImportRow[] = [];
+  for (const r of rows as ImportRow[]) {
+    if (!r || typeof r.callId !== "string" || typeof r.callType !== "string") {
+      res.status(400).json({ error: "each row needs callId and callType" });
+      return;
+    }
+    values.push({
+      callId: r.callId,
+      callType: r.callType,
+      customerName: r.customerName ?? null,
+      closerAgent: r.closerAgent ?? null,
+      mentionsTax: typeof r.mentionsTax === "boolean" ? r.mentionsTax : null,
+      txStatus: r.txStatus ?? null,
+      notes: r.notes ?? null,
+    });
+  }
+  try {
+    const CHUNK = 500;
+    for (let i = 0; i < values.length; i += CHUNK) {
+      await db
+        .insert(onboardingClassificationsTable)
+        .values(values.slice(i, i + CHUNK))
+        .onConflictDoNothing();
+    }
+    const total = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(onboardingClassificationsTable);
+    res.json({ received: values.length, total: total[0]?.n ?? 0 });
+    return;
+  } catch (err) {
+    req.log.error(err, "ob-report import error");
+    res.status(500).json({ error: "import failed" });
     return;
   }
 });

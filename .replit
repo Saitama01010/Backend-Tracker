@@ -51,6 +51,7 @@ externalPort = 3000
 
 [userenv.shared]
 QUO_API_KEY = "f246ba10fa0eb4eb193b58d896959e494072deed5738eed4ff8507665c08e576"
+OB_IMPORT_SECRET = "283eb36434b65bc9b36bf465dac7cb9fef1e0b18508cdd35"
 
 [nix]
 channel = "stable-25_05"

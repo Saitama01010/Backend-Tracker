@@ -141,11 +141,24 @@ function StatPill({
 
 // ─── Raw report card (Connection vs Onboarded) ────────────────────────────────
 function OnboardingReportCard() {
+  const today = laToday();
+  const thisMonth = today.slice(0, 7);
+  const [gran, setGran] = useState<Granularity>("all");
+  const [month, setMonth] = useState(thisMonth);
+  const [day, setDay] = useState(today);
   const [downloading, setDownloading] = useState(false);
+
+  const { from, to } = useMemo(() => {
+    if (gran === "month") return { from: `${month}-01`, to: lastDayOfMonth(month) };
+    if (gran === "day") return { from: day, to: day };
+    return { from: "", to: "" };
+  }, [gran, month, day]);
+  const qs = from && to ? `?from=${from}&to=${to}` : "";
+
   const { data: status, refetch } = useQuery<ObStatus>({
-    queryKey: ["obReportStatus"],
+    queryKey: ["obReportStatus", from, to],
     queryFn: async () => {
-      const res = await fetch(`${BASE}/api/ob-report/status`);
+      const res = await fetch(`${BASE}/api/ob-report/status${qs}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     },
@@ -165,13 +178,14 @@ function OnboardingReportCard() {
   const download = async () => {
     setDownloading(true);
     try {
-      const res = await fetch(`${BASE}/api/ob-report/download`);
+      const res = await fetch(`${BASE}/api/ob-report/download${qs}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
+      const tag = gran === "all" ? "AllTime" : gran === "month" ? month : day;
       const a = document.createElement("a");
       a.href = url;
-      a.download = `Onboarding_Line_Report_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.download = `Onboarding_Line_Report_${tag}.xlsx`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -191,6 +205,12 @@ function OnboardingReportCard() {
     running && status && status.progressTotal > 0
       ? Math.round((status.progressDone / status.progressTotal) * 100)
       : 0;
+  const rangeLabel =
+    gran === "all"
+      ? "All time"
+      : gran === "month"
+        ? new Date(`${month}-01`).toLocaleDateString([], { month: "long", year: "numeric" })
+        : new Date(`${day}T00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 
   return (
     <div className="rounded-xl border border-violet-700/30 bg-gradient-to-br from-violet-950/40 to-fuchsia-950/20 backdrop-blur p-5 space-y-4">
@@ -201,7 +221,7 @@ function OnboardingReportCard() {
             Onboarding Line Report
           </h2>
           <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
-            <span>(949) 315-7441 · Connection vs Onboarded + tax mentions</span>
+            <span>(949) 315-7441 · {rangeLabel} · Connection vs Onboarded + tax mentions</span>
             <span className="flex items-center gap-1 text-violet-300/80">
               <Sparkles className="h-3 w-3" />
               AI-classified from call transcripts
@@ -209,6 +229,25 @@ function OnboardingReportCard() {
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <div className="inline-flex rounded-lg border border-white/10 overflow-hidden">
+            {(["all", "month", "day"] as Granularity[]).map((g) => (
+              <button
+                key={g}
+                onClick={() => setGran(g)}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${gran === g ? "bg-violet-600 text-white" : "bg-transparent text-muted-foreground hover:bg-white/5"}`}
+              >
+                {g === "all" ? "All Time" : g === "month" ? "Monthly" : "Per Day"}
+              </button>
+            ))}
+          </div>
+          {gran === "month" && (
+            <input type="month" value={month} max={thisMonth} onChange={(e) => setMonth(e.target.value)}
+              className="rounded-md border border-white/10 bg-background px-2 py-1.5 text-xs" />
+          )}
+          {gran === "day" && (
+            <input type="date" value={day} max={today} onChange={(e) => setDay(e.target.value)}
+              className="rounded-md border border-white/10 bg-background px-2 py-1.5 text-xs" />
+          )}
           <Button size="sm" variant="outline" onClick={() => refreshMutation.mutate()} disabled={running}>
             {running
               ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Refreshing…</>
