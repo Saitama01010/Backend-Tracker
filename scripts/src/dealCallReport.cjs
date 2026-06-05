@@ -171,8 +171,9 @@ function categorize(call) {
       if ((c.duration_seconds ?? 0) < 20) continue;
       const op = cache[c.id];
       if (!op || (!op.summary && (!op.dialogue || !op.dialogue.length))) continue;
-      const isRetIn = c.cat === "retention_in" && c.direction === "incoming";
-      const snippet = isRetIn ? (op.dialogue || []).slice(0, 24).join("\n") : "";
+      // Feed opening transcript for ALL incoming calls (live transfers land on
+      // Onboarding, Retention, or CS lines — not only Retention).
+      const snippet = c.direction === "incoming" ? (op.dialogue || []).slice(0, 26).join("\n") : "";
       enriched.push({ when: c.created_at, dir: c.direction, line: c.line_name, cat: c.cat, dur: c.duration_seconds, summary: op.summary, snippet });
     }
     const aspireHit = enriched.some((e) => /aspire|resync|re-?sync/i.test((e.summary || "") + " " + (e.snippet || "")));
@@ -189,10 +190,12 @@ function categorize(call) {
       ).join("\n\n").slice(0, 14000);
 
       const sys = `You analyze a debt-relief company's phone call history for ONE customer phone number.
+This company receives "live transfers": a partner company representative (from "Aspire" or "Resync", also said as "re-sync") calls IN with the client already on the line, to hand off / transfer the client (usually because the client wants to cancel or has an issue). These come in on ANY inbound line — most often the "Onboarding" line, also "Retention" or "CS Team".
 Definitions:
-- "Live call" = an INCOMING call to the Retention line where a representative states they are from "Aspire" or "Resync" and have a client who wants/needs to CANCEL (a warm transfer of a cancelling client). Only mark Yes if the transcript/summary clearly shows this.
-- "Transfer source" = if an INCOMING retention call was transferred from another internal line/agent or department (e.g., onboarding, CS, NSF, a named agent) rather than an Aspire/Resync live transfer, name that line/agent/department. Empty if not applicable.
-- "ob_done_no_retention" = TRUE only if there were outbound (OB) calls/attempts to this customer but ZERO incoming calls on the Retention line.
+- "Live call" = ANY INCOMING call (on any line: Onboarding, Retention, CS, etc.) where the caller/representative indicates they are from "Aspire" or "Resync"/"re-sync", OR is clearly a partner handing off / transferring this client to your company. Mark "Yes" if any incoming call shows this. Use the opening transcript lines (greeting/intro) as the primary signal. Be inclusive: a mention of Aspire/Resync by an incoming caller, or an explicit "I have a client to transfer", counts. Do NOT count outbound calls your agents made.
+- "live_call_evidence" = quote/paraphrase the specific intro line and name the line it came in on, or say why No.
+- "Transfer source" = which line/agent/department the live/incoming call came in on or was transferred from (e.g., "Aspire/Resync via Onboarding line", a named agent, or a department). Empty only if there is no incoming call.
+- "ob_done_no_retention" = TRUE only if there were outbound (OB) calls/attempts to this customer but ZERO completed incoming calls on the Retention line.
 - "Outcome summary" = 2-4 sentence plain-English summary of what happened across ALL the calls (cancellation, retained, payment, onboarding, voicemails, no answer, etc.).
 Return STRICT JSON: {"live_call":"Yes|No","live_call_evidence":"...","transfer_source":"...","ob_done_no_retention":true|false,"outcome_summary":"..."}`;
 
