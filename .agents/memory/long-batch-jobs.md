@@ -1,46 +1,28 @@
 ---
-name: Long batch jobs over the agent bash tool
-description: How to run multi-minute batch processing (e.g. transcript+LLM enrichment over thousands of rows) reliably in this environment.
+name: Long batch jobs in this sandbox
+description: How to run multi-minute offline scripts (LLM passes, scrapes) that exceed the 2-min shell limit
 ---
 
-# Running long batch jobs reliably
+# Long-running batch scripts
 
-The agent's `bash` tool SIGTERMs the whole process group when each command returns,
-and also caps command runtime (~120s, often killed earlier under memory pressure).
-Backgrounding with `nohup`/`setsid`/`disown` is UNRELIABLE — sometimes an orphan
-survives and keeps writing, sometimes it dies immediately. Trivial commands even
-get 143-killed when orphaned `node` processes pile up and cause memory pressure.
+Bash backgrounding (`nohup ... &`, `disown`) does NOT survive: detached processes are
+killed when the bash tool call returns. Do not rely on it for multi-minute jobs.
 
-**Reliable pattern: run the batch as a temporary console Workflow.**
-- `configureWorkflow({ name, command: "bash -lc 'cd … && node script.mjs'", outputType: "console", autoStart: true })`
-- Workflows are Replit-managed and run to completion independent of the bash tool.
-- Poll progress with `getWorkflowStatus({name, maxScrollbackLines})`; the script's own
-  stdout (progress lines) is visible there. State goes `running` → `finished` on exit.
-- `removeWorkflow({name})` when done. (Don't leave extra workflows around.)
+**Why:** the sandbox tears down child processes spawned by a shell command once that
+command completes; a detached node job died within seconds with no output.
 
-**Make the script resumable + chunk-safe regardless of mechanism:**
-- Cache every result to a JSON file (flush every ~20 items). On restart, skip cached ids.
-- Add an AbortController timeout to EVERY `fetch` (transcript AND LLM) — hung connections
-  with no timeout stall workers and tank throughput to ~0.
-- Support a `MAXSEC` env budget for the bash-chunk fallback, but the workflow path lets you
-  just run to completion.
+**Preferred approach — run as a temporary console workflow.** Workflows persist beyond
+a single tool call, so a multi-minute LLM/scrape pass can run to completion there while
+you poll its logs. Remove the temp workflow when done.
 
-**Why:** discovered the hard way — bash-chunking 2600 LLM-classified calls kept getting
-killed mid-run; the workflow ran the same script start-to-finish without intervention.
+**Fallback — resumable foreground batches.** If a workflow isn't convenient, make the
+script idempotent and run it in FOREGROUND chunks each under the ~120s shell timeout:
+- Persist expensive results to disk frequently (every N items), keyed by id; skip
+  already-done items on restart so re-runs are cheap.
+- Split phases (e.g. fetch/cache vs. compute) and cap per-invocation work via an env
+  var (batch size / phone limit); loop by re-issuing the command until done.
+- Wrap with `timeout <sec> env VAR=… node script` so the call returns cleanly before
+  the tool's own timeout, then re-invoke to continue.
 
-**How to apply:** any enrichment/scrape/LLM pass over hundreds+ rows → resumable cached
-script + temporary console workflow, not bash backgrounding.
-
-## AI Integrations OpenAI proxy throughput
-High concurrency against `${AI_INTEGRATIONS_OPENAI_BASE_URL}/chat/completions` causes a large
-fraction of calls to fail (rate-limited / aborted) if retries are stingy. At CONC=6 with
-2 retries × 20s, ~70% of a 2600-call batch came back unclassified; re-running at CONC=3 with
-5 retries × 45s dropped failures to ~3%. Rate at CONC=3 ≈ 0.6/s. **Trade concurrency for
-generous retry budget** on LLM classification passes; mark residual hard-fails for manual review.
-
-## OpenPhone transcript fetch quirk
-`GET /call-transcripts/{callId}` is fast serially (~150–300ms) but parallel requests can HANG
-(OpenPhone stalls the connection instead of returning a quick 429). Always pass an
-AbortController timeout so hung ones abort and retry instead of freezing a worker.
-Transcript shape: `data.dialogue[]` of `{identifier, content}`; identifier === the line's own
-E.164 number = the agent, anything else = the customer.
+**Regardless of approach:** add a resumable cache, per-request fetch timeouts + retry,
+and trade concurrency for retries when hitting the AI proxy / external APIs (429s).

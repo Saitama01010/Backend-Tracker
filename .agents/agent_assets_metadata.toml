@@ -12,3 +12,9 @@ id = "azQhpOPeepG5dVh0aBG_l"
 uri = "file://.local/Onboarding_Line_Report.xlsx"
 type = "table"
 title = "Onboarding Line Call Report (with Tax column)"
+
+[[outputs]]
+id = "05dbrd4MS4a8ar0_Uoi6H"
+uri = "file://attached_assets/May_Deals_1780695126872_Call_Analysis.xlsx"
+type = "table"
+title = "May Deals — Call Analysis Report"
