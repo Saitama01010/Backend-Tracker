@@ -380,12 +380,21 @@ function detectKeywordStatus(r: Row): "Retained" | "Cancelled" | null {
 const RETENTION_AGENTS_NORM_EARLY = new Set([
   "levi miller", "ahmed ayman-levi miller", "henry hart", "ryan henderson", "michael belfort",
   "jacob stephenson", "katherine adams", "talia morgan", "rick miller", "dean lewis", "haythem",
+  // Moved NSF → Retention (May 2026). Aliases cover her compound Discord-bot name.
+  "kayla navarro", "jana", "jana-kayla navarro-2718",
 ]);
 
 // Fetches old + new retention sheets AND the Discord-bot sheet (which Retention agents
 // can now also submit to) AND the IDP-Handled tab, merging them all together.
 // Agents who were temporarily on NSF but whose old NSF-sheet rows belong in the Retention panel.
 const RETENTION_TEMP_NSF_AGENTS = new Set(["talia morgan", "tuqa hossam"]);
+
+// NSF-origin agents who now sit on the Retention team (per roster) but whose
+// Discord-bot (gid=0) submissions are file FIXES, not retains. Their non-keyword
+// Discord rows default to "Fixed" (like the NSF panel) instead of "Retained".
+// Genuine retains still classify correctly: a retain/cancel keyword on the row,
+// the IDP-Handled tab, or the IDP-Cancel-Retained tab all override this default.
+const RETENTION_FIX_DEFAULT_AGENTS = new Set(["kayla navarro", "jana", "jana-kayla navarro-2718"]);
 
 async function fetchRetentionCombinedSheet(
   roster?: RosterIndex,
@@ -494,10 +503,17 @@ async function fetchRetentionCombinedSheet(
       derivedStatus = kw;
     } else {
       const fileStatus = (r["File Status"] ?? "").toLowerCase();
+      // NSF-origin retention agents (e.g. Kayla Navarro): their non-keyword
+      // Discord-bot submissions are fixes, so default to "Fixed" not "Retained".
+      const agentNorm = normalizeAgent(agentRaw);
+      const isFixDefault = RETENTION_FIX_DEFAULT_AGENTS.has(agentNorm)
+        || agentNorm.split("-").map(s => s.trim()).some(s => RETENTION_FIX_DEFAULT_AGENTS.has(s));
       derivedStatus = /cancel|revok/.test(fileStatus)
         ? "Cancelled"
         : /\bfixed\b|\bidp\b/.test(fileStatus)
         ? "IDP-Handled"
+        : isFixDefault
+        ? "Fixed"
         : "Retained";
     }
     rows.push({
@@ -867,8 +883,7 @@ const RETENTION_SHEET_NSF_AGENTS = new Set([
   "kevin micheal", "omar badr", "omar badr-kevin micheal-3140",
   "raymond reed", "yousef taher", "yousef taher-raymond reed-2977",
   // New agents — May 2026
-  "kayla navarro", "jana",
-  "jana-kayla navarro-2718",
+  // (Kayla Navarro / "jana" moved NSF → Retention; see RETENTION_AGENTS_NORM_EARLY.)
   "alex miller", "seif eslam",
   "tyler grant", "abdelrahman",
   "otto klein", "omar",
@@ -907,8 +922,7 @@ const NSF_AGENT_NAMES = new Set([
   "omar badr-kevin micheal-3140",
   "yousef taher-raymond reed-2977",
   // New agents — May 2026
-  "kayla navarro", "jana",
-  "jana-kayla navarro-2718",
+  // (Kayla Navarro / "jana" moved NSF → Retention; see RETENTION_AGENTS_NORM_EARLY.)
   "alex miller", "seif eslam",
   "tyler grant", "abdelrahman",
   "otto klein", "omar",

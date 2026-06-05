@@ -45,3 +45,26 @@ flag) or the split column undercounts.
 sets, so `includeInactive:true` does not make matching fully inclusive of every
 historical name. Changing that lives in the shared fetchers and would affect all
 tabs — don't "fix" it inside one consumer.
+
+**Per-loader default status differs by team (subtle):** the same Discord-bot
+(gid=0) row defaults to `Fixed` in the NSF/CS loader (`fetchNewSheetForTeam`,
+`kw ?? "Fixed"`) but to `Retained` in the Retention loader
+(`fetchRetentionCombinedSheet`). A genuine keyword (retain/cancel), the
+IDP-Handled tab, and the IDP-Cancel-Retained tab still override. So an NSF-style
+"fixer" agent who is moved onto the Retention team will have their plain fixes
+mis-bucketed as `Retained` unless special-cased.
+**Why:** Retention agents retain by default; NSF/CS agents fix by default.
+**How to apply:** when an agent does fix-work but is org'd under Retention (e.g.
+Kayla Navarro / "Jana-Kayla Navarro-2718"), add their aliases to
+`RETENTION_FIX_DEFAULT_AGENTS` so the Retention Discord default flips to `Fixed`.
+
+**Team-move requires removing from the OLD team's hardcoded set:**
+`rosterTeamMembers()` UNIONs hardcoded sets with roster (it never subtracts), and
+`rosterHasAnyForTeam` only bypasses hardcoded when the *whole team* has zero
+roster rows. So moving one agent to a new team in the roster does NOT remove them
+from the other team's hardcoded set — they double-count on both teams until you
+delete their name/aliases from the old set (`NSF_AGENT_NAMES`,
+`RETENTION_SHEET_NSF_AGENTS`, `RETENTION_SHEET_CS_AGENTS`, `CS_AGENT_NAMES`).
+**How to apply:** team reassignment = roster change + delete from old hardcoded
+set + (if they should appear regardless of dev roster) add to the new team's
+`*_NORM_EARLY` / name set.
