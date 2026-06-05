@@ -85,6 +85,7 @@ import {
   Tooltip as RTooltip,
   Legend as RLegend,
 } from "recharts";
+import { OnboardingPanel } from "./OnboardingPanel";
 
 const queryClient = new QueryClient();
 
@@ -108,6 +109,7 @@ const ALL_TABS: { value: string; label: string }[] = [
   { value: "callback-review", label: "CB Review" },
   { value: "violations",      label: "Violations" },
   { value: "qa",              label: "Retention QA" },
+  { value: "onboarding",      label: "Onboarding" },
 ];
 
 type TeamAccess = "retention" | "nsf" | "cs";
@@ -4268,6 +4270,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
       if (tab === "retention") return allTeams || ta === "retention";
       if (tab === "cs") return allTeams || ta === "cs";
       if (tab === "nsf") return allTeams || ta === "nsf";
+      if (tab === "onboarding") return allTeams;
       return false;
     };
     return (
@@ -8748,6 +8751,11 @@ function Dashboard() {
             {canSeeTab("qa") && (
               <TabsContent value="qa">
                 <QAPanel />
+              </TabsContent>
+            )}
+            {canSeeTab("onboarding") && (
+              <TabsContent value="onboarding">
+                <OnboardingPanel />
               </TabsContent>
             )}
           </Tabs>

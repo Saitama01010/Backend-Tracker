@@ -17,6 +17,7 @@ import breaksRouter from "./breaks";
 import teamAgentsRouter from "./teamAgents";
 import qaRouter, { startQaBackgroundProcessor } from "./qa";
 import obReportRouter from "./obReport";
+import obAnalyticsRouter from "./obAnalytics";
 
 const router: IRouter = Router();
 
@@ -37,6 +38,7 @@ router.use(csvProxyRouter);
 router.use(sheetsRouter);
 router.use(qaRouter);
 router.use(obReportRouter);
+router.use(obAnalyticsRouter);
 
 // Kick off background QA processor (evaluates new retention calls every 5 min).
 startQaBackgroundProcessor();
