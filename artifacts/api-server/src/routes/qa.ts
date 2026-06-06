@@ -1,4 +1,5 @@
 import { Router, type IRouter } from "express";
+import ExcelJS from "exceljs";
 import { db, phoneCallsTable, qaReviewsTable, managerQaTasksTable } from "@workspace/db";
 import { and, desc, eq, gte, lte, sql, isNull, inArray } from "drizzle-orm";
 import OpenAI from "openai";
@@ -458,6 +459,10 @@ function deptFilterArr(req: { query: Record<string, unknown> }): Department[] | 
   return map[d] ? [map[d]] : null;
 }
 
+// POSIX word-boundary regex matching "tax" or "taxes" (case-insensitive) inside a
+// transcript — used both for QA stats counts and the per-review export flag.
+const TAX_REGEX = String.raw`\ytax(es)?\y`;
+
 // ── Routes ──────────────────────────────────────────────────────────────────
 
 router.post("/qa/evaluate", requireAuth, requireRole("admin"), async (req, res) => {
@@ -525,10 +530,10 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
     const criticalFails = rows.filter((r) => r.criticalFail).length;
 
     // Per-department breakdown
-    const byDept: Record<string, { reviewed: number; avgScore: number; criticalFails: number; failed: number }> = {};
+    const byDept: Record<string, { reviewed: number; avgScore: number; criticalFails: number; failed: number; taxMentions: number }> = {};
     for (const r of rows) {
       const d = r.department || "Unknown";
-      if (!byDept[d]) byDept[d] = { reviewed: 0, avgScore: 0, criticalFails: 0, failed: 0 };
+      if (!byDept[d]) byDept[d] = { reviewed: 0, avgScore: 0, criticalFails: 0, failed: 0, taxMentions: 0 };
       byDept[d].reviewed++;
       byDept[d].avgScore += r.score;
       if (r.criticalFail) byDept[d].criticalFails++;
@@ -537,6 +542,25 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
     for (const d of Object.keys(byDept)) {
       const b = byDept[d];
       b.avgScore = b.reviewed ? Math.round(b.avgScore / b.reviewed) : 0;
+    }
+
+    // Tax mentions — count reviewed calls whose transcript mentions "tax"/"taxes",
+    // grouped by department (same date/dept filters as the rest of the stats).
+    const taxRows = await db
+      .select({
+        department: qaReviewsTable.department,
+        cnt: sql<number>`cast(count(*) filter (where ${qaReviewsTable.transcript} ~* ${TAX_REGEX}) as int)`,
+      })
+      .from(qaReviewsTable)
+      .where(and(...filters))
+      .groupBy(qaReviewsTable.department);
+    let taxMentions = 0;
+    for (const t of taxRows) {
+      const d = t.department || "Unknown";
+      const n = Number(t.cnt) || 0;
+      taxMentions += n;
+      if (!byDept[d]) byDept[d] = { reviewed: 0, avgScore: 0, criticalFails: 0, failed: 0, taxMentions: 0 };
+      byDept[d].taxMentions = n;
     }
 
     const taskFilters = [eq(managerQaTasksTable.status, "open")];
@@ -567,11 +591,114 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
       failed, criticalFails,
       pendingReviews: Number(pending) || 0,
       avgVariance,
+      taxMentions,
       byDept,
     });
   } catch (err) {
     req.log.error(err, "qa stats error");
     return res.status(500).json({ error: String(err) });
+  }
+});
+
+// GET /api/qa/download — Excel export of QA reviews (with a Mentions Tax flag).
+router.get("/qa/download", requireAuth, async (req, res) => {
+  try {
+    const from = req.query["from"] ? new Date(String(req.query["from"])) : new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    const to = req.query["to"] ? new Date(String(req.query["to"])) : new Date();
+    const depts = deptFilterArr(req);
+
+    const filters = [gte(qaReviewsTable.callDate, from), lte(qaReviewsTable.callDate, to)];
+    if (depts) filters.push(inArray(qaReviewsTable.department, depts));
+
+    const rows = await db
+      .select({
+        callDate: qaReviewsTable.callDate,
+        agentName: qaReviewsTable.agentName,
+        department: qaReviewsTable.department,
+        phoneNumber: qaReviewsTable.phoneNumber,
+        score: qaReviewsTable.score,
+        protocolScore: qaReviewsTable.protocolScore,
+        softSkillsScore: qaReviewsTable.softSkillsScore,
+        pass: qaReviewsTable.pass,
+        criticalFail: qaReviewsTable.criticalFail,
+        aiSummary: qaReviewsTable.aiSummary,
+        mentionsTax: sql<boolean>`(${qaReviewsTable.transcript} ~* ${TAX_REGEX})`,
+      })
+      .from(qaReviewsTable)
+      .where(and(...filters))
+      .orderBy(desc(qaReviewsTable.callDate));
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = "Backend Tracker";
+    wb.created = new Date();
+    const TZ = "America/Los_Angeles";
+    const solid = (argb: string): ExcelJS.Fill => ({ type: "pattern", pattern: "solid", fgColor: { argb } });
+
+    const ws = wb.addWorksheet("QA Reviews", {
+      views: [{ state: "frozen", ySplit: 4 }],
+      pageSetup: { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+    });
+    const headers = [
+      "Date (Los Angeles)", "Agent", "Department", "Customer Phone",
+      "Score", "Protocol", "Soft Skills", "Result", "Critical Fail", "Mentions Tax", "AI Summary",
+    ];
+    const widths = [22, 22, 14, 16, 8, 10, 11, 10, 12, 13, 60];
+    widths.forEach((w, i) => (ws.getColumn(i + 1).width = w));
+    const ncols = headers.length;
+
+    ws.mergeCells(1, 1, 1, ncols);
+    const titleCell = ws.getCell(1, 1);
+    titleCell.value = "QA Reviews — Tax Mentions Report";
+    titleCell.font = { bold: true, size: 16, color: { argb: "FF3B0764" } };
+    ws.mergeCells(2, 1, 2, ncols);
+    const taxCount = rows.filter((r) => r.mentionsTax).length;
+    ws.getCell(2, 1).value = `${rows.length} reviewed  •  ${taxCount} mention tax  •  Generated ${new Date().toLocaleString("en-US", { timeZone: TZ })} (LA)`;
+    ws.getCell(2, 1).font = { italic: true, size: 10, color: { argb: "FF666666" } };
+
+    const headerRow = ws.getRow(4);
+    headers.forEach((h, i) => {
+      const cell = headerRow.getCell(i + 1);
+      cell.value = h;
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = solid("FF6D28D9");
+      cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    });
+    headerRow.commit();
+
+    let r = 5;
+    for (const row of rows) {
+      const xr = ws.getRow(r);
+      xr.getCell(1).value = new Date(row.callDate).toLocaleString("en-US", { timeZone: TZ });
+      xr.getCell(2).value = row.agentName ?? "";
+      xr.getCell(3).value = row.department ?? "";
+      xr.getCell(4).value = row.phoneNumber ?? "";
+      xr.getCell(5).value = row.score ?? 0;
+      xr.getCell(6).value = row.protocolScore ?? 0;
+      xr.getCell(7).value = row.softSkillsScore ?? 0;
+      xr.getCell(8).value = row.pass ? "Pass" : "Fail";
+      xr.getCell(9).value = row.criticalFail ? "YES" : "";
+      const taxCell = xr.getCell(10);
+      taxCell.value = row.mentionsTax ? "YES" : "";
+      taxCell.alignment = { horizontal: "center" };
+      if (row.mentionsTax) {
+        taxCell.fill = solid("FFFEF3C7");
+        taxCell.font = { bold: true, color: { argb: "FF92400E" } };
+      }
+      xr.getCell(11).value = row.aiSummary ?? "";
+      xr.commit();
+      r++;
+    }
+    ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: Math.max(4, r - 1), column: ncols } };
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="QA_Reviews.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+    return;
+  } catch (err) {
+    req.log.error(err, "qa download error");
+    res.status(500).json({ error: String(err) });
+    return;
   }
 });
 

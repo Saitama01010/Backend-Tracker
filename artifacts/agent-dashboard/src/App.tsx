@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -69,6 +69,10 @@ import {
   Wrench,
   Layers,
   XCircle,
+  Receipt,
+  FileSpreadsheet,
+  Loader2,
+  ArrowLeftRight,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -6883,7 +6887,8 @@ function fmtHourLabel(h: number): string {
 interface QAStats {
   reviewed: number; avgScore: number; avgProtocol: number; avgSoftSkills: number;
   failed: number; criticalFails: number; pendingReviews: number; avgVariance: number;
-  byDept: Record<string, { reviewed: number; avgScore: number; criticalFails: number; failed: number }>;
+  taxMentions: number;
+  byDept: Record<string, { reviewed: number; avgScore: number; criticalFails: number; failed: number; taxMentions: number }>;
 }
 interface QAReview {
   id: string; agentName: string; phoneNumber: string | null; callDate: string;
@@ -6902,6 +6907,197 @@ interface QATask {
   resolvedBy: string | null; resolvedAt: string | null; notes: string | null;
 }
 type QADept = "all" | "Retention" | "CS" | "NSF";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inbound Live Transfers (Aspire / Resync partner warm-transfers)
+// ─────────────────────────────────────────────────────────────────────────────
+type LTGran = "all" | "month" | "day";
+interface LTStatus {
+  running: boolean;
+  lastRunAt: string | null;
+  progressDone: number;
+  progressTotal: number;
+  totalIncoming: number;
+  totalLive: number;
+  aspire: number;
+  resync: number;
+  unspecified: number;
+}
+
+function ltLaToday(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+function ltLastDayOfMonth(ym: string): string {
+  const [y, m] = ym.split("-").map(Number);
+  const d = new Date(y!, m!, 0).getDate();
+  return `${ym}-${String(d).padStart(2, "0")}`;
+}
+
+function LiveTransfersCard() {
+  const { token } = useUser();
+  const today = ltLaToday();
+  const thisMonth = today.slice(0, 7);
+  const [gran, setGran] = useState<LTGran>("all");
+  const [month, setMonth] = useState(thisMonth);
+  const [day, setDay] = useState(today);
+  const [downloading, setDownloading] = useState(false);
+
+  const { from, to } = useMemo(() => {
+    if (gran === "month") return { from: `${month}-01`, to: ltLastDayOfMonth(month) };
+    if (gran === "day") return { from: day, to: day };
+    return { from: "", to: "" };
+  }, [gran, month, day]);
+  const qs = from && to ? `?from=${from}&to=${to}` : "";
+
+  const { data: status, refetch } = useQuery<LTStatus>({
+    queryKey: ["liveTransfersStatus", from, to, token],
+    queryFn: async () => {
+      const res = await fetch(`/api/live-transfers/status${qs}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json() as Promise<LTStatus>;
+    },
+    refetchInterval: (q) => (q.state.data?.running ? 3000 : false),
+    refetchOnWindowFocus: false,
+  });
+
+  const refreshMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/live-transfers/refresh`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok && res.status !== 409) throw new Error(`HTTP ${res.status}`);
+      return res.json().catch(() => ({}));
+    },
+    onSuccess: () => setTimeout(() => refetch(), 800),
+  });
+
+  const download = async () => {
+    setDownloading(true);
+    try {
+      const res = await fetch(`/api/live-transfers/download${qs}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const tag = gran === "all" ? "AllTime" : gran === "month" ? month : day;
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Live_Transfers_${tag}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const running = status?.running ?? refreshMutation.isPending;
+  const lastRun = status?.lastRunAt
+    ? new Date(status.lastRunAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : null;
+  const progressPct =
+    running && status && status.progressTotal > 0
+      ? Math.round((status.progressDone / status.progressTotal) * 100)
+      : 0;
+  const rangeLabel =
+    gran === "all"
+      ? "All time"
+      : gran === "month"
+        ? new Date(`${month}-01`).toLocaleDateString([], { month: "long", year: "numeric" })
+        : new Date(`${day}T00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+
+  return (
+    <div className="rounded-xl border border-violet-700/30 bg-gradient-to-br from-violet-950/40 to-fuchsia-950/20 backdrop-blur p-5 space-y-4">
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <ArrowLeftRight className="h-5 w-5 text-violet-300" />
+            Inbound Live Transfers
+          </h2>
+          <div className="flex items-center gap-2 text-sm text-zinc-400 flex-wrap">
+            <span>Aspire vs Resync partner transfers · {rangeLabel}</span>
+            <span className="flex items-center gap-1 text-violet-300/80">
+              <Sparkles className="h-3 w-3" />
+              AI-classified from call transcripts
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="inline-flex rounded-lg border border-white/10 overflow-hidden">
+            {(["all", "month", "day"] as LTGran[]).map((g) => (
+              <button
+                key={g}
+                onClick={() => setGran(g)}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${gran === g ? "bg-violet-600 text-white" : "bg-transparent text-zinc-400 hover:bg-white/5"}`}
+              >
+                {g === "all" ? "All Time" : g === "month" ? "Monthly" : "Per Day"}
+              </button>
+            ))}
+          </div>
+          {gran === "month" && (
+            <input type="month" value={month} max={thisMonth} onChange={(e) => setMonth(e.target.value)}
+              className="rounded-md border border-white/10 bg-zinc-900/70 px-2 py-1.5 text-xs" />
+          )}
+          {gran === "day" && (
+            <input type="date" value={day} max={today} onChange={(e) => setDay(e.target.value)}
+              className="rounded-md border border-white/10 bg-zinc-900/70 px-2 py-1.5 text-xs" />
+          )}
+          <Button size="sm" variant="outline" onClick={() => refreshMutation.mutate()} disabled={running}>
+            {running
+              ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Refreshing…</>
+              : <><RefreshCw className="h-4 w-4 mr-1" />Refresh</>}
+          </Button>
+          <Button size="sm" onClick={download} disabled={downloading || !status || status.totalLive === 0}>
+            {downloading
+              ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Preparing…</>
+              : <><Download className="h-4 w-4 mr-1" />Download Excel</>}
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-violet-500/15 to-violet-500/5 border-violet-500/30 text-violet-200">
+          <div className="flex items-center gap-1.5 text-xs opacity-80"><ArrowLeftRight className="h-3.5 w-3.5" />Total Live Transfers</div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.totalLive ?? 0).toLocaleString()}</div>
+          <div className="text-xs opacity-70 mt-0.5">of {(status?.totalIncoming ?? 0).toLocaleString()} inbound considered</div>
+        </div>
+        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-sky-500/15 to-sky-500/5 border-sky-500/30 text-sky-200">
+          <div className="flex items-center gap-1.5 text-xs opacity-80"><PhoneIncoming className="h-3.5 w-3.5" />Aspire</div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.aspire ?? 0).toLocaleString()}</div>
+        </div>
+        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-emerald-500/15 to-emerald-500/5 border-emerald-500/30 text-emerald-200">
+          <div className="flex items-center gap-1.5 text-xs opacity-80"><PhoneIncoming className="h-3.5 w-3.5" />Resync</div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.resync ?? 0).toLocaleString()}</div>
+        </div>
+        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-zinc-500/15 to-zinc-500/5 border-zinc-500/30 text-zinc-300">
+          <div className="flex items-center gap-1.5 text-xs opacity-80"><Info className="h-3.5 w-3.5" />Unspecified</div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.unspecified ?? 0).toLocaleString()}</div>
+        </div>
+      </div>
+
+      {running && status && status.progressTotal > 0 && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs text-zinc-400">
+            <span>Classifying new transcripts…</span>
+            <span className="tabular-nums">{status.progressDone}/{status.progressTotal} ({progressPct}%)</span>
+          </div>
+          <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
+            <div className="h-full bg-violet-500 transition-all" style={{ width: `${progressPct}%` }} />
+          </div>
+        </div>
+      )}
+      {lastRun && !running && (
+        <div className="text-xs text-emerald-400 flex items-center gap-1">
+          <CheckCircle2 className="h-3 w-3" />
+          Last classified {lastRun}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function QAPanel() {
   const { token, user } = useUser();
@@ -6981,11 +7177,34 @@ function QAPanel() {
     void qc.invalidateQueries({ queryKey: ["qa-stats"] });
   }, [token, user.username, qc]);
 
+  const [downloadingQa, setDownloadingQa] = useState(false);
+  const downloadQa = useCallback(async () => {
+    setDownloadingQa(true);
+    try {
+      const res = await fetch(`/api/qa/download?from=${range.fromISO}&to=${range.toISO}${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `QA_Reviews_${dept === "all" ? "AllDepts" : dept}_${from}_to_${to}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } finally {
+      setDownloadingQa(false);
+    }
+  }, [token, range.fromISO, range.toISO, deptParam, dept, from, to]);
+
   const reviewRows = reviews.data?.reviews ?? [];
   const taskRows = tasks.data?.tasks ?? [];
 
   return (
     <div className="space-y-4">
+      {/* Inbound Live Transfers (Aspire / Resync) */}
+      <LiveTransfersCard />
+
       {/* Header */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex items-center gap-1.5">
@@ -7007,14 +7226,21 @@ function QAPanel() {
             </button>
           ))}
         </div>
-        <Button onClick={runProcessor} disabled={processing} size="sm" className="ml-auto bg-violet-600 hover:bg-violet-500">
-          <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${processing ? "animate-spin" : ""}`} />
-          {processing ? "Evaluating…" : "Run QA now"}
-        </Button>
+        <div className="ml-auto flex items-center gap-2">
+          <Button onClick={downloadQa} disabled={downloadingQa || !stats.data || stats.data.reviewed === 0} size="sm" variant="outline">
+            {downloadingQa
+              ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Preparing…</>
+              : <><Download className="h-3.5 w-3.5 mr-1.5" />Export Excel</>}
+          </Button>
+          <Button onClick={runProcessor} disabled={processing} size="sm" className="bg-violet-600 hover:bg-violet-500">
+            <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${processing ? "animate-spin" : ""}`} />
+            {processing ? "Evaluating…" : "Run QA now"}
+          </Button>
+        </div>
       </div>
 
       {/* Stat tiles */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
         <QATile label="Reviewed" value={stats.data?.reviewed ?? 0} />
         <QATile label="Avg score" value={`${stats.data?.avgScore ?? 0}/100`} accent={stats.data && stats.data.avgScore >= 80 ? "good" : "warn"} />
         <QATile label="Protocol %" value={`${stats.data?.avgProtocol ?? 0}`} accent={stats.data && stats.data.avgProtocol >= 70 ? "good" : "bad"} />
@@ -7022,19 +7248,23 @@ function QAPanel() {
         <QATile label="Failed" value={stats.data?.failed ?? 0} accent={stats.data && stats.data.failed > 0 ? "bad" : undefined} />
         <QATile label="Critical fails" value={stats.data?.criticalFails ?? 0} accent={stats.data && stats.data.criticalFails > 0 ? "bad" : undefined} />
         <QATile label="Manager queue" value={stats.data?.pendingReviews ?? 0} accent={stats.data && stats.data.pendingReviews > 0 ? "warn" : undefined} />
+        <QATile label="Mention Tax" value={stats.data?.taxMentions ?? 0} accent={stats.data && stats.data.taxMentions > 0 ? "warn" : undefined} />
       </div>
 
       {/* Per-department breakdown */}
       {stats.data?.byDept && Object.keys(stats.data.byDept).length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           {(["Retention", "CS", "NSF"] as const).map((d) => {
-            const b = stats.data!.byDept[d] ?? { reviewed: 0, avgScore: 0, criticalFails: 0, failed: 0 };
+            const b = stats.data!.byDept[d] ?? { reviewed: 0, avgScore: 0, criticalFails: 0, failed: 0, taxMentions: 0 };
             return (
               <Card key={d} className="bg-zinc-950/40 border-zinc-800/60">
                 <CardContent className="p-3 flex items-center justify-between">
                   <div>
                     <div className="text-[11px] uppercase tracking-wide text-zinc-500">{d}</div>
                     <div className="text-lg font-semibold text-zinc-100">{b.reviewed} reviewed · avg {b.avgScore}</div>
+                    <div className="text-xs text-amber-300/90 flex items-center gap-1 mt-0.5">
+                      <Receipt className="h-3 w-3" />{b.taxMentions} mention tax
+                    </div>
                   </div>
                   <div className="text-right text-xs">
                     <div className={b.criticalFails > 0 ? "text-rose-400" : "text-zinc-500"}>{b.criticalFails} crit</div>

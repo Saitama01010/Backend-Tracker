@@ -7,3 +7,4 @@
 - [Onboarding ring-group line](onboarding-ring-group.md) — onboarding line rings all agents; OpenPhone dumps all missed inbound on one overflow account, so per-agent response rate is degenerate — rank by workload, not response rate.
 - [OpenPhone sync scoping](openphone-sync-scoping.md) — /conversations can't filter by line so scoped syncs still page all convos; derive job `running` from in-memory flag, not DB.
 - [Long batch jobs](long-batch-jobs.md) — run multi-min LLM/scrape passes as a temp console workflow (bash backgrounding gets killed); resumable cache + fetch timeouts; trade concurrency for retries on the AI proxy.
+- [Live transfers classification](live-transfers-classification.md) — Aspire/Resync keyword is only a pre-filter; AI `isTransfer` sets `isLive` (keyword-only doubles false positives); reclassify needs row DELETE.
