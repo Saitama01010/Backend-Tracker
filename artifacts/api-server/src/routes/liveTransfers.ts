@@ -25,6 +25,50 @@ const CONCURRENCY = Number(process.env["LT_CONC"] ?? 4);
 
 const ASPIRE_RE = /\baspire\b/i;
 const RESYNC_RE = /re-?sync/i;
+const CLARITY_RE = /\bclarity\b/i;
+const CONCORDIA_RE = /\bconcordia\b/i;
+const PARTNER_NAMES = ["Aspire", "Resync", "Clarity", "Concordia"];
+// Recall-only pre-filter for INTERNAL transfers (one of our own departments
+// handing the client to this team). The AI confirms; this just decides whether
+// a transcript is worth an AI call so we don't classify every single call.
+const TRANSFER_INTENT_RE =
+  /\btransfer|hand(?:ing)?\s+(?:you|them|him|her|it)\s+(?:over|off)|get(?:ting)?\s+you\s+(?:over\s+)?to|i(?:'?ve| have)?\s+(?:have\s+)?got?\s+a\s+(?:client|customer|member)|my\s+(?:colleague|co-?worker)|\b(?:nsf|retention|onboarding|billing|customer\s+service)\b|over\s+to\s+(?:retention|onboarding|cs|customer\s+service|billing)/i;
+
+// When the AI doesn't name the partner company, fall back to an unambiguous
+// single keyword hit.
+function keywordPartner(flags: { aspire: boolean; resync: boolean; clarity: boolean; concordia: boolean }): string {
+  const hits: string[] = [];
+  if (flags.aspire) hits.push("Aspire");
+  if (flags.resync) hits.push("Resync");
+  if (flags.clarity) hits.push("Clarity");
+  if (flags.concordia) hits.push("Concordia");
+  return hits.length === 1 ? hits[0]! : "";
+}
+
+// Canonicalize internal department names so casing/wording variants
+// ("Account services" vs "Account Services", "lending") don't split into
+// separate buckets in the breakdown.
+const DEPT_CANON: Record<string, string> = {
+  cs: "CS",
+  "customer service": "CS",
+  "customer care": "Client Care",
+  "client care": "Client Care",
+  nsf: "NSF",
+  onboarding: "Onboarding",
+  retention: "Retention",
+  billing: "Billing",
+  compliance: "Compliance",
+  lending: "Lending",
+  sales: "Sales",
+  "account services": "Account Services",
+  other: "Other",
+};
+function normalizeDept(raw: string): string {
+  const base = raw.trim().toLowerCase().replace(/\s+(team|department|dept\.?|division)$/i, "").trim();
+  if (!base) return "Other";
+  if (DEPT_CANON[base]) return DEPT_CANON[base]!;
+  return base.replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 // A call is in scope if it's on the onboarding line OR a retention/cs team line.
 function scopeFilter() {
@@ -125,18 +169,25 @@ function aiClient(): OpenAI {
   });
 }
 
-const SYS_PROMPT = `You analyze the OPENING of an INCOMING phone call to a debt-relief company.
-On these calls a partner-company representative (from "Aspire" or "Resync", sometimes said "re-sync") warm-transfers a client to us (usually because the client wants to cancel or has an issue). The rep typically introduces themselves by name and company, e.g. "Hi, this is Marcus with Aspire, I have a client for you".
+const SYS_PROMPT = `You analyze the OPENING of an INCOMING phone call to a debt-relief company. Classify whether the call is a warm-transfer (someone handing a client off to this team), and if so, what KIND.
+
+Two kinds of transfer:
+1. PARTNER — a representative from an EXTERNAL partner company warm-transfers a client to us. The partner companies are "Aspire", "Resync" (sometimes said "re-sync"), "Clarity", and "Concordia". e.g. "Hi, this is Marcus with Aspire, I have a client for you".
+2. INTERNAL — one of OUR OWN departments/agents hands the client to this team. Internal departments include Customer Service ("CS"), "NSF", "Retention", "Onboarding", "Billing", "Sales". e.g. "Hey, it's Sarah from the NSF team, I've got a customer who needs...".
+
+If the caller is the client themselves, a company name is only mentioned in passing, or it is any other kind of call, it is NOT a transfer.
+
 Return STRICT JSON only:
 {
-  "isTransfer": boolean,                    // true ONLY if the opening clearly shows a rep from Aspire or Resync warm-transferring/handing off a client to us; false if the company name is merely mentioned in passing, the caller is the client themselves, or it is any other kind of call
-  "company": "Aspire" | "Resync" | "",   // which partner company the rep is from; "" if not clearly stated
-  "agent": string,                         // the transferring partner rep's name as introduced; "" if none stated
-  "evidence": string                       // <= 18 words: the intro line / why this is (or isn't) a partner transfer
+  "kind": "partner" | "internal" | "none",
+  "company": string,   // for partner: one of "Aspire","Resync","Clarity","Concordia" (or "" if a partner transfer but company unclear); for internal: the department that transferred, e.g. "CS","NSF","Retention","Onboarding","Billing" ("" if unclear); "" when kind is "none"
+  "agent": string,     // the transferring rep/agent's name as introduced; "" if none stated
+  "evidence": string   // <= 18 words: the intro line / why this is (or isn't) a transfer
 }`;
 
+type TransferKind = "partner" | "internal" | "none";
 interface ExtractResult {
-  isTransfer: boolean;
+  kind: TransferKind;
   company: string;
   agent: string;
   evidence: string;
@@ -248,15 +299,23 @@ async function runClassifier(): Promise<void> {
               .onConflictDoNothing();
           } else {
             const text = dialogueText(tx.dialogue);
-            const aspire = ASPIRE_RE.test(text);
-            const resync = RESYNC_RE.test(text);
-            const isLive = aspire || resync;
-            if (!isLive) {
+            const flags = {
+              aspire: ASPIRE_RE.test(text),
+              resync: RESYNC_RE.test(text),
+              clarity: CLARITY_RE.test(text),
+              concordia: CONCORDIA_RE.test(text),
+            };
+            const partnerHit = flags.aspire || flags.resync || flags.clarity || flags.concordia;
+            const intentHit = TRANSFER_INTENT_RE.test(text);
+            // Cheap pre-filter (partner name OR internal transfer intent). The AI
+            // decides the actual kind so the keyword match never alone sets isLive.
+            if (!partnerHit && !intentHit) {
               await db
                 .insert(liveTransferClassificationsTable)
                 .values({
                   callId: call.id,
                   isLive: false,
+                  kind: null,
                   company: null,
                   agent: null,
                   evidence: null,
@@ -264,19 +323,18 @@ async function runClassifier(): Promise<void> {
                 })
                 .onConflictDoNothing();
             } else {
-              // Keyword match is only a cheap pre-filter; the AI decides whether
-              // this is actually a partner warm-transfer (isTransfer).
               const opening = tx.dialogue.slice(0, 26);
               const res = await extract(ai, dialogueText(opening));
               if (res === null) {
                 // AI failed — leave unclassified so the next run retries.
                 logger.warn({ callId: call.id }, "liveTransfers: AI extract failed, will retry");
-              } else if (!res.isTransfer) {
+              } else if (res.kind !== "partner" && res.kind !== "internal") {
                 await db
                   .insert(liveTransferClassificationsTable)
                   .values({
                     callId: call.id,
                     isLive: false,
+                    kind: null,
                     company: null,
                     agent: null,
                     evidence: res.evidence?.trim() || null,
@@ -284,14 +342,20 @@ async function runClassifier(): Promise<void> {
                   })
                   .onConflictDoNothing();
               } else {
-                // Prefer AI company; fall back to unambiguous keyword.
-                let company = aspire && !resync ? "Aspire" : resync && !aspire ? "Resync" : "";
-                if (res.company === "Aspire" || res.company === "Resync") company = res.company;
+                let company: string;
+                if (res.kind === "partner") {
+                  // Prefer AI company; fall back to an unambiguous keyword hit.
+                  company = PARTNER_NAMES.includes(res.company) ? res.company : keywordPartner(flags);
+                } else {
+                  // Internal: the AI names the source department; canonicalize it.
+                  company = normalizeDept(res.company ?? "");
+                }
                 await db
                   .insert(liveTransferClassificationsTable)
                   .values({
                     callId: call.id,
                     isLive: true,
+                    kind: res.kind,
                     company: company || null,
                     agent: res.agent?.trim() || null,
                     evidence: res.evidence?.trim() || null,
@@ -333,6 +397,7 @@ interface LiveRow {
   dateLa: string;
   customerPhone: string;
   line: string;
+  kind: string;
   company: string;
   agent: string;
   evidence: string;
@@ -352,6 +417,7 @@ async function loadLiveRows(from?: string, to?: string): Promise<LiveRow[]> {
       agentName: phoneCallsTable.agentName,
       durationSeconds: phoneCallsTable.durationSeconds,
       createdAt: phoneCallsTable.createdAt,
+      kind: liveTransferClassificationsTable.kind,
       company: liveTransferClassificationsTable.company,
       agent: liveTransferClassificationsTable.agent,
       evidence: liveTransferClassificationsTable.evidence,
@@ -374,6 +440,7 @@ async function loadLiveRows(from?: string, to?: string): Promise<LiveRow[]> {
     dateLa: new Date(c.createdAt).toLocaleString("en-US", { timeZone: TZ }),
     customerPhone: c.participant ?? "",
     line: c.lineName ?? "",
+    kind: c.kind === "internal" ? "Internal" : "Partner",
     company: c.company ?? "",
     agent: c.agent ?? "",
     evidence: c.evidence ?? "",
@@ -409,27 +476,45 @@ router.get("/live-transfers/status", requireAuth, async (req, res) => {
         ),
       );
 
-    // Live transfers, split by company.
-    const byCompany = await db
+    // Live transfers, split by kind + company/department.
+    const byKindCompany = await db
       .select({
+        kind: liveTransferClassificationsTable.kind,
         company: liveTransferClassificationsTable.company,
         cnt: sql<number>`cast(count(*) as int)`,
       })
       .from(liveTransferClassificationsTable)
       .innerJoin(phoneCallsTable, eq(phoneCallsTable.id, liveTransferClassificationsTable.callId))
       .where(and(eq(liveTransferClassificationsTable.isLive, true), inRange))
-      .groupBy(liveTransferClassificationsTable.company);
+      .groupBy(liveTransferClassificationsTable.kind, liveTransferClassificationsTable.company);
 
     let aspire = 0;
     let resync = 0;
-    let unspecified = 0;
-    for (const r of byCompany) {
+    let clarity = 0;
+    let concordia = 0;
+    let unspecified = 0; // partner transfer with no clear company
+    let internalTotal = 0;
+    const internalMap = new Map<string, number>();
+    for (const r of byKindCompany) {
       const n = Number(r.cnt) || 0;
-      if (r.company === "Aspire") aspire += n;
-      else if (r.company === "Resync") resync += n;
-      else unspecified += n;
+      if (r.kind === "internal") {
+        const dept = r.company || "Other";
+        internalMap.set(dept, (internalMap.get(dept) ?? 0) + n);
+        internalTotal += n;
+      } else {
+        // partner (or legacy null kind, treated as partner)
+        if (r.company === "Aspire") aspire += n;
+        else if (r.company === "Resync") resync += n;
+        else if (r.company === "Clarity") clarity += n;
+        else if (r.company === "Concordia") concordia += n;
+        else unspecified += n;
+      }
     }
-    const totalLive = aspire + resync + unspecified;
+    const partnerTotal = aspire + resync + clarity + concordia + unspecified;
+    const internalByDept = [...internalMap.entries()]
+      .map(([dept, count]) => ({ dept, count }))
+      .sort((a, b) => b.count - a.count);
+    const totalLive = partnerTotal + internalTotal;
 
     const st = await readState();
     return res.json({
@@ -439,9 +524,14 @@ router.get("/live-transfers/status", requireAuth, async (req, res) => {
       progressTotal: st?.progressTotal ?? 0,
       totalIncoming: Number(totalIncoming) || 0,
       totalLive,
+      partnerTotal,
       aspire,
       resync,
+      clarity,
+      concordia,
       unspecified,
+      internalTotal,
+      internalByDept,
     });
   } catch (err) {
     req.log.error(err, "live-transfers status error");
@@ -501,20 +591,21 @@ async function buildWorkbook(rows: LiveRow[]): Promise<ExcelJS.Workbook> {
     "Date (Los Angeles)",
     "Customer Phone",
     "Line",
-    "Transferred From (Company)",
+    "Type",
+    "Transferred From (Company / Dept)",
     "Transferred By (Agent)",
     "Evidence",
     "Handling Agent (our system)",
     "Duration (min)",
     "Call ID",
   ];
-  const widths = [22, 16, 22, 22, 22, 44, 24, 13, 36];
+  const widths = [22, 16, 22, 12, 26, 22, 44, 24, 13, 36];
   widths.forEach((w, i) => (ws.getColumn(i + 1).width = w));
 
   const ncols = headers.length;
   ws.mergeCells(1, 1, 1, ncols);
   const titleCell = ws.getCell(1, 1);
-  titleCell.value = "Inbound Live Transfers — Aspire / Resync";
+  titleCell.value = "Inbound Live Transfers — Partner & Internal";
   titleCell.font = { bold: true, size: 16, color: { argb: "FF3B0764" } };
 
   ws.mergeCells(2, 1, 2, ncols);
@@ -537,10 +628,14 @@ async function buildWorkbook(rows: LiveRow[]): Promise<ExcelJS.Workbook> {
   const companyFill: Record<string, ExcelJS.Fill> = {
     Aspire: solid("FFDBEAFE"),
     Resync: solid("FFDCFCE7"),
+    Clarity: solid("FFFEF9C3"),
+    Concordia: solid("FFFCE7F3"),
   };
   const companyFont: Record<string, Partial<ExcelJS.Font>> = {
     Aspire: { bold: true, color: { argb: "FF1E40AF" } },
     Resync: { bold: true, color: { argb: "FF166534" } },
+    Clarity: { bold: true, color: { argb: "FF854D0E" } },
+    Concordia: { bold: true, color: { argb: "FF9D174D" } },
   };
 
   let r = 5;
@@ -549,22 +644,31 @@ async function buildWorkbook(rows: LiveRow[]): Promise<ExcelJS.Workbook> {
     xr.getCell(1).value = row.dateLa;
     xr.getCell(2).value = row.customerPhone;
     xr.getCell(3).value = row.line;
-    const compCell = xr.getCell(4);
+    const kindCell = xr.getCell(4);
+    kindCell.value = row.kind;
+    kindCell.alignment = { horizontal: "center", vertical: "middle" };
+    kindCell.font =
+      row.kind === "Internal"
+        ? { bold: true, color: { argb: "FF7C3AED" } }
+        : { bold: true, color: { argb: "FF0F766E" } };
+    const compCell = xr.getCell(5);
     compCell.value = row.company || "—";
     compCell.alignment = { horizontal: "center", vertical: "middle" };
-    if (row.company && companyFill[row.company]) {
+    if (row.kind === "Partner" && row.company && companyFill[row.company]) {
       compCell.fill = companyFill[row.company]!;
       compCell.font = companyFont[row.company]!;
+    } else if (row.company) {
+      compCell.font = { color: { argb: "FF374151" } };
     } else {
       compCell.font = { color: { argb: "FF9CA3AF" } };
     }
-    xr.getCell(5).value = row.agent;
-    xr.getCell(6).value = row.evidence;
-    xr.getCell(7).value = row.handlingAgent;
-    const durCell = xr.getCell(8);
+    xr.getCell(6).value = row.agent;
+    xr.getCell(7).value = row.evidence;
+    xr.getCell(8).value = row.handlingAgent;
+    const durCell = xr.getCell(9);
     durCell.value = row.durationMin;
     durCell.numFmt = "0.0";
-    xr.getCell(9).value = row.callId;
+    xr.getCell(10).value = row.callId;
     for (let c = 1; c <= ncols; c++) xr.getCell(c).border = thinBorder();
     xr.commit();
     r++;
@@ -576,36 +680,71 @@ async function buildWorkbook(rows: LiveRow[]): Promise<ExcelJS.Workbook> {
   const s = wb.addWorksheet("Summary");
   s.getColumn(1).width = 34;
   s.getColumn(2).width = 16;
-  const byCompany: Record<string, number> = {};
+
+  // Partner companies (fixed order, always shown) + internal departments (dynamic).
+  const partnerCounts: Record<string, number> = {};
+  const internalCounts: Record<string, number> = {};
+  let partnerTotal = 0;
+  let internalTotal = 0;
   for (const row of rows) {
-    const key = row.company || "(unspecified)";
-    byCompany[key] = (byCompany[key] ?? 0) + 1;
+    if (row.kind === "Internal") {
+      const key = row.company || "Other";
+      internalCounts[key] = (internalCounts[key] ?? 0) + 1;
+      internalTotal++;
+    } else {
+      const key = row.company || "(unspecified)";
+      partnerCounts[key] = (partnerCounts[key] ?? 0) + 1;
+      partnerTotal++;
+    }
   }
+
   let sr = 1;
   const title = s.getCell(sr, 1);
   title.value = "Live Transfers — Summary";
   title.font = { bold: true, size: 14, color: { argb: "FF3B0764" } };
   sr += 2;
-  for (const [a, b] of [["Transferred From", "Count"]] as const) {
-    s.getCell(sr, 1).value = a;
-    s.getCell(sr, 2).value = b;
+
+  const sectionHeader = (label: string) => {
+    s.getCell(sr, 1).value = label;
+    s.getCell(sr, 2).value = "Count";
     s.getCell(sr, 1).font = { bold: true, color: { argb: "FFFFFFFF" } };
     s.getCell(sr, 2).font = { bold: true, color: { argb: "FFFFFFFF" } };
     s.getCell(sr, 1).fill = solid("FF6D28D9");
     s.getCell(sr, 2).fill = solid("FF6D28D9");
     sr++;
-  }
-  for (const key of ["Aspire", "Resync", "(unspecified)"]) {
-    s.getCell(sr, 1).value = key;
-    s.getCell(sr, 2).value = byCompany[key] ?? 0;
+  };
+  const dataRow = (label: string, n: number) => {
+    s.getCell(sr, 1).value = label;
+    s.getCell(sr, 2).value = n;
     s.getCell(sr, 2).alignment = { horizontal: "right" };
     sr++;
+  };
+  const totalRow = (label: string, n: number) => {
+    s.getCell(sr, 1).value = label;
+    s.getCell(sr, 1).font = { bold: true };
+    s.getCell(sr, 2).value = n;
+    s.getCell(sr, 2).font = { bold: true };
+    s.getCell(sr, 2).alignment = { horizontal: "right" };
+    sr++;
+  };
+
+  sectionHeader("Partner — Transferred From");
+  for (const key of ["Aspire", "Resync", "Clarity", "Concordia", "(unspecified)"]) {
+    dataRow(key, partnerCounts[key] ?? 0);
   }
-  s.getCell(sr, 1).value = "TOTAL";
-  s.getCell(sr, 1).font = { bold: true };
-  s.getCell(sr, 2).value = rows.length;
-  s.getCell(sr, 2).font = { bold: true };
-  s.getCell(sr, 2).alignment = { horizontal: "right" };
+  totalRow("Partner Total", partnerTotal);
+  sr++;
+
+  sectionHeader("Internal — Transferred By (Dept)");
+  const internalKeys = Object.keys(internalCounts).sort(
+    (a, b) => (internalCounts[b] ?? 0) - (internalCounts[a] ?? 0),
+  );
+  if (internalKeys.length === 0) dataRow("(none)", 0);
+  for (const key of internalKeys) dataRow(key, internalCounts[key] ?? 0);
+  totalRow("Internal Total", internalTotal);
+  sr++;
+
+  totalRow("TOTAL LIVE TRANSFERS", rows.length);
 
   return wb;
 }

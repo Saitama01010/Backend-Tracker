@@ -6909,7 +6909,7 @@ interface QATask {
 type QADept = "all" | "Retention" | "CS" | "NSF";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Inbound Live Transfers (Aspire / Resync partner warm-transfers)
+// Inbound Live Transfers (partner warm-transfers + internal team transfers)
 // ─────────────────────────────────────────────────────────────────────────────
 type LTGran = "all" | "month" | "day";
 interface LTStatus {
@@ -6919,9 +6919,14 @@ interface LTStatus {
   progressTotal: number;
   totalIncoming: number;
   totalLive: number;
+  partnerTotal: number;
   aspire: number;
   resync: number;
+  clarity: number;
+  concordia: number;
   unspecified: number;
+  internalTotal: number;
+  internalByDept: { dept: string; count: number }[];
 }
 
 function ltLaToday(): string {
@@ -7018,7 +7023,7 @@ function LiveTransfersCard() {
             Inbound Live Transfers
           </h2>
           <div className="flex items-center gap-2 text-sm text-zinc-400 flex-wrap">
-            <span>Aspire vs Resync partner transfers · {rangeLabel}</span>
+            <span>Partner (Aspire · Resync · Clarity · Concordia) + internal team transfers · {rangeLabel}</span>
             <span className="flex items-center gap-1 text-violet-300/80">
               <Sparkles className="h-3 w-3" />
               AI-classified from call transcripts
@@ -7058,24 +7063,62 @@ function LiveTransfersCard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         <div className="rounded-xl border bg-gradient-to-br p-3.5 from-violet-500/15 to-violet-500/5 border-violet-500/30 text-violet-200">
           <div className="flex items-center gap-1.5 text-xs opacity-80"><ArrowLeftRight className="h-3.5 w-3.5" />Total Live Transfers</div>
           <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.totalLive ?? 0).toLocaleString()}</div>
           <div className="text-xs opacity-70 mt-0.5">of {(status?.totalIncoming ?? 0).toLocaleString()} inbound considered</div>
         </div>
-        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-sky-500/15 to-sky-500/5 border-sky-500/30 text-sky-200">
-          <div className="flex items-center gap-1.5 text-xs opacity-80"><PhoneIncoming className="h-3.5 w-3.5" />Aspire</div>
-          <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.aspire ?? 0).toLocaleString()}</div>
+        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-teal-500/15 to-teal-500/5 border-teal-500/30 text-teal-200">
+          <div className="flex items-center gap-1.5 text-xs opacity-80"><PhoneIncoming className="h-3.5 w-3.5" />Partner Transfers</div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.partnerTotal ?? 0).toLocaleString()}</div>
         </div>
-        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-emerald-500/15 to-emerald-500/5 border-emerald-500/30 text-emerald-200">
-          <div className="flex items-center gap-1.5 text-xs opacity-80"><PhoneIncoming className="h-3.5 w-3.5" />Resync</div>
-          <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.resync ?? 0).toLocaleString()}</div>
+        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-fuchsia-500/15 to-fuchsia-500/5 border-fuchsia-500/30 text-fuchsia-200">
+          <div className="flex items-center gap-1.5 text-xs opacity-80"><ArrowLeftRight className="h-3.5 w-3.5" />Internal Transfers</div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.internalTotal ?? 0).toLocaleString()}</div>
         </div>
-        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-zinc-500/15 to-zinc-500/5 border-zinc-500/30 text-zinc-300">
-          <div className="flex items-center gap-1.5 text-xs opacity-80"><Info className="h-3.5 w-3.5" />Unspecified</div>
-          <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.unspecified ?? 0).toLocaleString()}</div>
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">Partner companies</div>
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          <div className="rounded-xl border bg-gradient-to-br p-3.5 from-sky-500/15 to-sky-500/5 border-sky-500/30 text-sky-200">
+            <div className="flex items-center gap-1.5 text-xs opacity-80"><PhoneIncoming className="h-3.5 w-3.5" />Aspire</div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.aspire ?? 0).toLocaleString()}</div>
+          </div>
+          <div className="rounded-xl border bg-gradient-to-br p-3.5 from-emerald-500/15 to-emerald-500/5 border-emerald-500/30 text-emerald-200">
+            <div className="flex items-center gap-1.5 text-xs opacity-80"><PhoneIncoming className="h-3.5 w-3.5" />Resync</div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.resync ?? 0).toLocaleString()}</div>
+          </div>
+          <div className="rounded-xl border bg-gradient-to-br p-3.5 from-amber-500/15 to-amber-500/5 border-amber-500/30 text-amber-200">
+            <div className="flex items-center gap-1.5 text-xs opacity-80"><PhoneIncoming className="h-3.5 w-3.5" />Clarity</div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.clarity ?? 0).toLocaleString()}</div>
+          </div>
+          <div className="rounded-xl border bg-gradient-to-br p-3.5 from-pink-500/15 to-pink-500/5 border-pink-500/30 text-pink-200">
+            <div className="flex items-center gap-1.5 text-xs opacity-80"><PhoneIncoming className="h-3.5 w-3.5" />Concordia</div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.concordia ?? 0).toLocaleString()}</div>
+          </div>
+          <div className="rounded-xl border bg-gradient-to-br p-3.5 from-zinc-500/15 to-zinc-500/5 border-zinc-500/30 text-zinc-300">
+            <div className="flex items-center gap-1.5 text-xs opacity-80"><Info className="h-3.5 w-3.5" />Unspecified</div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.unspecified ?? 0).toLocaleString()}</div>
+          </div>
         </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">Internal departments (transferred by)</div>
+        {status && status.internalByDept.length > 0 ? (
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            {status.internalByDept.map((d) => (
+              <div key={d.dept} className="rounded-xl border bg-gradient-to-br p-3.5 from-fuchsia-500/10 to-fuchsia-500/5 border-fuchsia-500/25 text-fuchsia-200">
+                <div className="flex items-center gap-1.5 text-xs opacity-80"><ArrowLeftRight className="h-3.5 w-3.5" />{d.dept}</div>
+                <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{d.count.toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-xs text-zinc-500 italic">No internal transfers found in this range.</div>
+        )}
       </div>
 
       {running && status && status.progressTotal > 0 && (

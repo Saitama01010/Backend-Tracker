@@ -1,13 +1,16 @@
 import { pgTable, text, boolean, timestamp, integer } from "drizzle-orm/pg-core";
 
-// Per-call AI/keyword classification cache for inbound live transfers
-// (partner reps from Aspire / Resync handing off a client). Keyed by OpenPhone
-// call id so a refresh only ever classifies NEW incoming calls.
+// Per-call AI/keyword classification cache for inbound live transfers. Covers
+// both PARTNER warm-transfers (external reps from Aspire / Resync / Clarity /
+// Concordia handing off a client) and INTERNAL transfers (one of our own
+// departments — CS, NSF, Retention, Onboarding, etc. — passing the client to
+// this team). Keyed by OpenPhone call id so a refresh only classifies NEW calls.
 export const liveTransferClassificationsTable = pgTable("live_transfer_classifications", {
   callId: text("call_id").primaryKey(),
   isLive: boolean("is_live").notNull().default(false),
-  company: text("company"), // "Aspire" | "Resync" | null (unspecified)
-  agent: text("agent"), // transferring partner rep name, if stated
+  kind: text("kind"), // "partner" | "internal" | null (not a transfer)
+  company: text("company"), // partner: company name; internal: department; null if unspecified
+  agent: text("agent"), // transferring rep/agent name, if stated
   evidence: text("evidence"), // short quote/paraphrase of the intro line
   txStatus: text("tx_status"), // transcript status: completed | notfound | none
   classifiedAt: timestamp("classified_at", { withTimezone: true }).defaultNow().notNull(),
