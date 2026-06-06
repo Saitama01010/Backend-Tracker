@@ -126,6 +126,20 @@ function categorize(call) {
       r.ob_attempts = obAttempts.length;
       if (retInCompleted.length === 0 && obAttempts.length > 0) r.ob_done_no_retention = true;
       if (retInCompleted.length > 0) r.ob_done_no_retention = false;
+      // Backfill transfer_company from full incoming transcripts if AI left it blank
+      if (r.live_call === "Yes" && !r.transfer_company) {
+        let a = false, re = false;
+        for (const c of completed) {
+          if (c.direction !== "incoming") continue;
+          const op = cache[c.id];
+          if (!op) continue;
+          const t = ((op.summary || "") + " " + ((op.dialogue || []).join(" "))).toLowerCase();
+          if (/aspire/.test(t)) a = true;
+          if (/re-?sync/.test(t)) re = true;
+        }
+        if (a && !re) r.transfer_company = "Aspire";
+        else if (re && !a) r.transfer_company = "Resync";
+      }
       n++;
     }
     fs.writeFileSync(RESULTS_PATH, JSON.stringify(results, null, 2));
@@ -194,10 +208,12 @@ This company receives "live transfers": a partner company representative (from "
 Definitions:
 - "Live call" = ANY INCOMING call (on any line: Onboarding, Retention, CS, etc.) where the caller/representative indicates they are from "Aspire" or "Resync"/"re-sync", OR is clearly a partner handing off / transferring this client to your company. Mark "Yes" if any incoming call shows this. Use the opening transcript lines (greeting/intro) as the primary signal. Be inclusive: a mention of Aspire/Resync by an incoming caller, or an explicit "I have a client to transfer", counts. Do NOT count outbound calls your agents made.
 - "live_call_evidence" = quote/paraphrase the specific intro line and name the line it came in on, or say why No.
-- "Transfer source" = which line/agent/department the live/incoming call came in on or was transferred from (e.g., "Aspire/Resync via Onboarding line", a named agent, or a department). Empty only if there is no incoming call.
+- "transfer_company" = the partner company the client was transferred FROM. Must be EXACTLY "Aspire" or "Resync" (pick whichever the incoming caller states). If the caller clearly is a partner transfer but does not name the company, use "". If it is NOT a live transfer, use "".
+- "transfer_agent" = the name the transferring partner rep gave when introducing themselves on the live-transfer call (e.g., from "Hi this is Marcus with Aspire" -> "Marcus"; from "This is Jason, I'm with Eugene here" -> "Jason"). Use their full name if stated. If not a live transfer, or no name was given, use "".
+- "transfer_source" = which line/agent/department the live/incoming call came in on or was transferred from (e.g., "Aspire/Resync via Onboarding line", a named agent, or a department). Empty only if there is no incoming call.
 - "ob_done_no_retention" = TRUE only if there were outbound (OB) calls/attempts to this customer but ZERO completed incoming calls on the Retention line.
 - "Outcome summary" = 2-4 sentence plain-English summary of what happened across ALL the calls (cancellation, retained, payment, onboarding, voicemails, no answer, etc.).
-Return STRICT JSON: {"live_call":"Yes|No","live_call_evidence":"...","transfer_source":"...","ob_done_no_retention":true|false,"outcome_summary":"..."}`;
+Return STRICT JSON: {"live_call":"Yes|No","live_call_evidence":"...","transfer_company":"Aspire|Resync|","transfer_agent":"...","transfer_source":"...","ob_done_no_retention":true|false,"outcome_summary":"..."}`;
 
       const user = `Customer: ${deal0.CustomerName || "?"} | Deal status: ${deal0.Status || "?"} | Agent: ${deal0.AgentName || "?"}
 Totals: total calls ${cs.length}; completed ${completed.length}; incoming retention-line completed ${retInCompleted.length}; outbound completed ${obCompleted.length}; outbound attempts ${obAttempts.length}.
@@ -237,6 +253,8 @@ ${enrText || "(no transcribable conversations)"}`;
       ob_attempts: obAttempts.length,
       live_call: ai.live_call || "No",
       live_call_evidence: ai.live_call_evidence || "",
+      transfer_company: ai.transfer_company || "",
+      transfer_agent: ai.transfer_agent || "",
       transfer_source: ai.transfer_source || "",
       ob_done_no_retention: !!ai.ob_done_no_retention,
       outcome_summary: ai.outcome_summary || "",
