@@ -7,18 +7,17 @@ import {
   liveTransferClassificationsTable,
   liveTransferStateTable,
 } from "@workspace/db";
-import { and, eq, gte, lte, or, inArray, sql } from "drizzle-orm";
+import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { requireAuth } from "../middleware/auth.js";
 
 const router: IRouter = Router();
 
 // ─── Scope ────────────────────────────────────────────────────────────────────
-// Inbound live transfers (a partner rep from Aspire/Resync warm-transferring a
-// client) land almost entirely on the Onboarding line and the Retention/CS team
-// lines. We only classify INCOMING completed calls >= MIN_SECONDS on those lines.
-const ONBOARDING_LINE_ID = "PNdcJ0UEu5";
-const RELEVANT_TEAMS = ["retention", "cs"];
+// Inbound live transfers must land on the Retention MAIN line only —
+// "Retention" (669) 333-7644, line id PN0uO5PSsk. Any call on any other line is
+// ignored. We only classify INCOMING completed calls >= MIN_SECONDS on this line.
+const RETENTION_MAIN_LINE_ID = "PN0uO5PSsk";
 const MIN_SECONDS = Number(process.env["LT_MIN_SECONDS"] ?? 20);
 const MODEL = process.env["LT_MODEL"] ?? "gpt-4.1-mini";
 const CONCURRENCY = Number(process.env["LT_CONC"] ?? 4);
@@ -70,12 +69,9 @@ function normalizeDept(raw: string): string {
   return base.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-// A call is in scope if it's on the onboarding line OR a retention/cs team line.
+// A call is in scope only if it's on the Retention main line (669) 333-7644.
 function scopeFilter() {
-  return or(
-    eq(phoneCallsTable.lineId, ONBOARDING_LINE_ID),
-    inArray(phoneCallsTable.lineTeam, RELEVANT_TEAMS),
-  );
+  return eq(phoneCallsTable.lineId, RETENTION_MAIN_LINE_ID);
 }
 
 // ─── Date range helpers (LA timezone, mirrors obReport) ───────────────────────
@@ -430,6 +426,7 @@ async function loadLiveRows(from?: string, to?: string): Promise<LiveRow[]> {
     .where(
       and(
         eq(liveTransferClassificationsTable.isLive, true),
+        scopeFilter(),
         gte(phoneCallsTable.createdAt, fromDate),
         lte(phoneCallsTable.createdAt, toDate),
       ),
@@ -485,7 +482,7 @@ router.get("/live-transfers/status", requireAuth, async (req, res) => {
       })
       .from(liveTransferClassificationsTable)
       .innerJoin(phoneCallsTable, eq(phoneCallsTable.id, liveTransferClassificationsTable.callId))
-      .where(and(eq(liveTransferClassificationsTable.isLive, true), inRange))
+      .where(and(eq(liveTransferClassificationsTable.isLive, true), scopeFilter(), inRange))
       .groupBy(liveTransferClassificationsTable.kind, liveTransferClassificationsTable.company);
 
     let aspire = 0;
