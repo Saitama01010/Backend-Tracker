@@ -4353,7 +4353,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
 
 // ─── User Management Panel (Admin only) ──────────────────────────────────────
 
-interface PortalUser { id: number; username: string; role: string; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; allowedSubTabs?: string[] | null; lockToToday?: boolean; active: boolean; }
+interface PortalUser { id: number; username: string; role: string; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; allowedSubTabs?: string[] | null; lockToToday?: boolean; samiaCurse?: boolean; active: boolean; }
 
 const DEFAULT_PERMS: Record<string, Permission[]> = {
   admin: ["view_metrics", "view_attendance", "edit_attendance", "manage_members", "view_missed_tables"],
@@ -4707,6 +4707,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   const [newAllowedAgents, setNewAllowedAgents] = useState("");
   const [newAllowedSubTabs, setNewAllowedSubTabs] = useState<string[]>([]);
   const [newLockToToday, setNewLockToToday] = useState(false);
+  const [newSamiaCurse, setNewSamiaCurse] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editPw, setEditPw] = useState("");
@@ -4717,6 +4718,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   const [editAllowedAgents, setEditAllowedAgents] = useState("");
   const [editAllowedSubTabs, setEditAllowedSubTabs] = useState<string[]>([]);
   const [editLockToToday, setEditLockToToday] = useState(false);
+  const [editSamiaCurse, setEditSamiaCurse] = useState(false);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -4748,13 +4750,14 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
       allowedAgents: parseAgentInput(newAllowedAgents),
       allowedSubTabs: newAllowedSubTabs.length > 0 ? newAllowedSubTabs : null,
       lockToToday: newLockToToday,
+      samiaCurse: newSamiaCurse,
     };
     const r = await fetch("/api/users", { method: "POST", headers: authHeaders(token), body: JSON.stringify(body) });
     if (r.ok) {
       setNewUsername(""); setNewPassword(""); setNewRole("view");
       setNewPerms(DEFAULT_PERMS["view"]); setNewTeamAccess("");
       setNewAllowedTabs([]); setNewAllowedAgents("");
-      setNewAllowedSubTabs([]); setNewLockToToday(false);
+      setNewAllowedSubTabs([]); setNewLockToToday(false); setNewSamiaCurse(false);
       await load();
     } else { const d = await r.json() as { error?: string }; setError(d.error ?? "Failed to add user"); }
     setSaving(false);
@@ -4783,6 +4786,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
     setEditAllowedAgents((u.allowedAgents ?? []).join(", "));
     setEditAllowedSubTabs(u.allowedSubTabs ?? []);
     setEditLockToToday(!!u.lockToToday);
+    setEditSamiaCurse(!!u.samiaCurse);
   }
 
   const roleBadge = (role: string) =>
@@ -4859,6 +4863,10 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
             {newRole === "admin" && (
               <p className="text-[11px] text-zinc-500 px-1">Admins always have full access to everything.</p>
             )}
+            <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer px-1">
+              <input type="checkbox" checked={newSamiaCurse} onChange={(e) => setNewSamiaCurse(e.target.checked)} className="h-3.5 w-3.5 accent-rose-500" />
+              Samia curse mode (refuses to answer, only replies "fuck you")
+            </label>
             <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white w-full" onClick={addUser} disabled={saving || !newUsername.trim() || !newPassword.trim()}>
               <Plus className="h-3.5 w-3.5 mr-1" />Add User
             </Button>
@@ -4953,6 +4961,10 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                       </div>
                     )}
                     {editRole === "admin" && <p className="text-[11px] text-zinc-500">Admins always have full access.</p>}
+                    <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer">
+                      <input type="checkbox" checked={editSamiaCurse} onChange={(e) => setEditSamiaCurse(e.target.checked)} className="h-3.5 w-3.5 accent-rose-500" />
+                      Samia curse mode (refuses to answer, only replies "fuck you")
+                    </label>
                     <div className="flex gap-2 justify-end">
                       <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditingId(null)}>Cancel</Button>
                       <Button size="sm" className="h-7 text-xs bg-violet-600 hover:bg-violet-700 text-white px-3" onClick={() => patchUser(u.id, {
@@ -4963,6 +4975,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                         allowedAgents: editRole === "admin" ? null : parseAgentInput(editAllowedAgents),
                         allowedSubTabs: editRole === "admin" ? null : (editAllowedSubTabs.length > 0 ? editAllowedSubTabs : null),
                         lockToToday: editRole === "admin" ? false : editLockToToday,
+                        samiaCurse: editSamiaCurse,
                         ...(editPw ? { password: editPw } : {}),
                       })}>
                         <KeyRound className="h-3 w-3 mr-1" />Save

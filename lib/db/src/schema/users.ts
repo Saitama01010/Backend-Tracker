@@ -24,6 +24,8 @@ export const portalUsersTable = pgTable("portal_users", {
   allowedSubTabs: text("allowed_sub_tabs"),
   // true = date pickers locked to today (no PresetFilter, no history)
   lockToToday: boolean("lock_to_today").notNull().default(false),
+  // true = Samia replies "fuck you {username}" to anything this user asks
+  samiaCurse: boolean("samia_curse").notNull().default(false),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

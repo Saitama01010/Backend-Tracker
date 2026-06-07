@@ -1,6 +1,6 @@
 import { Router } from "express";
 import OpenAI from "openai";
-import { db, samiaMessagesTable, phoneCallsTable, pbxMissedCallsTable } from "@workspace/db";
+import { db, samiaMessagesTable, phoneCallsTable, pbxMissedCallsTable, portalUsersTable } from "@workspace/db";
 import { and, gte, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
@@ -613,6 +613,32 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
     // Prefer the display name the user typed in the name-gate prompt over the
     // shared login username (e.g. "retention" or "cs").
     const username = (displayName?.trim()) || req.user!.username;
+
+    // "Curse" users: Samia refuses to answer anything and replies with a fixed
+    // insult. Short-circuit before any AI call or data fetch.
+    const [curseRow] = await db
+      .select({ samiaCurse: portalUsersTable.samiaCurse })
+      .from(portalUsersTable)
+      .where(eq(portalUsersTable.id, userId))
+      .limit(1);
+    if (curseRow?.samiaCurse) {
+      const reply = `fuck you ${username}`;
+      await db.insert(samiaMessagesTable).values({
+        userId,
+        username,
+        role: "user",
+        content: message,
+        images: images.length > 0 ? images : null,
+      });
+      await db.insert(samiaMessagesTable).values({
+        userId,
+        username,
+        role: "assistant",
+        content: reply,
+        images: null,
+      });
+      return res.json({ reply });
+    }
 
     // Load last 60 messages for this user as persistent memory
     const dbHistory = await db
