@@ -26,6 +26,8 @@ export const portalUsersTable = pgTable("portal_users", {
   lockToToday: boolean("lock_to_today").notNull().default(false),
   // true = Samia replies "fuck you {username}" to anything this user asks
   samiaCurse: boolean("samia_curse").notNull().default(false),
+  // true = hide the Backend Statistics tab for this user
+  hideBackendStats: boolean("hide_backend_stats").notNull().default(false),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

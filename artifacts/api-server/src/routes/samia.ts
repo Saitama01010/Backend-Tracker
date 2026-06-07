@@ -622,17 +622,20 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       .where(eq(portalUsersTable.id, userId))
       .limit(1);
     if (curseRow?.samiaCurse) {
-      const reply = `fuck you ${username}`;
+      // Always use the real logged-in account name here, not the name-gate
+      // display name (which is cached per-device and can be someone else's).
+      const curseName = req.user!.username;
+      const reply = `fuck you ${curseName}`;
       await db.insert(samiaMessagesTable).values({
         userId,
-        username,
+        username: curseName,
         role: "user",
         content: message,
         images: images.length > 0 ? images : null,
       });
       await db.insert(samiaMessagesTable).values({
         userId,
-        username,
+        username: curseName,
         role: "assistant",
         content: reply,
         images: null,

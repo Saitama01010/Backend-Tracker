@@ -28,6 +28,7 @@ const SELECTABLE = {
   allowedSubTabs: portalUsersTable.allowedSubTabs,
   lockToToday: portalUsersTable.lockToToday,
   samiaCurse: portalUsersTable.samiaCurse,
+  hideBackendStats: portalUsersTable.hideBackendStats,
   active: portalUsersTable.active,
   createdAt: portalUsersTable.createdAt,
 };
@@ -64,7 +65,7 @@ function serializeJsonArray(v: unknown): string | null {
 }
 
 router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
-  const { username, password, role, permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday, samiaCurse } = req.body ?? {};
+  const { username, password, role, permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday, samiaCurse, hideBackendStats } = req.body ?? {};
   if (!username || !password || !["admin", "edit", "view"].includes(role)) {
     res.status(400).json({ error: "username, password and role required" });
     return;
@@ -84,6 +85,7 @@ router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
       allowedSubTabs: serializeSubTabs(allowedSubTabs),
       lockToToday: !!lockToToday,
       samiaCurse: !!samiaCurse,
+      hideBackendStats: !!hideBackendStats,
     })
     .returning(SELECTABLE);
   res.json({ ...user, permissions: parsePermissions(user.permissions, user.role), allowedTabs: parseJsonArray(user.allowedTabs), allowedAgents: parseJsonArray(user.allowedAgents), allowedSubTabs: parseJsonArray(user.allowedSubTabs) });
@@ -91,7 +93,7 @@ router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
 
 router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) => {
   const id = Number(req.params.id);
-  const { username, password, role, active, permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday, samiaCurse } = req.body ?? {};
+  const { username, password, role, active, permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday, samiaCurse, hideBackendStats } = req.body ?? {};
   const updates: Record<string, unknown> = {};
   if (username) updates["username"] = username.trim().toLowerCase();
   if (password) updates["passwordHash"] = await bcrypt.hash(password, 10);
@@ -104,6 +106,7 @@ router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) =
   if ("allowedSubTabs" in (req.body ?? {})) updates["allowedSubTabs"] = serializeSubTabs(allowedSubTabs);
   if ("lockToToday" in (req.body ?? {})) updates["lockToToday"] = !!lockToToday;
   if ("samiaCurse" in (req.body ?? {})) updates["samiaCurse"] = !!samiaCurse;
+  if ("hideBackendStats" in (req.body ?? {})) updates["hideBackendStats"] = !!hideBackendStats;
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: "Nothing to update" });
     return;

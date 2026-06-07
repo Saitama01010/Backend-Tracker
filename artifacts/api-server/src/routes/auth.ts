@@ -52,8 +52,9 @@ router.post("/auth/login", async (req, res) => {
   const allowedAgents = parseJsonArray(user.allowedAgents);
   const allowedSubTabs = parseJsonArray(user.allowedSubTabs);
   const lockToToday = !!user.lockToToday;
-  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday });
-  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday } });
+  const hideBackendStats = !!user.hideBackendStats;
+  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday, hideBackendStats });
+  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday, hideBackendStats } });
 });
 
 router.get("/auth/me", requireAuth, async (req, res) => {
@@ -72,8 +73,9 @@ router.get("/auth/me", requireAuth, async (req, res) => {
   const allowedAgents = parseJsonArray(user.allowedAgents);
   const allowedSubTabs = parseJsonArray(user.allowedSubTabs);
   const lockToToday = !!user.lockToToday;
-  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday });
-  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday } });
+  const hideBackendStats = !!user.hideBackendStats;
+  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday, hideBackendStats });
+  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday, hideBackendStats } });
 });
 
 export default router;

@@ -117,7 +117,7 @@ const ALL_TABS: { value: string; label: string }[] = [
 ];
 
 type TeamAccess = "retention" | "nsf" | "cs";
-interface AuthUser { id: number; username: string; role: "admin" | "edit" | "view"; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; allowedSubTabs?: string[] | null; lockToToday?: boolean; }
+interface AuthUser { id: number; username: string; role: "admin" | "edit" | "view"; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; allowedSubTabs?: string[] | null; lockToToday?: boolean; hideBackendStats?: boolean; }
 interface AuthCtx { user: AuthUser; token: string; logout: () => void; can: (p: Permission) => boolean; canSeeTab: (tab: string) => boolean; }
 const UserContext = createContext<AuthCtx | null>(null);
 function useUser() {
@@ -4276,6 +4276,8 @@ function LoginGate({ children }: { children: React.ReactNode }) {
   if (auth) {
     const can = (p: Permission) => auth.user.role === "admin" || auth.user.permissions.includes(p);
     const canSeeTab = (tab: string) => {
+      // Per-user override: hide the Backend Statistics tab entirely, even for admins.
+      if (tab === "backend-stats" && auth.user.hideBackendStats) return false;
       if (auth.user.role === "admin") return true;
       const at = auth.user.allowedTabs;
       if (at && at.length > 0) return at.includes(tab);
@@ -4353,7 +4355,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
 
 // ─── User Management Panel (Admin only) ──────────────────────────────────────
 
-interface PortalUser { id: number; username: string; role: string; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; allowedSubTabs?: string[] | null; lockToToday?: boolean; samiaCurse?: boolean; active: boolean; }
+interface PortalUser { id: number; username: string; role: string; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; allowedSubTabs?: string[] | null; lockToToday?: boolean; samiaCurse?: boolean; hideBackendStats?: boolean; active: boolean; }
 
 const DEFAULT_PERMS: Record<string, Permission[]> = {
   admin: ["view_metrics", "view_attendance", "edit_attendance", "manage_members", "view_missed_tables"],
@@ -4708,6 +4710,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   const [newAllowedSubTabs, setNewAllowedSubTabs] = useState<string[]>([]);
   const [newLockToToday, setNewLockToToday] = useState(false);
   const [newSamiaCurse, setNewSamiaCurse] = useState(false);
+  const [newHideBackendStats, setNewHideBackendStats] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editPw, setEditPw] = useState("");
@@ -4719,6 +4722,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   const [editAllowedSubTabs, setEditAllowedSubTabs] = useState<string[]>([]);
   const [editLockToToday, setEditLockToToday] = useState(false);
   const [editSamiaCurse, setEditSamiaCurse] = useState(false);
+  const [editHideBackendStats, setEditHideBackendStats] = useState(false);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -4751,13 +4755,14 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
       allowedSubTabs: newAllowedSubTabs.length > 0 ? newAllowedSubTabs : null,
       lockToToday: newLockToToday,
       samiaCurse: newSamiaCurse,
+      hideBackendStats: newHideBackendStats,
     };
     const r = await fetch("/api/users", { method: "POST", headers: authHeaders(token), body: JSON.stringify(body) });
     if (r.ok) {
       setNewUsername(""); setNewPassword(""); setNewRole("view");
       setNewPerms(DEFAULT_PERMS["view"]); setNewTeamAccess("");
       setNewAllowedTabs([]); setNewAllowedAgents("");
-      setNewAllowedSubTabs([]); setNewLockToToday(false); setNewSamiaCurse(false);
+      setNewAllowedSubTabs([]); setNewLockToToday(false); setNewSamiaCurse(false); setNewHideBackendStats(false);
       await load();
     } else { const d = await r.json() as { error?: string }; setError(d.error ?? "Failed to add user"); }
     setSaving(false);
@@ -4787,6 +4792,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
     setEditAllowedSubTabs(u.allowedSubTabs ?? []);
     setEditLockToToday(!!u.lockToToday);
     setEditSamiaCurse(!!u.samiaCurse);
+    setEditHideBackendStats(!!u.hideBackendStats);
   }
 
   const roleBadge = (role: string) =>
@@ -4866,6 +4872,10 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
             <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer px-1">
               <input type="checkbox" checked={newSamiaCurse} onChange={(e) => setNewSamiaCurse(e.target.checked)} className="h-3.5 w-3.5 accent-rose-500" />
               Samia curse mode (refuses to answer, only replies "fuck you")
+            </label>
+            <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer px-1">
+              <input type="checkbox" checked={newHideBackendStats} onChange={(e) => setNewHideBackendStats(e.target.checked)} className="h-3.5 w-3.5 accent-amber-500" />
+              Hide Backend Statistics tab
             </label>
             <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white w-full" onClick={addUser} disabled={saving || !newUsername.trim() || !newPassword.trim()}>
               <Plus className="h-3.5 w-3.5 mr-1" />Add User
@@ -4965,6 +4975,10 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                       <input type="checkbox" checked={editSamiaCurse} onChange={(e) => setEditSamiaCurse(e.target.checked)} className="h-3.5 w-3.5 accent-rose-500" />
                       Samia curse mode (refuses to answer, only replies "fuck you")
                     </label>
+                    <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer">
+                      <input type="checkbox" checked={editHideBackendStats} onChange={(e) => setEditHideBackendStats(e.target.checked)} className="h-3.5 w-3.5 accent-amber-500" />
+                      Hide Backend Statistics tab
+                    </label>
                     <div className="flex gap-2 justify-end">
                       <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditingId(null)}>Cancel</Button>
                       <Button size="sm" className="h-7 text-xs bg-violet-600 hover:bg-violet-700 text-white px-3" onClick={() => patchUser(u.id, {
@@ -4976,6 +4990,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                         allowedSubTabs: editRole === "admin" ? null : (editAllowedSubTabs.length > 0 ? editAllowedSubTabs : null),
                         lockToToday: editRole === "admin" ? false : editLockToToday,
                         samiaCurse: editSamiaCurse,
+                        hideBackendStats: editHideBackendStats,
                         ...(editPw ? { password: editPw } : {}),
                       })}>
                         <KeyRound className="h-3 w-3 mr-1" />Save

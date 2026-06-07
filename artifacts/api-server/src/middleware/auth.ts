@@ -12,6 +12,7 @@ export interface AuthPayload {
   allowedAgents?: string[] | null;
   allowedSubTabs?: string[] | null;
   lockToToday?: boolean;
+  hideBackendStats?: boolean;
 }
 
 declare global {
