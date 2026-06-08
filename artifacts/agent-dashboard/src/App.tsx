@@ -6974,18 +6974,12 @@ function ltLastDayOfMonth(ym: string): string {
 function LiveTransfersCard() {
   const { token } = useUser();
   const today = ltLaToday();
-  const thisMonth = today.slice(0, 7);
-  const [gran, setGran] = useState<LTGran>("all");
-  const [month, setMonth] = useState(thisMonth);
-  const [day, setDay] = useState(today);
   const [downloading, setDownloading] = useState(false);
 
-  const { from, to } = useMemo(() => {
-    if (gran === "month") return { from: `${month}-01`, to: ltLastDayOfMonth(month) };
-    if (gran === "day") return { from: day, to: day };
-    return { from: "", to: "" };
-  }, [gran, month, day]);
-  const qs = from && to ? `?from=${from}&to=${to}` : "";
+  // Filter is locked to today.
+  const from = today;
+  const to = today;
+  const qs = `?from=${from}&to=${to}`;
 
   const { data: status, refetch } = useQuery<LTStatus>({
     queryKey: ["liveTransfersStatus", from, to, token],
@@ -7014,7 +7008,7 @@ function LiveTransfersCard() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
-      const tag = gran === "all" ? "AllTime" : gran === "month" ? month : day;
+      const tag = today;
       const a = document.createElement("a");
       a.href = url;
       a.download = `Live_Transfers_${tag}.xlsx`;
@@ -7035,12 +7029,7 @@ function LiveTransfersCard() {
     running && status && status.progressTotal > 0
       ? Math.round((status.progressDone / status.progressTotal) * 100)
       : 0;
-  const rangeLabel =
-    gran === "all"
-      ? "All time"
-      : gran === "month"
-        ? new Date(`${month}-01`).toLocaleDateString([], { month: "long", year: "numeric" })
-        : new Date(`${day}T00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+  const rangeLabel = new Date(`${today}T00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 
   return (
     <div className="rounded-xl border border-violet-700/30 bg-gradient-to-br from-violet-950/40 to-fuchsia-950/20 backdrop-blur p-5 space-y-4">
@@ -7059,25 +7048,9 @@ function LiveTransfersCard() {
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="inline-flex rounded-lg border border-white/10 overflow-hidden">
-            {(["all", "month", "day"] as LTGran[]).map((g) => (
-              <button
-                key={g}
-                onClick={() => setGran(g)}
-                className={`px-3 py-1.5 text-xs font-medium transition-colors ${gran === g ? "bg-violet-600 text-white" : "bg-transparent text-zinc-400 hover:bg-white/5"}`}
-              >
-                {g === "all" ? "All Time" : g === "month" ? "Monthly" : "Per Day"}
-              </button>
-            ))}
-          </div>
-          {gran === "month" && (
-            <input type="month" value={month} max={thisMonth} onChange={(e) => setMonth(e.target.value)}
-              className="rounded-md border border-white/10 bg-zinc-900/70 px-2 py-1.5 text-xs" />
-          )}
-          {gran === "day" && (
-            <input type="date" value={day} max={today} onChange={(e) => setDay(e.target.value)}
-              className="rounded-md border border-white/10 bg-zinc-900/70 px-2 py-1.5 text-xs" />
-          )}
+          <span className="inline-flex items-center gap-1.5 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-200">
+            <CalendarDays className="h-3.5 w-3.5" />Today
+          </span>
           <Button size="sm" variant="outline" onClick={() => refreshMutation.mutate()} disabled={running}>
             {running
               ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Refreshing…</>
@@ -7174,9 +7147,9 @@ function QAPanel() {
   const { token, user } = useUser();
   const qc = useQueryClient();
   const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-  const monthAgo = new Date(Date.now() - 29 * 86400000).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-  const [from, setFrom] = useState(monthAgo);
-  const [to, setTo] = useState(todayLA);
+  // QA filter is locked to today.
+  const from = todayLA;
+  const to = todayLA;
   const [sub, setSub] = useState<"reviews" | "tasks">("reviews");
   const [dept, setDept] = useState<QADept>("all");
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -7278,14 +7251,9 @@ function QAPanel() {
 
       {/* Header */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex items-center gap-1.5">
-          <Label htmlFor="qa-from" className="text-xs text-zinc-400">From</Label>
-          <Input id="qa-from" type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 w-36 bg-zinc-900/70 border-zinc-800" />
-        </div>
-        <div className="flex items-center gap-1.5">
-          <Label htmlFor="qa-to" className="text-xs text-zinc-400">To</Label>
-          <Input id="qa-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 w-36 bg-zinc-900/70 border-zinc-800" />
-        </div>
+        <span className="inline-flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900/70 px-3 h-8 text-xs font-medium text-zinc-300">
+          <CalendarDays className="h-3.5 w-3.5 text-zinc-400" />Today
+        </span>
         <div className="flex items-center gap-1 ml-2">
           {(["all", "Retention", "CS", "NSF"] as QADept[]).map((d) => (
             <button
