@@ -6,6 +6,7 @@
 - [Production data seeding](prod-data-seeding.md) — prod DB is read-only to tooling; bulk-seed only via a guarded POST endpoint on the deployed app, then call the prod domain.
 - [Onboarding ring-group line](onboarding-ring-group.md) — onboarding line rings all agents; OpenPhone dumps all missed inbound on one overflow account, so per-agent response rate is degenerate — rank by workload, not response rate.
 - [OpenPhone sync scoping](openphone-sync-scoping.md) — /conversations can't filter by line so scoped syncs still page all convos; derive job `running` from in-memory flag, not DB.
+- [OpenPhone offline-gap recovery](openphone-offline-gap-recovery.md) — after days offline, dashboard shows 0 (runaway all-or-nothing sync); fix = advance phone_sync_state.last_synced_at to now, then restart api-server.
 - [Long batch jobs](long-batch-jobs.md) — run multi-min LLM/scrape passes as a temp console workflow (bash backgrounding gets killed); resumable cache + fetch timeouts; trade concurrency for retries on the AI proxy.
 - [Live transfers classification](live-transfers-classification.md) — Aspire/Resync keyword is only a pre-filter; AI `isTransfer` sets `isLive` (keyword-only doubles false positives); reclassify needs row DELETE.
 - [Samia name-gate displayName](samia-name-gate.md) — displayName is per-device cached, can be another person's; identity-sensitive replies must use req.user.username, not displayName.
