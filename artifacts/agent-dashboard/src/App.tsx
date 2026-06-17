@@ -91,7 +91,15 @@ import {
 } from "recharts";
 import { OnboardingPanel } from "./OnboardingPanel";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+      staleTime: 30_000,
+      gcTime: 5 * 60_000,
+    },
+  },
+});
 
 // ─── Auth Context ────────────────────────────────────────────────────────────
 
@@ -3358,9 +3366,9 @@ function TeamPanel({
   const statusQ = useQuery({
     queryKey: ["status", sheetKey, roster.version, includeInactive],
     queryFn: statusQueryFn ? () => statusQueryFn(roster, { includeInactive }) : (() => fetchHeaderCsv(urls.status)),
-    staleTime: 1000 * 10,
-    refetchOnWindowFocus: true,
-    refetchInterval: 15 * 1000,
+    staleTime: 30 * 1000,
+    refetchOnWindowFocus: false,
+    refetchInterval: 60 * 1000,
   });
   const isLoading = statusQ.isLoading;
   const isFetching = statusQ.isFetching;
@@ -3379,9 +3387,9 @@ function TeamPanel({
       if (!res.ok) return null;
       return res.json() as Promise<PhoneStatsResponse>;
     },
-    staleTime: 1000 * 10,
-    refetchOnWindowFocus: true,
-    refetchInterval: 15 * 1000,
+    staleTime: 30 * 1000,
+    refetchOnWindowFocus: false,
+    refetchInterval: 60 * 1000,
   });
 
   const readymodeByKey = useReadymodeByKey(from, to, roster);
@@ -3661,9 +3669,9 @@ function CSPanel() {
   const statusQ = useQuery({
     queryKey: ["status", "cs", roster.version, includeInactive],
     queryFn: () => fetchCSCombinedSheet(roster, { includeInactive }),
-    staleTime: 1000 * 10,
-    refetchOnWindowFocus: true,
-    refetchInterval: 15 * 1000,
+    staleTime: 30 * 1000,
+    refetchOnWindowFocus: false,
+    refetchInterval: 60 * 1000,
   });
 
   const phoneQ = useQuery<PhoneStatsResponse | null>({
@@ -3675,9 +3683,9 @@ function CSPanel() {
       if (!res.ok) return null;
       return res.json() as Promise<PhoneStatsResponse>;
     },
-    staleTime: 1000 * 10,
-    refetchOnWindowFocus: true,
-    refetchInterval: 15 * 1000,
+    staleTime: 30 * 1000,
+    refetchOnWindowFocus: false,
+    refetchInterval: 60 * 1000,
   });
 
   const readymodeByKey = useReadymodeByKey(from, to, roster);
@@ -3892,9 +3900,9 @@ function RetentionPanel() {
   const statusQ = useQuery({
     queryKey: ["status", "retention", roster.version, includeInactive],
     queryFn: () => fetchRetentionCombinedSheet(roster, { includeInactive }),
-    staleTime: 1000 * 10,
-    refetchOnWindowFocus: true,
-    refetchInterval: 15 * 1000,
+    staleTime: 30 * 1000,
+    refetchOnWindowFocus: false,
+    refetchInterval: 60 * 1000,
   });
 
   const phoneQ = useQuery<PhoneStatsResponse | null>({
@@ -3906,9 +3914,9 @@ function RetentionPanel() {
       if (!res.ok) return null;
       return res.json() as Promise<PhoneStatsResponse>;
     },
-    staleTime: 1000 * 10,
-    refetchOnWindowFocus: true,
-    refetchInterval: 15 * 1000,
+    staleTime: 30 * 1000,
+    refetchOnWindowFocus: false,
+    refetchInterval: 60 * 1000,
   });
 
   const aggregated = useMemo(() => {
@@ -4105,9 +4113,9 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
       if (!r.ok) return null;
       return r.json() as Promise<{ data: CallRecord[] }>;
     },
-    staleTime: 1000 * 10,
-    refetchOnWindowFocus: true,
-    refetchInterval: 15 * 1000,
+    staleTime: 30 * 1000,
+    refetchOnWindowFocus: false,
+    refetchInterval: 60 * 1000,
   });
 
   const [search, setSearch] = useState("");
@@ -5151,9 +5159,9 @@ function QuoLinesPanel() {
       return r.json() as Promise<LineStatsResponse>;
     },
     enabled: !!selectedLine,
-    staleTime: 1000 * 10,
-    refetchInterval: 15 * 1000,
-    refetchOnWindowFocus: true,
+    staleTime: 30 * 1000,
+    refetchInterval: 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {
@@ -5804,9 +5812,9 @@ function ReadyModeKillersPanel() {
   const subsQ = useQuery<SheetData>({
     queryKey: ["rmkSubmissions"],
     queryFn: fetchRMKSubmissions,
-    staleTime: 1000 * 10,
-    refetchOnWindowFocus: true,
-    refetchInterval: 15 * 1000,
+    staleTime: 30 * 1000,
+    refetchOnWindowFocus: false,
+    refetchInterval: 60 * 1000,
   });
 
   // ReadyMode dialer stats keyed by normalized name, restricted to the team.

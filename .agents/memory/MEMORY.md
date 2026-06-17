@@ -10,3 +10,4 @@
 - [Long batch jobs](long-batch-jobs.md) — run multi-min LLM/scrape passes as a temp console workflow (bash backgrounding gets killed); resumable cache + fetch timeouts; trade concurrency for retries on the AI proxy.
 - [Live transfers classification](live-transfers-classification.md) — Aspire/Resync keyword is only a pre-filter; AI `isTransfer` sets `isLive` (keyword-only doubles false positives); reclassify needs row DELETE.
 - [Samia name-gate displayName](samia-name-gate.md) — displayName is per-device cached, can be another person's; identity-sensitive replies must use req.user.username, not displayName.
+- [Dashboard polling cadence](dashboard-polling.md) — only liveCalls/vosLive stay at 15s; all stat/sheet queries poll 60s (DB syncs every ~15min); global refetchOnWindowFocus off.
