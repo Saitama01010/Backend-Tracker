@@ -109,6 +109,7 @@ const ALL_TABS: { value: string; label: string }[] = [
   { value: "retention",       label: "Retention" },
   { value: "cs",              label: "Internal CS" },
   { value: "nsf",             label: "NSF" },
+  { value: "rmk",             label: "Ready-Mode Killers" },
   { value: "missed-no-cb",    label: "Missed / No CB" },
   { value: "callback-review", label: "CB Review" },
   { value: "violations",      label: "Violations" },
@@ -4290,6 +4291,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
       if (tab === "retention") return allTeams || ta === "retention";
       if (tab === "cs") return allTeams || ta === "cs";
       if (tab === "nsf") return allTeams || ta === "nsf";
+      if (tab === "rmk") return allTeams;
       if (tab === "onboarding") return allTeams;
       return false;
     };
@@ -5729,6 +5731,220 @@ interface RmStatsResponse {
   totals: { dialed: number; connected: number; talkTimeSecs: number; connectRate: number };
   updatedAt: string;
   raw?: string;
+}
+
+// ─── Ready-Mode Killers ──────────────────────────────────────────────────────
+// A ReadyMode-only team: call activity comes solely from the ReadyMode dialer
+// (no OpenPhone/PBX lines). Submissions come from the same shared Discord-bot
+// sheets as the other teams. The roster is fixed (provided by ops) and matched
+// by normalized agent name.
+const RMK_AGENT_NAMES = new Set<string>([
+  "jackson miller",
+  "leah tanner",
+  "isabella cruz",
+  "henry cole",
+  "henry marcus",
+  "jonathan underwood",
+]);
+const RMK_DISPLAY: Record<string, string> = {
+  "jackson miller": "Jackson Miller",
+  "leah tanner": "Leah Tanner",
+  "isabella cruz": "Isabella Cruz",
+  "henry cole": "Henry Cole",
+  "henry marcus": "Henry Marcus",
+  "jonathan underwood": "Jonathan Underwood",
+};
+
+// Submissions for the Ready-Mode Killers team come from the same shared sheets
+// as the other teams (Discord-bot gid=0 + IDP-Handled tab), matched by roster name.
+async function fetchRMKSubmissions(): Promise<SheetData> {
+  // Both tabs live in the same spreadsheet (11kOhk8x) — fetch sequentially to
+  // avoid Google silently dropping the concurrent second request.
+  const newRows = await fetchNewSheetForTeam(RMK_AGENT_NAMES);
+  const idpRows = await fetchIDPSheetForTeam(RMK_AGENT_NAMES);
+  return { headers: ["Agent", "Status", "Date", "File ID"], rows: [...newRows, ...idpRows] };
+}
+
+function ReadyModeKillersPanel() {
+  const todayIso = todayPDT();
+  const [from, setFrom] = useState(todayIso);
+  const [to, setTo] = useState(todayIso);
+  const { user } = useUser();
+  const lockToToday = !!user.lockToToday;
+  useEffect(() => {
+    if (lockToToday) { setFrom(todayPDT()); setTo(todayPDT()); }
+  }, [lockToToday, todayIso]);
+
+  const rmQ = useQuery<RmStatsResponse | null>({
+    queryKey: ["rmkReadymodeStats", from, to],
+    queryFn: async () => {
+      const qs = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+      const res = await fetch(`/api/readymode/stats${qs}`);
+      if (!res.ok) return null;
+      return res.json() as Promise<RmStatsResponse>;
+    },
+    staleTime: 1000 * 30,
+    refetchOnWindowFocus: true,
+    refetchInterval: 60 * 1000,
+  });
+
+  const subsQ = useQuery<SheetData>({
+    queryKey: ["rmkSubmissions"],
+    queryFn: fetchRMKSubmissions,
+    staleTime: 1000 * 10,
+    refetchOnWindowFocus: true,
+    refetchInterval: 15 * 1000,
+  });
+
+  // ReadyMode dialer stats keyed by normalized name, restricted to the team.
+  const rmByKey = useMemo(() => {
+    const m = new Map<string, RmAgentStat>();
+    for (const a of rmQ.data?.agents ?? []) {
+      const norm = normalizeAgent(a.agentName);
+      if (!RMK_AGENT_NAMES.has(norm)) continue;
+      const prev = m.get(norm);
+      if (prev) {
+        const dialed = prev.dialed + a.dialed;
+        const connected = prev.connected + a.connected;
+        const talkTimeSecs = prev.talkTimeSecs + a.talkTimeSecs;
+        m.set(norm, {
+          agentName: prev.agentName,
+          dialed, connected, talkTimeSecs,
+          avgTalkSecs: connected ? Math.round(talkTimeSecs / connected) : 0,
+          connectRate: dialed ? Math.round((connected / dialed) * 100) : 0,
+        });
+      } else {
+        m.set(norm, { ...a });
+      }
+    }
+    return m;
+  }, [rmQ.data]);
+
+  // Submission counts keyed by normalized name, restricted to the team + date range.
+  const subsByKey = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of subsQ.data?.rows ?? []) {
+      const d = (r["Date"] ?? "").trim();
+      if (from && d && d < from) continue;
+      if (to && d && d > to) continue;
+      const norm = normalizeAgent((r["Agent"] ?? "").trim());
+      let key: string | null = null;
+      if (RMK_AGENT_NAMES.has(norm)) key = norm;
+      else {
+        const seg = norm.split("-").map((s) => s.trim()).find((s) => RMK_AGENT_NAMES.has(s));
+        if (seg) key = seg;
+      }
+      if (!key) continue;
+      m.set(key, (m.get(key) ?? 0) + 1);
+    }
+    return m;
+  }, [subsQ.data, from, to]);
+
+  const rows = useMemo(() => {
+    return [...RMK_AGENT_NAMES]
+      .map((key) => {
+        const rm = rmByKey.get(key);
+        return {
+          key,
+          name: RMK_DISPLAY[key] ?? key.replace(/\b\w/g, (c) => c.toUpperCase()),
+          dialed: rm?.dialed ?? 0,
+          connected: rm?.connected ?? 0,
+          connectRate: rm?.connectRate ?? 0,
+          talkTimeSecs: rm?.talkTimeSecs ?? 0,
+          avgTalkSecs: rm?.avgTalkSecs ?? 0,
+          submissions: subsByKey.get(key) ?? 0,
+        };
+      })
+      .sort((a, b) => b.dialed - a.dialed || b.submissions - a.submissions);
+  }, [rmByKey, subsByKey]);
+
+  const totals = useMemo(() => {
+    let dialed = 0, connected = 0, talkTimeSecs = 0, submissions = 0;
+    for (const r of rows) { dialed += r.dialed; connected += r.connected; talkTimeSecs += r.talkTimeSecs; submissions += r.submissions; }
+    return { dialed, connected, talkTimeSecs, submissions, connectRate: dialed ? Math.round((connected / dialed) * 100) : 0 };
+  }, [rows]);
+
+  function refresh() { rmQ.refetch(); subsQ.refetch(); }
+  const isFetching = rmQ.isFetching || subsQ.isFetching;
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-4">
+        <div>
+          <CardTitle className="text-xl flex items-center gap-2">
+            Ready-Mode Killers
+            <Badge className="text-[10px] px-1.5 py-0.5 bg-orange-500/20 text-orange-300 border-orange-500/30">Dialer</Badge>
+          </CardTitle>
+          <p className="text-sm text-muted-foreground mt-1">
+            Call activity from the ReadyMode dialer · submissions from the shared sheets
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={refresh} disabled={isFetching}>
+          <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`} />Refresh
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {(rmQ.isLoading || subsQ.isLoading) && <TableSkeleton />}
+
+        {!lockToToday && <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />}
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <StatTile label="Agents" value={RMK_AGENT_NAMES.size} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+          <StatTile label="Total dialed" value={totals.dialed.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
+          <StatTile label="Connected" value={totals.connected.toLocaleString()} icon={<PhoneCall className="h-3.5 w-3.5" />} tone="emerald" />
+          <StatTile label="Connect rate" value={`${totals.connectRate}%`} icon={<Activity className="h-3.5 w-3.5" />} tone="violet" />
+          <StatTile label="Talk time" value={formatHours(totals.talkTimeSecs)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
+          <StatTile label="Submissions" value={totals.submissions.toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="emerald" />
+        </div>
+
+        <div className="rounded-lg border bg-card overflow-hidden">
+          <div className="overflow-x-auto max-h-[60vh]">
+            <Table>
+              <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+                <TableRow>
+                  <TableHead className="text-left text-muted-foreground">Agent</TableHead>
+                  <TableHead className="text-right text-sky-400">Dialed</TableHead>
+                  <TableHead className="text-right text-emerald-400">Connected</TableHead>
+                  <TableHead className="text-right text-violet-400">Connect %</TableHead>
+                  <TableHead className="text-right">Talk time</TableHead>
+                  <TableHead className="text-right">Avg talk</TableHead>
+                  <TableHead className="text-right text-emerald-300">Submissions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r) => (
+                  <TableRow key={r.key} className="hover-elevate">
+                    <TableCell className="font-medium whitespace-nowrap">{r.name}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${r.dialed ? "text-sky-400" : "text-muted-foreground/40"}`}>{r.dialed || "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${r.connected ? "text-emerald-400" : "text-muted-foreground/40"}`}>{r.connected || "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${r.connectRate >= 20 ? "text-violet-400" : r.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>{r.connectRate > 0 ? `${r.connectRate}%` : "—"}</TableCell>
+                    <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{r.talkTimeSecs ? formatDuration(r.talkTimeSecs) : "—"}</TableCell>
+                    <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{r.avgTalkSecs ? formatDuration(r.avgTalkSecs) : "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${r.submissions ? "text-emerald-300" : "text-muted-foreground/40"}`}>{r.submissions || "—"}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+              <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
+                <TableRow>
+                  <TableCell className="font-bold">Whole team</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totals.dialed || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totals.connected || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-violet-400">{totals.connectRate ? `${totals.connectRate}%` : "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold">{totals.talkTimeSecs ? formatDuration(totals.talkTimeSecs) : "—"}</TableCell>
+                  <TableCell />
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-300">{totals.submissions || "—"}</TableCell>
+                </TableRow>
+              </TableHeader>
+            </Table>
+          </div>
+        </div>
+
+        {rmQ.error && (
+          <p className="text-xs text-muted-foreground">ReadyMode data could not be loaded right now.</p>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 function ReadyModePanel() {
@@ -9014,6 +9230,11 @@ function Dashboard() {
             {canSeeTab("nsf") && (
               <TabsContent value="nsf">
                 <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" statusQueryFn={fetchNSFCombinedSheet} />
+              </TabsContent>
+            )}
+            {canSeeTab("rmk") && (
+              <TabsContent value="rmk">
+                <ReadyModeKillersPanel />
               </TabsContent>
             )}
             {canSeeTab("missed-no-cb") && (
