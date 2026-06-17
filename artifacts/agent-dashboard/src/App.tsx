@@ -5755,6 +5755,18 @@ const RMK_DISPLAY: Record<string, string> = {
   "jonathan underwood": "Jonathan Underwood",
 };
 
+// Canonical submission-status column order for the breakdown view; any other
+// status the sheets produce is appended afterwards alphabetically.
+const RMK_STATUS_ORDER = ["Retained", "Cancelled", "Fixed", "IDP-Handled"];
+function rmkStatusTone(status: string): string {
+  const l = status.toLowerCase();
+  if (/retain/.test(l)) return "text-emerald-400";
+  if (/cancel/.test(l)) return "text-rose-400";
+  if (/\bidp\b/.test(l)) return "text-violet-400";
+  if (/fixed/.test(l)) return "text-sky-400";
+  return "text-zinc-300";
+}
+
 // Submissions for the Ready-Mode Killers team come from the same shared sheets
 // as the other teams (Discord-bot gid=0 + IDP-Handled tab), matched by roster name.
 async function fetchRMKSubmissions(): Promise<SheetData> {
@@ -5769,6 +5781,7 @@ function ReadyModeKillersPanel() {
   const todayIso = todayPDT();
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
+  const [subView, setSubView] = useState<"calls" | "subs">("calls");
   const { user } = useUser();
   const lockToToday = !!user.lockToToday;
   useEffect(() => {
@@ -5864,6 +5877,54 @@ function ReadyModeKillersPanel() {
     return { dialed, connected, talkTimeSecs, submissions, connectRate: dialed ? Math.round((connected / dialed) * 100) : 0 };
   }, [rows]);
 
+  // Submission breakdown by status (Retained / Cancelled / Fixed / IDP-Handled / …),
+  // keyed by normalized agent name and restricted to the team + date range.
+  const subsBreakdown = useMemo(() => {
+    const perAgent = new Map<string, Map<string, number>>();
+    const statusSet = new Set<string>();
+    for (const r of subsQ.data?.rows ?? []) {
+      const d = (r["Date"] ?? "").trim();
+      if (from && d && d < from) continue;
+      if (to && d && d > to) continue;
+      const norm = normalizeAgent((r["Agent"] ?? "").trim());
+      let key: string | null = null;
+      if (RMK_AGENT_NAMES.has(norm)) key = norm;
+      else {
+        const seg = norm.split("-").map((s) => s.trim()).find((s) => RMK_AGENT_NAMES.has(s));
+        if (seg) key = seg;
+      }
+      if (!key) continue;
+      const status = normalizeStatus((r["Status"] ?? "").trim()) || "Other";
+      statusSet.add(status);
+      let m = perAgent.get(key);
+      if (!m) { m = new Map(); perAgent.set(key, m); }
+      m.set(status, (m.get(status) ?? 0) + 1);
+    }
+    const extras = [...statusSet].filter((s) => !RMK_STATUS_ORDER.includes(s)).sort();
+    const statuses = [...RMK_STATUS_ORDER.filter((s) => statusSet.has(s)), ...extras];
+    return { perAgent, statuses };
+  }, [subsQ.data, from, to]);
+
+  const subRows = useMemo(() => {
+    return [...RMK_AGENT_NAMES]
+      .map((key) => {
+        const m = subsBreakdown.perAgent.get(key);
+        const counts: Record<string, number> = {};
+        let total = 0;
+        for (const s of subsBreakdown.statuses) { const n = m?.get(s) ?? 0; counts[s] = n; total += n; }
+        return { key, name: RMK_DISPLAY[key] ?? key.replace(/\b\w/g, (c) => c.toUpperCase()), counts, total };
+      })
+      .sort((a, b) => b.total - a.total);
+  }, [subsBreakdown]);
+
+  const subTotals = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const s of subsBreakdown.statuses) counts[s] = 0;
+    let total = 0;
+    for (const r of subRows) { for (const s of subsBreakdown.statuses) counts[s] += r.counts[s] ?? 0; total += r.total; }
+    return { counts, total };
+  }, [subRows, subsBreakdown.statuses]);
+
   function refresh() { rmQ.refetch(); subsQ.refetch(); }
   const isFetching = rmQ.isFetching || subsQ.isFetching;
 
@@ -5888,56 +5949,119 @@ function ReadyModeKillersPanel() {
 
         {!lockToToday && <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />}
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <StatTile label="Agents" value={RMK_AGENT_NAMES.size} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
-          <StatTile label="Total dialed" value={totals.dialed.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
-          <StatTile label="Connected" value={totals.connected.toLocaleString()} icon={<PhoneCall className="h-3.5 w-3.5" />} tone="emerald" />
-          <StatTile label="Connect rate" value={`${totals.connectRate}%`} icon={<Activity className="h-3.5 w-3.5" />} tone="violet" />
-          <StatTile label="Talk time" value={formatHours(totals.talkTimeSecs)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
-          <StatTile label="Submissions" value={totals.submissions.toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="emerald" />
+        <div className="flex gap-2">
+          <Button variant={subView === "calls" ? "default" : "outline"} size="sm" onClick={() => setSubView("calls")}>
+            <PhoneCall className="h-3.5 w-3.5 mr-1.5" />Call activity
+          </Button>
+          <Button variant={subView === "subs" ? "default" : "outline"} size="sm" onClick={() => setSubView("subs")}>
+            <Receipt className="h-3.5 w-3.5 mr-1.5" />Submissions
+          </Button>
         </div>
 
-        <div className="rounded-lg border bg-card overflow-hidden">
-          <div className="overflow-x-auto max-h-[60vh]">
-            <Table>
-              <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
-                <TableRow>
-                  <TableHead className="text-left text-muted-foreground">Agent</TableHead>
-                  <TableHead className="text-right text-sky-400">Dialed</TableHead>
-                  <TableHead className="text-right text-emerald-400">Connected</TableHead>
-                  <TableHead className="text-right text-violet-400">Connect %</TableHead>
-                  <TableHead className="text-right">Talk time</TableHead>
-                  <TableHead className="text-right">Avg talk</TableHead>
-                  <TableHead className="text-right text-emerald-300">Submissions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rows.map((r) => (
-                  <TableRow key={r.key} className="hover-elevate">
-                    <TableCell className="font-medium whitespace-nowrap">{r.name}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${r.dialed ? "text-sky-400" : "text-muted-foreground/40"}`}>{r.dialed || "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${r.connected ? "text-emerald-400" : "text-muted-foreground/40"}`}>{r.connected || "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${r.connectRate >= 20 ? "text-violet-400" : r.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>{r.connectRate > 0 ? `${r.connectRate}%` : "—"}</TableCell>
-                    <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{r.talkTimeSecs ? formatDuration(r.talkTimeSecs) : "—"}</TableCell>
-                    <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{r.avgTalkSecs ? formatDuration(r.avgTalkSecs) : "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${r.submissions ? "text-emerald-300" : "text-muted-foreground/40"}`}>{r.submissions || "—"}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-              <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
-                <TableRow>
-                  <TableCell className="font-bold">Whole team</TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totals.dialed || "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totals.connected || "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-violet-400">{totals.connectRate ? `${totals.connectRate}%` : "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold">{totals.talkTimeSecs ? formatDuration(totals.talkTimeSecs) : "—"}</TableCell>
-                  <TableCell />
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-300">{totals.submissions || "—"}</TableCell>
-                </TableRow>
-              </TableHeader>
-            </Table>
-          </div>
-        </div>
+        {subView === "calls" ? (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <StatTile label="Agents" value={RMK_AGENT_NAMES.size} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+              <StatTile label="Total dialed" value={totals.dialed.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
+              <StatTile label="Connected" value={totals.connected.toLocaleString()} icon={<PhoneCall className="h-3.5 w-3.5" />} tone="emerald" />
+              <StatTile label="Connect rate" value={`${totals.connectRate}%`} icon={<Activity className="h-3.5 w-3.5" />} tone="violet" />
+              <StatTile label="Talk time" value={formatHours(totals.talkTimeSecs)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
+              <StatTile label="Submissions" value={totals.submissions.toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="emerald" />
+            </div>
+
+            <div className="rounded-lg border bg-card overflow-hidden">
+              <div className="overflow-x-auto max-h-[60vh]">
+                <Table>
+                  <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+                    <TableRow>
+                      <TableHead className="text-left text-muted-foreground">Agent</TableHead>
+                      <TableHead className="text-right text-sky-400">Dialed</TableHead>
+                      <TableHead className="text-right text-emerald-400">Connected</TableHead>
+                      <TableHead className="text-right text-violet-400">Connect %</TableHead>
+                      <TableHead className="text-right">Talk time</TableHead>
+                      <TableHead className="text-right">Avg talk</TableHead>
+                      <TableHead className="text-right text-emerald-300">Submissions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {rows.map((r) => (
+                      <TableRow key={r.key} className="hover-elevate">
+                        <TableCell className="font-medium whitespace-nowrap">{r.name}</TableCell>
+                        <TableCell className={`text-right tabular-nums font-mono ${r.dialed ? "text-sky-400" : "text-muted-foreground/40"}`}>{r.dialed || "—"}</TableCell>
+                        <TableCell className={`text-right tabular-nums font-mono ${r.connected ? "text-emerald-400" : "text-muted-foreground/40"}`}>{r.connected || "—"}</TableCell>
+                        <TableCell className={`text-right tabular-nums font-mono ${r.connectRate >= 20 ? "text-violet-400" : r.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>{r.connectRate > 0 ? `${r.connectRate}%` : "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{r.talkTimeSecs ? formatDuration(r.talkTimeSecs) : "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{r.avgTalkSecs ? formatDuration(r.avgTalkSecs) : "—"}</TableCell>
+                        <TableCell className={`text-right tabular-nums font-mono ${r.submissions ? "text-emerald-300" : "text-muted-foreground/40"}`}>{r.submissions || "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                  <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
+                    <TableRow>
+                      <TableCell className="font-bold">Whole team</TableCell>
+                      <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totals.dialed || "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totals.connected || "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums font-mono font-bold text-violet-400">{totals.connectRate ? `${totals.connectRate}%` : "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums font-mono font-bold">{totals.talkTimeSecs ? formatDuration(totals.talkTimeSecs) : "—"}</TableCell>
+                      <TableCell />
+                      <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-300">{totals.submissions || "—"}</TableCell>
+                    </TableRow>
+                  </TableHeader>
+                </Table>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <StatTile label="Submissions" value={subTotals.total.toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="emerald" />
+              <StatTile label="Retained" value={(subTotals.counts["Retained"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="emerald" />
+              <StatTile label="Cancelled" value={(subTotals.counts["Cancelled"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="rose" />
+              <StatTile label="Fixed" value={(subTotals.counts["Fixed"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="sky" />
+              <StatTile label="IDP-Handled" value={(subTotals.counts["IDP-Handled"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="violet" />
+            </div>
+
+            <div className="rounded-lg border bg-card overflow-hidden">
+              <div className="overflow-x-auto max-h-[60vh]">
+                <Table>
+                  <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+                    <TableRow>
+                      <TableHead className="text-left text-muted-foreground">Agent</TableHead>
+                      {subsBreakdown.statuses.map((s) => (
+                        <TableHead key={s} className={`text-right ${rmkStatusTone(s)}`}>{s}</TableHead>
+                      ))}
+                      <TableHead className="text-right">Total</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {subRows.map((r) => (
+                      <TableRow key={r.key} className="hover-elevate">
+                        <TableCell className="font-medium whitespace-nowrap">{r.name}</TableCell>
+                        {subsBreakdown.statuses.map((s) => (
+                          <TableCell key={s} className={`text-right tabular-nums font-mono ${r.counts[s] ? rmkStatusTone(s) : "text-muted-foreground/40"}`}>{r.counts[s] || "—"}</TableCell>
+                        ))}
+                        <TableCell className="text-right tabular-nums font-mono font-semibold">{r.total || "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                  <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
+                    <TableRow>
+                      <TableCell className="font-bold">Whole team</TableCell>
+                      {subsBreakdown.statuses.map((s) => (
+                        <TableCell key={s} className={`text-right tabular-nums font-mono font-bold ${rmkStatusTone(s)}`}>{subTotals.counts[s] || "—"}</TableCell>
+                      ))}
+                      <TableCell className="text-right tabular-nums font-mono font-bold">{subTotals.total || "—"}</TableCell>
+                    </TableRow>
+                  </TableHeader>
+                </Table>
+              </div>
+            </div>
+
+            {subsBreakdown.statuses.length === 0 && !subsQ.isLoading && (
+              <p className="text-xs text-muted-foreground">No submissions in this date range.</p>
+            )}
+          </>
+        )}
 
         {rmQ.error && (
           <p className="text-xs text-muted-foreground">ReadyMode data could not be loaded right now.</p>
