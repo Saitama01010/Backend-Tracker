@@ -8915,7 +8915,10 @@ function BackendStatsPanel() {
     staleTime: 60_000,
   });
 
-  const [month, setMonth] = useState<string>("all");
+  const today = todayPDT();
+  const currentMonth = today.slice(0, 7);
+  // Default to the current month on open. "all" = All time, "today" = just today.
+  const [month, setMonth] = useState<string>(currentMonth);
   const months = useMemo(() => {
     const set = new Set<string>();
     for (const r of rows ?? []) {
@@ -8924,15 +8927,26 @@ function BackendStatsPanel() {
     }
     return [...set].sort((a, b) => b.localeCompare(a));
   }, [rows]);
+  // Always offer the current month as an option even before any rows land in it,
+  // so the default selection has a matching <option>.
+  const monthOptions = useMemo(() => {
+    const set = new Set(months);
+    set.add(currentMonth);
+    return [...set].sort((a, b) => b.localeCompare(a));
+  }, [months, currentMonth]);
   const filtered = useMemo(() => {
     const rs = rows ?? [];
-    return month === "all" ? rs : rs.filter((r) => r.date.startsWith(month));
-  }, [rows, month]);
-  // If the selected month disappears after a refresh, fall back to All time
-  // instead of silently showing an empty view.
+    if (month === "all") return rs;
+    if (month === "today") return rs.filter((r) => r.date === today);
+    return rs.filter((r) => r.date.startsWith(month));
+  }, [rows, month, today]);
+  // If a selected past month disappears after a refresh, fall back to All time
+  // instead of silently showing an empty view. The current month and "today"
+  // are always valid selections and never reset (they can legitimately be empty).
   useEffect(() => {
-    if (month !== "all" && months.length > 0 && !months.includes(month)) setMonth("all");
-  }, [months, month]);
+    if (month !== "all" && month !== "today" && month !== currentMonth
+        && months.length > 0 && !months.includes(month)) setMonth("all");
+  }, [months, month, currentMonth]);
 
   const stats = useMemo(() => {
     const rs = filtered;
@@ -9029,7 +9043,8 @@ function BackendStatsPanel() {
               className="appearance-none pl-9 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500/50"
             >
               <option value="all">All time</option>
-              {months.map((m) => <option key={m} value={m}>{bstatMonthLabel(m)}</option>)}
+              <option value="today">Today</option>
+              {monthOptions.map((m) => <option key={m} value={m}>{bstatMonthLabel(m)}</option>)}
             </select>
             <Calendar className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
             <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs">▾</span>
