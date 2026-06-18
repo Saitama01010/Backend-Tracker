@@ -2,7 +2,7 @@ import { pgTable, text, serial, boolean, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
-export const VALID_TEAMS = ["retention", "nsf", "cs"] as const;
+export const VALID_TEAMS = ["retention", "nsf", "cs", "killers"] as const;
 export type TeamSlug = typeof VALID_TEAMS[number];
 
 export const teamAgentsTable = pgTable("team_agents", {

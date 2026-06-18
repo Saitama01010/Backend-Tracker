@@ -143,7 +143,7 @@ function authHeaders(token: string) {
 // Adding an agent here automatically makes them appear in Google Sheets matching
 // AND OpenPhone/PBX call matching — no code change required.
 
-type RosterTeam = "retention" | "nsf" | "cs";
+type RosterTeam = "retention" | "nsf" | "cs" | "killers";
 interface RosterAgent { id: number; name: string; arabicName: string | null; shift: string | null; team: RosterTeam; active: boolean; }
 interface RosterIndex {
   agents: RosterAgent[];
@@ -165,10 +165,10 @@ function emptyRosterIndex(): RosterIndex {
   const idx: RosterIndex = {
     agents: [],
     version: 0,
-    teamNames: { retention: new Set(), nsf: new Set(), cs: new Set() },
-    teamNamesAll: { retention: new Set(), nsf: new Set(), cs: new Set() },
+    teamNames: { retention: new Set(), nsf: new Set(), cs: new Set(), killers: new Set() },
+    teamNamesAll: { retention: new Set(), nsf: new Set(), cs: new Set(), killers: new Set() },
     phoneAliases: {},
-    allowlist: { retention: new Set(), nsf: new Set(), cs: new Set() },
+    allowlist: { retention: new Set(), nsf: new Set(), cs: new Set(), killers: new Set() },
     byName: new Map(),
     lookupByAnyName: () => null,
     teamForAgent: () => null,
@@ -286,7 +286,7 @@ function unionTeamSet(
 function rosterTeamMembers(
   hardcoded: Set<string>,
   roster: RosterIndex | null | undefined,
-  team: "retention" | "nsf" | "cs",
+  team: RosterTeam,
 ): Set<string> {
   // Union of roster + hardcoded. The roster is the source of truth for
   // active membership, but hardcoded sets carry historical English/Arabic
@@ -303,7 +303,7 @@ function rosterTeamMembers(
 
 // Per-team check: does the roster have ANY entries (active or inactive)?
 // When true, the roster is authoritative and hardcoded fallbacks are bypassed.
-function rosterHasAnyForTeam(roster: RosterIndex | null | undefined, team: "retention" | "nsf" | "cs"): boolean {
+function rosterHasAnyForTeam(roster: RosterIndex | null | undefined, team: RosterTeam): boolean {
   if (!roster) return false;
   return (roster.teamNamesAll[team]?.size ?? 0) > 0;
 }
@@ -311,7 +311,7 @@ function rosterHasAnyForTeam(roster: RosterIndex | null | undefined, team: "rete
 // Per-team check: is the roster actively driving this team's visible membership?
 // Mirrors rosterHasAnyForTeam so callers that gate hardcoded "seed" name lists
 // on this signal also bypass the seed when only inactive roster rows exist.
-function rosterDrivesTeam(roster: RosterIndex | null | undefined, team: "retention" | "nsf" | "cs"): boolean {
+function rosterDrivesTeam(roster: RosterIndex | null | undefined, team: RosterTeam): boolean {
   return rosterHasAnyForTeam(roster, team);
 }
 
@@ -2023,8 +2023,31 @@ function sumRetained(byStatus: Map<string, number>, retained: Set<string>): numb
 function ByDayView({ data }: { data: Aggregated }) {
   const showRate = data.mode === "retention";
   const [agentFilter, setAgentFilter] = useState<string>("");
+  // Merge every Killer agent's day breakdowns into one combined series so the
+  // "⚔ Killers" filter behaves like a single (team-level) selection.
+  const killerDays = useMemo<DayBreakdown[]>(() => {
+    const m = new Map<number, DayBreakdown>();
+    for (const [agent, days] of data.byAgentDay) {
+      if (!isKillerAgentKey(normalizeAgent(agent))) continue;
+      for (const d of days) {
+        const t = d.date.getTime();
+        let agg = m.get(t);
+        if (!agg) {
+          agg = { iso: d.iso, date: d.date, calls: 0, seconds: 0, total: 0, byStatus: new Map() };
+          m.set(t, agg);
+        }
+        agg.calls += d.calls;
+        agg.seconds += d.seconds;
+        agg.total += d.total;
+        for (const [s, n] of d.byStatus) agg.byStatus.set(s, (agg.byStatus.get(s) ?? 0) + n);
+      }
+    }
+    return Array.from(m.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
+  }, [data.byAgentDay]);
   const sourceDays: DayBreakdown[] =
-    agentFilter && data.byAgentDay.has(agentFilter)
+    agentFilter === KILLERS_FILTER
+      ? killerDays
+      : agentFilter && data.byAgentDay.has(agentFilter)
       ? data.byAgentDay.get(agentFilter)!
       : data.byDay;
   // Group days into weeks (Mon–Sun) and emit a subtotal row at the end of each week
@@ -2081,6 +2104,9 @@ function ByDayView({ data }: { data: Aggregated }) {
           className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
         >
           <option value="">All agents</option>
+          {agentOptions.some((n) => isKillerAgentKey(normalizeAgent(n))) && (
+            <option value={KILLERS_FILTER}>⚔ Killers</option>
+          )}
           {agentOptions.map((n) => (
             <option key={n} value={n}>{n}</option>
           ))}
@@ -4456,7 +4482,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   const [newName, setNewName] = useState("");
   const [newArabic, setNewArabic] = useState("");
   const [newShift, setNewShift] = useState("");
-  const [newTeam, setNewTeam] = useState<"retention" | "nsf" | "cs">("retention");
+  const [newTeam, setNewTeam] = useState<RosterTeam>("retention");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -4537,15 +4563,17 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
     await patchAgent(a.id, { [field]: field === "name" ? next : (next || null) });
   }
 
-  const TEAMS: { key: "retention" | "nsf" | "cs"; label: string }[] = [
+  const TEAMS: { key: RosterTeam; label: string }[] = [
     { key: "retention", label: "Retention" },
     { key: "nsf",       label: "NSF" },
     { key: "cs",        label: "CS" },
+    { key: "killers",   label: "ReadyMode Killer" },
   ];
   const teamBadge: Record<string, string> = {
     retention: "bg-violet-500/20 text-violet-300 border-violet-500/30",
     nsf: "bg-sky-500/20 text-sky-300 border-sky-500/30",
     cs: "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30",
+    killers: "bg-rose-500/20 text-rose-300 border-rose-500/30",
   };
 
   // Sort: team, then English name.
@@ -4595,7 +4623,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
               />
               <select
                 value={newTeam}
-                onChange={(e) => setNewTeam(e.target.value as "retention" | "nsf" | "cs")}
+                onChange={(e) => setNewTeam(e.target.value as RosterTeam)}
                 className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500/50"
               >
                 {TEAMS.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
@@ -5192,7 +5220,9 @@ function QuoLinesPanel() {
     for (const [agentName, days] of Object.entries(agentStats)) {
       const key = normalizeAgent(agentName);
       if (PHONE_BLOCKLIST.has(key)) continue;
-      if (agentFilter && normalizeAgent(agentFilter) !== key) continue;
+      if (agentFilter === KILLERS_FILTER) {
+        if (!isKillerAgentKey(key)) continue;
+      } else if (agentFilter && normalizeAgent(agentFilter) !== key) continue;
       const acc: PhoneAgentMetrics = {
         calls: 0, seconds: 0, answered: 0, missed: 0,
         voicemail: 0, vmBrief: 0, inbound: 0, outbound: 0,
@@ -5292,6 +5322,9 @@ function QuoLinesPanel() {
                 className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
               >
                 <option value="">All agents</option>
+                {allAgentNames.some((n) => isKillerAgentKey(normalizeAgent(n))) && (
+                  <option value={KILLERS_FILTER}>⚔ Killers</option>
+                )}
                 {allAgentNames.map((n) => (
                   <option key={n} value={n}>{n}</option>
                 ))}
@@ -5762,6 +5795,15 @@ const RMK_DISPLAY: Record<string, string> = {
   "henry marcus": "Henry Marcus",
   "jonathan underwood": "Jonathan Underwood",
 };
+
+// Sentinel value used by agent-filter dropdowns to mean "the Killers team".
+const KILLERS_FILTER = "__killers__";
+// An agent belongs to the Ready-Mode Killers roster when its normalized key —
+// or any dash-separated segment of a compound name — is in RMK_AGENT_NAMES.
+function isKillerAgentKey(agentKey: string): boolean {
+  if (RMK_AGENT_NAMES.has(agentKey)) return true;
+  return agentKey.split("-").map((s) => s.trim()).some((seg) => RMK_AGENT_NAMES.has(seg));
+}
 
 // Canonical submission-status column order for the breakdown view; any other
 // status the sheets produce is appended afterwards alphabetically.
@@ -8831,17 +8873,10 @@ function bstatResolveAgent(raw: string, roster: RosterIndex, fallbackTeam: TeamM
       if (hit) break;
     }
   }
-  if (hit) return { key: normalizeAgent(hit.name), display: hit.name, team: hit.team };
+  if (hit) return { key: normalizeAgent(hit.name), display: hit.name, team: hit.team === "killers" ? fallbackTeam : hit.team };
   const key = aliased;
   const display = NAME_DISPLAY[key] ?? key.replace(/\b\w/g, (c) => c.toUpperCase());
   return { key, display, team: fallbackTeam };
-}
-
-// An agent is a "Killer" (Ready-Mode Killers roster) when its resolved key —
-// or any dash-separated segment of a compound name — is in RMK_AGENT_NAMES.
-function bstatIsKiller(agentKey: string): boolean {
-  if (RMK_AGENT_NAMES.has(agentKey)) return true;
-  return agentKey.split("-").map((s) => s.trim()).some((seg) => RMK_AGENT_NAMES.has(seg));
 }
 
 function bstatMonthLabel(ym: string): string {
@@ -8926,6 +8961,8 @@ function BackendStatsPanel() {
   const currentMonth = today.slice(0, 7);
   // Default to the current month on open. "all" = All time, "today" = just today.
   const [month, setMonth] = useState<string>(currentMonth);
+  // When on, the leaderboard shows only the Ready-Mode Killers roster.
+  const [killersOnly, setKillersOnly] = useState(false);
   const months = useMemo(() => {
     const set = new Set<string>();
     for (const r of rows ?? []) {
@@ -8999,6 +9036,12 @@ function BackendStatsPanel() {
       cancelled: byStatus.get("Cancelled") ?? 0,
     };
   }, [filtered]);
+
+  const hasKillers = useMemo(() => stats.agents.some((a) => isKillerAgentKey(a.agentKey)), [stats.agents]);
+  const leaderboardAgents = useMemo(
+    () => (killersOnly ? stats.agents.filter((a) => isKillerAgentKey(a.agentKey)) : stats.agents),
+    [stats.agents, killersOnly],
+  );
 
   if (isLoading) {
     return (
@@ -9169,8 +9212,17 @@ function BackendStatsPanel() {
 
           {/* Full leaderboard */}
           <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-semibold text-zinc-200">All contributors ({stats.agents.length})</CardTitle>
+            <CardHeader className="pb-2 flex flex-row items-center justify-between gap-2 space-y-0">
+              <CardTitle className="text-sm font-semibold text-zinc-200">All contributors ({leaderboardAgents.length})</CardTitle>
+              {hasKillers && (
+                <button
+                  type="button"
+                  onClick={() => setKillersOnly((v) => !v)}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors border ${killersOnly ? "border-rose-500/50 bg-rose-500/15 text-rose-200" : "border-white/10 text-zinc-400 hover:text-white hover:bg-white/5"}`}
+                >
+                  ⚔ Killers only
+                </button>
+              )}
             </CardHeader>
             <CardContent>
               <div className="overflow-x-auto">
@@ -9190,10 +9242,17 @@ function BackendStatsPanel() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {stats.agents.map((a, i) => (
+                    {leaderboardAgents.map((a, i) => (
                       <TableRow key={a.agent} className="border-white/5">
                         <TableCell className="text-zinc-500 tabular-nums">{i + 1}</TableCell>
-                        <TableCell className="font-medium text-zinc-100">{a.agent}</TableCell>
+                        <TableCell className="font-medium text-zinc-100">
+                          <span className="inline-flex items-center gap-2">
+                            {a.agent}
+                            {isKillerAgentKey(a.agentKey) && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-rose-500/30 bg-rose-500/15 text-rose-300">Killer</span>
+                            )}
+                          </span>
+                        </TableCell>
                         <TableCell>
                           <span className="inline-flex items-center gap-1.5 text-xs text-zinc-300">
                             <span className="h-2 w-2 rounded-full" style={{ background: BSTAT_TEAM_META[a.team].color }} />
@@ -10042,12 +10101,18 @@ function AttendancePanel() {
   const departments = useMemo(() => {
     const s = new Set<string>(["All"]);
     for (const m of scopedMembers) if (m.department) s.add(m.department);
+    // Killers span teams; offer them as a pseudo-department when any are present.
+    if (scopedMembers.some((m) => isKillerAgentKey(normalizeAgent(m.name)))) s.add("Killers");
     return [...s];
   }, [scopedMembers]);
 
   const visible = useMemo(
     () => scopedMembers
-      .filter((m) => deptFilter === "All" || m.department === deptFilter)
+      .filter((m) =>
+        deptFilter === "All" ||
+        (deptFilter === "Killers"
+          ? isKillerAgentKey(normalizeAgent(m.name))
+          : m.department === deptFilter))
       .sort((a, b) => {
         if (a.active !== b.active) return a.active ? -1 : 1;
         return parseFloat(a.shift || "0") - parseFloat(b.shift || "0");

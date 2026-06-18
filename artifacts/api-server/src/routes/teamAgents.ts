@@ -6,7 +6,7 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
 
-const VALID_TEAMS = ["retention", "nsf", "cs"] as const;
+const VALID_TEAMS = ["retention", "nsf", "cs", "killers"] as const;
 
 router.get("/team-agents", requireAuth, async (_req, res) => {
   const agents = await db
@@ -19,7 +19,7 @@ router.get("/team-agents", requireAuth, async (_req, res) => {
 router.post("/team-agents", requireAuth, requireRole("admin"), async (req, res) => {
   const { name, team, arabicName, shift } = req.body ?? {};
   if (!name || typeof name !== "string" || !VALID_TEAMS.includes(team)) {
-    res.status(400).json({ error: "name and valid team (retention|nsf|cs) required" });
+    res.status(400).json({ error: "name and valid team (retention|nsf|cs|killers) required" });
     return;
   }
   const [agent] = await db
