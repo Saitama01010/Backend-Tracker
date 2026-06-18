@@ -73,6 +73,7 @@ import {
   FileSpreadsheet,
   Loader2,
   ArrowLeftRight,
+  type LucideIcon,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -124,6 +125,18 @@ const ALL_TABS: { value: string; label: string }[] = [
   { value: "qa",              label: "Retention QA" },
   { value: "onboarding",      label: "Onboarding" },
 ];
+
+const TAB_ICONS: Record<string, LucideIcon> = {
+  retention:         ShieldCheck,
+  cs:                MessageCircle,
+  nsf:               Receipt,
+  rmk:               Rocket,
+  "missed-no-cb":    PhoneMissed,
+  "callback-review": PhoneCall,
+  violations:        ShieldAlert,
+  qa:                CheckCircle2,
+  onboarding:        UserCheck,
+};
 
 type TeamAccess = "retention" | "nsf" | "cs";
 interface AuthUser { id: number; username: string; role: "admin" | "edit" | "view"; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; allowedSubTabs?: string[] | null; lockToToday?: boolean; hideBackendStats?: boolean; }
@@ -9503,13 +9516,22 @@ function Dashboard() {
           <BackendStatsPanel />
         ) : view === "metrics" && can("view_metrics") ? (
           <Tabs defaultValue={metricsTabs[0]?.value ?? defaultTab} className="space-y-6">
-            <div className="overflow-x-auto pb-1 -mx-1 px-1">
-              <TabsList className="flex w-max sm:w-full sm:max-w-4xl">
-                {metricsTabs.map((t) => (
-                  <TabsTrigger key={t.value} value={t.value} data-testid={`tab-${t.value}`} className="whitespace-nowrap px-3 sm:px-4">{t.label}</TabsTrigger>
-                ))}
-              </TabsList>
-            </div>
+            <TabsList className="flex h-auto flex-wrap justify-start gap-2 bg-transparent p-0">
+              {metricsTabs.map((t) => {
+                const Icon = TAB_ICONS[t.value] ?? Layers;
+                return (
+                  <TabsTrigger
+                    key={t.value}
+                    value={t.value}
+                    data-testid={`tab-${t.value}`}
+                    className="group gap-2 whitespace-nowrap rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm font-medium text-zinc-400 backdrop-blur transition-all hover:border-white/20 hover:bg-white/[0.07] hover:text-zinc-100 data-[state=active]:border-transparent data-[state=active]:bg-gradient-to-r data-[state=active]:from-violet-500 data-[state=active]:to-fuchsia-500 data-[state=active]:text-white data-[state=active]:shadow-[0_0_22px_-4px_rgba(168,85,247,0.75)]"
+                  >
+                    <Icon className="h-3.5 w-3.5 shrink-0" />
+                    {t.label}
+                  </TabsTrigger>
+                );
+              })}
+            </TabsList>
             {canSeeTab("retention") && (
               <TabsContent value="retention">
                 <RetentionPanel />
