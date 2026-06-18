@@ -8837,6 +8837,13 @@ function bstatResolveAgent(raw: string, roster: RosterIndex, fallbackTeam: TeamM
   return { key, display, team: fallbackTeam };
 }
 
+// An agent is a "Killer" (Ready-Mode Killers roster) when its resolved key —
+// or any dash-separated segment of a compound name — is in RMK_AGENT_NAMES.
+function bstatIsKiller(agentKey: string): boolean {
+  if (RMK_AGENT_NAMES.has(agentKey)) return true;
+  return agentKey.split("-").map((s) => s.trim()).some((seg) => RMK_AGENT_NAMES.has(seg));
+}
+
 function bstatMonthLabel(ym: string): string {
   const m = /^(\d{4})-(\d{2})$/.exec(ym);
   if (!m) return ym;
@@ -8953,12 +8960,12 @@ function BackendStatsPanel() {
     const byDay = new Map<string, number>();
     const byStatus = new Map<string, number>();
     const byTeam = new Map<TeamMode, number>();
-    const byAgent = new Map<string, { agent: string; team: TeamMode; total: number; retained: number; idpCancelRetained: number; fixed: number; idp: number; cancelled: number }>();
+    const byAgent = new Map<string, { agent: string; agentKey: string; team: TeamMode; total: number; retained: number; idpCancelRetained: number; fixed: number; idp: number; cancelled: number }>();
     for (const r of rs) {
       if (/^\d{4}-\d{2}-\d{2}$/.test(r.date)) byDay.set(r.date, (byDay.get(r.date) ?? 0) + 1);
       byStatus.set(r.status, (byStatus.get(r.status) ?? 0) + 1);
       byTeam.set(r.team, (byTeam.get(r.team) ?? 0) + 1);
-      const a = byAgent.get(r.agentKey) ?? { agent: r.agent, team: r.team, total: 0, retained: 0, idpCancelRetained: 0, fixed: 0, idp: 0, cancelled: 0 };
+      const a = byAgent.get(r.agentKey) ?? { agent: r.agent, agentKey: r.agentKey, team: r.team, total: 0, retained: 0, idpCancelRetained: 0, fixed: 0, idp: 0, cancelled: 0 };
       a.total++;
       if (r.status === "Retained") { if (r.idpCancel) a.idpCancelRetained++; else a.retained++; }
       else if (r.status === "Fixed") a.fixed++;
