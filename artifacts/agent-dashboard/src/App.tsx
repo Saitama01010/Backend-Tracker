@@ -5782,7 +5782,34 @@ async function fetchRMKSubmissions(): Promise<SheetData> {
   // avoid Google silently dropping the concurrent second request.
   const newRows = await fetchNewSheetForTeam(RMK_AGENT_NAMES);
   const idpRows = await fetchIDPSheetForTeam(RMK_AGENT_NAMES);
-  return { headers: ["Agent", "Status", "Date", "File ID"], rows: [...newRows, ...idpRows] };
+
+  // The Killers also track files in the old NSF sheet (NSF.status) — the same
+  // source the NSF team's Submissions table reads. Pull their rows from there
+  // too so files logged there (which were missing here) show up. Each row maps
+  // to "Fixed" unless a retain/cancel keyword overrides it.
+  const oldNsfSheet = await fetchHeaderCsv(NSF.status).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
+  const oldNsfRows: Row[] = [];
+  const oldAgentCol = findColumn(oldNsfSheet.headers, ["Agent", "Agent Name", "Rep"]);
+  const oldDateCol = findColumn(oldNsfSheet.headers, ["Date", "Day", "Call Date"]);
+  const oldNsfFileCol = findColumn(oldNsfSheet.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
+  if (oldAgentCol) {
+    for (const r of oldNsfSheet.rows) {
+      const agentRaw = (r[oldAgentCol] ?? "").trim();
+      if (!agentRaw || /total$/i.test(agentRaw)) continue;
+      const agentNorm = normalizeAgent(agentRaw);
+      const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
+      const segments = agentNorm.split("-").map((s) => s.trim()).filter(Boolean);
+      const matches = RMK_AGENT_NAMES.has(agentNorm) || RMK_AGENT_NAMES.has(resolvedKey)
+        || segments.some((seg) => RMK_AGENT_NAMES.has(seg));
+      if (!matches) continue;
+      const dateStr = oldDateCol ? (r[oldDateCol] ?? "").trim() : "";
+      const d = parseDate(dateStr);
+      const kw = detectKeywordStatus(r);
+      oldNsfRows.push({ Agent: agentRaw, Status: kw ?? "Fixed", Date: d ? toIsoDate(d) : dateStr, "File ID": oldNsfFileCol ? (r[oldNsfFileCol] ?? "").trim() : "" });
+    }
+  }
+
+  return { headers: ["Agent", "Status", "Date", "File ID"], rows: [...newRows, ...idpRows, ...oldNsfRows] };
 }
 
 function ReadyModeKillersPanel() {
