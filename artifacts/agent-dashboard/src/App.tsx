@@ -18,6 +18,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import Papa from "papaparse";
+import companyLogo from "@assets/WhatsApp_Image_2026-01-12_at_10.33.41_PM_1781812846940.jpeg";
 import { createContext, useContext, Fragment, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
   ArrowDown,
@@ -4358,8 +4359,8 @@ function LoginGate({ children }: { children: React.ReactNode }) {
       <div className="relative w-full max-w-sm mx-4">
         <div className="rounded-2xl border border-white/10 bg-card/80 backdrop-blur-xl p-8 space-y-6 shadow-2xl">
           <div className="flex flex-col items-center gap-3">
-            <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center shadow-[0_0_24px_-6px_rgba(168,85,247,0.7)]">
-              <Rocket className="h-6 w-6 text-white" />
+            <div className="h-12 w-12 rounded-xl overflow-hidden ring-1 ring-white/10 shadow-[0_0_24px_-6px_rgba(59,130,246,0.6)]">
+              <img src={companyLogo} alt="Company logo" className="h-full w-full object-cover" />
             </div>
             <div className="text-center">
               <h1 className="text-xl font-bold bg-gradient-to-r from-violet-300 via-fuchsia-300 to-sky-300 bg-clip-text text-transparent">
@@ -9407,8 +9408,8 @@ function Dashboard() {
 
       <header className="relative border-b border-white/5 bg-card/60 backdrop-blur-xl">
         <div className="max-w-[1400px] mx-auto px-3 py-3 sm:px-6 sm:py-4 flex items-center gap-3">
-          <div className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white flex items-center justify-center shadow-[0_0_24px_-6px_rgba(168,85,247,0.7)]">
-            <Rocket className="h-4 w-4 sm:h-5 sm:w-5" />
+          <div className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-lg overflow-hidden ring-1 ring-white/10 shadow-[0_0_24px_-6px_rgba(59,130,246,0.6)]">
+            <img src={companyLogo} alt="Company logo" className="h-full w-full object-cover" />
           </div>
           <div className="flex-1 min-w-0">
             <h1 className="text-base sm:text-xl font-bold tracking-tight bg-gradient-to-r from-violet-300 via-fuchsia-300 to-sky-300 bg-clip-text text-transparent truncate">
