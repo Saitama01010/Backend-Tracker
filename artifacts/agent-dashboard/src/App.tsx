@@ -6021,6 +6021,37 @@ function ReadyModeKillersPanel() {
   function refresh() { rmQ.refetch(); subsQ.refetch(); }
   const isFetching = rmQ.isFetching || subsQ.isFetching;
 
+  // Export raw submission rows (Agent, Status, Date, File ID) for the current
+  // date range — mirrors the other teams' "Export Rows" CSV. IDP-Cancel-Retained
+  // rows are surfaced as "IDP-Cancel-Handled" so they can be audited separately.
+  function exportSubsRows() {
+    const data = subsQ.data;
+    if (!data) return;
+    const filtered = (data.rows ?? []).filter((r) => {
+      const d = (r["Date"] ?? "").trim();
+      if (from && d && d < from) return false;
+      if (to && d && d > to) return false;
+      return true;
+    });
+    const exportRows = filtered.map((r) => {
+      const isIdpCancel = r["__sourceTab"] === "IDP-Cancel-Retained";
+      return {
+        Agent: (r["Agent"] ?? "").trim(),
+        Status: isIdpCancel ? "IDP-Cancel-Handled" : (r["Status"] ?? "").trim(),
+        Date: (r["Date"] ?? "").trim(),
+        "File ID": (r["File ID"] ?? "").trim(),
+      };
+    });
+    const csv = Papa.unparse(exportRows);
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `rmk_submissions_${from}_to_${to}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-4">
@@ -6112,6 +6143,12 @@ function ReadyModeKillersPanel() {
               <StatTile label="Cancelled" value={(subTotals.counts["Cancelled"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="rose" />
               <StatTile label="Fixed" value={(subTotals.counts["Fixed"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="sky" />
               <StatTile label="IDP-Handled" value={(subTotals.counts["IDP-Handled"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="violet" />
+            </div>
+
+            <div className="flex justify-end">
+              <Button variant="outline" size="sm" onClick={exportSubsRows} disabled={!subsQ.data} data-testid="button-export-rmk-rows">
+                <Download className="h-3.5 w-3.5 mr-1.5" />Export Rows
+              </Button>
             </div>
 
             <div className="rounded-lg border bg-card overflow-hidden">
