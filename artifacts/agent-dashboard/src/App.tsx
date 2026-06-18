@@ -5775,41 +5775,57 @@ function rmkStatusTone(status: string): string {
   return "text-zinc-300";
 }
 
-// Submissions for the Ready-Mode Killers team come from the same shared sheets
-// as the other teams (Discord-bot gid=0 + IDP-Handled tab), matched by roster name.
+// Submissions for the Ready-Mode Killers team are pulled (per ops) from four
+// sources, matched to the fixed Killer roster by normalized agent name:
+//   1. Fixes               — Discord-bot sheet gid=0   (NEW_NSF_URL)            → "Fixed" (keyword override)
+//   2. IDP-Handled         — gid=871007220             (IDP_RETENTION_URL)      → "IDP-Handled"
+//   3. IDP-Cancel-Retained — gid=1018337469            (IDP_CANCEL_RETAINED_URL)→ "Retained"
+//   4. Retained/Cancelled  — retention sheet gid=837339339 (NEW_RETENTION_URL)  → "Retained" or "Cancelled"
 async function fetchRMKSubmissions(): Promise<SheetData> {
-  // Both tabs live in the same spreadsheet (11kOhk8x) — fetch sequentially to
-  // avoid Google silently dropping the concurrent second request.
+  // Match a sheet's agent name against the fixed Killer roster, resolving
+  // aliases and dash-separated compound names ("riham samir-leah tanner-1234").
+  const matchesRMK = (agentRaw: string): boolean => {
+    const norm = normalizeAgent(agentRaw);
+    const resolvedKey = NAME_ALIASES[norm] ?? norm;
+    const segments = norm.split("-").map((s) => s.trim()).filter(Boolean);
+    return RMK_AGENT_NAMES.has(norm) || RMK_AGENT_NAMES.has(resolvedKey)
+      || segments.some((seg) => RMK_AGENT_NAMES.has(seg));
+  };
+
+  // Sources 1–3 share spreadsheet 11kOhk8x — fetch sequentially so Google does
+  // not silently drop concurrent requests on the same workbook. Source 4 is a
+  // different workbook and is fetched alongside.
+  const newRetentionP = fetchHeaderCsv(NEW_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
   const newRows = await fetchNewSheetForTeam(RMK_AGENT_NAMES);
   const idpRows = await fetchIDPSheetForTeam(RMK_AGENT_NAMES);
+  const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
+  const newRetentionSheet = await newRetentionP;
 
-  // The Killers also track files in the old NSF sheet (NSF.status) — the same
-  // source the NSF team's Submissions table reads. Pull their rows from there
-  // too so files logged there (which were missing here) show up. Each row maps
-  // to "Fixed" unless a retain/cancel keyword overrides it.
-  const oldNsfSheet = await fetchHeaderCsv(NSF.status).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
-  const oldNsfRows: Row[] = [];
-  const oldAgentCol = findColumn(oldNsfSheet.headers, ["Agent", "Agent Name", "Rep"]);
-  const oldDateCol = findColumn(oldNsfSheet.headers, ["Date", "Day", "Call Date"]);
-  const oldNsfFileCol = findColumn(oldNsfSheet.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
-  if (oldAgentCol) {
-    for (const r of oldNsfSheet.rows) {
-      const agentRaw = (r[oldAgentCol] ?? "").trim();
-      if (!agentRaw || /total$/i.test(agentRaw)) continue;
-      const agentNorm = normalizeAgent(agentRaw);
-      const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
-      const segments = agentNorm.split("-").map((s) => s.trim()).filter(Boolean);
-      const matches = RMK_AGENT_NAMES.has(agentNorm) || RMK_AGENT_NAMES.has(resolvedKey)
-        || segments.some((seg) => RMK_AGENT_NAMES.has(seg));
-      if (!matches) continue;
-      const dateStr = oldDateCol ? (r[oldDateCol] ?? "").trim() : "";
-      const d = parseDate(dateStr);
-      const kw = detectKeywordStatus(r);
-      oldNsfRows.push({ Agent: agentRaw, Status: kw ?? "Fixed", Date: d ? toIsoDate(d) : dateStr, "File ID": oldNsfFileCol ? (r[oldNsfFileCol] ?? "").trim() : "" });
-    }
+  // 3. IDP Cancel Retained → every row is a Retained for the submitting agent.
+  const idpCancelRows: Row[] = [];
+  for (const r of idpCancelSheet.rows) {
+    const d = parseEgyptTimestamp((r["Timestamp"] ?? "").trim());
+    if (!d) continue;
+    const agentRaw = (r["Agent Name"] ?? "").trim();
+    if (!agentRaw || !matchesRMK(agentRaw)) continue;
+    idpCancelRows.push({ Agent: agentRaw, Status: "Retained", Date: toCaliforniaDateStr(d), "File ID": (r["File ID"] ?? "").trim(), __sourceTab: "IDP-Cancel-Retained" });
   }
 
-  return { headers: ["Agent", "Status", "Date", "File ID"], rows: [...newRows, ...idpRows, ...oldNsfRows] };
+  // 4. Retention sheet → keep Retained and Cancelled rows (IDP-Handled rows are
+  // already covered by source 2, so they are skipped here).
+  const retentionRows: Row[] = [];
+  for (const r of newRetentionSheet.rows) {
+    const d = parseEgyptTimestamp((r["Timestamp"] ?? "").trim());
+    if (!d) continue;
+    const agentRaw = (r["Agent Name"] ?? "").trim();
+    if (!agentRaw || !matchesRMK(agentRaw)) continue;
+    const kw = detectKeywordStatus(r);
+    const derived = kw ?? deriveNewRetentionStatus(r["Cancel request update"] ?? "");
+    if (derived !== "Retained" && derived !== "Cancelled") continue;
+    retentionRows.push({ Agent: agentRaw, Status: derived, Date: toCaliforniaDateStr(d), "File ID": (r["File ID"] ?? "").trim() });
+  }
+
+  return { headers: ["Agent", "Status", "Date", "File ID"], rows: [...newRows, ...idpRows, ...idpCancelRows, ...retentionRows] };
 }
 
 function ReadyModeKillersPanel() {
