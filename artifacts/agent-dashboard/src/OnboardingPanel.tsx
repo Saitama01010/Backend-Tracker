@@ -112,9 +112,9 @@ function lastDayOfMonth(ym: string): string {
   return `${ym}-${String(d).padStart(2, "0")}`;
 }
 
-type ToneKey = "violet" | "emerald" | "sky" | "amber" | "rose" | "cyan";
+type ToneKey = "blue" | "emerald" | "sky" | "amber" | "rose" | "cyan";
 const TONES: Record<ToneKey, string> = {
-  violet: "from-violet-500/15 to-violet-500/5 border-violet-500/30 text-violet-200",
+  blue: "from-blue-500/15 to-blue-500/5 border-blue-500/30 text-blue-200",
   emerald: "from-emerald-500/15 to-emerald-500/5 border-emerald-500/30 text-emerald-200",
   sky: "from-sky-500/15 to-sky-500/5 border-sky-500/30 text-sky-200",
   amber: "from-amber-500/15 to-amber-500/5 border-amber-500/30 text-amber-200",
@@ -213,16 +213,16 @@ function OnboardingReportCard() {
         : new Date(`${day}T00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 
   return (
-    <div className="rounded-xl border border-violet-700/30 bg-gradient-to-br from-violet-950/40 to-fuchsia-950/20 backdrop-blur p-5 space-y-4">
+    <div className="rounded-xl border border-blue-700/30 bg-gradient-to-br from-blue-950/40 to-cyan-950/20 backdrop-blur p-5 space-y-4">
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
-            <FileSpreadsheet className="h-5 w-5 text-violet-300" />
+            <FileSpreadsheet className="h-5 w-5 text-blue-300" />
             Onboarding Line Report
           </h2>
           <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
             <span>(949) 315-7441 · {rangeLabel} · Connection vs Onboarded + tax mentions</span>
-            <span className="flex items-center gap-1 text-violet-300/80">
+            <span className="flex items-center gap-1 text-blue-300/80">
               <Sparkles className="h-3 w-3" />
               AI-classified from call transcripts
             </span>
@@ -234,7 +234,7 @@ function OnboardingReportCard() {
               <button
                 key={g}
                 onClick={() => setGran(g)}
-                className={`px-3 py-1.5 text-xs font-medium transition-colors ${gran === g ? "bg-violet-600 text-white" : "bg-transparent text-muted-foreground hover:bg-white/5"}`}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${gran === g ? "bg-blue-600 text-white" : "bg-transparent text-muted-foreground hover:bg-white/5"}`}
               >
                 {g === "all" ? "All Time" : g === "month" ? "Monthly" : "Per Day"}
               </button>
@@ -262,7 +262,7 @@ function OnboardingReportCard() {
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatPill label="Total Calls" value={status?.totalCalls?.toLocaleString() ?? "—"} icon={Phone} tone="violet" />
+        <StatPill label="Total Calls" value={status?.totalCalls?.toLocaleString() ?? "—"} icon={Phone} tone="blue" />
         <StatPill label="Onboarded" value={onboarded.toLocaleString()} icon={CheckCircle} tone="emerald" />
         <StatPill label="Connection" value={connection.toLocaleString()} icon={PhoneIncoming} tone="sky" />
         <StatPill label="Mention Tax" value={(status?.taxYes ?? 0).toLocaleString()} icon={Receipt} tone="amber" />
@@ -275,7 +275,7 @@ function OnboardingReportCard() {
             <span className="tabular-nums">{status.progressDone}/{status.progressTotal} ({progressPct}%)</span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-            <div className="h-full bg-violet-500 transition-all" style={{ width: `${progressPct}%` }} />
+            <div className="h-full bg-blue-500 transition-all" style={{ width: `${progressPct}%` }} />
           </div>
         </div>
       )}
@@ -359,11 +359,11 @@ export function OnboardingPanel() {
       <OnboardingReportCard />
 
       {/* Controls */}
-      <div className="rounded-xl border border-fuchsia-700/30 bg-gradient-to-br from-fuchsia-950/30 to-violet-950/10 backdrop-blur p-5 space-y-4">
+      <div className="rounded-xl border border-cyan-700/30 bg-gradient-to-br from-cyan-950/30 to-blue-950/10 backdrop-blur p-5 space-y-4">
         <div className="flex items-start justify-between flex-wrap gap-3">
           <div>
             <h2 className="text-lg font-semibold flex items-center gap-2">
-              <TrendingUp className="h-5 w-5 text-fuchsia-300" />
+              <TrendingUp className="h-5 w-5 text-cyan-300" />
               Onboarding Team Analytics
             </h2>
             <p className="text-sm text-muted-foreground">
@@ -376,7 +376,7 @@ export function OnboardingPanel() {
                 <button
                   key={g}
                   onClick={() => setGran(g)}
-                  className={`px-3 py-1.5 text-xs font-medium transition-colors ${gran === g ? "bg-fuchsia-600 text-white" : "bg-transparent text-muted-foreground hover:bg-white/5"}`}
+                  className={`px-3 py-1.5 text-xs font-medium transition-colors ${gran === g ? "bg-cyan-600 text-white" : "bg-transparent text-muted-foreground hover:bg-white/5"}`}
                 >
                   {g === "all" ? "All Time" : g === "month" ? "Monthly" : "Per Day"}
                 </button>
@@ -413,7 +413,7 @@ export function OnboardingPanel() {
           <>
             {/* KPIs */}
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-              <StatPill label="Total Calls" value={k!.totalCalls.toLocaleString()} sub={`${k!.inbound} in · ${k!.outbound} out`} icon={Phone} tone="violet" />
+              <StatPill label="Total Calls" value={k!.totalCalls.toLocaleString()} sub={`${k!.inbound} in · ${k!.outbound} out`} icon={Phone} tone="blue" />
               <StatPill label="Response Rate" value={`${k!.responseRate}%`} sub={`${k!.inboundAnswered}/${k!.inboundReceived} inbound`} icon={PhoneIncoming} tone="emerald" />
               <StatPill label="Missed Ratio" value={`${k!.missedRatio}%`} sub={`${k!.inboundMissed} missed`} icon={PhoneMissed} tone="rose" />
               <StatPill label="Talk Time" value={fmtDur(k!.talkSeconds)} sub={`avg ${fmtDur(k!.avgTalkSec)}/call`} icon={Clock} tone="sky" />
@@ -489,7 +489,7 @@ export function OnboardingPanel() {
             {/* Agent ranking */}
             <div className="rounded-xl border border-white/10 bg-black/20 overflow-hidden">
               <h3 className="text-sm font-medium flex items-center gap-1.5 p-4 pb-2">
-                <Award className="h-4 w-4 text-violet-300" /> Agent Ranking — most responsive & productive (best → worst)
+                <Award className="h-4 w-4 text-blue-300" /> Agent Ranking — most responsive & productive (best → worst)
               </h3>
               <div className="overflow-x-auto">
                 <Table>
@@ -561,14 +561,14 @@ function CassieSpotlight({ c }: { c: NonNullable<Analytics["cassie"]> }) {
     </span>
   );
   return (
-    <div className="rounded-xl border border-fuchsia-500/30 bg-gradient-to-br from-fuchsia-600/15 to-violet-600/10 p-5 space-y-4">
+    <div className="rounded-xl border border-cyan-500/30 bg-gradient-to-br from-cyan-600/15 to-blue-600/10 p-5 space-y-4">
       <div className="flex items-center gap-2">
-        <Trophy className="h-5 w-5 text-fuchsia-300" />
+        <Trophy className="h-5 w-5 text-cyan-300" />
         <h3 className="text-base font-semibold">Cassie Lynn — Spotlight</h3>
         <span className="text-xs text-muted-foreground">Productivity & problem-solving</span>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        <StatPill label="Calls Handled" value={c.totalCalls.toLocaleString()} sub={`${c.uniqueContacts} customers`} icon={Phone} tone="violet" />
+        <StatPill label="Calls Handled" value={c.totalCalls.toLocaleString()} sub={`${c.uniqueContacts} customers`} icon={Phone} tone="blue" />
         <StatPill label="Response Rate" value={`${c.responseRate}%`} sub="" icon={PhoneIncoming} tone="emerald" />
         <StatPill label="Talk Time" value={fmtDur(c.talkSeconds)} sub="total" icon={Clock} tone="sky" />
         <StatPill label="Avg Gap" value={`${c.avgGapMin}m`} sub="between calls" icon={Timer} tone="amber" />

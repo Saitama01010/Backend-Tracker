@@ -106,8 +106,8 @@
   --chart-1: 221 83% 53%;
   --chart-2: 142 71% 45%;
   --chart-3: 38 92% 50%;
-  --chart-4: 280 65% 60%;
-  --chart-5: 0 72% 51%;
+  --chart-4: 190 85% 45%;
+  --chart-5: 152 70% 42%;
 
   --app-font-sans: 'Inter', system-ui, -apple-system, sans-serif;
   --app-font-serif: Georgia, serif;
@@ -156,15 +156,15 @@
   --sidebar: 240 28% 9%;
   --sidebar-foreground: 220 14% 96%;
   --sidebar-border: 240 20% 18%;
-  --sidebar-primary: 263 85% 65%;
+  --sidebar-primary: 213 90% 58%;
   --sidebar-primary-foreground: 0 0% 100%;
   --sidebar-accent: 240 20% 16%;
   --sidebar-accent-foreground: 220 14% 96%;
-  --sidebar-ring: 263 85% 65%;
+  --sidebar-ring: 213 90% 58%;
   --popover: 240 28% 9%;
   --popover-foreground: 220 14% 96%;
   --popover-border: 240 20% 18%;
-  --primary: 263 85% 65%;
+  --primary: 213 90% 58%;
   --primary-foreground: 0 0% 100%;
   --secondary: 240 20% 16%;
   --secondary-foreground: 220 14% 96%;
@@ -175,12 +175,12 @@
   --destructive: 0 75% 60%;
   --destructive-foreground: 0 0% 100%;
   --input: 240 20% 22%;
-  --ring: 263 85% 65%;
-  --chart-1: 263 85% 65%;
-  --chart-2: 152 70% 55%;
+  --ring: 213 90% 58%;
+  --chart-1: 213 90% 58%;
+  --chart-2: 168 76% 45%;
   --chart-3: 35 95% 60%;
-  --chart-4: 195 90% 60%;
-  --chart-5: 340 80% 65%;
+  --chart-4: 190 85% 55%;
+  --chart-5: 152 70% 50%;
 
   --shadow-2xs: 0px 1px 2px 0px hsl(0 0% 0% / 0.20);
   --shadow-xs: 0px 1px 2px 0px hsl(0 0% 0% / 0.25);

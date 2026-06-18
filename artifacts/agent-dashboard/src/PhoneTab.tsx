@@ -119,14 +119,14 @@ function buildInboundRows(
 
 function StatPill({ label, value, icon: Icon, tone }: { label: string; value: string | number; icon?: React.ElementType; tone: string }) {
   const tones: Record<string, string> = {
-    violet: "from-violet-950/60 to-violet-900/40 border-violet-700/40 text-violet-300",
+    blue: "from-blue-950/60 to-blue-900/40 border-blue-700/40 text-blue-300",
     sky: "from-sky-950/60 to-sky-900/40 border-sky-700/40 text-sky-300",
     emerald: "from-emerald-950/60 to-emerald-900/40 border-emerald-700/40 text-emerald-300",
     rose: "from-rose-950/60 to-rose-900/40 border-rose-700/40 text-rose-300",
     amber: "from-amber-950/60 to-amber-900/40 border-amber-700/40 text-amber-300",
   };
   return (
-    <div className={`rounded-xl border bg-gradient-to-br px-4 py-3 flex flex-col gap-1 ${tones[tone] ?? tones.violet}`}>
+    <div className={`rounded-xl border bg-gradient-to-br px-4 py-3 flex flex-col gap-1 ${tones[tone] ?? tones.blue}`}>
       <p className="text-xs font-medium uppercase tracking-wide opacity-70 flex items-center gap-1">
         {Icon && <Icon className="h-3 w-3" />}{label}
       </p>
@@ -204,16 +204,16 @@ function OnboardingReportCard() {
       : 0;
 
   return (
-    <div className="rounded-xl border border-violet-700/30 bg-gradient-to-br from-violet-950/40 to-fuchsia-950/20 backdrop-blur p-5 space-y-4">
+    <div className="rounded-xl border border-blue-700/30 bg-gradient-to-br from-blue-950/40 to-cyan-950/20 backdrop-blur p-5 space-y-4">
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
-            <FileSpreadsheet className="h-5 w-5 text-violet-300" />
+            <FileSpreadsheet className="h-5 w-5 text-blue-300" />
             Onboarding Line Report
           </h2>
           <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
             <span>(949) 315-7441 · Connection vs Onboarded + tax mentions</span>
-            <span className="flex items-center gap-1 text-violet-300/80">
+            <span className="flex items-center gap-1 text-blue-300/80">
               <Sparkles className="h-3 w-3" />
               AI-classified from call transcripts
             </span>
@@ -245,7 +245,7 @@ function OnboardingReportCard() {
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatPill label="Total Calls" value={status?.totalCalls?.toLocaleString() ?? "—"} icon={Phone} tone="violet" />
+        <StatPill label="Total Calls" value={status?.totalCalls?.toLocaleString() ?? "—"} icon={Phone} tone="blue" />
         <StatPill label="Onboarded" value={onboarded.toLocaleString()} icon={CheckCircle} tone="emerald" />
         <StatPill label="Connection" value={connection.toLocaleString()} icon={PhoneIncoming} tone="sky" />
         <StatPill label="Mention Tax" value={(status?.taxYes ?? 0).toLocaleString()} icon={Receipt} tone="amber" />
@@ -258,7 +258,7 @@ function OnboardingReportCard() {
             <span className="tabular-nums">{status.progressDone}/{status.progressTotal} ({progressPct}%)</span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-            <div className="h-full bg-violet-500 transition-all" style={{ width: `${progressPct}%` }} />
+            <div className="h-full bg-blue-500 transition-all" style={{ width: `${progressPct}%` }} />
           </div>
         </div>
       )}
@@ -312,7 +312,7 @@ function AgentTable({ rows }: { rows: AgentRow[] }) {
           {rows.map((r) => (
             <TableRow key={r.name} className="hover:bg-muted/30">
               <TableCell className="font-medium">{r.name}</TableCell>
-              <TableCell className="text-right tabular-nums font-mono text-violet-300">{r.totalCalls}</TableCell>
+              <TableCell className="text-right tabular-nums font-mono text-blue-300">{r.totalCalls}</TableCell>
               <TableCell className="text-right tabular-nums font-mono text-sky-300">{r.outbound}</TableCell>
               <TableCell className="text-right tabular-nums font-mono">{r.inbound}</TableCell>
               <TableCell className="text-right tabular-nums font-mono text-emerald-300">{r.answered}</TableCell>
@@ -360,7 +360,7 @@ function InboundTable({ rows }: { rows: InboundRow[] }) {
             <TableRow key={i} className="hover:bg-muted/30">
               <TableCell className="font-medium">{r.lineName}</TableCell>
               <TableCell className="text-muted-foreground">{r.date}</TableCell>
-              <TableCell className="text-right tabular-nums font-mono text-violet-300">{r.received}</TableCell>
+              <TableCell className="text-right tabular-nums font-mono text-blue-300">{r.received}</TableCell>
               <TableCell className="text-right tabular-nums font-mono text-emerald-300">{r.answered}</TableCell>
               <TableCell className="text-right tabular-nums font-mono text-rose-400">{r.missed}</TableCell>
               <TableCell className="text-right tabular-nums font-mono text-amber-300">{r.voicemail}</TableCell>
@@ -369,7 +369,7 @@ function InboundTable({ rows }: { rows: InboundRow[] }) {
           ))}
           <TableRow className="bg-primary/5 font-semibold">
             <TableCell colSpan={2}>Total</TableCell>
-            <TableCell className="text-right tabular-nums font-mono text-violet-300">{totals.received}</TableCell>
+            <TableCell className="text-right tabular-nums font-mono text-blue-300">{totals.received}</TableCell>
             <TableCell className="text-right tabular-nums font-mono text-emerald-300">{totals.answered}</TableCell>
             <TableCell className="text-right tabular-nums font-mono text-rose-400">{totals.missed}</TableCell>
             <TableCell className="text-right tabular-nums font-mono text-amber-300">{totals.voicemail}</TableCell>
@@ -404,7 +404,7 @@ function TeamPhonePanel({
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        <StatPill label="Total Calls" value={totals.calls} icon={Phone} tone="violet" />
+        <StatPill label="Total Calls" value={totals.calls} icon={Phone} tone="blue" />
         <StatPill label="CX Reached" value={totals.unique} icon={Users} tone="sky" />
         <StatPill label="Talk Time" value={formatDur(totals.secs)} icon={Clock} tone="amber" />
         <StatPill label="Inbound Recv" value={inbTotals.recv} icon={PhoneIncoming} tone="emerald" />

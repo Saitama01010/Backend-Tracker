@@ -1907,14 +1907,14 @@ function aggregate(
 
 // ---------- UI ----------
 
-type TileTone = "violet" | "emerald" | "amber" | "sky" | "rose" | "slate" | "zinc";
+type TileTone = "blue" | "emerald" | "amber" | "sky" | "rose" | "slate" | "zinc";
 
 const TONE_STYLES: Record<TileTone, { bg: string; ring: string; text: string; glow: string }> = {
-  violet: {
-    bg: "bg-gradient-to-br from-violet-500/15 via-fuchsia-500/10 to-transparent",
-    ring: "border-violet-500/30",
-    text: "text-violet-300",
-    glow: "shadow-[0_0_24px_-12px_rgba(168,85,247,0.6)]",
+  blue: {
+    bg: "bg-gradient-to-br from-blue-500/15 via-cyan-500/10 to-transparent",
+    ring: "border-blue-500/30",
+    text: "text-blue-300",
+    glow: "shadow-[0_0_24px_-12px_rgba(37,99,235,0.6)]",
   },
   emerald: {
     bg: "bg-gradient-to-br from-emerald-500/15 via-teal-500/10 to-transparent",
@@ -2115,7 +2115,7 @@ function ByDayView({ data }: { data: Aggregated }) {
         <select
           value={agentFilter}
           onChange={(e) => setAgentFilter(e.target.value)}
-          className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
+          className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500"
         >
           <option value="">All agents</option>
           {agentOptions.some((n) => isKillerAgentKey(normalizeAgent(n))) && (
@@ -2149,9 +2149,9 @@ function ByDayView({ data }: { data: Aggregated }) {
                   {s}
                 </TableHead>
               ))}
-              <TableHead className="text-right whitespace-nowrap bg-primary/10 text-violet-300">Total</TableHead>
+              <TableHead className="text-right whitespace-nowrap bg-primary/10 text-blue-300">Total</TableHead>
               {showRate && (
-                <TableHead className="text-right whitespace-nowrap bg-primary/10 text-violet-200">Retention rate</TableHead>
+                <TableHead className="text-right whitespace-nowrap bg-primary/10 text-blue-200">Retention rate</TableHead>
               )}
             </TableRow>
           </TableHeader>
@@ -2213,7 +2213,7 @@ function ByDayView({ data }: { data: Aggregated }) {
                           </TableCell>
                         );
                       })}
-                      <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5 text-violet-200">
+                      <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5 text-blue-200">
                         {d.total || ""}
                       </TableCell>
                       {showRate && (
@@ -2494,7 +2494,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
                       </TableCell>
                     );
                   })}
-                  <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5 text-violet-200">{a.total}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5 text-blue-200">{a.total}</TableCell>
                   {showRate && (
                     <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/10">
                       {retentionRate(sumRetained(a.byStatus, data.retainedStatuses), a.total)}
@@ -2899,7 +2899,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
       <TableHead className={`whitespace-nowrap ${align === "right" ? "text-right" : ""} ${tone}`}>
         <div className={`inline-flex items-center gap-1 ${align === "right" ? "flex-row-reverse" : ""}`}>
           <button type="button" onClick={() => toggle(id)}
-            className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${active ? "text-violet-300" : "text-muted-foreground"} ${align === "right" ? "flex-row-reverse" : ""}`}>
+            className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${active ? "text-blue-300" : "text-muted-foreground"} ${align === "right" ? "flex-row-reverse" : ""}`}>
             {label}
             {active ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
           </button>
@@ -2976,11 +2976,11 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
             <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
               <TableRow>
                 <Th id="__agent__" label="Agent" align="left" />
-                <TableHead className="whitespace-nowrap text-right text-violet-400">Last call</TableHead>
+                <TableHead className="whitespace-nowrap text-right text-blue-400">Last call</TableHead>
                 <Th id="__calls__" label="Calls" tip="Total calls across all phone systems (Quo + PBX + ReadyMode) in the selected period." />
                 {pbxData && <Th id="__pbx__" label="PBX" tone="text-blue-400" tip="Calls via the PBX phone system only." />}
                 {readymodeByKey && <Th id="__readymode__" label="ReadyMode" tone="text-pink-400" tip="Outbound dialer calls from the ReadyMode CSV (operator-uploaded Google Sheet)." />}
-                <Th id="__outbound__" label="Outbound" tone="text-fuchsia-400" tip="Calls the agent placed to customers (all systems)." />
+                <Th id="__outbound__" label="Outbound" tone="text-cyan-400" tip="Calls the agent placed to customers (all systems)." />
                 <Th id="__inbound__" label="Inbound" tone="text-cyan-400" tip="Calls received from customers (all systems)." />
                 <Th id="__answered__" label="Answered" tone="text-emerald-400" tip="Calls where a real conversation happened. Inbound: agent picked up. Outbound: customer stayed on for 60+ seconds." />
                 <Th id="__missed__" label="Missed" tone="text-rose-400" tip="Calls where no one answered at all — phone rang but nothing picked up." />
@@ -3023,8 +3023,8 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                         {isLive && (
                           onBoth ? (
                             <span className="relative flex h-2.5 w-2.5 shrink-0" title="On a live call — both Quo & PBX">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-violet-400 opacity-75" />
-                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-violet-500" />
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
                             </span>
                           ) : onPbx ? (
                             <span className="relative flex h-2.5 w-2.5 shrink-0" title="On a live call — PBX">
@@ -3041,7 +3041,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                         {agent}
                         <ShiftDot agentName={agent} />
                         {dept && (
-                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold leading-none ${dept === "Retention" ? "bg-violet-500/20 text-violet-300 border border-violet-500/30" : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"}`}>
+                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold leading-none ${dept === "Retention" ? "bg-blue-500/20 text-blue-300 border border-blue-500/30" : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"}`}>
                             {dept}
                           </span>
                         )}
@@ -3051,7 +3051,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                       {isLive ? (() => {
                         const participant = onQuo ? liveAgents.quoParticipant.get(phoneKey) : undefined;
                         const label = `On call ${onBoth ? "(Quo + PBX)" : onPbx ? "(PBX)" : "(Quo)"}`;
-                        const cls = `font-medium text-xs ${onBoth ? "text-violet-400" : onPbx ? "text-blue-400" : "text-emerald-400"}`;
+                        const cls = `font-medium text-xs ${onBoth ? "text-blue-400" : onPbx ? "text-blue-400" : "text-emerald-400"}`;
                         return participant ? (
                           <Tooltip delayDuration={120}>
                             <TooltipTrigger asChild>
@@ -3071,7 +3071,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                     <TableCell className={`text-right tabular-nums font-mono ${!combinedCalls ? "text-muted-foreground/40" : ""}`}>{combinedCalls || "—"}</TableCell>
                     {pbxData && <TableCell className={`text-right tabular-nums font-mono ${px?.calls ? "text-blue-400" : "text-muted-foreground/40"}`}>{px?.calls || "—"}</TableCell>}
                     {readymodeByKey && (() => { const rm = getRm(agent); return <TableCell className={`text-right tabular-nums font-mono ${rm?.calls ? "text-pink-400" : "text-muted-foreground/40"}`}>{rm?.calls || "—"}</TableCell>; })()}
-                    <TableCell className={`text-right tabular-nums font-mono ${combinedOut ? "text-fuchsia-400" : "text-muted-foreground/40"}`}>{combinedOut || "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${combinedOut ? "text-cyan-400" : "text-muted-foreground/40"}`}>{combinedOut || "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${combinedIn ? "text-cyan-400" : "text-muted-foreground/40"}`}>{combinedIn || "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${combinedAns ? "text-emerald-400" : "text-muted-foreground/40"}`}>{combinedAns || "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${combinedMissed ? "text-rose-400" : "text-muted-foreground/40"}`}>{combinedMissed || "—"}</TableCell>
@@ -3092,7 +3092,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                   <TableCell className="text-right tabular-nums font-mono font-bold">{totCalls || "—"}</TableCell>
                   {pbxData && <TableCell className="text-right tabular-nums font-mono font-bold text-blue-400">{totPbxCalls || "—"}</TableCell>}
                   {readymodeByKey && <TableCell className="text-right tabular-nums font-mono font-bold text-pink-400">{visible.reduce((s, a) => s + (getRm(a)?.calls ?? 0), 0) || "—"}</TableCell>}
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-fuchsia-400">{totOut || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{totOut || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{totIn || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totAns || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold text-rose-400">{totMissed || "—"}</TableCell>
@@ -3250,7 +3250,7 @@ function PresetFilter({ from, to, setFrom, setTo }: { from: string; to: string; 
           key={p.label}
           variant={active === p.label ? "default" : "outline"}
           size="sm"
-          className={active === p.label ? "bg-violet-600 hover:bg-violet-700 text-white" : ""}
+          className={active === p.label ? "bg-blue-600 hover:bg-blue-700 text-white" : ""}
           onClick={() => { setFrom(p.from); setTo(p.to); }}
         >
           {p.label}
@@ -3262,7 +3262,7 @@ function PresetFilter({ from, to, setFrom, setTo }: { from: string; to: string; 
         value={from}
         max={todayIso}
         onChange={(e) => { if (e.target.value) setFrom(e.target.value); }}
-        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500 w-[130px]"
+        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500 w-[130px]"
         title="From date"
       />
       <span className="text-muted-foreground text-xs">–</span>
@@ -3271,7 +3271,7 @@ function PresetFilter({ from, to, setFrom, setTo }: { from: string; to: string; 
         value={to}
         max={todayIso}
         onChange={(e) => { if (e.target.value) setTo(e.target.value); }}
-        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500 w-[130px]"
+        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500 w-[130px]"
         title="To date"
       />
     </div>
@@ -3608,7 +3608,7 @@ function TeamPanel({
           <>
             {!isRestricted && <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {subTabAllowed("call") && <>
-                <StatTile label="Agents" value={callAgentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+                <StatTile label="Agents" value={callAgentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="blue" />
                 <StatTile
                   label="Total calls"
                   value={(phoneTotals.calls + pbxTotals.calls).toLocaleString()}
@@ -3636,14 +3636,14 @@ function TeamPanel({
                 <>
                   <StatTile label="Today's fixed" value={aggregated.todayCount.toLocaleString()} tone="emerald" />
                   {!lockToToday && <StatTile label="This month's fixed" value={aggregated.monthCount.toLocaleString()} tone="emerald" />}
-                  {!lockToToday && <StatTile label="Total fixed" value={aggregated.totals.grand.toLocaleString()} tone="violet" />}
+                  {!lockToToday && <StatTile label="Total fixed" value={aggregated.totals.grand.toLocaleString()} tone="blue" />}
                 </>
               ) : (
                 <>
                   <StatTile label="Today's retains" value={aggregated.todayRetained.toLocaleString()} tone="emerald" />
                   {!lockToToday && <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />}
                   {!lockToToday && <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />}
-                  {!lockToToday && <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />}
+                  {!lockToToday && <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="blue" />}
                 </>
               ))}
             </div>}
@@ -3858,7 +3858,7 @@ function CSPanel() {
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {csSubTabAllowed("call") && <>
-            <StatTile label="Agents" value={allAgents.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+            <StatTile label="Agents" value={allAgents.length} icon={<Users className="h-3.5 w-3.5" />} tone="blue" />
             <StatTile label="Total calls" value={(totals.calls + pbxTotals.calls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
             <StatTile label="Answered" value={(totals.answered + pbxTotals.answered).toLocaleString()} tone="emerald" />
             <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
@@ -3870,7 +3870,7 @@ function CSPanel() {
               <StatTile label="Today's retains" value={aggregated.todayRetained.toLocaleString()} tone="emerald" />
               {!csLockToToday && <StatTile label="This month's retains" value={aggregated.monthRetained.toLocaleString()} tone="emerald" />}
               {!csLockToToday && <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />}
-              {!csLockToToday && <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />}
+              {!csLockToToday && <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="blue" />}
             </>
           )}
         </div>
@@ -4060,7 +4060,7 @@ function RetentionPanel() {
         {!retUser.allowedAgents?.length && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {retSubTabAllowed("call") && <>
-              <StatTile label="Agents" value={agentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+              <StatTile label="Agents" value={agentList.length} icon={<Users className="h-3.5 w-3.5" />} tone="blue" />
               <StatTile label="Total calls" value={(totals.calls + pbxTotals.calls).toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
               <StatTile label="Answered" value={(totals.answered + pbxTotals.answered).toLocaleString()} tone="emerald" />
               <StatTile label="Missed" value={(totals.missed + pbxMissed).toLocaleString()} tone="rose" />
@@ -4074,7 +4074,7 @@ function RetentionPanel() {
                 {!retLockToToday && <StatTile label="This month's cancels" value={aggregated.monthCancelled.toLocaleString()} tone="rose" />}
                 <StatTile label="Today's fixed" value={aggregated.todayFixed.toLocaleString()} tone="sky" />
                 {!retLockToToday && <StatTile label="This month's fixed" value={aggregated.monthFixed.toLocaleString()} tone="sky" />}
-                {!retLockToToday && <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="violet" />}
+                {!retLockToToday && <StatTile label="Retention rate" value={retentionRate(aggregated.totals.retained, aggregated.totals.grand)} tone="blue" />}
               </>
             )}
           </div>
@@ -4128,7 +4128,7 @@ interface CallRecord {
 }
 
 function directionIcon(dir: string) {
-  if (dir === "outgoing") return <PhoneOutgoing className="h-3.5 w-3.5 text-fuchsia-400" />;
+  if (dir === "outgoing") return <PhoneOutgoing className="h-3.5 w-3.5 text-cyan-400" />;
   return <PhoneIncoming className="h-3.5 w-3.5 text-cyan-400" />;
 }
 
@@ -4189,7 +4189,7 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
     return (
       <TableHead className={align === "right" ? "text-right" : ""}>
         <button type="button" onClick={() => toggleSort(col)}
-          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${active ? "text-violet-300" : "text-muted-foreground"} ${align === "right" ? "flex-row-reverse" : ""}`}>
+          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${active ? "text-blue-300" : "text-muted-foreground"} ${align === "right" ? "flex-row-reverse" : ""}`}>
           {label}
           {active ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
         </button>
@@ -4353,8 +4353,8 @@ function LoginGate({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-background flex items-center justify-center relative overflow-hidden">
       <div className="pointer-events-none absolute inset-0">
-        <div className="absolute -top-32 -left-32 h-[500px] w-[500px] rounded-full bg-violet-600/20 blur-[120px]" />
-        <div className="absolute bottom-0 right-0 h-[400px] w-[400px] rounded-full bg-fuchsia-500/15 blur-[120px]" />
+        <div className="absolute -top-32 -left-32 h-[500px] w-[500px] rounded-full bg-blue-600/20 blur-[120px]" />
+        <div className="absolute bottom-0 right-0 h-[400px] w-[400px] rounded-full bg-cyan-500/15 blur-[120px]" />
       </div>
       <div className="relative w-full max-w-sm mx-4">
         <div className="rounded-2xl border border-white/10 bg-card/80 backdrop-blur-xl p-8 space-y-6 shadow-2xl">
@@ -4363,7 +4363,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
               <img src={companyLogo} alt="Company logo" className="h-full w-full object-cover" />
             </div>
             <div className="text-center">
-              <h1 className="text-xl font-bold bg-gradient-to-r from-violet-300 via-fuchsia-300 to-sky-300 bg-clip-text text-transparent">
+              <h1 className="text-xl font-bold bg-gradient-to-r from-blue-300 via-cyan-300 to-sky-300 bg-clip-text text-transparent">
                 Backend Tracker
               </h1>
               <p className="text-sm text-muted-foreground mt-1">Sign in to continue</p>
@@ -4393,7 +4393,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
               />
             </div>
             {error && <p className="text-sm text-rose-400 text-center">{error}</p>}
-            <Button type="submit" className="w-full bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white" disabled={loading || !username || !password}>
+            <Button type="submit" className="w-full bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white" disabled={loading || !username || !password}>
               {loading ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Sign in"}
             </Button>
           </form>
@@ -4419,13 +4419,13 @@ function PermCheckboxes({ perms, onChange, disabled }: { perms: Permission[]; on
       {ALL_PERMISSIONS.map(({ key, label, desc }) => {
         const checked = perms.includes(key);
         return (
-          <label key={key} className={`flex items-start gap-2.5 rounded-md px-3 py-2 cursor-pointer transition-colors ${checked ? "bg-violet-500/10 border border-violet-500/20" : "bg-zinc-900/60 border border-white/5 hover:border-white/10"} ${disabled ? "opacity-40 pointer-events-none" : ""}`}>
-            <div className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${checked ? "bg-violet-500 border-violet-500" : "border-zinc-600"}`}
+          <label key={key} className={`flex items-start gap-2.5 rounded-md px-3 py-2 cursor-pointer transition-colors ${checked ? "bg-blue-500/10 border border-blue-500/20" : "bg-zinc-900/60 border border-white/5 hover:border-white/10"} ${disabled ? "opacity-40 pointer-events-none" : ""}`}>
+            <div className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${checked ? "bg-blue-500 border-blue-500" : "border-zinc-600"}`}
               onClick={() => !disabled && onChange(checked ? perms.filter((p) => p !== key) : [...perms, key])}>
               {checked && <span className="text-white text-[10px] font-bold leading-none">✓</span>}
             </div>
             <div className="min-w-0">
-              <div className={`text-xs font-medium leading-tight ${checked ? "text-violet-200" : "text-zinc-300"}`}>{label}</div>
+              <div className={`text-xs font-medium leading-tight ${checked ? "text-blue-200" : "text-zinc-300"}`}>{label}</div>
               <div className="text-[11px] text-zinc-500 leading-tight mt-0.5">{desc}</div>
             </div>
           </label>
@@ -4437,7 +4437,7 @@ function PermCheckboxes({ perms, onChange, disabled }: { perms: Permission[]; on
 
 const TEAM_ACCESS_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "CS" };
 const TEAM_ACCESS_COLORS: Record<string, string> = {
-  retention: "bg-violet-500/20 text-violet-300 border-violet-500/30",
+  retention: "bg-blue-500/20 text-blue-300 border-blue-500/30",
   nsf:       "bg-sky-500/20 text-sky-300 border-sky-500/30",
   cs:        "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
 };
@@ -4584,9 +4584,9 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
     { key: "killers",   label: "ReadyMode Killer" },
   ];
   const teamBadge: Record<string, string> = {
-    retention: "bg-violet-500/20 text-violet-300 border-violet-500/30",
+    retention: "bg-blue-500/20 text-blue-300 border-blue-500/30",
     nsf: "bg-sky-500/20 text-sky-300 border-sky-500/30",
-    cs: "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30",
+    cs: "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
     killers: "bg-rose-500/20 text-rose-300 border-rose-500/30",
   };
 
@@ -4601,7 +4601,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
       <div className="relative w-full max-w-5xl mx-4 rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl">
         <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-white/10">
           <div className="flex items-center gap-2">
-            <Users className="h-5 w-5 text-violet-400" />
+            <Users className="h-5 w-5 text-blue-400" />
             <h2 className="text-lg font-semibold text-white">Agent Roster</h2>
             <span className="text-xs text-zinc-500">· canonical identity registry</span>
           </div>
@@ -4618,7 +4618,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && void addAgent()}
                 placeholder="English name"
-                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
               />
               <input
                 value={newArabic}
@@ -4626,26 +4626,26 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                 onKeyDown={(e) => e.key === "Enter" && void addAgent()}
                 placeholder="Arabic name (optional)"
                 dir="rtl"
-                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
               />
               <input
                 value={newShift}
                 onChange={(e) => setNewShift(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && void addAgent()}
                 placeholder="Shift (e.g. 9–5, Night)"
-                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
               />
               <select
                 value={newTeam}
                 onChange={(e) => setNewTeam(e.target.value as RosterTeam)}
-                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
               >
                 {TEAMS.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
               </select>
               <button
                 onClick={() => void addAgent()}
                 disabled={saving || !newName.trim()}
-                className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
               >
                 <Plus className="h-4 w-4" />Add
               </button>
@@ -4690,7 +4690,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                           onChange={(e) => setDraft(a.id, "name", e.target.value)}
                           onBlur={() => void commitDraft(a, "name")}
                           onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                          className={`w-full bg-transparent px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-violet-500/50 focus:outline-none ${a.active ? "text-zinc-100" : "text-zinc-500 line-through"}`}
+                          className={`w-full bg-transparent px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-blue-500/50 focus:outline-none ${a.active ? "text-zinc-100" : "text-zinc-500 line-through"}`}
                         />
                       </td>
                       <td className="px-3 py-2">
@@ -4701,7 +4701,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                           onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                           dir="rtl"
                           placeholder="—"
-                          className="w-full bg-transparent text-zinc-200 placeholder:text-zinc-600 px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-violet-500/50 focus:outline-none"
+                          className="w-full bg-transparent text-zinc-200 placeholder:text-zinc-600 px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-blue-500/50 focus:outline-none"
                         />
                       </td>
                       <td className="px-3 py-2">
@@ -4711,7 +4711,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                           onBlur={() => void commitDraft(a, "shift")}
                           onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                           placeholder="—"
-                          className="w-full bg-transparent text-zinc-200 placeholder:text-zinc-600 px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-violet-500/50 focus:outline-none"
+                          className="w-full bg-transparent text-zinc-200 placeholder:text-zinc-600 px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-blue-500/50 focus:outline-none"
                         />
                       </td>
                       <td className="px-3 py-2 text-center">
@@ -4848,7 +4848,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   }
 
   const roleBadge = (role: string) =>
-    role === "admin" ? "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30" :
+    role === "admin" ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/30" :
     role === "edit"  ? "bg-amber-500/20 text-amber-300 border-amber-500/30" :
                        "bg-zinc-500/20 text-zinc-300 border-zinc-500/30";
 
@@ -4862,7 +4862,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
       <div className="relative w-full max-w-lg mx-4 rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl">
         <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-white/10">
           <div className="flex items-center gap-2">
-            <UserCog className="h-5 w-5 text-fuchsia-400" />
+            <UserCog className="h-5 w-5 text-cyan-400" />
             <h2 className="text-lg font-semibold text-white">User Management</h2>
           </div>
           <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors"><X className="h-5 w-5" /></button>
@@ -4875,12 +4875,12 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
             <div className="flex gap-2 flex-wrap">
               <Input placeholder="Username" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} className="h-8 text-sm flex-1 min-w-[130px]" />
               <Input placeholder="Password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="h-8 text-sm flex-1 min-w-[130px]" />
-              <select value={newRole} onChange={(e) => { const r = e.target.value as "admin"|"edit"|"view"; setNewRole(r); setNewPerms(DEFAULT_PERMS[r]); }} className="h-8 rounded-md bg-zinc-800 border border-white/10 text-sm text-white px-2 focus:outline-none focus:ring-2 focus:ring-violet-500/50">
+              <select value={newRole} onChange={(e) => { const r = e.target.value as "admin"|"edit"|"view"; setNewRole(r); setNewPerms(DEFAULT_PERMS[r]); }} className="h-8 rounded-md bg-zinc-800 border border-white/10 text-sm text-white px-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50">
                 <option value="view">View</option>
                 <option value="edit">Edit</option>
                 <option value="admin">Admin</option>
               </select>
-              <select value={newTeamAccess} onChange={(e) => setNewTeamAccess(e.target.value as TeamAccess | "")} className="h-8 rounded-md bg-zinc-800 border border-white/10 text-sm text-white px-2 focus:outline-none focus:ring-2 focus:ring-violet-500/50">
+              <select value={newTeamAccess} onChange={(e) => setNewTeamAccess(e.target.value as TeamAccess | "")} className="h-8 rounded-md bg-zinc-800 border border-white/10 text-sm text-white px-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50">
                 <option value="">All Teams</option>
                 <option value="retention">Retention</option>
                 <option value="nsf">NSF</option>
@@ -4913,7 +4913,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                   <SubTabCheckboxes tabs={newAllowedSubTabs} onChange={setNewAllowedSubTabs} />
                 </div>
                 <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer">
-                  <input type="checkbox" checked={newLockToToday} onChange={(e) => setNewLockToToday(e.target.checked)} className="h-3.5 w-3.5 accent-violet-500" />
+                  <input type="checkbox" checked={newLockToToday} onChange={(e) => setNewLockToToday(e.target.checked)} className="h-3.5 w-3.5 accent-blue-500" />
                   Lock date to today (hide date range picker)
                 </label>
               </div>
@@ -4929,7 +4929,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
               <input type="checkbox" checked={newHideBackendStats} onChange={(e) => setNewHideBackendStats(e.target.checked)} className="h-3.5 w-3.5 accent-amber-500" />
               Hide Backend Statistics tab
             </label>
-            <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white w-full" onClick={addUser} disabled={saving || !newUsername.trim() || !newPassword.trim()}>
+            <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white w-full" onClick={addUser} disabled={saving || !newUsername.trim() || !newPassword.trim()}>
               <Plus className="h-3.5 w-3.5 mr-1" />Add User
             </Button>
             {error && <p className="text-xs text-rose-400">{error}</p>}
@@ -4957,14 +4957,14 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                     {u.role !== "admin" && (u.permissions ?? []).map((p) => {
                       const info = ALL_PERMISSIONS.find((x) => x.key === p);
                       return info ? (
-                        <span key={p} className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20">
+                        <span key={p} className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/20">
                           {info.label}
                         </span>
                       ) : null;
                     })}
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
-                    <button onClick={() => startEdit(u)} className={`p-1 rounded transition-colors ${editingId === u.id ? "text-violet-400 bg-violet-500/10" : "text-zinc-500 hover:text-white"}`} title="Edit">
+                    <button onClick={() => startEdit(u)} className={`p-1 rounded transition-colors ${editingId === u.id ? "text-blue-400 bg-blue-500/10" : "text-zinc-500 hover:text-white"}`} title="Edit">
                       <Pencil className="h-3.5 w-3.5" />
                     </button>
                     {u.active
@@ -4980,12 +4980,12 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                   <div className="px-3 pb-3 pt-0 space-y-3 border-t border-white/5">
                     <div className="flex gap-2 items-center flex-wrap pt-2">
                       <Input placeholder="New password (optional)" type="password" value={editPw} onChange={(e) => setEditPw(e.target.value)} className="h-7 text-xs flex-1 min-w-[140px]" />
-                      <select value={editRole} onChange={(e) => { const r = e.target.value as "admin"|"edit"|"view"; setEditRole(r); if (r === "admin") setEditPerms(DEFAULT_PERMS["admin"]); }} className="h-7 rounded-md bg-zinc-800 border border-white/10 text-xs text-white px-2 focus:outline-none focus:ring-2 focus:ring-violet-500/50">
+                      <select value={editRole} onChange={(e) => { const r = e.target.value as "admin"|"edit"|"view"; setEditRole(r); if (r === "admin") setEditPerms(DEFAULT_PERMS["admin"]); }} className="h-7 rounded-md bg-zinc-800 border border-white/10 text-xs text-white px-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50">
                         <option value="view">View</option>
                         <option value="edit">Edit</option>
                         <option value="admin">Admin</option>
                       </select>
-                      <select value={editTeamAccess} onChange={(e) => setEditTeamAccess(e.target.value as TeamAccess | "")} className="h-7 rounded-md bg-zinc-800 border border-white/10 text-xs text-white px-2 focus:outline-none focus:ring-2 focus:ring-violet-500/50">
+                      <select value={editTeamAccess} onChange={(e) => setEditTeamAccess(e.target.value as TeamAccess | "")} className="h-7 rounded-md bg-zinc-800 border border-white/10 text-xs text-white px-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50">
                         <option value="">All Teams</option>
                         <option value="retention">Retention</option>
                         <option value="nsf">NSF</option>
@@ -5017,7 +5017,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                           <SubTabCheckboxes tabs={editAllowedSubTabs} onChange={setEditAllowedSubTabs} />
                         </div>
                         <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer">
-                          <input type="checkbox" checked={editLockToToday} onChange={(e) => setEditLockToToday(e.target.checked)} className="h-3.5 w-3.5 accent-violet-500" />
+                          <input type="checkbox" checked={editLockToToday} onChange={(e) => setEditLockToToday(e.target.checked)} className="h-3.5 w-3.5 accent-blue-500" />
                           Lock date to today (hide date range picker)
                         </label>
                       </div>
@@ -5033,7 +5033,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                     </label>
                     <div className="flex gap-2 justify-end">
                       <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditingId(null)}>Cancel</Button>
-                      <Button size="sm" className="h-7 text-xs bg-violet-600 hover:bg-violet-700 text-white px-3" onClick={() => patchUser(u.id, {
+                      <Button size="sm" className="h-7 text-xs bg-blue-600 hover:bg-blue-700 text-white px-3" onClick={() => patchUser(u.id, {
                         role: editRole,
                         permissions: editRole === "admin" ? DEFAULT_PERMS["admin"] : editPerms,
                         teamAccess: editTeamAccess || null,
@@ -5162,7 +5162,7 @@ interface LineStatsResponse {
 }
 
 const LINE_TEAM_COLORS: Record<string, string> = {
-  retention: "bg-violet-500/20 text-violet-300 border border-violet-500/30",
+  retention: "bg-blue-500/20 text-blue-300 border border-blue-500/30",
   nsf: "bg-amber-500/20 text-amber-300 border border-amber-500/30",
   cs: "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30",
 };
@@ -5311,7 +5311,7 @@ function QuoLinesPanel() {
               Back to all lines
             </button>
             <CardTitle className="text-xl flex items-center gap-2">
-              <PhoneCall className="h-5 w-5 text-violet-400" />
+              <PhoneCall className="h-5 w-5 text-blue-400" />
               {selectedLine.name}
               {selectedLine.team && (
                 <span className={`text-xs px-1.5 py-0.5 rounded ${LINE_TEAM_COLORS[selectedLine.team]}`}>
@@ -5333,7 +5333,7 @@ function QuoLinesPanel() {
               <select
                 value={agentFilter}
                 onChange={(e) => setAgentFilter(e.target.value)}
-                className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
+                className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500"
               >
                 <option value="">All agents</option>
                 {allAgentNames.some((n) => isKillerAgentKey(normalizeAgent(n))) && (
@@ -5346,7 +5346,7 @@ function QuoLinesPanel() {
               <select
                 value={dayFilter}
                 onChange={(e) => setDayFilter(e.target.value)}
-                className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-violet-500"
+                className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500"
               >
                 <option value="">All days</option>
                 {availableDays.map((d) => (
@@ -5368,7 +5368,7 @@ function QuoLinesPanel() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <StatTile label="Total calls" value={lineTotals.calls.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
               <StatTile label="Time on calls" value={formatHours(lineTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
-              <StatTile label="Agents active" value={agentList.length.toLocaleString()} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+              <StatTile label="Agents active" value={agentList.length.toLocaleString()} icon={<Users className="h-3.5 w-3.5" />} tone="blue" />
               {(lineInbounds?.total ?? 0) > 0 && !isFiltered && (
                 <StatTile
                   label="Missed inbounds"
@@ -5423,11 +5423,11 @@ function QuoLinesPanel() {
                 key={line.id}
                 type="button"
                 onClick={() => setSelectedLine(line)}
-                className="text-left p-4 rounded-lg border bg-card hover:bg-accent/40 hover:border-violet-500/50 transition-all group"
+                className="text-left p-4 rounded-lg border bg-card hover:bg-accent/40 hover:border-blue-500/50 transition-all group"
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <div className="font-medium text-sm truncate group-hover:text-violet-300 transition-colors">
+                    <div className="font-medium text-sm truncate group-hover:text-blue-300 transition-colors">
                       {line.name}
                     </div>
                     <div className="text-xs text-muted-foreground mt-0.5 font-mono">{line.formattedNumber}</div>
@@ -5578,7 +5578,7 @@ function VoSPanel() {
     return (
       <TableHead className={`whitespace-nowrap text-right ${tone}`}>
         <button type="button" onClick={() => toggle(col)}
-          className={`inline-flex items-center gap-1 flex-row-reverse font-semibold hover:text-foreground ${active ? "text-violet-300" : "text-muted-foreground"}`}>
+          className={`inline-flex items-center gap-1 flex-row-reverse font-semibold hover:text-foreground ${active ? "text-blue-300" : "text-muted-foreground"}`}>
           {label}
           {active ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
         </button>
@@ -5652,7 +5652,7 @@ function VoSPanel() {
               <StatTile label="Active calls" value={tileTotals.activeCalls} icon={<PhoneCall className="h-3.5 w-3.5" />} tone="emerald" />
               <StatTile label="Total today" value={tileTotals.totalCalls} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
               <StatTile label="Inbound today" value={tileTotals.inbound} icon={<PhoneIncoming className="h-3.5 w-3.5" />} tone="sky" />
-              <StatTile label="Outbound today" value={tileTotals.outbound} icon={<PhoneOutgoing className="h-3.5 w-3.5" />} tone="violet" />
+              <StatTile label="Outbound today" value={tileTotals.outbound} icon={<PhoneOutgoing className="h-3.5 w-3.5" />} tone="blue" />
               {tileTotals.missed !== null && <StatTile label="Missed today" value={tileTotals.missed} icon={<PhoneMissed className="h-3.5 w-3.5" />} tone="rose" />}
               <StatTile label="Avg duration" value={formatDuration(tileTotals.avgDuration)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
             </div>
@@ -5684,7 +5684,7 @@ function VoSPanel() {
               <div className="flex gap-1.5 flex-wrap">
                 {groups.map((g) => (
                   <button key={g} onClick={() => setGroupFilter(g)}
-                    className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${groupFilter === g ? "bg-violet-600 text-white" : "text-muted-foreground hover:text-white hover:bg-white/5"}`}>
+                    className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${groupFilter === g ? "bg-blue-600 text-white" : "text-muted-foreground hover:text-white hover:bg-white/5"}`}>
                     {g}
                   </button>
                 ))}
@@ -5699,14 +5699,14 @@ function VoSPanel() {
                     <TableRow>
                       <TableHead className="text-left text-muted-foreground">
                         <button type="button" onClick={() => toggle("name")}
-                          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${sort.col === "name" ? "text-violet-300" : "text-muted-foreground"}`}>
+                          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${sort.col === "name" ? "text-blue-300" : "text-muted-foreground"}`}>
                           Agent {sort.col === "name" ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
                         </button>
                       </TableHead>
                       <TableHead className="text-center text-xs text-muted-foreground font-medium">Status</TableHead>
                       <SortTh col="calls" label="Total calls" />
                       <SortTh col="inbound" label="Inbound" tone="text-cyan-400" />
-                      <SortTh col="outbound" label="Outbound" tone="text-fuchsia-400" />
+                      <SortTh col="outbound" label="Outbound" tone="text-cyan-400" />
                       <SortTh col="avgDuration" label="Avg duration" />
                     </TableRow>
                   </TableHeader>
@@ -5736,13 +5736,13 @@ function VoSPanel() {
                                 </span>
                               )}
                               <span>{agent.agentName}</span>
-                              {group && <Badge className="text-[9px] px-1 py-0 bg-violet-500/15 text-violet-300 border-violet-500/20">{group}</Badge>}
+                              {group && <Badge className="text-[9px] px-1 py-0 bg-blue-500/15 text-blue-300 border-blue-500/20">{group}</Badge>}
                             </div>
                           </TableCell>
                           <TableCell className={`text-center text-xs font-medium ${statusColor}`}>{statusLabel}</TableCell>
                           <TableCell className={`text-right tabular-nums font-mono ${!agent.calls ? "text-muted-foreground/40" : ""}`}>{agent.calls || "—"}</TableCell>
                           <TableCell className={`text-right tabular-nums font-mono ${agent.inbound ? "text-cyan-400" : "text-muted-foreground/40"}`}>{agent.inbound || "—"}</TableCell>
-                          <TableCell className={`text-right tabular-nums font-mono ${agent.outbound ? "text-fuchsia-400" : "text-muted-foreground/40"}`}>{agent.outbound || "—"}</TableCell>
+                          <TableCell className={`text-right tabular-nums font-mono ${agent.outbound ? "text-cyan-400" : "text-muted-foreground/40"}`}>{agent.outbound || "—"}</TableCell>
                           <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{agent.avgDuration ? formatDuration(agent.avgDuration) : "—"}</TableCell>
                         </TableRow>
                       );
@@ -5755,7 +5755,7 @@ function VoSPanel() {
                         <TableCell />
                         <TableCell className="text-right tabular-nums font-mono font-bold">{totCalls || "—"}</TableCell>
                         <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{totIn || "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums font-mono font-bold text-fuchsia-400">{totOut || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{totOut || "—"}</TableCell>
                         <TableCell />
                       </TableRow>
                     </TableHeader>
@@ -5826,7 +5826,7 @@ function rmkStatusTone(status: string): string {
   const l = status.toLowerCase();
   if (/retain/.test(l)) return "text-emerald-400";
   if (/cancel/.test(l)) return "text-rose-400";
-  if (/\bidp\b/.test(l)) return "text-violet-400";
+  if (/\bidp\b/.test(l)) return "text-blue-400";
   if (/fixed/.test(l)) return "text-sky-400";
   return "text-zinc-300";
 }
@@ -6099,10 +6099,10 @@ function ReadyModeKillersPanel() {
         {subView === "calls" ? (
           <>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <StatTile label="Agents" value={RMK_AGENT_NAMES.size} icon={<Users className="h-3.5 w-3.5" />} tone="violet" />
+              <StatTile label="Agents" value={RMK_AGENT_NAMES.size} icon={<Users className="h-3.5 w-3.5" />} tone="blue" />
               <StatTile label="Total dialed" value={totals.dialed.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
               <StatTile label="Connected" value={totals.connected.toLocaleString()} icon={<PhoneCall className="h-3.5 w-3.5" />} tone="emerald" />
-              <StatTile label="Connect rate" value={`${totals.connectRate}%`} icon={<Activity className="h-3.5 w-3.5" />} tone="violet" />
+              <StatTile label="Connect rate" value={`${totals.connectRate}%`} icon={<Activity className="h-3.5 w-3.5" />} tone="blue" />
               <StatTile label="Talk time" value={formatHours(totals.talkTimeSecs)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
               <StatTile label="Submissions" value={totals.submissions.toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="emerald" />
             </div>
@@ -6115,7 +6115,7 @@ function ReadyModeKillersPanel() {
                       <TableHead className="text-left text-muted-foreground">Agent</TableHead>
                       <TableHead className="text-right text-sky-400">Dialed</TableHead>
                       <TableHead className="text-right text-emerald-400">Connected</TableHead>
-                      <TableHead className="text-right text-violet-400">Connect %</TableHead>
+                      <TableHead className="text-right text-blue-400">Connect %</TableHead>
                       <TableHead className="text-right">Talk time</TableHead>
                       <TableHead className="text-right">Avg talk</TableHead>
                       <TableHead className="text-right text-emerald-300">Submissions</TableHead>
@@ -6127,7 +6127,7 @@ function ReadyModeKillersPanel() {
                         <TableCell className="font-medium whitespace-nowrap">{r.name}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${r.dialed ? "text-sky-400" : "text-muted-foreground/40"}`}>{r.dialed || "—"}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${r.connected ? "text-emerald-400" : "text-muted-foreground/40"}`}>{r.connected || "—"}</TableCell>
-                        <TableCell className={`text-right tabular-nums font-mono ${r.connectRate >= 20 ? "text-violet-400" : r.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>{r.connectRate > 0 ? `${r.connectRate}%` : "—"}</TableCell>
+                        <TableCell className={`text-right tabular-nums font-mono ${r.connectRate >= 20 ? "text-blue-400" : r.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>{r.connectRate > 0 ? `${r.connectRate}%` : "—"}</TableCell>
                         <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{r.talkTimeSecs ? formatDuration(r.talkTimeSecs) : "—"}</TableCell>
                         <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{r.avgTalkSecs ? formatDuration(r.avgTalkSecs) : "—"}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${r.submissions ? "text-emerald-300" : "text-muted-foreground/40"}`}>{r.submissions || "—"}</TableCell>
@@ -6139,7 +6139,7 @@ function ReadyModeKillersPanel() {
                       <TableCell className="font-bold">Whole team</TableCell>
                       <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totals.dialed || "—"}</TableCell>
                       <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totals.connected || "—"}</TableCell>
-                      <TableCell className="text-right tabular-nums font-mono font-bold text-violet-400">{totals.connectRate ? `${totals.connectRate}%` : "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums font-mono font-bold text-blue-400">{totals.connectRate ? `${totals.connectRate}%` : "—"}</TableCell>
                       <TableCell className="text-right tabular-nums font-mono font-bold">{totals.talkTimeSecs ? formatDuration(totals.talkTimeSecs) : "—"}</TableCell>
                       <TableCell />
                       <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-300">{totals.submissions || "—"}</TableCell>
@@ -6156,7 +6156,7 @@ function ReadyModeKillersPanel() {
               <StatTile label="Retained" value={(subTotals.counts["Retained"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="emerald" />
               <StatTile label="Cancelled" value={(subTotals.counts["Cancelled"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="rose" />
               <StatTile label="Fixed" value={(subTotals.counts["Fixed"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="sky" />
-              <StatTile label="IDP-Handled" value={(subTotals.counts["IDP-Handled"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="violet" />
+              <StatTile label="IDP-Handled" value={(subTotals.counts["IDP-Handled"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="blue" />
             </div>
 
             <div className="flex justify-end">
@@ -6248,7 +6248,7 @@ function ReadyModePanel() {
     return (
       <TableHead className={`whitespace-nowrap text-right ${tone}`}>
         <button type="button" onClick={() => toggle(col)}
-          className={`inline-flex items-center gap-1 flex-row-reverse font-semibold hover:text-foreground ${active ? "text-violet-300" : "text-muted-foreground"}`}>
+          className={`inline-flex items-center gap-1 flex-row-reverse font-semibold hover:text-foreground ${active ? "text-blue-300" : "text-muted-foreground"}`}>
           {label}
           {active ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
         </button>
@@ -6327,7 +6327,7 @@ function ReadyModePanel() {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <StatTile label="Total dialed" value={totals.dialed} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
             <StatTile label="Connected" value={totals.connected} icon={<PhoneCall className="h-3.5 w-3.5" />} tone="emerald" />
-            <StatTile label="Connect rate" value={`${totals.connectRate}%`} icon={<Activity className="h-3.5 w-3.5" />} tone="violet" />
+            <StatTile label="Connect rate" value={`${totals.connectRate}%`} icon={<Activity className="h-3.5 w-3.5" />} tone="blue" />
             <StatTile label="Total talk time" value={formatDuration(totals.talkTimeSecs)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
           </div>
         )}
@@ -6362,13 +6362,13 @@ function ReadyModePanel() {
                     <TableRow>
                       <TableHead className="text-left text-muted-foreground">
                         <button type="button" onClick={() => toggle("name")}
-                          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${sort.col === "name" ? "text-violet-300" : "text-muted-foreground"}`}>
+                          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${sort.col === "name" ? "text-blue-300" : "text-muted-foreground"}`}>
                           Agent {sort.col === "name" ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
                         </button>
                       </TableHead>
                       <SortTh col="dialed" label="Dialed" tone="text-sky-400" />
                       <SortTh col="connected" label="Connected" tone="text-emerald-400" />
-                      <SortTh col="connectRate" label="Connect %" tone="text-violet-400" />
+                      <SortTh col="connectRate" label="Connect %" tone="text-blue-400" />
                       <SortTh col="talkTime" label="Talk time" />
                       <SortTh col="avgTalk" label="Avg talk" />
                     </TableRow>
@@ -6384,7 +6384,7 @@ function ReadyModePanel() {
                         <TableCell className="font-medium whitespace-nowrap">{agent.agentName}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${agent.dialed ? "text-sky-400" : "text-muted-foreground/40"}`}>{agent.dialed || "—"}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${agent.connected ? "text-emerald-400" : "text-muted-foreground/40"}`}>{agent.connected || "—"}</TableCell>
-                        <TableCell className={`text-right tabular-nums font-mono ${agent.connectRate >= 20 ? "text-violet-400" : agent.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>
+                        <TableCell className={`text-right tabular-nums font-mono ${agent.connectRate >= 20 ? "text-blue-400" : agent.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>
                           {agent.connectRate > 0 ? `${agent.connectRate}%` : "—"}
                         </TableCell>
                         <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{agent.talkTimeSecs ? formatDuration(agent.talkTimeSecs) : "—"}</TableCell>
@@ -6398,7 +6398,7 @@ function ReadyModePanel() {
                         <TableCell className="font-bold">Whole team</TableCell>
                         <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totals?.dialed || "—"}</TableCell>
                         <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totals?.connected || "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums font-mono font-bold text-violet-400">{totals?.connectRate ? `${totals.connectRate}%` : "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono font-bold text-blue-400">{totals?.connectRate ? `${totals.connectRate}%` : "—"}</TableCell>
                         <TableCell className="text-right tabular-nums font-mono font-bold">{totals?.talkTimeSecs ? formatDuration(totals.talkTimeSecs) : "—"}</TableCell>
                         <TableCell />
                       </TableRow>
@@ -6433,7 +6433,7 @@ function PhonesPanel() {
             onClick={() => setSub(t.value)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
               sub === t.value
-                ? "border-violet-500 text-violet-300"
+                ? "border-blue-500 text-blue-300"
                 : "border-transparent text-zinc-400 hover:text-zinc-200"
             }`}
           >
@@ -6466,10 +6466,10 @@ function formatCallTime(iso: string): string {
 
 const TEAM_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "Internal CS", backend: "Retention & Internal CS", other: "Other" };
 const TEAM_COLORS: Record<string, string> = {
-  retention: "bg-violet-500/15 text-violet-300 border-violet-500/20",
+  retention: "bg-blue-500/15 text-blue-300 border-blue-500/20",
   nsf: "bg-sky-500/15 text-sky-300 border-sky-500/20",
   cs: "bg-emerald-500/15 text-emerald-300 border-emerald-500/20",
-  backend: "bg-violet-500/15 text-violet-300 border-violet-500/20",
+  backend: "bg-blue-500/15 text-blue-300 border-blue-500/20",
   other: "bg-zinc-500/15 text-zinc-300 border-zinc-500/20",
 };
 
@@ -6557,13 +6557,13 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
             <StatTile
               label={TEAM_LABELS[lockedTeam] ?? lockedTeam}
               value={q.isLoading ? "…" : (counts[lockedTeam] ?? 0).toLocaleString()}
-              tone={lockedTeam === "retention" ? "violet" : lockedTeam === "nsf" ? "sky" : "emerald"}
+              tone={lockedTeam === "retention" ? "blue" : lockedTeam === "nsf" ? "sky" : "emerald"}
             />
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <StatTile label="Total missed / no CB" value={q.isLoading ? "…" : items.length.toLocaleString()} tone="rose" icon={<PhoneOff className="h-3.5 w-3.5" />} />
-            <StatTile label="Retention" value={q.isLoading ? "…" : (counts["retention"] ?? 0).toLocaleString()} tone="violet" />
+            <StatTile label="Retention" value={q.isLoading ? "…" : (counts["retention"] ?? 0).toLocaleString()} tone="blue" />
             <StatTile label="Internal CS" value={q.isLoading ? "…" : (counts["cs"] ?? 0).toLocaleString()} tone="emerald" />
             <StatTile label="NSF" value={q.isLoading ? "…" : (counts["nsf"] ?? 0).toLocaleString()} tone="sky" />
           </div>
@@ -6584,7 +6584,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                   className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
                     teamFilter === t
                       ? t === "retention"
-                        ? "bg-violet-500/25 text-violet-200 border-violet-500/40"
+                        ? "bg-blue-500/25 text-blue-200 border-blue-500/40"
                         : t === "cs"
                         ? "bg-emerald-500/25 text-emerald-200 border-emerald-500/40"
                         : t === "nsf"
@@ -6825,7 +6825,7 @@ function HourlyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) 
             <TableHeader>
               <TableRow className="border-zinc-800 bg-zinc-900/60">
                 <TableHead className="text-xs w-20">Hour</TableHead>
-                <TableHead className="text-xs text-violet-300">Retention</TableHead>
+                <TableHead className="text-xs text-blue-300">Retention</TableHead>
                 <TableHead className="text-xs text-emerald-300">CS</TableHead>
                 <TableHead className="text-xs text-sky-300">NSF</TableHead>
                 <TableHead className="text-xs text-right">Total</TableHead>
@@ -6837,7 +6837,7 @@ function HourlyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) 
                 return (
                   <TableRow key={h.hour} className="border-zinc-800 hover:bg-zinc-800/20">
                     <TableCell className="text-xs text-zinc-400 tabular-nums">{fmt(h.hour)}</TableCell>
-                    <TableCell className="text-xs text-violet-300 font-medium">{cellVal(h.retention.quo, h.retention.ghost, h.retention.pbx)}</TableCell>
+                    <TableCell className="text-xs text-blue-300 font-medium">{cellVal(h.retention.quo, h.retention.ghost, h.retention.pbx)}</TableCell>
                     <TableCell className="text-xs text-emerald-300 font-medium">{cellVal(h.cs.quo, h.cs.ghost, h.cs.pbx)}</TableCell>
                     <TableCell className="text-xs text-sky-300 font-medium">{cellVal(h.nsf.quo, h.nsf.ghost, h.nsf.pbx)}</TableCell>
                     <TableCell className="text-xs text-right font-semibold text-zinc-200">{total}</TableCell>
@@ -6909,10 +6909,10 @@ function DailyMissedBreakdown({ date }: { date: string }) {
           <div key={n.fromNumber + n.firstMissedAt} className={`flex items-center justify-between text-xs py-1 px-2 rounded hover:bg-zinc-800/40 ${n.isGhost ? "opacity-50" : ""}`}>
             <span className="font-mono text-zinc-300 tabular-nums">{n.fromNumber}</span>
             <div className="flex items-center gap-2 shrink-0">
-              <span className={`text-[10px] ${n.team === "retention" ? "text-violet-400" : n.team === "cs" ? "text-emerald-400" : "text-sky-400"}`}>
+              <span className={`text-[10px] ${n.team === "retention" ? "text-blue-400" : n.team === "cs" ? "text-emerald-400" : "text-sky-400"}`}>
                 {TEAM_LABELS[n.team] ?? n.team}
               </span>
-              <span className={`text-[10px] px-1 py-0.5 rounded ${n.source === "quo" ? "bg-violet-500/20 text-violet-300" : n.source === "pbx" ? "bg-sky-500/20 text-sky-300" : "bg-zinc-500/20 text-zinc-300"}`}>
+              <span className={`text-[10px] px-1 py-0.5 rounded ${n.source === "quo" ? "bg-blue-500/20 text-blue-300" : n.source === "pbx" ? "bg-sky-500/20 text-sky-300" : "bg-zinc-500/20 text-zinc-300"}`}>
                 {n.source === "both" ? "Quo+PBX" : n.source === "quo" ? "Quo" : "PBX"}
               </span>
               {n.isGhost && <span className="text-[9px] px-1 py-0.5 rounded border border-zinc-700 bg-zinc-800 text-zinc-500 uppercase font-medium">ghost</span>}
@@ -6957,7 +6957,7 @@ function DailyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) {
           <TableHeader>
             <TableRow className="border-zinc-800 bg-zinc-900/60">
               <TableHead className="text-xs w-28">Date</TableHead>
-              <TableHead className="text-xs text-violet-300">Retention</TableHead>
+              <TableHead className="text-xs text-blue-300">Retention</TableHead>
               <TableHead className="text-xs text-emerald-300">CS</TableHead>
               <TableHead className="text-xs text-sky-300">NSF</TableHead>
               <TableHead className="text-xs text-right">Total</TableHead>
@@ -6978,7 +6978,7 @@ function DailyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) {
                       {fmt(d.date)}
                     </TableCell>
                     <TableCell className="text-xs">
-                      <span className="text-violet-300 font-medium">{ret || "—"}</span>
+                      <span className="text-blue-300 font-medium">{ret || "—"}</span>
                       {ret > 0 && (
                         <span className="text-zinc-600 ml-1 text-[10px]">
                           {d.retention.quo > 0 && <>{d.retention.quo}q</>}
@@ -7137,14 +7137,14 @@ function CallbackReviewPanel() {
     return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
   };
 
-  const btnCls = (active: boolean, activeColor = "bg-violet-500/25 text-violet-200 border-violet-500/40") =>
+  const btnCls = (active: boolean, activeColor = "bg-blue-500/25 text-blue-200 border-blue-500/40") =>
     `text-xs px-3 py-1.5 rounded-md border transition-colors ${active ? activeColor : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"}`;
 
   return (
     <Card className="border-white/5 bg-card/40 backdrop-blur-sm">
       <CardHeader className="pb-3">
         <CardTitle className="text-base font-semibold flex items-center gap-2">
-          <PhoneCall className="h-4 w-4 text-violet-400" />
+          <PhoneCall className="h-4 w-4 text-blue-400" />
           Callback Review
         </CardTitle>
       </CardHeader>
@@ -7171,7 +7171,7 @@ function CallbackReviewPanel() {
           {(["all", "retention", "cs", "nsf"] as const).map((t) => (
             <button key={t} onClick={() => setTeamFilter(t)}
               className={btnCls(teamFilter === t,
-                t === "retention" ? "bg-violet-500/25 text-violet-200 border-violet-500/40"
+                t === "retention" ? "bg-blue-500/25 text-blue-200 border-blue-500/40"
                 : t === "cs" ? "bg-emerald-500/25 text-emerald-200 border-emerald-500/40"
                 : t === "nsf" ? "bg-sky-500/25 text-sky-200 border-sky-500/40"
                 : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
@@ -7204,7 +7204,7 @@ function CallbackReviewPanel() {
                   <TableHead className="text-xs text-right text-rose-400">Missed</TableHead>
                   <TableHead className="text-xs text-right text-zinc-500">Ghost</TableHead>
                   <TableHead className="text-xs text-right text-emerald-400">Called Back</TableHead>
-                  <TableHead className="text-xs text-right text-violet-400">CB%</TableHead>
+                  <TableHead className="text-xs text-right text-blue-400">CB%</TableHead>
                   <TableHead className="text-xs text-right text-sky-400">Talked</TableHead>
                   <TableHead className="text-xs text-right text-amber-400">Connect%</TableHead>
                 </TableRow>
@@ -7245,7 +7245,7 @@ function CallbackReviewPanel() {
                 <button key={t} onClick={() => setTeamFilter(t)}
                   className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
                     teamFilter === t
-                      ? t === "retention" ? "bg-violet-500/25 text-violet-200 border-violet-500/40"
+                      ? t === "retention" ? "bg-blue-500/25 text-blue-200 border-blue-500/40"
                         : t === "cs" ? "bg-emerald-500/25 text-emerald-200 border-emerald-500/40"
                         : t === "nsf" ? "bg-sky-500/25 text-sky-200 border-sky-500/40"
                         : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
@@ -7278,7 +7278,7 @@ function CallbackReviewPanel() {
                     const num = item.fromNumber.replace(/(\+1)(\d{3})(\d{3})(\d{4})/, "$1 ($2) $3-$4");
                     const dot = !item.hasCallback ? "bg-zinc-700"
                       : item.callbackConnected ? "bg-emerald-500/70" : "bg-amber-500/60";
-                    const teamColor = item.team === "retention" ? "text-violet-300 border-violet-500/30 bg-violet-500/10"
+                    const teamColor = item.team === "retention" ? "text-blue-300 border-blue-500/30 bg-blue-500/10"
                       : item.team === "cs" ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/10"
                       : item.team === "nsf" ? "text-sky-300 border-sky-500/30 bg-sky-500/10"
                       : "text-zinc-400 border-zinc-600 bg-zinc-800";
@@ -7355,7 +7355,7 @@ type ViolationsData = {
 
 function deptBadge(dept: string): string {
   const d = dept.toLowerCase();
-  if (d === "retention") return "bg-violet-500/15 text-violet-300 border-violet-500/30";
+  if (d === "retention") return "bg-blue-500/15 text-blue-300 border-blue-500/30";
   if (d === "cs") return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
   if (d === "nsf") return "bg-sky-500/15 text-sky-300 border-sky-500/30";
   return "bg-zinc-700/40 text-zinc-300 border-zinc-600/30";
@@ -7516,23 +7516,23 @@ function LiveTransfersCard() {
   const rangeLabel = new Date(`${today}T00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 
   return (
-    <div className="rounded-xl border border-violet-700/30 bg-gradient-to-br from-violet-950/40 to-fuchsia-950/20 backdrop-blur p-5 space-y-4">
+    <div className="rounded-xl border border-blue-700/30 bg-gradient-to-br from-blue-950/40 to-cyan-950/20 backdrop-blur p-5 space-y-4">
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
-            <ArrowLeftRight className="h-5 w-5 text-violet-300" />
+            <ArrowLeftRight className="h-5 w-5 text-blue-300" />
             Inbound Live Transfers
           </h2>
           <div className="flex items-center gap-2 text-sm text-zinc-400 flex-wrap">
             <span>Partner (Aspire · Resync · Clarity · Concordia) + internal team transfers · {rangeLabel}</span>
-            <span className="flex items-center gap-1 text-violet-300/80">
+            <span className="flex items-center gap-1 text-blue-300/80">
               <Sparkles className="h-3 w-3" />
               AI-classified from call transcripts
             </span>
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="inline-flex items-center gap-1.5 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-200">
+          <span className="inline-flex items-center gap-1.5 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-xs font-medium text-blue-200">
             <CalendarDays className="h-3.5 w-3.5" />Today
           </span>
           <Button size="sm" variant="outline" onClick={() => refreshMutation.mutate()} disabled={running}>
@@ -7549,7 +7549,7 @@ function LiveTransfersCard() {
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-violet-500/15 to-violet-500/5 border-violet-500/30 text-violet-200">
+        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-blue-500/15 to-blue-500/5 border-blue-500/30 text-blue-200">
           <div className="flex items-center gap-1.5 text-xs opacity-80"><ArrowLeftRight className="h-3.5 w-3.5" />Total Live Transfers</div>
           <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.totalLive ?? 0).toLocaleString()}</div>
           <div className="text-xs opacity-70 mt-0.5">of {(status?.totalIncoming ?? 0).toLocaleString()} inbound considered</div>
@@ -7558,7 +7558,7 @@ function LiveTransfersCard() {
           <div className="flex items-center gap-1.5 text-xs opacity-80"><PhoneIncoming className="h-3.5 w-3.5" />Partner Transfers</div>
           <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.partnerTotal ?? 0).toLocaleString()}</div>
         </div>
-        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-fuchsia-500/15 to-fuchsia-500/5 border-fuchsia-500/30 text-fuchsia-200">
+        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-cyan-500/15 to-cyan-500/5 border-cyan-500/30 text-cyan-200">
           <div className="flex items-center gap-1.5 text-xs opacity-80"><ArrowLeftRight className="h-3.5 w-3.5" />Internal Transfers</div>
           <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.internalTotal ?? 0).toLocaleString()}</div>
         </div>
@@ -7595,7 +7595,7 @@ function LiveTransfersCard() {
         {status && status.internalByDept.length > 0 ? (
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
             {status.internalByDept.map((d) => (
-              <div key={d.dept} className="rounded-xl border bg-gradient-to-br p-3.5 from-fuchsia-500/10 to-fuchsia-500/5 border-fuchsia-500/25 text-fuchsia-200">
+              <div key={d.dept} className="rounded-xl border bg-gradient-to-br p-3.5 from-cyan-500/10 to-cyan-500/5 border-cyan-500/25 text-cyan-200">
                 <div className="flex items-center gap-1.5 text-xs opacity-80"><ArrowLeftRight className="h-3.5 w-3.5" />{d.dept}</div>
                 <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{d.count.toLocaleString()}</div>
               </div>
@@ -7613,7 +7613,7 @@ function LiveTransfersCard() {
             <span className="tabular-nums">{status.progressDone}/{status.progressTotal} ({progressPct}%)</span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
-            <div className="h-full bg-violet-500 transition-all" style={{ width: `${progressPct}%` }} />
+            <div className="h-full bg-blue-500 transition-all" style={{ width: `${progressPct}%` }} />
           </div>
         </div>
       )}
@@ -7743,7 +7743,7 @@ function QAPanel() {
             <button
               key={d}
               onClick={() => setDept(d)}
-              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${dept === d ? "bg-violet-600 text-white" : "bg-zinc-900/60 text-zinc-400 hover:text-white"}`}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${dept === d ? "bg-blue-600 text-white" : "bg-zinc-900/60 text-zinc-400 hover:text-white"}`}
             >
               {d === "all" ? "All depts" : d}
             </button>
@@ -7755,7 +7755,7 @@ function QAPanel() {
               ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Preparing…</>
               : <><Download className="h-3.5 w-3.5 mr-1.5" />Export Excel</>}
           </Button>
-          <Button onClick={runProcessor} disabled={processing} size="sm" className="bg-violet-600 hover:bg-violet-500">
+          <Button onClick={runProcessor} disabled={processing} size="sm" className="bg-blue-600 hover:bg-blue-500">
             <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${processing ? "animate-spin" : ""}`} />
             {processing ? "Evaluating…" : "Run QA now"}
           </Button>
@@ -7829,7 +7829,7 @@ function QAPanel() {
                     <TableRow><TableCell colSpan={8} className="text-center text-zinc-500 py-8">No QA reviews in this date range yet. Click "Run QA now" to evaluate recent calls.</TableCell></TableRow>
                   ) : reviewRows.map((r) => {
                     const isOpen = expanded === r.id;
-                    const deptColor = r.department === "Retention" ? "border-violet-700/60 text-violet-300"
+                    const deptColor = r.department === "Retention" ? "border-blue-700/60 text-blue-300"
                       : r.department === "CS" ? "border-sky-700/60 text-sky-300"
                       : "border-amber-700/60 text-amber-300";
                     return (
@@ -7855,7 +7855,7 @@ function QAPanel() {
                           </TableCell>
                           <TableCell>
                             {r.managerReviewRequired
-                              ? <Badge variant="outline" className="border-violet-700/60 text-violet-300">Manager</Badge>
+                              ? <Badge variant="outline" className="border-blue-700/60 text-blue-300">Manager</Badge>
                               : <span className="text-xs text-zinc-500">—</span>}
                           </TableCell>
                         </TableRow>
@@ -7924,7 +7924,7 @@ function QAPanel() {
                   ) : taskRows.length === 0 ? (
                     <TableRow><TableCell colSpan={7} className="text-center text-zinc-500 py-8">No open manager reviews. Nice.</TableCell></TableRow>
                   ) : taskRows.map((t) => {
-                    const deptColor = t.department === "Retention" ? "border-violet-700/60 text-violet-300"
+                    const deptColor = t.department === "Retention" ? "border-blue-700/60 text-blue-300"
                       : t.department === "CS" ? "border-sky-700/60 text-sky-300"
                       : "border-amber-700/60 text-amber-300";
                     const srcLabel = t.source === "weekly_lowest" ? "Weekly · lowest"
@@ -7945,7 +7945,7 @@ function QAPanel() {
                         </TableCell>
                         <TableCell className="text-xs text-zinc-400">{new Date(t.createdAt).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</TableCell>
                         <TableCell className="text-right space-x-1">
-                          <Button size="sm" variant="outline" className="border-violet-700/60 text-violet-300 h-7" onClick={() => setReviewingTask(t)}>Review</Button>
+                          <Button size="sm" variant="outline" className="border-blue-700/60 text-blue-300 h-7" onClick={() => setReviewingTask(t)}>Review</Button>
                           <Button size="sm" variant="ghost" className="text-zinc-400 h-7 px-2" onClick={() => resolveTask(t.id)}>Skip</Button>
                         </TableCell>
                       </TableRow>
@@ -8060,7 +8060,7 @@ function ManagerReviewDialog({
               onChange={(e) => setComments(e.target.value)}
               rows={3}
               placeholder="What did the agent do well or poorly? Coaching notes for the agent…"
-              className="w-full mt-1 rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+              className="w-full mt-1 rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
             />
           </div>
 
@@ -8078,7 +8078,7 @@ function ManagerReviewDialog({
               try { await onSubmit({ managerScore: ms, comments, coachingComplete }); }
               finally { setSaving(false); }
             }}
-            className="bg-violet-600 hover:bg-violet-500"
+            className="bg-blue-600 hover:bg-blue-500"
           >{saving ? "Saving…" : "Submit review"}</Button>
         </DialogFooter>
       </DialogContent>
@@ -8431,7 +8431,7 @@ function ViolationsPanel() {
             <button key={t.id} onClick={() => setSub(t.id)}
               className={`px-3 py-1.5 text-xs font-medium transition-colors flex items-center gap-1.5 ${
                 sub === t.id
-                  ? t.accent ? "bg-emerald-600 text-white" : t.urgent ? "bg-red-600 text-white" : "bg-violet-600 text-white"
+                  ? t.accent ? "bg-emerald-600 text-white" : t.urgent ? "bg-red-600 text-white" : "bg-blue-600 text-white"
                   : "bg-zinc-900/60 text-zinc-400 hover:text-white"
               }`}>
               {t.label}
@@ -8679,7 +8679,7 @@ function ViolationsPanel() {
                       </TableCell>
                       <TableCell className="text-xs">
                         {r.source === "quo"
-                          ? <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-violet-500/15 text-violet-300 border border-violet-500/25">OpenPhone</span>
+                          ? <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-blue-500/15 text-blue-300 border border-blue-500/25">OpenPhone</span>
                           : <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-500/15 text-sky-300 border border-sky-500/25">PBX</span>
                         }
                       </TableCell>
@@ -8803,7 +8803,7 @@ function ViolationsPanel() {
               disabled={!verifiedData?.items.length}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all
                 ${verifiedData?.items.length
-                  ? copied ? "bg-emerald-600 text-white" : "bg-violet-600 hover:bg-violet-500 text-white"
+                  ? copied ? "bg-emerald-600 text-white" : "bg-blue-600 hover:bg-blue-500 text-white"
                   : "bg-zinc-800 text-zinc-600 cursor-not-allowed"
                 }`}
             >
@@ -9126,11 +9126,11 @@ function BackendStatsPanel() {
       {/* Title row */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white shadow-[0_0_24px_-6px_rgba(168,85,247,0.7)]">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 text-white shadow-[0_0_24px_-6px_rgba(37,99,235,0.7)]">
             <BarChart3 className="h-5 w-5" />
           </div>
           <div>
-            <h2 className="text-lg font-bold tracking-tight bg-gradient-to-r from-violet-300 via-fuchsia-300 to-sky-300 bg-clip-text text-transparent">
+            <h2 className="text-lg font-bold tracking-tight bg-gradient-to-r from-blue-300 via-cyan-300 to-sky-300 bg-clip-text text-transparent">
               Backend Statistics
             </h2>
             <p className="text-xs text-muted-foreground">Every file submitted across all teams.</p>
@@ -9141,7 +9141,7 @@ function BackendStatsPanel() {
             <select
               value={month}
               onChange={(e) => setMonth(e.target.value)}
-              className="appearance-none pl-9 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+              className="appearance-none pl-9 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/50"
             >
               <option value="all">All time</option>
               <option value="today">Today</option>
@@ -9159,8 +9159,8 @@ function BackendStatsPanel() {
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        <BStatKpi icon={Layers} label="Total Files" value={stats.totalFiles} accent="bg-violet-500/30" />
-        <BStatKpi icon={Users} label="Contributors" value={stats.contributors} accent="bg-fuchsia-500/30" />
+        <BStatKpi icon={Layers} label="Total Files" value={stats.totalFiles} accent="bg-blue-500/30" />
+        <BStatKpi icon={Users} label="Contributors" value={stats.contributors} accent="bg-cyan-500/30" />
         <BStatKpi icon={CheckCircle2} label="Retained" value={stats.retained} accent="bg-emerald-500/30" />
         <BStatKpi icon={Wrench} label="Fixed" value={stats.fixed} accent="bg-sky-500/30" />
         <BStatKpi icon={TrendingUp} label="IDP-Handled" value={stats.idp} accent="bg-amber-500/30" />
@@ -9180,7 +9180,7 @@ function BackendStatsPanel() {
           <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
-                <Activity className="h-4 w-4 text-violet-300" /> Files submitted over time
+                <Activity className="h-4 w-4 text-blue-300" /> Files submitted over time
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -9389,7 +9389,7 @@ function Dashboard() {
   const defaultTab = ta ?? "retention";
 
   const roleBadgeCls =
-    user.role === "admin" ? "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30" :
+    user.role === "admin" ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/30" :
     user.role === "edit"  ? "bg-amber-500/20 text-amber-300 border-amber-500/30" :
                             "bg-zinc-500/20 text-zinc-300 border-zinc-500/30";
   const RoleIcon = user.role === "admin" ? ShieldCheck : user.role === "edit" ? Pencil : Eye;
@@ -9401,9 +9401,9 @@ function Dashboard() {
       {showAgents && <AgentRosterPanel onClose={() => setShowAgents(false)} />}
 
       <div className="pointer-events-none absolute inset-0 -z-0">
-        <div className="absolute -top-32 -left-32 h-[500px] w-[500px] rounded-full bg-violet-600/20 blur-[120px]" />
+        <div className="absolute -top-32 -left-32 h-[500px] w-[500px] rounded-full bg-blue-600/20 blur-[120px]" />
         <div className="absolute top-20 right-0 h-[400px] w-[400px] rounded-full bg-sky-500/15 blur-[120px]" />
-        <div className="absolute bottom-0 left-1/3 h-[400px] w-[400px] rounded-full bg-fuchsia-500/10 blur-[120px]" />
+        <div className="absolute bottom-0 left-1/3 h-[400px] w-[400px] rounded-full bg-cyan-500/10 blur-[120px]" />
       </div>
 
       <header className="relative border-b border-white/5 bg-card/60 backdrop-blur-xl">
@@ -9412,7 +9412,7 @@ function Dashboard() {
             <img src={companyLogo} alt="Company logo" className="h-full w-full object-cover" />
           </div>
           <div className="flex-1 min-w-0">
-            <h1 className="text-base sm:text-xl font-bold tracking-tight bg-gradient-to-r from-violet-300 via-fuchsia-300 to-sky-300 bg-clip-text text-transparent truncate">
+            <h1 className="text-base sm:text-xl font-bold tracking-tight bg-gradient-to-r from-blue-300 via-cyan-300 to-sky-300 bg-clip-text text-transparent truncate">
               Backend Tracker
             </h1>
             <p className="text-xs text-muted-foreground hidden sm:block">Retention, NSF &amp; CS team metrics at a glance</p>
@@ -9424,7 +9424,7 @@ function Dashboard() {
               <select
                 value={view}
                 onChange={(e) => setView(e.target.value as DashView)}
-                className="appearance-none pl-4 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+                className="appearance-none pl-4 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/50"
               >
                 {canSeeTab("backend-stats") && <option value="backend-stats">📊 Backend Statistics</option>}
                 {can("view_metrics") && <option value="metrics">📈 Metrics</option>}
@@ -9482,7 +9482,7 @@ function Dashboard() {
                 </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button onClick={() => setShowAgents(true)} className="p-2 rounded-lg text-zinc-400 hover:text-violet-300 hover:bg-violet-500/10 transition-colors">
+                    <button onClick={() => setShowAgents(true)} className="p-2 rounded-lg text-zinc-400 hover:text-blue-300 hover:bg-blue-500/10 transition-colors">
                       <Users className="h-4 w-4" />
                     </button>
                   </TooltipTrigger>
@@ -9490,7 +9490,7 @@ function Dashboard() {
                 </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button onClick={() => setShowUsers(true)} className="p-2 rounded-lg text-zinc-400 hover:text-fuchsia-300 hover:bg-fuchsia-500/10 transition-colors">
+                    <button onClick={() => setShowUsers(true)} className="p-2 rounded-lg text-zinc-400 hover:text-cyan-300 hover:bg-cyan-500/10 transition-colors">
                       <UserCog className="h-4 w-4" />
                     </button>
                   </TooltipTrigger>
@@ -9525,7 +9525,7 @@ function Dashboard() {
                     key={t.value}
                     value={t.value}
                     data-testid={`tab-${t.value}`}
-                    className="group gap-2 whitespace-nowrap rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm font-medium text-zinc-400 backdrop-blur transition-all hover:border-white/20 hover:bg-white/[0.07] hover:text-zinc-100 data-[state=active]:border-transparent data-[state=active]:bg-gradient-to-r data-[state=active]:from-violet-500 data-[state=active]:to-fuchsia-500 data-[state=active]:text-white data-[state=active]:shadow-[0_0_22px_-4px_rgba(168,85,247,0.75)]"
+                    className="group gap-2 whitespace-nowrap rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm font-medium text-zinc-400 backdrop-blur transition-all hover:border-white/20 hover:bg-white/[0.07] hover:text-zinc-100 data-[state=active]:border-transparent data-[state=active]:bg-gradient-to-r data-[state=active]:from-blue-500 data-[state=active]:to-cyan-500 data-[state=active]:text-white data-[state=active]:shadow-[0_0_22px_-4px_rgba(37,99,235,0.75)]"
                   >
                     <Icon className="h-3.5 w-3.5 shrink-0" />
                     {t.label}
@@ -9772,7 +9772,7 @@ function SamiaChat() {
       {/* Floating bubble */}
       <button
         onClick={() => setOpen((o) => !o)}
-        className="fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white shadow-[0_0_32px_-4px_rgba(168,85,247,0.7)] flex items-center justify-center hover:scale-105 transition-transform"
+        className="fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 text-white shadow-[0_0_32px_-4px_rgba(37,99,235,0.7)] flex items-center justify-center hover:scale-105 transition-transform"
         aria-label="Open Samia"
       >
         {open ? <X className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
@@ -9788,19 +9788,19 @@ function SamiaChat() {
             : "bottom-24 right-4 sm:right-6 w-[calc(100vw-32px)] sm:w-[360px] max-h-[560px]"
         }`}>
           {/* Header */}
-          <div className="flex items-center gap-3 px-4 py-3 border-b border-white/8 bg-gradient-to-r from-violet-600/20 to-fuchsia-600/20 flex-shrink-0">
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-white/8 bg-gradient-to-r from-blue-600/20 to-cyan-600/20 flex-shrink-0">
             {(adminView === "users" || adminView === "viewUser" || adminView === "history" || adminView === "viewDate") ? (
               <button onClick={() => adminView === "viewUser" ? setAdminView("users") : adminView === "viewDate" ? setAdminView("history") : setAdminView("chat")} className="text-zinc-400 hover:text-white transition-colors p-1 -ml-1">
                 <ChevronLeft className="h-4 w-4" />
               </button>
             ) : (
-              <div className="h-9 w-9 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white font-bold text-sm shadow-md flex-shrink-0">S</div>
+              <div className="h-9 w-9 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-white font-bold text-sm shadow-md flex-shrink-0">S</div>
             )}
             <div>
               <p className="text-sm font-semibold text-white leading-none">
                 {adminView === "users" ? "All Chats" : adminView === "viewUser" ? adminViewUser?.username ?? "User" : adminView === "history" ? "Chat History" : adminView === "viewDate" ? historyGroup?.label ?? "Chat" : "Samia"}
               </p>
-              <p className="text-[10px] text-violet-300 mt-0.5 flex items-center gap-1">
+              <p className="text-[10px] text-blue-300 mt-0.5 flex items-center gap-1">
                 {adminView === "chat" && <><span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />AI Analyst · Live data</>}
                 {adminView === "users" && "Select a user to view their chat"}
                 {adminView === "viewUser" && "Read-only · Admin view"}
@@ -9811,13 +9811,13 @@ function SamiaChat() {
             <div className="ml-auto flex items-center gap-1">
               {/* Personal chat history button */}
               {adminView === "chat" && (
-                <button onClick={openHistory} title="Chat history" className="text-zinc-500 hover:text-violet-300 transition-colors p-1">
+                <button onClick={openHistory} title="Chat history" className="text-zinc-500 hover:text-blue-300 transition-colors p-1">
                   <Clock className="h-4 w-4" />
                 </button>
               )}
               {/* Admin all-chats button */}
               {isAdmin && adminView === "chat" && (
-                <button onClick={openAdminUsers} title="View all user chats" className="text-zinc-500 hover:text-violet-300 transition-colors p-1">
+                <button onClick={openAdminUsers} title="View all user chats" className="text-zinc-500 hover:text-blue-300 transition-colors p-1">
                   <Users className="h-4 w-4" />
                 </button>
               )}
@@ -9847,7 +9847,7 @@ function SamiaChat() {
           {/* Name gate — shown if user hasn't set their display name yet */}
           {!chatName ? (
             <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 gap-5">
-              <div className="h-14 w-14 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white font-bold text-xl shadow-lg">S</div>
+              <div className="h-14 w-14 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-white font-bold text-xl shadow-lg">S</div>
               <div className="text-center">
                 <p className="text-sm font-semibold text-white mb-1">Hey, before we start —</p>
                 <p className="text-xs text-zinc-400">What's your name? Samia will use it to remember you.</p>
@@ -9859,12 +9859,12 @@ function SamiaChat() {
                   onChange={(e) => setNameInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") submitName(); }}
                   placeholder="Your first name…"
-                  className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2.5 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                  className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2.5 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
                 <button
                   onClick={submitName}
                   disabled={!nameInput.trim()}
-                  className="px-4 rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white text-sm font-medium disabled:opacity-40 hover:opacity-90 transition-opacity"
+                  className="px-4 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 text-white text-sm font-medium disabled:opacity-40 hover:opacity-90 transition-opacity"
                 >
                   Go
                 </button>
@@ -9874,7 +9874,7 @@ function SamiaChat() {
             <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1 min-h-0">
               {adminLoading && (
                 <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-6">
-                  <div className="h-3 w-3 rounded-full border-2 border-violet-400 border-t-transparent animate-spin" />
+                  <div className="h-3 w-3 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
                   Loading…
                 </div>
               )}
@@ -9899,7 +9899,7 @@ function SamiaChat() {
             <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
               {adminLoading && (
                 <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-4">
-                  <div className="h-3 w-3 rounded-full border-2 border-violet-400 border-t-transparent animate-spin" />
+                  <div className="h-3 w-3 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
                   Loading…
                 </div>
               )}
@@ -9909,10 +9909,10 @@ function SamiaChat() {
               {adminMessages.map((m, i) => (
                 <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                   {m.role === "assistant" && (
-                    <div className="h-6 w-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
+                    <div className="h-6 w-6 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
                   )}
                   <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                    m.role === "user" ? "bg-violet-600/70 text-white rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
+                    m.role === "user" ? "bg-blue-600/70 text-white rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
                   }`}>{m.content}</div>
                 </div>
               ))}
@@ -9921,7 +9921,7 @@ function SamiaChat() {
             <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1 min-h-0">
               {historyLoading && (
                 <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-6">
-                  <div className="h-3 w-3 rounded-full border-2 border-violet-400 border-t-transparent animate-spin" />
+                  <div className="h-3 w-3 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
                   Loading…
                 </div>
               )}
@@ -9934,7 +9934,7 @@ function SamiaChat() {
                   onClick={() => viewHistoryDate(g)}
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white/5 transition-colors text-left"
                 >
-                  <div className="h-8 w-8 rounded-full bg-zinc-700 flex items-center justify-center text-violet-300 flex-shrink-0">
+                  <div className="h-8 w-8 rounded-full bg-zinc-700 flex items-center justify-center text-blue-300 flex-shrink-0">
                     <Clock className="h-4 w-4" />
                   </div>
                   <div className="min-w-0 flex-1">
@@ -9954,10 +9954,10 @@ function SamiaChat() {
               {(historyGroup?.messages ?? []).map((m, i) => (
                 <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                   {m.role === "assistant" && (
-                    <div className="h-6 w-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
+                    <div className="h-6 w-6 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
                   )}
                   <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                    m.role === "user" ? "bg-violet-600/70 text-white rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
+                    m.role === "user" ? "bg-blue-600/70 text-white rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
                   }`}>{m.content}</div>
                 </div>
               ))}
@@ -9968,14 +9968,14 @@ function SamiaChat() {
               <div className={`flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0 ${size === "minimized" ? "hidden" : ""}`}>
                 {historyLoading && (
                   <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-4">
-                    <div className="h-3 w-3 rounded-full border-2 border-violet-400 border-t-transparent animate-spin" />
+                    <div className="h-3 w-3 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
                     Loading memory…
                   </div>
                 )}
                 {messages.map((m, i) => (
                   <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                     {m.role === "assistant" && (
-                      <div className="h-6 w-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
+                      <div className="h-6 w-6 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
                     )}
                     <div className={`max-w-[80%] flex flex-col gap-1.5 ${m.role === "user" ? "items-end" : "items-start"}`}>
                       {m.images?.map((src, idx) => (
@@ -9983,7 +9983,7 @@ function SamiaChat() {
                       ))}
                       {m.content && (
                         <div className={`rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                          m.role === "user" ? "bg-violet-600 text-white rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
+                          m.role === "user" ? "bg-blue-600 text-white rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
                         }`}>{m.content}</div>
                       )}
                     </div>
@@ -9991,7 +9991,7 @@ function SamiaChat() {
                 ))}
                 {loading && (
                   <div className="flex justify-start">
-                    <div className="h-6 w-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
+                    <div className="h-6 w-6 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
                     <div className="bg-zinc-800 rounded-2xl rounded-bl-sm px-3 py-2">
                       <div className="flex gap-1 items-center h-4">
                         <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:0ms]" />
@@ -10025,15 +10025,15 @@ function SamiaChat() {
                   <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
                     onChange={(e) => { if (e.target.files) { void addImages(e.target.files); e.target.value = ""; } }} />
                   <button onClick={() => fileInputRef.current?.click()} disabled={loading} title="Attach image"
-                    className="h-9 w-9 rounded-xl bg-zinc-800 border border-white/10 text-zinc-400 hover:text-violet-400 flex items-center justify-center transition-colors disabled:opacity-40 flex-shrink-0">
+                    className="h-9 w-9 rounded-xl bg-zinc-800 border border-white/10 text-zinc-400 hover:text-blue-400 flex items-center justify-center transition-colors disabled:opacity-40 flex-shrink-0">
                     <Paperclip className="h-4 w-4" />
                   </button>
                   <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
                     onPaste={handlePaste} placeholder="Ask Samia anything… or paste a screenshot" disabled={loading}
-                    className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-violet-500 disabled:opacity-50" />
+                    className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50" />
                   <button onClick={() => void send()} disabled={(!input.trim() && pendingImages.length === 0) || loading}
-                    className="h-9 w-9 rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity flex-shrink-0">
+                    className="h-9 w-9 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 text-white flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity flex-shrink-0">
                     <Send className="h-4 w-4" />
                   </button>
                 </div>
@@ -10307,7 +10307,7 @@ function AttendancePanel() {
             <span className="text-xs text-emerald-400">{autoMarkResult}</span>
           )}
           {canManage && (
-            <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white" onClick={() => setShowAdd((v) => !v)}>
+            <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" onClick={() => setShowAdd((v) => !v)}>
               + Add Member
             </Button>
           )}
@@ -10321,7 +10321,7 @@ function AttendancePanel() {
 
       {/* Add Member form */}
       {showAdd && (
-        <Card className="border-violet-500/30 bg-zinc-900/70 p-4">
+        <Card className="border-blue-500/30 bg-zinc-900/70 p-4">
           <div className="flex gap-3 items-end flex-wrap">
             <div className="flex-1 min-w-[160px]">
               <Label className="text-xs text-muted-foreground mb-1 block">Name *</Label>
@@ -10387,14 +10387,14 @@ function AttendancePanel() {
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex gap-1.5 flex-wrap items-center">
           {lockedDept ? (
-            <div className="px-3 py-1 rounded-md text-sm font-medium bg-violet-600/30 text-violet-200 border border-violet-700/40">
+            <div className="px-3 py-1 rounded-md text-sm font-medium bg-blue-600/30 text-blue-200 border border-blue-700/40">
               {lockedDept} team
             </div>
           ) : departments.map((d) => (
             <button
               key={d}
               onClick={() => setDeptFilter(d)}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${deptFilter === d ? "bg-violet-600 text-white" : "text-muted-foreground hover:text-white hover:bg-white/5"}`}
+              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${deptFilter === d ? "bg-blue-600 text-white" : "text-muted-foreground hover:text-white hover:bg-white/5"}`}
             >
               {d}
             </button>
@@ -10434,11 +10434,11 @@ function AttendancePanel() {
                   return (
                     <th
                       key={d}
-                      className={`text-center px-0 py-1 border-b border-white/10 w-12 ${isToday ? "bg-violet-900/40" : isTomorrow ? "bg-teal-900/30" : ""}`}
+                      className={`text-center px-0 py-1 border-b border-white/10 w-12 ${isToday ? "bg-blue-900/40" : isTomorrow ? "bg-teal-900/30" : ""}`}
                       style={isWknd && !isToday && !isTomorrow ? { background: "repeating-linear-gradient(135deg, #0f0f12 0px, #0f0f12 4px, #16141a 4px, #16141a 8px)" } : undefined}
                     >
-                      <div className={`text-[11px] font-semibold ${isToday ? "text-violet-300" : isTomorrow ? "text-teal-300" : isWknd ? "text-amber-700/80" : "text-muted-foreground"}`}>{dt.getDate()}</div>
-                      <div className={`text-[9px] ${isToday ? "text-violet-400" : isTomorrow ? "text-teal-500" : isWknd ? "text-amber-800/70" : "text-zinc-600"}`}>{WDAYS[dt.getDay()]}</div>
+                      <div className={`text-[11px] font-semibold ${isToday ? "text-blue-300" : isTomorrow ? "text-teal-300" : isWknd ? "text-amber-700/80" : "text-muted-foreground"}`}>{dt.getDate()}</div>
+                      <div className={`text-[9px] ${isToday ? "text-blue-400" : isTomorrow ? "text-teal-500" : isWknd ? "text-amber-800/70" : "text-zinc-600"}`}>{WDAYS[dt.getDay()]}</div>
                     </th>
                   );
                 })}
@@ -10476,7 +10476,7 @@ function AttendancePanel() {
                     </td>
                     <td className={`sticky left-[250px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-2 border-b border-white/5`}>
                       {member.department && (
-                        <Badge className="text-[10px] px-1.5 py-0 bg-violet-500/20 text-violet-300 border-violet-500/30">{member.department}</Badge>
+                        <Badge className="text-[10px] px-1.5 py-0 bg-blue-500/20 text-blue-300 border-blue-500/30">{member.department}</Badge>
                       )}
                     </td>
                     {dateCols.map((d) => {
@@ -10492,7 +10492,7 @@ function AttendancePanel() {
                           onClick={() => canEdit && openCell(member, d)}
                           title={rec?.note ? `📝 ${rec.note}` : undefined}
                           className={`text-center border-b border-white/5 w-12 h-8 transition-colors
-                            ${isToday ? "bg-violet-950/40" : isTomorrow ? "bg-teal-950/30" : ""}
+                            ${isToday ? "bg-blue-950/40" : isTomorrow ? "bg-teal-950/30" : ""}
                             ${!canEdit ? "cursor-default opacity-20" : "cursor-pointer hover:bg-white/5"}`}
                           style={isWknd && !isToday && !isTomorrow ? { background: "repeating-linear-gradient(135deg, #0f0f12 0px, #0f0f12 4px, #16141a 4px, #16141a 8px)" } : undefined}
                         >
@@ -10516,7 +10516,7 @@ function AttendancePanel() {
                 <tr>
                   <td colSpan={dateCols.length + 9} className="text-center py-16 text-muted-foreground text-sm">
                     {(data?.members.length ?? 0) === 0 ? (
-                      <>No members yet — <button onClick={doImport} disabled={importing} className="text-violet-400 hover:text-violet-300 underline">{importing ? "Importing…" : "import from Google Sheets"}</button> or add one above.</>
+                      <>No members yet — <button onClick={doImport} disabled={importing} className="text-blue-400 hover:text-blue-300 underline">{importing ? "Importing…" : "import from Google Sheets"}</button> or add one above.</>
                     ) : (
                       <>No members in this department.</>
                     )}
@@ -10544,7 +10544,7 @@ function AttendancePanel() {
       {/* Cell editor overlay */}
       {editCell && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={(e) => { if (e.target === e.currentTarget) setEditCell(null); }}>
-          <Card className="w-80 bg-zinc-900 border-violet-500/40 p-5 space-y-4 shadow-2xl">
+          <Card className="w-80 bg-zinc-900 border-blue-500/40 p-5 space-y-4 shadow-2xl">
             <div>
               <div className="font-semibold text-white">{editCell.name}</div>
               <div className="text-xs text-muted-foreground mt-0.5">
@@ -10589,7 +10589,7 @@ function AttendancePanel() {
             </div>
             <div className="flex gap-2 justify-end pt-1">
               <Button size="sm" variant="ghost" onClick={() => setEditCell(null)}>Cancel</Button>
-              <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white" onClick={saveCell}>Save</Button>
+              <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" onClick={saveCell}>Save</Button>
             </div>
           </Card>
         </div>
@@ -10632,7 +10632,7 @@ function AttendancePanel() {
               )}
               <div className="flex gap-2">
                 <Button size="sm" variant="ghost" onClick={() => setEditingMember(null)}>Cancel</Button>
-                <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white" onClick={saveMember}>Save</Button>
+                <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" onClick={saveMember}>Save</Button>
               </div>
             </div>
           </Card>
