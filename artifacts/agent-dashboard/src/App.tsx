@@ -8891,10 +8891,11 @@ const BSTAT_STATUS_COLORS: Record<string, string> = {
   "IDP-Handled": "#fbbf24",
   Cancelled: "#fb7185",
 };
-const BSTAT_TEAM_META: Record<TeamMode, { label: string; color: string }> = {
+const BSTAT_TEAM_META: Record<RosterTeam, { label: string; color: string }> = {
   retention: { label: "Retention", color: "#a78bfa" },
   nsf: { label: "NSF", color: "#f0abfc" },
   cs: { label: "Internal CS", color: "#38bdf8" },
+  killers: { label: "ReadyMode Killers", color: "#2dd4bf" },
 };
 const bstatChartTooltip = {
   contentStyle: {
@@ -8909,13 +8910,13 @@ const bstatChartTooltip = {
   itemStyle: { color: "#e4e4e7" },
 } as const;
 
-type BStatRow = { agent: string; agentKey: string; team: TeamMode; status: string; date: string; fileId: string; idpCancel: boolean };
+type BStatRow = { agent: string; agentKey: string; team: RosterTeam; status: string; date: string; fileId: string; idpCancel: boolean };
 
 // Resolve a raw submission name to a single canonical agent identity. Mirrors
 // aggregate()'s roster-aware resolution but ALSO applies NAME_ALIASES, so Arabic
 // and compound Discord-bot names collapse onto one agent (e.g. "Ahmed Ayman" +
 // "Ahmed Ayman-Levi Miller" → Levi Miller; "Kevin Michael" + "Kevin Micheal").
-function bstatResolveAgent(raw: string, roster: RosterIndex, fallbackTeam: TeamMode): { key: string; display: string; team: TeamMode } {
+function bstatResolveAgent(raw: string, roster: RosterIndex, fallbackTeam: TeamMode): { key: string; display: string; team: RosterTeam } {
   const aliased = normalizeAgent(raw); // NAME_ALIASES[norm] ?? norm
   let hit = roster.lookupByAnyName(aliased) ?? roster.lookupByAnyName(raw);
   if (!hit) {
@@ -8924,10 +8925,16 @@ function bstatResolveAgent(raw: string, roster: RosterIndex, fallbackTeam: TeamM
       if (hit) break;
     }
   }
-  if (hit) return { key: normalizeAgent(hit.name), display: hit.name, team: hit.team === "killers" ? fallbackTeam : hit.team };
+  // ReadyMode Killers are a first-class team here: an agent counts as a Killer
+  // when the roster assigns them the "killers" team OR their name is in the fixed
+  // Killer roster (isKillerAgentKey). Otherwise fall back to the loader's team.
+  if (hit) {
+    const key = normalizeAgent(hit.name);
+    return { key, display: hit.name, team: hit.team === "killers" || isKillerAgentKey(key) ? "killers" : hit.team };
+  }
   const key = aliased;
   const display = NAME_DISPLAY[key] ?? key.replace(/\b\w/g, (c) => c.toUpperCase());
-  return { key, display, team: fallbackTeam };
+  return { key, display, team: isKillerAgentKey(key) ? "killers" : fallbackTeam };
 }
 
 function bstatMonthLabel(ym: string): string {
@@ -9047,8 +9054,8 @@ function BackendStatsPanel() {
     const rs = filtered;
     const byDay = new Map<string, number>();
     const byStatus = new Map<string, number>();
-    const byTeam = new Map<TeamMode, number>();
-    const byAgent = new Map<string, { agent: string; agentKey: string; team: TeamMode; total: number; retained: number; idpCancelRetained: number; fixed: number; idp: number; cancelled: number }>();
+    const byTeam = new Map<RosterTeam, number>();
+    const byAgent = new Map<string, { agent: string; agentKey: string; team: RosterTeam; total: number; retained: number; idpCancelRetained: number; fixed: number; idp: number; cancelled: number }>();
     for (const r of rs) {
       if (/^\d{4}-\d{2}-\d{2}$/.test(r.date)) byDay.set(r.date, (byDay.get(r.date) ?? 0) + 1);
       byStatus.set(r.status, (byStatus.get(r.status) ?? 0) + 1);
@@ -9068,7 +9075,7 @@ function BackendStatsPanel() {
     const statusData = [...byStatus.entries()]
       .sort((a, b) => (statusOrder.indexOf(a[0]) + 1 || 99) - (statusOrder.indexOf(b[0]) + 1 || 99))
       .map(([name, value]) => ({ name, value, color: BSTAT_STATUS_COLORS[name] ?? "#a1a1aa" }));
-    const teamData = (["retention", "nsf", "cs"] as TeamMode[])
+    const teamData = (["retention", "nsf", "cs", "killers"] as RosterTeam[])
       .filter((t) => byTeam.get(t))
       .map((t) => ({ name: BSTAT_TEAM_META[t].label, value: byTeam.get(t) ?? 0, color: BSTAT_TEAM_META[t].color }));
     const agents = [...byAgent.values()].sort((a, b) => b.total - a.total);
@@ -9088,9 +9095,9 @@ function BackendStatsPanel() {
     };
   }, [filtered]);
 
-  const hasKillers = useMemo(() => stats.agents.some((a) => isKillerAgentKey(a.agentKey)), [stats.agents]);
+  const hasKillers = useMemo(() => stats.agents.some((a) => a.team === "killers"), [stats.agents]);
   const leaderboardAgents = useMemo(
-    () => (killersOnly ? stats.agents.filter((a) => isKillerAgentKey(a.agentKey)) : stats.agents),
+    () => (killersOnly ? stats.agents.filter((a) => a.team === "killers") : stats.agents),
     [stats.agents, killersOnly],
   );
 
@@ -9299,8 +9306,8 @@ function BackendStatsPanel() {
                         <TableCell className="font-medium text-zinc-100">
                           <span className="inline-flex items-center gap-2">
                             {a.agent}
-                            {isKillerAgentKey(a.agentKey) && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-rose-500/30 bg-rose-500/15 text-rose-300">Killer</span>
+                            {a.team === "killers" && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-teal-500/30 bg-teal-500/15 text-teal-300">Killer</span>
                             )}
                           </span>
                         </TableCell>
