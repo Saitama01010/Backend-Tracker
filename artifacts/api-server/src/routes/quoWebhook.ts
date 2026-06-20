@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
 import crypto from "node:crypto";
 import { db, phoneCallsTable } from "@workspace/db";
 import { logger } from "../lib/logger.js";
@@ -174,7 +174,7 @@ async function handleCallCompleted(obj: Record<string, unknown>) {
 }
 
 // ─── POST /api/quo/webhook ────────────────────────────────────────────────────
-router.post("/quo/webhook", async (req, res) => {
+async function handleOpenPhoneWebhook(req: Request, res: Response) {
   const sig = req.headers["openphone-signature"] as string | undefined;
 
   if (!verifySignature(req.body, sig)) {
@@ -217,6 +217,9 @@ router.post("/quo/webhook", async (req, res) => {
     });
   }
   // call.summary.completed, message.*, contact.* — acknowledged, not processed
-});
+}
+
+router.post("/quo/webhook", handleOpenPhoneWebhook);
+router.post("/openphone/webhook", handleOpenPhoneWebhook);
 
 export default router;
