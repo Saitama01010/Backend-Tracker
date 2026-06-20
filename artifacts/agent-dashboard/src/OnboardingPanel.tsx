@@ -114,12 +114,12 @@ function lastDayOfMonth(ym: string): string {
 
 type ToneKey = "blue" | "emerald" | "sky" | "amber" | "rose" | "cyan";
 const TONES: Record<ToneKey, string> = {
-  blue: "from-blue-500/15 to-blue-500/5 border-blue-500/30 text-blue-200",
-  emerald: "from-emerald-500/15 to-emerald-500/5 border-emerald-500/30 text-emerald-200",
-  sky: "from-sky-500/15 to-sky-500/5 border-sky-500/30 text-sky-200",
-  amber: "from-amber-500/15 to-amber-500/5 border-amber-500/30 text-amber-200",
-  rose: "from-rose-500/15 to-rose-500/5 border-rose-500/30 text-rose-200",
-  cyan: "from-cyan-500/15 to-cyan-500/5 border-cyan-500/30 text-cyan-200",
+  blue: "from-card to-muted/50 border-border metric-info",
+  emerald: "from-card to-muted/50 border-border metric-good",
+  sky: "from-card to-muted/50 border-border metric-info",
+  amber: "from-card to-muted/50 border-border metric-warn",
+  rose: "from-card to-muted/50 border-border metric-bad",
+  cyan: "from-card to-muted/50 border-border metric-info",
 };
 
 function StatPill({
@@ -213,16 +213,16 @@ function OnboardingReportCard() {
         : new Date(`${day}T00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 
   return (
-    <div className="rounded-xl border border-blue-700/30 bg-gradient-to-br from-blue-950/40 to-cyan-950/20 backdrop-blur p-5 space-y-4">
+    <div className="rounded-xl border border-border bg-card backdrop-blur p-5 space-y-4">
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
-            <FileSpreadsheet className="h-5 w-5 text-blue-300" />
+            <FileSpreadsheet className="h-5 w-5 metric-info" />
             Onboarding Line Report
           </h2>
           <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
             <span>(949) 315-7441 · {rangeLabel} · Connection vs Onboarded + tax mentions</span>
-            <span className="flex items-center gap-1 text-blue-300/80">
+            <span className="flex items-center gap-1 metric-info">
               <Sparkles className="h-3 w-3" />
               AI-classified from call transcripts
             </span>
@@ -234,7 +234,7 @@ function OnboardingReportCard() {
               <button
                 key={g}
                 onClick={() => setGran(g)}
-                className={`px-3 py-1.5 text-xs font-medium transition-colors ${gran === g ? "bg-blue-600 text-white" : "bg-transparent text-muted-foreground hover:bg-white/5"}`}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${gran === g ? "bg-primary text-primary-foreground" : "bg-transparent text-muted-foreground hover:bg-white/5"}`}
               >
                 {g === "all" ? "All Time" : g === "month" ? "Monthly" : "Per Day"}
               </button>
@@ -275,12 +275,12 @@ function OnboardingReportCard() {
             <span className="tabular-nums">{status.progressDone}/{status.progressTotal} ({progressPct}%)</span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-            <div className="h-full bg-blue-500 transition-all" style={{ width: `${progressPct}%` }} />
+            <div className="h-full bg-primary transition-all" style={{ width: `${progressPct}%` }} />
           </div>
         </div>
       )}
       {lastRun && !running && (
-        <div className="text-xs text-emerald-400 flex items-center gap-1">
+        <div className="text-xs metric-good flex items-center gap-1">
           <CheckCircle className="h-3 w-3" />
           Last refreshed {lastRun}
         </div>
@@ -359,11 +359,11 @@ export function OnboardingPanel() {
       <OnboardingReportCard />
 
       {/* Controls */}
-      <div className="rounded-xl border border-cyan-700/30 bg-gradient-to-br from-cyan-950/30 to-blue-950/10 backdrop-blur p-5 space-y-4">
+      <div className="rounded-xl border border-border bg-card backdrop-blur p-5 space-y-4">
         <div className="flex items-start justify-between flex-wrap gap-3">
           <div>
             <h2 className="text-lg font-semibold flex items-center gap-2">
-              <TrendingUp className="h-5 w-5 text-cyan-300" />
+              <TrendingUp className="h-5 w-5 metric-info" />
               Onboarding Team Analytics
             </h2>
             <p className="text-sm text-muted-foreground">
@@ -376,7 +376,7 @@ export function OnboardingPanel() {
                 <button
                   key={g}
                   onClick={() => setGran(g)}
-                  className={`px-3 py-1.5 text-xs font-medium transition-colors ${gran === g ? "bg-cyan-600 text-white" : "bg-transparent text-muted-foreground hover:bg-white/5"}`}
+                  className={`px-3 py-1.5 text-xs font-medium transition-colors ${gran === g ? "bg-primary text-primary-foreground" : "bg-transparent text-muted-foreground hover:bg-white/5"}`}
                 >
                   {g === "all" ? "All Time" : g === "month" ? "Monthly" : "Per Day"}
                 </button>
@@ -406,7 +406,7 @@ export function OnboardingPanel() {
             <Loader2 className="h-5 w-5 animate-spin" /> Crunching the numbers…
           </div>
         ) : isError ? (
-          <div className="py-16 text-center text-rose-300 text-sm">Failed to load analytics.</div>
+          <div className="py-16 text-center metric-bad text-sm">Failed to load analytics.</div>
         ) : !data || data.kpis.totalCalls === 0 ? (
           <div className="py-16 text-center text-muted-foreground text-sm">No onboarding calls in this range.</div>
         ) : (
@@ -425,7 +425,7 @@ export function OnboardingPanel() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div className="rounded-xl border border-white/10 bg-black/20 p-4">
                 <h3 className="text-sm font-medium flex items-center gap-1.5 mb-3">
-                  <PhoneMissed className="h-4 w-4 text-rose-400" /> Missed Calls by Hour of Day
+                  <PhoneMissed className="h-4 w-4 metric-bad" /> Missed Calls by Hour of Day
                 </h3>
                 <ResponsiveContainer width="100%" height={220}>
                   <BarChart data={data.hourly} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
@@ -447,7 +447,7 @@ export function OnboardingPanel() {
               </div>
               <div className="rounded-xl border border-white/10 bg-black/20 p-4">
                 <h3 className="text-sm font-medium flex items-center gap-1.5 mb-3">
-                  <Timer className="h-4 w-4 text-cyan-400" /> Availability by Hour (avg idle min between calls)
+                  <Timer className="h-4 w-4 metric-info" /> Availability by Hour (avg idle min between calls)
                 </h3>
                 <ResponsiveContainer width="100%" height={220}>
                   <BarChart data={data.hourly} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
@@ -470,13 +470,13 @@ export function OnboardingPanel() {
             </div>
 
             {/* Insights */}
-            <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-4">
-              <h3 className="text-sm font-medium flex items-center gap-1.5 mb-2 text-amber-200">
+            <div className="rounded-xl border border-border bg-muted/30 p-4">
+              <h3 className="text-sm font-medium flex items-center gap-1.5 mb-2 metric-warn">
                 <Lightbulb className="h-4 w-4" /> Recommendations & What Can Be Improved
               </h3>
-              <ul className="space-y-1.5 text-sm text-amber-100/90">
+              <ul className="space-y-1.5 text-sm text-muted-foreground">
                 {data.insights.map((ins, i) => (
-                  <li key={i} className="flex gap-2"><span className="text-amber-400">•</span><span>{ins}</span></li>
+                  <li key={i} className="flex gap-2"><span className="metric-warn">•</span><span>{ins}</span></li>
                 ))}
               </ul>
             </div>
@@ -489,7 +489,7 @@ export function OnboardingPanel() {
             {/* Agent ranking */}
             <div className="rounded-xl border border-white/10 bg-black/20 overflow-hidden">
               <h3 className="text-sm font-medium flex items-center gap-1.5 p-4 pb-2">
-                <Award className="h-4 w-4 text-blue-300" /> Agent Ranking — most responsive & productive (best → worst)
+                <Award className="h-4 w-4 metric-info" /> Agent Ranking — most responsive & productive (best → worst)
               </h3>
               <div className="overflow-x-auto">
                 <Table>
@@ -512,14 +512,14 @@ export function OnboardingPanel() {
                       let rank = 0;
                       return data.agents.map((a) => {
                         if (a.ranked) rank++;
-                        const rrColor = a.responseRate >= 85 ? "text-emerald-300" : a.responseRate >= 70 ? "text-amber-300" : "text-rose-300";
+                        const rrColor = a.responseRate >= 85 ? "metric-good" : a.responseRate >= 70 ? "metric-warn" : "metric-bad";
                         return (
                           <TableRow key={a.name} className={a.ranked ? "" : "opacity-50"}>
                             <TableCell className="tabular-nums">{a.ranked ? rank : "—"}</TableCell>
                             <TableCell className="font-medium whitespace-nowrap">
                               {a.name}
                               {a.overflow && (
-                                <span className="ml-2 text-[10px] uppercase tracking-wide text-rose-300/80 font-normal">
+                                <span className="ml-2 text-[10px] uppercase tracking-wide metric-bad/80 font-normal">
                                   unanswered overflow
                                 </span>
                               )}
@@ -543,7 +543,7 @@ export function OnboardingPanel() {
                 This is a shared ring-group line: inbound calls ring every agent, so a missed call can't be pinned on
                 one person — per-agent response rate stays ~100% for everyone who answers. Agents are ranked by workload
                 (answered volume) and onboarding conversion. Faded rows have fewer than 10 inbound calls (not ranked).
-                The <span className="text-rose-300/80">unanswered overflow</span> row is the line's catch-all where
+                The <span className="metric-bad/80">unanswered overflow</span> row is the line's catch-all where
                 missed inbound calls land, not a working agent.
               </p>
             </div>
@@ -556,14 +556,14 @@ export function OnboardingPanel() {
 
 function CassieSpotlight({ c }: { c: NonNullable<Analytics["cassie"]> }) {
   const delta = (v: number, unit: string) => (
-    <span className={v >= 0 ? "text-emerald-400" : "text-rose-400"}>
+    <span className={v >= 0 ? "metric-good" : "metric-bad"}>
       {v >= 0 ? "+" : ""}{v}{unit} vs team
     </span>
   );
   return (
-    <div className="rounded-xl border border-cyan-500/30 bg-gradient-to-br from-cyan-600/15 to-blue-600/10 p-5 space-y-4">
+    <div className="rounded-xl border border-border bg-card p-5 space-y-4">
       <div className="flex items-center gap-2">
-        <Trophy className="h-5 w-5 text-cyan-300" />
+        <Trophy className="h-5 w-5 metric-info" />
         <h3 className="text-base font-semibold">Cassie Lynn — Spotlight</h3>
         <span className="text-xs text-muted-foreground">Productivity & problem-solving</span>
       </div>
@@ -597,3 +597,5 @@ function CassieSpotlight({ c }: { c: NonNullable<Analytics["cassie"]> }) {
     </div>
   );
 }
+
+

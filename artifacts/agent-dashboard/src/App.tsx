@@ -941,11 +941,11 @@ const NAME_ALIASES: Record<string, string> = {
 // Shift 4 = 4pm–12am EGY, Shift 5 = 5pm–1am EGY, Shift 6 = 6pm–2am EGY,
 // Shift 7 = 7pm–3am EGY, Shift 8 = 8pm–4am EGY
 const SHIFT_COLORS: Record<number, string> = {
-  4: "bg-blue-700",
-  5: "bg-emerald-700",
-  6: "bg-orange-700",
-  7: "bg-pink-700",
-  8: "bg-red-700",
+  4: "bg-stone-700",
+  5: "bg-zinc-700",
+  6: "bg-neutral-700",
+  7: "bg-stone-600",
+  8: "bg-zinc-800",
 };
 
 const AGENT_SHIFTS: Record<string, { num: number; label: string; color: string }> = {
@@ -977,7 +977,7 @@ function ShiftDot({ agentName }: { agentName: string }) {
   return (
     <span
       title={shift.label}
-      className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[11px] font-extrabold text-white leading-none shadow-md ring-2 ring-black/30 ${shift.color}`}
+      className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[11px] font-extrabold text-white leading-none shadow-sm ring-1 ring-border ${shift.color}`}
       style={{ verticalAlign: "middle", flexShrink: 0 }}
     >
       {shift.num}
@@ -1661,7 +1661,7 @@ function TimeSince({ isoStr }: { isoStr?: string }) {
   if (!isoStr) return <span className="text-muted-foreground/40">—</span>;
   const diff = Date.now() - new Date(isoStr).getTime();
   const mins = Math.floor(diff / 60000);
-  const color = mins < 30 ? "text-emerald-400" : mins < 120 ? "text-amber-400" : "text-rose-400";
+  const color = mins < 30 ? "metric-good" : mins < 120 ? "metric-warn" : "metric-bad";
   return <span className={`tabular-nums font-mono ${color}`}>{formatTimeSince(isoStr, now)}</span>;
 }
 
@@ -2000,34 +2000,34 @@ type TileTone = "blue" | "emerald" | "amber" | "sky" | "rose" | "slate" | "zinc"
 
 const TONE_STYLES: Record<TileTone, { bg: string; ring: string; text: string; glow: string }> = {
   blue: {
-    bg: "bg-gradient-to-br from-blue-500/15 via-cyan-500/10 to-transparent",
-    ring: "border-blue-500/30",
-    text: "text-blue-300",
-    glow: "shadow-[0_0_24px_-12px_rgba(37,99,235,0.6)]",
+    bg: "bg-card",
+    ring: "border-border",
+    text: "metric-info",
+    glow: "shadow-sm",
   },
   emerald: {
-    bg: "bg-gradient-to-br from-emerald-500/15 via-teal-500/10 to-transparent",
-    ring: "border-emerald-500/30",
-    text: "text-emerald-300",
-    glow: "shadow-[0_0_24px_-12px_rgba(16,185,129,0.6)]",
+    bg: "bg-card",
+    ring: "border-border",
+    text: "metric-good",
+    glow: "shadow-sm",
   },
   amber: {
-    bg: "bg-gradient-to-br from-amber-500/15 via-orange-500/10 to-transparent",
-    ring: "border-amber-500/30",
-    text: "text-amber-300",
-    glow: "shadow-[0_0_24px_-12px_rgba(245,158,11,0.6)]",
+    bg: "bg-card",
+    ring: "border-border",
+    text: "metric-warn",
+    glow: "shadow-sm",
   },
   sky: {
-    bg: "bg-gradient-to-br from-sky-500/15 via-cyan-500/10 to-transparent",
-    ring: "border-sky-500/30",
-    text: "text-sky-300",
-    glow: "shadow-[0_0_24px_-12px_rgba(14,165,233,0.6)]",
+    bg: "bg-card",
+    ring: "border-border",
+    text: "metric-info",
+    glow: "shadow-sm",
   },
   rose: {
-    bg: "bg-gradient-to-br from-rose-500/15 via-pink-500/10 to-transparent",
-    ring: "border-rose-500/30",
-    text: "text-rose-300",
-    glow: "shadow-[0_0_24px_-12px_rgba(244,63,94,0.6)]",
+    bg: "bg-card",
+    ring: "border-border",
+    text: "metric-bad",
+    glow: "shadow-sm",
   },
   slate: {
     bg: "bg-card",
@@ -2071,10 +2071,10 @@ function StatTile({
 
 function statusTone(s: string): string {
   const lower = s.toLowerCase();
-  if (/retain/.test(lower)) return "text-emerald-400";
-  if (/idp/.test(lower)) return "text-sky-400";
-  if (/cancel/.test(lower)) return "text-rose-400";
-  if (/fixed/.test(lower)) return "text-emerald-400";
+  if (/retain/.test(lower)) return "metric-good";
+  if (/idp/.test(lower)) return "metric-info";
+  if (/cancel/.test(lower)) return "metric-bad";
+  if (/fixed/.test(lower)) return "metric-good";
   return "text-foreground";
 }
 
@@ -2204,7 +2204,7 @@ function ByDayView({ data }: { data: Aggregated }) {
         <select
           value={agentFilter}
           onChange={(e) => setAgentFilter(e.target.value)}
-          className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500"
+          className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
         >
           <option value="">All agents</option>
           {agentOptions.some((n) => isKillerAgentKey(normalizeAgent(n))) && (
@@ -2238,9 +2238,9 @@ function ByDayView({ data }: { data: Aggregated }) {
                   {s}
                 </TableHead>
               ))}
-              <TableHead className="text-right whitespace-nowrap bg-primary/10 text-blue-300">Total</TableHead>
+              <TableHead className="text-right whitespace-nowrap bg-primary/10 metric-info">Total</TableHead>
               {showRate && (
-                <TableHead className="text-right whitespace-nowrap bg-primary/10 text-blue-200">Retention rate</TableHead>
+                <TableHead className="text-right whitespace-nowrap bg-primary/10 metric-info">Retention rate</TableHead>
               )}
             </TableRow>
           </TableHeader>
@@ -2302,7 +2302,7 @@ function ByDayView({ data }: { data: Aggregated }) {
                           </TableCell>
                         );
                       })}
-                      <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5 text-blue-200">
+                      <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5 metric-info">
                         {d.total || ""}
                       </TableCell>
                       {showRate && (
@@ -2583,7 +2583,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
                       </TableCell>
                     );
                   })}
-                  <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5 text-blue-200">{a.total}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/5 metric-info">{a.total}</TableCell>
                   {showRate && (
                     <TableCell className="text-right tabular-nums font-mono font-semibold bg-primary/10">
                       {retentionRate(sumRetained(a.byStatus, data.retainedStatuses), a.total)}
@@ -2988,7 +2988,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
       <TableHead className={`whitespace-nowrap ${align === "right" ? "text-right" : ""} ${tone}`}>
         <div className={`inline-flex items-center gap-1 ${align === "right" ? "flex-row-reverse" : ""}`}>
           <button type="button" onClick={() => toggle(id)}
-            className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${active ? "text-blue-300" : "text-muted-foreground"} ${align === "right" ? "flex-row-reverse" : ""}`}>
+            className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${active ? "metric-info" : "text-muted-foreground"} ${align === "right" ? "flex-row-reverse" : ""}`}>
             {label}
             {active ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
           </button>
@@ -3033,12 +3033,12 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
               const norm = normalizeAgent(agent);
               const pbxCall = pbxLiveByName.get(norm);
               return (
-                <div key={agent} className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-xs">
+                <div key={agent} className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-muted/60 border border-border text-xs">
                   <span className="relative flex h-2 w-2 shrink-0">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-muted-foreground opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-muted-foreground" />
                   </span>
-                  <span className="text-emerald-300 font-medium">{agent}</span>
+                  <span className="metric-good font-medium">{agent}</span>
                   <ShiftDot agentName={agent} />
                   {pbxCall && (
                     <>
@@ -3065,19 +3065,19 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
             <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
               <TableRow>
                 <Th id="__agent__" label="Agent" align="left" />
-                <TableHead className="whitespace-nowrap text-right text-blue-400">Last call</TableHead>
+                <TableHead className="whitespace-nowrap text-right metric-info">Last call</TableHead>
                 <Th id="__calls__" label="Calls" tip="Total calls across all phone systems (Quo + PBX + ReadyMode) in the selected period." />
-                {pbxData && <Th id="__pbx__" label="PBX" tone="text-blue-400" tip="Calls via the PBX phone system only." />}
-                {readymodeByKey && <Th id="__readymode__" label="ReadyMode" tone="text-pink-400" tip="Outbound dialer calls from the ReadyMode CSV (operator-uploaded Google Sheet)." />}
-                <Th id="__outbound__" label="Outbound" tone="text-cyan-400" tip="Calls the agent placed to customers (all systems)." />
-                <Th id="__inbound__" label="Inbound" tone="text-cyan-400" tip="Calls received from customers (all systems)." />
-                <Th id="__answered__" label="Answered" tone="text-emerald-400" tip="Calls where a real conversation happened. Inbound: agent picked up. Outbound: customer stayed on for 60+ seconds." />
-                <Th id="__missed__" label="Missed" tone="text-rose-400" tip="Calls where no one answered at all — phone rang but nothing picked up." />
-                <Th id="__vm__" label="VM Left" tone="text-amber-400" tip="Outbound calls where the agent left a voicemail message (20–59s after VM answered)." />
-                <Th id="__vmbrief__" label="No VM" tone="text-orange-400" tip="Outbound calls that reached voicemail but the agent hung up without leaving a message." />
-                <Th id="__unique__" label="CX Reached" tone="text-sky-400" tip="Unique phone numbers the agent spoke with (inbound or outbound). Each number counted once regardless of how many times they interacted." />
+                {pbxData && <Th id="__pbx__" label="PBX" tone="metric-info" tip="Calls via the PBX phone system only." />}
+                {readymodeByKey && <Th id="__readymode__" label="ReadyMode" tone="metric-secondary" tip="Outbound dialer calls from the ReadyMode CSV (operator-uploaded Google Sheet)." />}
+                <Th id="__outbound__" label="Outbound" tone="metric-info" tip="Calls the agent placed to customers (all systems)." />
+                <Th id="__inbound__" label="Inbound" tone="metric-info" tip="Calls received from customers (all systems)." />
+                <Th id="__answered__" label="Answered" tone="metric-good" tip="Calls where a real conversation happened. Inbound: agent picked up. Outbound: customer stayed on for 60+ seconds." />
+                <Th id="__missed__" label="Missed" tone="metric-bad" tip="Calls where no one answered at all — phone rang but nothing picked up." />
+                <Th id="__vm__" label="VM Left" tone="metric-warn" tip="Outbound calls where the agent left a voicemail message (20–59s after VM answered)." />
+                <Th id="__vmbrief__" label="No VM" tone="metric-warn" tip="Outbound calls that reached voicemail but the agent hung up without leaving a message." />
+                <Th id="__unique__" label="CX Reached" tone="metric-info" tip="Unique phone numbers the agent spoke with (inbound or outbound). Each number counted once regardless of how many times they interacted." />
                 <Th id="__time__" label="Talk time" tip="Total duration of all calls combined." />
-                <Th id="__resp__" label="Response %" tone="text-amber-400" tip="Percentage of total calls that resulted in a real conversation (Answered ÷ Total Calls)." />
+                <Th id="__resp__" label="Response %" tone="metric-warn" tip="Percentage of total calls that resulted in a real conversation (Answered ÷ Total Calls)." />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -3112,25 +3112,25 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                         {isLive && (
                           onBoth ? (
                             <span className="relative flex h-2.5 w-2.5 shrink-0" title="On a live call — both Quo & PBX">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-muted-foreground opacity-75" />
+                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-muted-foreground" />
                             </span>
                           ) : onPbx ? (
                             <span className="relative flex h-2.5 w-2.5 shrink-0" title="On a live call — PBX">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-muted-foreground opacity-75" />
+                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-muted-foreground" />
                             </span>
                           ) : (
                             <span className="relative flex h-2.5 w-2.5 shrink-0" title="On a live call — Quo">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-muted-foreground opacity-75" />
+                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-muted-foreground" />
                             </span>
                           )
                         )}
                         {agent}
                         <ShiftDot agentName={agent} />
                         {dept && (
-                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold leading-none ${dept === "Retention" ? "bg-blue-500/20 text-blue-300 border border-blue-500/30" : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"}`}>
+                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold leading-none ${dept === "Retention" ? "bg-muted-foreground/20 metric-info border border-border" : "bg-muted metric-good border border-border"}`}>
                             {dept}
                           </span>
                         )}
@@ -3140,7 +3140,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                       {isLive ? (() => {
                         const participant = onQuo ? liveAgents.quoParticipant.get(phoneKey) : undefined;
                         const label = `On call ${onBoth ? "(Quo + PBX)" : onPbx ? "(PBX)" : "(Quo)"}`;
-                        const cls = `font-medium text-xs ${onBoth ? "text-blue-400" : onPbx ? "text-blue-400" : "text-emerald-400"}`;
+                        const cls = `font-medium text-xs ${onBoth ? "metric-info" : onPbx ? "metric-info" : "metric-good"}`;
                         return participant ? (
                           <Tooltip delayDuration={120}>
                             <TooltipTrigger asChild>
@@ -3158,17 +3158,17 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                       )}
                     </TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!combinedCalls ? "text-muted-foreground/40" : ""}`}>{combinedCalls || "—"}</TableCell>
-                    {pbxData && <TableCell className={`text-right tabular-nums font-mono ${px?.calls ? "text-blue-400" : "text-muted-foreground/40"}`}>{px?.calls || "—"}</TableCell>}
-                    {readymodeByKey && (() => { const rm = getRm(agent); return <TableCell className={`text-right tabular-nums font-mono ${rm?.calls ? "text-pink-400" : "text-muted-foreground/40"}`}>{rm?.calls || "—"}</TableCell>; })()}
-                    <TableCell className={`text-right tabular-nums font-mono ${combinedOut ? "text-cyan-400" : "text-muted-foreground/40"}`}>{combinedOut || "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${combinedIn ? "text-cyan-400" : "text-muted-foreground/40"}`}>{combinedIn || "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${combinedAns ? "text-emerald-400" : "text-muted-foreground/40"}`}>{combinedAns || "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${combinedMissed ? "text-rose-400" : "text-muted-foreground/40"}`}>{combinedMissed || "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${combinedVm ? "text-amber-400" : "text-muted-foreground/40"}`}>{combinedVm || "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.vmBrief ? "text-orange-400" : "text-muted-foreground/40"}`}>{ph?.vmBrief || "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${ph?.uniqueContacts ? "text-sky-400" : "text-muted-foreground/40"}`}>{ph?.uniqueContacts || "—"}</TableCell>
+                    {pbxData && <TableCell className={`text-right tabular-nums font-mono ${px?.calls ? "metric-info" : "text-muted-foreground/40"}`}>{px?.calls || "—"}</TableCell>}
+                    {readymodeByKey && (() => { const rm = getRm(agent); return <TableCell className={`text-right tabular-nums font-mono ${rm?.calls ? "metric-secondary" : "text-muted-foreground/40"}`}>{rm?.calls || "—"}</TableCell>; })()}
+                    <TableCell className={`text-right tabular-nums font-mono ${combinedOut ? "metric-info" : "text-muted-foreground/40"}`}>{combinedOut || "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${combinedIn ? "metric-info" : "text-muted-foreground/40"}`}>{combinedIn || "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${combinedAns ? "metric-good" : "text-muted-foreground/40"}`}>{combinedAns || "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${combinedMissed ? "metric-bad" : "text-muted-foreground/40"}`}>{combinedMissed || "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${combinedVm ? "metric-warn" : "text-muted-foreground/40"}`}>{combinedVm || "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.vmBrief ? "metric-warn" : "text-muted-foreground/40"}`}>{ph?.vmBrief || "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${ph?.uniqueContacts ? "metric-info" : "text-muted-foreground/40"}`}>{ph?.uniqueContacts || "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!combinedSecs ? "text-muted-foreground/40" : ""}`}>{combinedSecs ? formatDuration(combinedSecs) : "—"}</TableCell>
-                    <TableCell className={`text-right tabular-nums font-mono ${combinedCalls ? "text-amber-400" : "text-muted-foreground/40"}`}>{(ph || px) ? responseRate(combinedAns, combinedCalls) : "—"}</TableCell>
+                    <TableCell className={`text-right tabular-nums font-mono ${combinedCalls ? "metric-warn" : "text-muted-foreground/40"}`}>{(ph || px) ? responseRate(combinedAns, combinedCalls) : "—"}</TableCell>
                   </TableRow>
                 );
               })}
@@ -3179,18 +3179,18 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                   <TableCell className="font-bold">Whole team</TableCell>
                   <TableCell />
                   <TableCell className="text-right tabular-nums font-mono font-bold">{totCalls || "—"}</TableCell>
-                  {pbxData && <TableCell className="text-right tabular-nums font-mono font-bold text-blue-400">{totPbxCalls || "—"}</TableCell>}
-                  {readymodeByKey && <TableCell className="text-right tabular-nums font-mono font-bold text-pink-400">{visible.reduce((s, a) => s + (getRm(a)?.calls ?? 0), 0) || "—"}</TableCell>}
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{totOut || "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{totIn || "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totAns || "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-rose-400">{totMissed || "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-amber-400">{totVm || "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-orange-400">{totVmBrief || "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totUniq || "—"}</TableCell>
+                  {pbxData && <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totPbxCalls || "—"}</TableCell>}
+                  {readymodeByKey && <TableCell className="text-right tabular-nums font-mono font-bold metric-secondary">{visible.reduce((s, a) => s + (getRm(a)?.calls ?? 0), 0) || "—"}</TableCell>}
+                  <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totOut || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totIn || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold metric-good">{totAns || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold metric-bad">{totMissed || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold metric-warn">{totVm || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold metric-warn">{totVmBrief || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totUniq || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold">{totSecs ? formatDuration(totSecs) : "—"}</TableCell>
                   <TableCell />
-                  <TableCell className="text-right tabular-nums font-mono font-bold text-amber-400">{responseRate(totAns, totCalls)}</TableCell>
+                  <TableCell className="text-right tabular-nums font-mono font-bold metric-warn">{responseRate(totAns, totCalls)}</TableCell>
                 </TableRow>
               </TableHeader>
             )}
@@ -3339,7 +3339,7 @@ function PresetFilter({ from, to, setFrom, setTo }: { from: string; to: string; 
           key={p.label}
           variant={active === p.label ? "default" : "outline"}
           size="sm"
-          className={active === p.label ? "bg-blue-600 hover:bg-blue-700 text-white" : ""}
+          className={active === p.label ? "bg-primary hover:bg-primary/90 text-primary-foreground" : ""}
           onClick={() => { setFrom(p.from); setTo(p.to); }}
         >
           {p.label}
@@ -3351,7 +3351,7 @@ function PresetFilter({ from, to, setFrom, setTo }: { from: string; to: string; 
         value={from}
         max={todayIso}
         onChange={(e) => { if (e.target.value) setFrom(e.target.value); }}
-        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500 w-[130px]"
+        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring w-[130px]"
         title="From date"
       />
       <span className="text-muted-foreground text-xs">–</span>
@@ -3360,7 +3360,7 @@ function PresetFilter({ from, to, setFrom, setTo }: { from: string; to: string; 
         value={to}
         max={todayIso}
         onChange={(e) => { if (e.target.value) setTo(e.target.value); }}
-        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500 w-[130px]"
+        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring w-[130px]"
         title="To date"
       />
     </div>
@@ -4217,16 +4217,16 @@ interface CallRecord {
 }
 
 function directionIcon(dir: string) {
-  if (dir === "outgoing") return <PhoneOutgoing className="h-3.5 w-3.5 text-cyan-400" />;
-  return <PhoneIncoming className="h-3.5 w-3.5 text-cyan-400" />;
+  if (dir === "outgoing") return <PhoneOutgoing className="h-3.5 w-3.5 metric-info" />;
+  return <PhoneIncoming className="h-3.5 w-3.5 metric-info" />;
 }
 
 function statusIcon(status: string) {
-  if (status === "completed") return <span className="text-emerald-400 text-xs font-semibold">Answered</span>;
-  if (status === "voicemail") return <span className="text-amber-400 text-xs font-semibold">VM Left</span>;
-  if (status === "voicemail-brief") return <span className="text-orange-400 text-xs font-semibold">No VM</span>;
-  if (status === "missed" || status === "no-answer") return <span className="text-rose-400 text-xs font-semibold">Missed</span>;
-  if (status === "in-progress") return <span className="text-sky-400 text-xs font-semibold">Live</span>;
+  if (status === "completed") return <span className="metric-good text-xs font-semibold">Answered</span>;
+  if (status === "voicemail") return <span className="metric-warn text-xs font-semibold">VM Left</span>;
+  if (status === "voicemail-brief") return <span className="metric-warn text-xs font-semibold">No VM</span>;
+  if (status === "missed" || status === "no-answer") return <span className="metric-bad text-xs font-semibold">Missed</span>;
+  if (status === "in-progress") return <span className="metric-info text-xs font-semibold">Live</span>;
   return <span className="text-muted-foreground text-xs">{status}</span>;
 }
 
@@ -4278,7 +4278,7 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
     return (
       <TableHead className={align === "right" ? "text-right" : ""}>
         <button type="button" onClick={() => toggleSort(col)}
-          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${active ? "text-blue-300" : "text-muted-foreground"} ${align === "right" ? "flex-row-reverse" : ""}`}>
+          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${active ? "metric-info" : "text-muted-foreground"} ${align === "right" ? "flex-row-reverse" : ""}`}>
           {label}
           {active ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
         </button>
@@ -4484,7 +4484,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
                 autoComplete="current-password"
               />
             </div>
-            {error && <p className="text-sm text-rose-400 text-center">{error}</p>}
+            {error && <p className="text-sm metric-bad text-center">{error}</p>}
             <Button type="submit" className="w-full" disabled={loading || !username || !password}>
               {loading ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Sign in"}
             </Button>
@@ -4511,13 +4511,13 @@ function PermCheckboxes({ perms, onChange, disabled }: { perms: Permission[]; on
       {ALL_PERMISSIONS.map(({ key, label, desc }) => {
         const checked = perms.includes(key);
         return (
-          <label key={key} className={`flex items-start gap-2.5 rounded-md px-3 py-2 cursor-pointer transition-colors ${checked ? "bg-blue-500/10 border border-blue-500/20" : "bg-zinc-900/60 border border-white/5 hover:border-white/10"} ${disabled ? "opacity-40 pointer-events-none" : ""}`}>
-            <div className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${checked ? "bg-blue-500 border-blue-500" : "border-zinc-600"}`}
+          <label key={key} className={`flex items-start gap-2.5 rounded-md px-3 py-2 cursor-pointer transition-colors ${checked ? "bg-muted-foreground/10 border border-border" : "bg-zinc-900/60 border border-white/5 hover:border-white/10"} ${disabled ? "opacity-40 pointer-events-none" : ""}`}>
+            <div className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${checked ? "bg-muted-foreground border-border" : "border-zinc-600"}`}
               onClick={() => !disabled && onChange(checked ? perms.filter((p) => p !== key) : [...perms, key])}>
               {checked && <span className="text-white text-[10px] font-bold leading-none">✓</span>}
             </div>
             <div className="min-w-0">
-              <div className={`text-xs font-medium leading-tight ${checked ? "text-blue-200" : "text-zinc-300"}`}>{label}</div>
+              <div className={`text-xs font-medium leading-tight ${checked ? "metric-info" : "text-zinc-300"}`}>{label}</div>
               <div className="text-[11px] text-zinc-500 leading-tight mt-0.5">{desc}</div>
             </div>
           </label>
@@ -4529,9 +4529,9 @@ function PermCheckboxes({ perms, onChange, disabled }: { perms: Permission[]; on
 
 const TEAM_ACCESS_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "CS" };
 const TEAM_ACCESS_COLORS: Record<string, string> = {
-  retention: "bg-blue-500/20 text-blue-300 border-blue-500/30",
-  nsf:       "bg-sky-500/20 text-sky-300 border-sky-500/30",
-  cs:        "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
+  retention: "bg-muted-foreground/20 metric-info border-border",
+  nsf:       "bg-muted metric-info border-border",
+  cs:        "bg-muted metric-good border-border",
 };
 
 const ALL_SUB_TABS: { value: string; label: string }[] = [
@@ -4546,12 +4546,12 @@ function SubTabCheckboxes({ tabs, onChange }: { tabs: string[]; onChange: (t: st
       {ALL_SUB_TABS.map(({ value, label }) => {
         const checked = tabs.includes(value);
         return (
-          <label key={value} className={`flex items-center gap-2 rounded-md px-2.5 py-1.5 cursor-pointer transition-colors ${checked ? "bg-emerald-500/10 border border-emerald-500/20" : "bg-zinc-900/60 border border-white/5 hover:border-white/10"}`}
+          <label key={value} className={`flex items-center gap-2 rounded-md px-2.5 py-1.5 cursor-pointer transition-colors ${checked ? "bg-muted/60 border border-border" : "bg-zinc-900/60 border border-white/5 hover:border-white/10"}`}
             onClick={() => onChange(checked ? tabs.filter((t) => t !== value) : [...tabs, value])}>
-            <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${checked ? "bg-emerald-500 border-emerald-500" : "border-zinc-600"}`}>
+            <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${checked ? "bg-muted-foreground border-border" : "border-zinc-600"}`}>
               {checked && <span className="text-white text-[9px] font-bold leading-none">✓</span>}
             </div>
-            <span className={`text-xs font-medium ${checked ? "text-emerald-200" : "text-zinc-400"}`}>{label}</span>
+            <span className={`text-xs font-medium ${checked ? "metric-good" : "text-zinc-400"}`}>{label}</span>
           </label>
         );
       })}
@@ -4565,12 +4565,12 @@ function TabCheckboxes({ tabs, onChange }: { tabs: string[]; onChange: (t: strin
       {ALL_TABS.map(({ value, label }) => {
         const checked = tabs.includes(value);
         return (
-          <label key={value} className={`flex items-center gap-2 rounded-md px-2.5 py-1.5 cursor-pointer transition-colors ${checked ? "bg-sky-500/10 border border-sky-500/20" : "bg-zinc-900/60 border border-white/5 hover:border-white/10"}`}
+          <label key={value} className={`flex items-center gap-2 rounded-md px-2.5 py-1.5 cursor-pointer transition-colors ${checked ? "bg-muted/50 border border-border" : "bg-zinc-900/60 border border-white/5 hover:border-white/10"}`}
             onClick={() => onChange(checked ? tabs.filter((t) => t !== value) : [...tabs, value])}>
-            <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${checked ? "bg-sky-500 border-sky-500" : "border-zinc-600"}`}>
+            <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${checked ? "bg-muted-foreground border-border" : "border-zinc-600"}`}>
               {checked && <span className="text-white text-[9px] font-bold leading-none">✓</span>}
             </div>
-            <span className={`text-xs font-medium ${checked ? "text-sky-200" : "text-zinc-400"}`}>{label}</span>
+            <span className={`text-xs font-medium ${checked ? "metric-info" : "text-zinc-400"}`}>{label}</span>
           </label>
         );
       })}
@@ -4676,10 +4676,10 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
     { key: "killers",   label: "ReadyMode Killer" },
   ];
   const teamBadge: Record<string, string> = {
-    retention: "bg-blue-500/20 text-blue-300 border-blue-500/30",
-    nsf: "bg-sky-500/20 text-sky-300 border-sky-500/30",
-    cs: "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
-    killers: "bg-rose-500/20 text-rose-300 border-rose-500/30",
+    retention: "bg-muted-foreground/20 metric-info border-border",
+    nsf: "bg-muted metric-info border-border",
+    cs: "bg-muted metric-info border-border",
+    killers: "bg-muted metric-bad border-border",
   };
 
   // Sort: team, then English name.
@@ -4693,7 +4693,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
       <div className="relative w-full max-w-5xl mx-4 rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl">
         <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-white/10">
           <div className="flex items-center gap-2">
-            <Users className="h-5 w-5 text-blue-400" />
+            <Users className="h-5 w-5 metric-info" />
             <h2 className="text-lg font-semibold text-white">Agent Roster</h2>
             <span className="text-xs text-zinc-500">· canonical identity registry</span>
           </div>
@@ -4710,7 +4710,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && void addAgent()}
                 placeholder="English name"
-                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-ring/50"
               />
               <input
                 value={newArabic}
@@ -4718,31 +4718,31 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                 onKeyDown={(e) => e.key === "Enter" && void addAgent()}
                 placeholder="Arabic name (optional)"
                 dir="rtl"
-                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-ring/50"
               />
               <input
                 value={newShift}
                 onChange={(e) => setNewShift(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && void addAgent()}
                 placeholder="Shift (e.g. 9–5, Night)"
-                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-ring/50"
               />
               <select
                 value={newTeam}
                 onChange={(e) => setNewTeam(e.target.value as RosterTeam)}
-                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-ring/50"
               >
                 {TEAMS.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
               </select>
               <button
                 onClick={() => void addAgent()}
                 disabled={saving || !newName.trim()}
-                className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 disabled:opacity-50 text-white text-sm font-medium transition-colors"
               >
                 <Plus className="h-4 w-4" />Add
               </button>
             </div>
-            {error && <p className="text-xs text-rose-400">{error}</p>}
+            {error && <p className="text-xs metric-bad">{error}</p>}
           </div>
 
           {/* Roster table */}
@@ -4782,7 +4782,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                           onChange={(e) => setDraft(a.id, "name", e.target.value)}
                           onBlur={() => void commitDraft(a, "name")}
                           onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                          className={`w-full bg-transparent px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-blue-500/50 focus:outline-none ${a.active ? "text-zinc-100" : "text-zinc-500 line-through"}`}
+                          className={`w-full bg-transparent px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-border focus:outline-none ${a.active ? "text-zinc-100" : "text-zinc-500 line-through"}`}
                         />
                       </td>
                       <td className="px-3 py-2">
@@ -4793,7 +4793,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                           onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                           dir="rtl"
                           placeholder="—"
-                          className="w-full bg-transparent text-zinc-200 placeholder:text-zinc-600 px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-blue-500/50 focus:outline-none"
+                          className="w-full bg-transparent text-zinc-200 placeholder:text-zinc-600 px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-border focus:outline-none"
                         />
                       </td>
                       <td className="px-3 py-2">
@@ -4803,14 +4803,14 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                           onBlur={() => void commitDraft(a, "shift")}
                           onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                           placeholder="—"
-                          className="w-full bg-transparent text-zinc-200 placeholder:text-zinc-600 px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-blue-500/50 focus:outline-none"
+                          className="w-full bg-transparent text-zinc-200 placeholder:text-zinc-600 px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-border focus:outline-none"
                         />
                       </td>
                       <td className="px-3 py-2 text-center">
                         <button
                           onClick={() => void patchAgent(a.id, { active: !a.active })}
                           title={a.active ? "Deactivate" : "Activate"}
-                          className={`inline-flex items-center justify-center rounded-md p-1.5 transition-colors ${a.active ? "text-emerald-400 hover:bg-emerald-500/10" : "text-zinc-500 hover:bg-amber-500/10 hover:text-amber-400"}`}
+                          className={`inline-flex items-center justify-center rounded-md p-1.5 transition-colors ${a.active ? "metric-good hover:bg-muted/60" : "text-zinc-500 hover:bg-muted/50 hover:metric-warn"}`}
                         >
                           {a.active ? <UserCheck className="h-4 w-4" /> : <UserX className="h-4 w-4" />}
                         </button>
@@ -4819,7 +4819,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                         <button
                           onClick={() => { if (confirm(`Remove ${a.name}?`)) void removeAgent(a.id); }}
                           title="Remove agent"
-                          className="inline-flex items-center justify-center rounded-md p-1.5 text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                          className="inline-flex items-center justify-center rounded-md p-1.5 text-zinc-500 hover:metric-bad hover:bg-muted/50 transition-colors"
                         >
                           <X className="h-4 w-4" />
                         </button>
@@ -4940,8 +4940,8 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   }
 
   const roleBadge = (role: string) =>
-    role === "admin" ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/30" :
-    role === "edit"  ? "bg-amber-500/20 text-amber-300 border-amber-500/30" :
+    role === "admin" ? "bg-muted metric-info border-border" :
+    role === "edit"  ? "bg-muted metric-warn border-border" :
                        "bg-zinc-500/20 text-zinc-300 border-zinc-500/30";
 
   const roleIcon = (role: string) =>
@@ -4954,7 +4954,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
       <div className="relative w-full max-w-lg mx-4 rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl">
         <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-white/10">
           <div className="flex items-center gap-2">
-            <UserCog className="h-5 w-5 text-cyan-400" />
+            <UserCog className="h-5 w-5 metric-info" />
             <h2 className="text-lg font-semibold text-white">User Management</h2>
           </div>
           <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors"><X className="h-5 w-5" /></button>
@@ -4967,12 +4967,12 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
             <div className="flex gap-2 flex-wrap">
               <Input placeholder="Username" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} className="h-8 text-sm flex-1 min-w-[130px]" />
               <Input placeholder="Password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="h-8 text-sm flex-1 min-w-[130px]" />
-              <select value={newRole} onChange={(e) => { const r = e.target.value as "admin"|"edit"|"view"; setNewRole(r); setNewPerms(DEFAULT_PERMS[r]); }} className="h-8 rounded-md bg-zinc-800 border border-white/10 text-sm text-white px-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50">
+              <select value={newRole} onChange={(e) => { const r = e.target.value as "admin"|"edit"|"view"; setNewRole(r); setNewPerms(DEFAULT_PERMS[r]); }} className="h-8 rounded-md bg-zinc-800 border border-white/10 text-sm text-white px-2 focus:outline-none focus:ring-2 focus:ring-ring/50">
                 <option value="view">View</option>
                 <option value="edit">Edit</option>
                 <option value="admin">Admin</option>
               </select>
-              <select value={newTeamAccess} onChange={(e) => setNewTeamAccess(e.target.value as TeamAccess | "")} className="h-8 rounded-md bg-zinc-800 border border-white/10 text-sm text-white px-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50">
+              <select value={newTeamAccess} onChange={(e) => setNewTeamAccess(e.target.value as TeamAccess | "")} className="h-8 rounded-md bg-zinc-800 border border-white/10 text-sm text-white px-2 focus:outline-none focus:ring-2 focus:ring-ring/50">
                 <option value="">All Teams</option>
                 <option value="retention">Retention</option>
                 <option value="nsf">NSF</option>
@@ -5021,10 +5021,10 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
               <input type="checkbox" checked={newHideBackendStats} onChange={(e) => setNewHideBackendStats(e.target.checked)} className="h-3.5 w-3.5 accent-amber-500" />
               Hide Backend Statistics tab
             </label>
-            <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white w-full" onClick={addUser} disabled={saving || !newUsername.trim() || !newPassword.trim()}>
+            <Button size="sm" className="bg-primary hover:bg-primary/90 text-primary-foreground w-full" onClick={addUser} disabled={saving || !newUsername.trim() || !newPassword.trim()}>
               <Plus className="h-3.5 w-3.5 mr-1" />Add User
             </Button>
-            {error && <p className="text-xs text-rose-400">{error}</p>}
+            {error && <p className="text-xs metric-bad">{error}</p>}
           </div>
 
           {/* User list */}
@@ -5049,19 +5049,19 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                     {u.role !== "admin" && (u.permissions ?? []).map((p) => {
                       const info = ALL_PERMISSIONS.find((x) => x.key === p);
                       return info ? (
-                        <span key={p} className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/20">
+                        <span key={p} className="text-[10px] px-1.5 py-0.5 rounded bg-muted-foreground/10 metric-info border border-border">
                           {info.label}
                         </span>
                       ) : null;
                     })}
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
-                    <button onClick={() => startEdit(u)} className={`p-1 rounded transition-colors ${editingId === u.id ? "text-blue-400 bg-blue-500/10" : "text-zinc-500 hover:text-white"}`} title="Edit">
+                    <button onClick={() => startEdit(u)} className={`p-1 rounded transition-colors ${editingId === u.id ? "metric-info bg-muted-foreground/10" : "text-zinc-500 hover:text-white"}`} title="Edit">
                       <Pencil className="h-3.5 w-3.5" />
                     </button>
                     {u.active
                       ? <button onClick={() => patchUser(u.id, { active: false })} className="p-1 rounded text-zinc-500 hover:text-red-400 transition-colors" title="Disable"><UserX className="h-3.5 w-3.5" /></button>
-                      : <button onClick={() => patchUser(u.id, { active: true })} className="p-1 rounded text-zinc-500 hover:text-emerald-400 transition-colors" title="Enable"><UserCheck className="h-3.5 w-3.5" /></button>
+                      : <button onClick={() => patchUser(u.id, { active: true })} className="p-1 rounded text-zinc-500 hover:metric-good transition-colors" title="Enable"><UserCheck className="h-3.5 w-3.5" /></button>
                     }
                     <button onClick={() => deleteUser(u)} className="p-1 rounded text-zinc-500 hover:text-red-500 transition-colors" title="Delete permanently"><Trash2 className="h-3.5 w-3.5" /></button>
                   </div>
@@ -5072,12 +5072,12 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                   <div className="px-3 pb-3 pt-0 space-y-3 border-t border-white/5">
                     <div className="flex gap-2 items-center flex-wrap pt-2">
                       <Input placeholder="New password (optional)" type="password" value={editPw} onChange={(e) => setEditPw(e.target.value)} className="h-7 text-xs flex-1 min-w-[140px]" />
-                      <select value={editRole} onChange={(e) => { const r = e.target.value as "admin"|"edit"|"view"; setEditRole(r); if (r === "admin") setEditPerms(DEFAULT_PERMS["admin"]); }} className="h-7 rounded-md bg-zinc-800 border border-white/10 text-xs text-white px-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50">
+                      <select value={editRole} onChange={(e) => { const r = e.target.value as "admin"|"edit"|"view"; setEditRole(r); if (r === "admin") setEditPerms(DEFAULT_PERMS["admin"]); }} className="h-7 rounded-md bg-zinc-800 border border-white/10 text-xs text-white px-2 focus:outline-none focus:ring-2 focus:ring-ring/50">
                         <option value="view">View</option>
                         <option value="edit">Edit</option>
                         <option value="admin">Admin</option>
                       </select>
-                      <select value={editTeamAccess} onChange={(e) => setEditTeamAccess(e.target.value as TeamAccess | "")} className="h-7 rounded-md bg-zinc-800 border border-white/10 text-xs text-white px-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50">
+                      <select value={editTeamAccess} onChange={(e) => setEditTeamAccess(e.target.value as TeamAccess | "")} className="h-7 rounded-md bg-zinc-800 border border-white/10 text-xs text-white px-2 focus:outline-none focus:ring-2 focus:ring-ring/50">
                         <option value="">All Teams</option>
                         <option value="retention">Retention</option>
                         <option value="nsf">NSF</option>
@@ -5125,7 +5125,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                     </label>
                     <div className="flex gap-2 justify-end">
                       <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditingId(null)}>Cancel</Button>
-                      <Button size="sm" className="h-7 text-xs bg-blue-600 hover:bg-blue-700 text-white px-3" onClick={() => patchUser(u.id, {
+                      <Button size="sm" className="h-7 text-xs bg-primary hover:bg-primary/90 text-primary-foreground px-3" onClick={() => patchUser(u.id, {
                         role: editRole,
                         permissions: editRole === "admin" ? DEFAULT_PERMS["admin"] : editPerms,
                         teamAccess: editTeamAccess || null,
@@ -5197,7 +5197,7 @@ function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
       <div className="relative w-full max-w-md mx-4 rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl">
         <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-white/10">
           <div className="flex items-center gap-2">
-            <ShieldCheck className="h-5 w-5 text-rose-400" />
+            <ShieldCheck className="h-5 w-5 metric-bad" />
             <h2 className="text-lg font-semibold text-white">Blocked Numbers</h2>
           </div>
           <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors"><X className="h-5 w-5" /></button>
@@ -5210,10 +5210,10 @@ function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
               <Input placeholder="+1XXXXXXXXXX" value={newNumber} onChange={(e) => setNewNumber(e.target.value)} className="h-8 text-sm flex-1" />
               <Input placeholder="Note (optional)" value={newNote} onChange={(e) => setNewNote(e.target.value)} className="h-8 text-sm flex-1" />
             </div>
-            <Button size="sm" className="bg-rose-600 hover:bg-rose-700 text-white w-full" onClick={addNumber} disabled={saving || !newNumber.trim()}>
+            <Button size="sm" className="bg-destructive hover:bg-destructive/90 text-destructive-foreground w-full" onClick={addNumber} disabled={saving || !newNumber.trim()}>
               <Plus className="h-3.5 w-3.5 mr-1" />Block Number
             </Button>
-            {error && <p className="text-xs text-rose-400">{error}</p>}
+            {error && <p className="text-xs metric-bad">{error}</p>}
           </div>
           <div className="space-y-2">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Blocked ({items.length})</p>
@@ -5225,7 +5225,7 @@ function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
                   <p className="text-sm font-mono text-white">{item.number}</p>
                   {item.note && <p className="text-xs text-zinc-500">{item.note}</p>}
                 </div>
-                <button onClick={() => removeNumber(item.number)} className="p-1 rounded text-zinc-600 hover:text-rose-400 transition-colors flex-shrink-0">
+                <button onClick={() => removeNumber(item.number)} className="p-1 rounded text-zinc-600 hover:metric-bad transition-colors flex-shrink-0">
                   <X className="h-3.5 w-3.5" />
                 </button>
               </div>
@@ -5254,9 +5254,9 @@ interface LineStatsResponse {
 }
 
 const LINE_TEAM_COLORS: Record<string, string> = {
-  retention: "bg-blue-500/20 text-blue-300 border border-blue-500/30",
-  nsf: "bg-amber-500/20 text-amber-300 border border-amber-500/30",
-  cs: "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30",
+  retention: "bg-muted-foreground/20 metric-info border border-border",
+  nsf: "bg-muted metric-warn border border-border",
+  cs: "bg-muted metric-info border border-border",
 };
 const LINE_TEAM_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "Internal CS" };
 
@@ -5403,7 +5403,7 @@ function QuoLinesPanel() {
               Back to all lines
             </button>
             <CardTitle className="text-xl flex items-center gap-2">
-              <PhoneCall className="h-5 w-5 text-blue-400" />
+              <PhoneCall className="h-5 w-5 metric-info" />
               {selectedLine.name}
               {selectedLine.team && (
                 <span className={`text-xs px-1.5 py-0.5 rounded ${LINE_TEAM_COLORS[selectedLine.team]}`}>
@@ -5425,7 +5425,7 @@ function QuoLinesPanel() {
               <select
                 value={agentFilter}
                 onChange={(e) => setAgentFilter(e.target.value)}
-                className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
               >
                 <option value="">All agents</option>
                 {allAgentNames.some((n) => isKillerAgentKey(normalizeAgent(n))) && (
@@ -5438,7 +5438,7 @@ function QuoLinesPanel() {
               <select
                 value={dayFilter}
                 onChange={(e) => setDayFilter(e.target.value)}
-                className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
               >
                 <option value="">All days</option>
                 {availableDays.map((d) => (
@@ -5515,11 +5515,11 @@ function QuoLinesPanel() {
                 key={line.id}
                 type="button"
                 onClick={() => setSelectedLine(line)}
-                className="text-left p-4 rounded-lg border bg-card hover:bg-accent/40 hover:border-blue-500/50 transition-all group"
+                className="text-left p-4 rounded-lg border bg-card hover:bg-accent/40 hover:border-border transition-all group"
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <div className="font-medium text-sm truncate group-hover:text-blue-300 transition-colors">
+                    <div className="font-medium text-sm truncate group-hover:metric-info transition-colors">
                       {line.name}
                     </div>
                     <div className="text-xs text-muted-foreground mt-0.5 font-mono">{line.formattedNumber}</div>
@@ -5670,7 +5670,7 @@ function VoSPanel() {
     return (
       <TableHead className={`whitespace-nowrap text-right ${tone}`}>
         <button type="button" onClick={() => toggle(col)}
-          className={`inline-flex items-center gap-1 flex-row-reverse font-semibold hover:text-foreground ${active ? "text-blue-300" : "text-muted-foreground"}`}>
+          className={`inline-flex items-center gap-1 flex-row-reverse font-semibold hover:text-foreground ${active ? "metric-info" : "text-muted-foreground"}`}>
           {label}
           {active ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
         </button>
@@ -5723,7 +5723,7 @@ function VoSPanel() {
         <div>
           <CardTitle className="text-xl flex items-center gap-2">
             PBX
-            <Badge className="text-[10px] px-1.5 py-0.5 bg-blue-500/20 text-blue-300 border-blue-500/30">Live</Badge>
+            <Badge className="text-[10px] px-1.5 py-0.5 bg-muted-foreground/20 metric-info border-border">Live</Badge>
           </CardTitle>
           <p className="text-sm text-muted-foreground mt-1">Real-time call stats from PBX phone system · refreshes every 30s</p>
         </div>
@@ -5754,12 +5754,12 @@ function VoSPanel() {
                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Live calls right now</p>
                 <div className="flex flex-wrap gap-2">
                   {(liveQ.data?.liveCalls ?? []).map((c) => (
-                    <div key={c.id} className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-xs">
+                    <div key={c.id} className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-muted/60 border border-border text-xs">
                       <span className="relative flex h-2 w-2 shrink-0">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-muted-foreground opacity-75" />
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-muted-foreground" />
                       </span>
-                      <span className="text-emerald-300 font-medium">{c.agentName ?? "Unknown"}</span>
+                      <span className="metric-good font-medium">{c.agentName ?? "Unknown"}</span>
                       <span className="text-zinc-500">·</span>
                       <span className="text-zinc-400">{c.direction === "outbound" ? "↑" : "↓"} {formatDuration(c.duration)}</span>
                     </div>
@@ -5776,7 +5776,7 @@ function VoSPanel() {
               <div className="flex gap-1.5 flex-wrap">
                 {groups.map((g) => (
                   <button key={g} onClick={() => setGroupFilter(g)}
-                    className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${groupFilter === g ? "bg-blue-600 text-white" : "text-muted-foreground hover:text-white hover:bg-white/5"}`}>
+                    className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${groupFilter === g ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-white hover:bg-white/5"}`}>
                     {g}
                   </button>
                 ))}
@@ -5791,14 +5791,14 @@ function VoSPanel() {
                     <TableRow>
                       <TableHead className="text-left text-muted-foreground">
                         <button type="button" onClick={() => toggle("name")}
-                          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${sort.col === "name" ? "text-blue-300" : "text-muted-foreground"}`}>
+                          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${sort.col === "name" ? "metric-info" : "text-muted-foreground"}`}>
                           Agent {sort.col === "name" ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
                         </button>
                       </TableHead>
                       <TableHead className="text-center text-xs text-muted-foreground font-medium">Status</TableHead>
                       <SortTh col="calls" label="Total calls" />
-                      <SortTh col="inbound" label="Inbound" tone="text-cyan-400" />
-                      <SortTh col="outbound" label="Outbound" tone="text-cyan-400" />
+                      <SortTh col="inbound" label="Inbound" tone="metric-info" />
+                      <SortTh col="outbound" label="Outbound" tone="metric-info" />
                       <SortTh col="avgDuration" label="Avg duration" />
                     </TableRow>
                   </TableHeader>
@@ -5814,7 +5814,7 @@ function VoSPanel() {
                       const vosAgent = agentIdMap.get(nameKey);
                       const statusObj = liveQ.data?.agentStatuses.find((s) => s.name.trim().toLowerCase() === nameKey);
                       const status = statusObj?.status ?? vosAgent?.status ?? "offline";
-                      const statusColor = status === "on_call" ? "text-emerald-400" : status === "available" ? "text-sky-400" : status === "idle" ? "text-amber-400" : "text-zinc-500";
+                      const statusColor = status === "on_call" ? "metric-good" : status === "available" ? "metric-info" : status === "idle" ? "metric-warn" : "text-zinc-500";
                       const statusLabel = status === "on_call" ? "On call" : status === "available" ? "Available" : status === "idle" ? "Idle" : "Offline";
                       const group = vosAgent ? agentGroupMap.get(vosAgent.id) : undefined;
                       return (
@@ -5823,18 +5823,18 @@ function VoSPanel() {
                             <div className="flex items-center gap-2">
                               {isLive && (
                                 <span className="relative flex h-2.5 w-2.5 shrink-0">
-                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-muted-foreground opacity-75" />
+                                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-muted-foreground" />
                                 </span>
                               )}
                               <span>{agent.agentName}</span>
-                              {group && <Badge className="text-[9px] px-1 py-0 bg-blue-500/15 text-blue-300 border-blue-500/20">{group}</Badge>}
+                              {group && <Badge className="text-[9px] px-1 py-0 bg-muted-foreground/15 metric-info border-border">{group}</Badge>}
                             </div>
                           </TableCell>
                           <TableCell className={`text-center text-xs font-medium ${statusColor}`}>{statusLabel}</TableCell>
                           <TableCell className={`text-right tabular-nums font-mono ${!agent.calls ? "text-muted-foreground/40" : ""}`}>{agent.calls || "—"}</TableCell>
-                          <TableCell className={`text-right tabular-nums font-mono ${agent.inbound ? "text-cyan-400" : "text-muted-foreground/40"}`}>{agent.inbound || "—"}</TableCell>
-                          <TableCell className={`text-right tabular-nums font-mono ${agent.outbound ? "text-cyan-400" : "text-muted-foreground/40"}`}>{agent.outbound || "—"}</TableCell>
+                          <TableCell className={`text-right tabular-nums font-mono ${agent.inbound ? "metric-info" : "text-muted-foreground/40"}`}>{agent.inbound || "—"}</TableCell>
+                          <TableCell className={`text-right tabular-nums font-mono ${agent.outbound ? "metric-info" : "text-muted-foreground/40"}`}>{agent.outbound || "—"}</TableCell>
                           <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{agent.avgDuration ? formatDuration(agent.avgDuration) : "—"}</TableCell>
                         </TableRow>
                       );
@@ -5846,8 +5846,8 @@ function VoSPanel() {
                         <TableCell className="font-bold">Whole team</TableCell>
                         <TableCell />
                         <TableCell className="text-right tabular-nums font-mono font-bold">{totCalls || "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{totIn || "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums font-mono font-bold text-cyan-400">{totOut || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totIn || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totOut || "—"}</TableCell>
                         <TableCell />
                       </TableRow>
                     </TableHeader>
@@ -5916,10 +5916,10 @@ function isKillerAgentKey(agentKey: string): boolean {
 const RMK_STATUS_ORDER = ["Retained", "Cancelled", "Fixed", "IDP-Handled"];
 function rmkStatusTone(status: string): string {
   const l = status.toLowerCase();
-  if (/retain/.test(l)) return "text-emerald-400";
-  if (/cancel/.test(l)) return "text-rose-400";
-  if (/\bidp\b/.test(l)) return "text-blue-400";
-  if (/fixed/.test(l)) return "text-sky-400";
+  if (/retain/.test(l)) return "metric-good";
+  if (/cancel/.test(l)) return "metric-bad";
+  if (/\bidp\b/.test(l)) return "metric-info";
+  if (/fixed/.test(l)) return "metric-info";
   return "text-zinc-300";
 }
 
@@ -6164,7 +6164,7 @@ function ReadyModeKillersPanel() {
         <div>
           <CardTitle className="text-xl flex items-center gap-2">
             Ready-Mode Killers
-            <Badge className="text-[10px] px-1.5 py-0.5 bg-orange-500/20 text-orange-300 border-orange-500/30">Dialer</Badge>
+            <Badge className="text-[10px] px-1.5 py-0.5 bg-muted metric-warn border-border">Dialer</Badge>
           </CardTitle>
           <p className="text-sm text-muted-foreground mt-1">
             Call activity from the ReadyMode dialer · submissions from the shared sheets
@@ -6205,36 +6205,36 @@ function ReadyModeKillersPanel() {
                   <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
                     <TableRow>
                       <TableHead className="text-left text-muted-foreground">Agent</TableHead>
-                      <TableHead className="text-right text-sky-400">Dialed</TableHead>
-                      <TableHead className="text-right text-emerald-400">Connected</TableHead>
-                      <TableHead className="text-right text-blue-400">Connect %</TableHead>
+                      <TableHead className="text-right metric-info">Dialed</TableHead>
+                      <TableHead className="text-right metric-good">Connected</TableHead>
+                      <TableHead className="text-right metric-info">Connect %</TableHead>
                       <TableHead className="text-right">Talk time</TableHead>
                       <TableHead className="text-right">Avg talk</TableHead>
-                      <TableHead className="text-right text-emerald-300">Submissions</TableHead>
+                      <TableHead className="text-right metric-good">Submissions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {rows.map((r) => (
                       <TableRow key={r.key} className="hover-elevate">
                         <TableCell className="font-medium whitespace-nowrap">{r.name}</TableCell>
-                        <TableCell className={`text-right tabular-nums font-mono ${r.dialed ? "text-sky-400" : "text-muted-foreground/40"}`}>{r.dialed || "—"}</TableCell>
-                        <TableCell className={`text-right tabular-nums font-mono ${r.connected ? "text-emerald-400" : "text-muted-foreground/40"}`}>{r.connected || "—"}</TableCell>
-                        <TableCell className={`text-right tabular-nums font-mono ${r.connectRate >= 20 ? "text-blue-400" : r.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>{r.connectRate > 0 ? `${r.connectRate}%` : "—"}</TableCell>
+                        <TableCell className={`text-right tabular-nums font-mono ${r.dialed ? "metric-info" : "text-muted-foreground/40"}`}>{r.dialed || "—"}</TableCell>
+                        <TableCell className={`text-right tabular-nums font-mono ${r.connected ? "metric-good" : "text-muted-foreground/40"}`}>{r.connected || "—"}</TableCell>
+                        <TableCell className={`text-right tabular-nums font-mono ${r.connectRate >= 20 ? "metric-info" : r.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>{r.connectRate > 0 ? `${r.connectRate}%` : "—"}</TableCell>
                         <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{r.talkTimeSecs ? formatDuration(r.talkTimeSecs) : "—"}</TableCell>
                         <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{r.avgTalkSecs ? formatDuration(r.avgTalkSecs) : "—"}</TableCell>
-                        <TableCell className={`text-right tabular-nums font-mono ${r.submissions ? "text-emerald-300" : "text-muted-foreground/40"}`}>{r.submissions || "—"}</TableCell>
+                        <TableCell className={`text-right tabular-nums font-mono ${r.submissions ? "metric-good" : "text-muted-foreground/40"}`}>{r.submissions || "—"}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                   <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
                     <TableRow>
                       <TableCell className="font-bold">Whole team</TableCell>
-                      <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totals.dialed || "—"}</TableCell>
-                      <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totals.connected || "—"}</TableCell>
-                      <TableCell className="text-right tabular-nums font-mono font-bold text-blue-400">{totals.connectRate ? `${totals.connectRate}%` : "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totals.dialed || "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums font-mono font-bold metric-good">{totals.connected || "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totals.connectRate ? `${totals.connectRate}%` : "—"}</TableCell>
                       <TableCell className="text-right tabular-nums font-mono font-bold">{totals.talkTimeSecs ? formatDuration(totals.talkTimeSecs) : "—"}</TableCell>
                       <TableCell />
-                      <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-300">{totals.submissions || "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums font-mono font-bold metric-good">{totals.submissions || "—"}</TableCell>
                     </TableRow>
                   </TableHeader>
                 </Table>
@@ -6340,7 +6340,7 @@ function ReadyModePanel() {
     return (
       <TableHead className={`whitespace-nowrap text-right ${tone}`}>
         <button type="button" onClick={() => toggle(col)}
-          className={`inline-flex items-center gap-1 flex-row-reverse font-semibold hover:text-foreground ${active ? "text-blue-300" : "text-muted-foreground"}`}>
+          className={`inline-flex items-center gap-1 flex-row-reverse font-semibold hover:text-foreground ${active ? "metric-info" : "text-muted-foreground"}`}>
           {label}
           {active ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
         </button>
@@ -6375,7 +6375,7 @@ function ReadyModePanel() {
         <div>
           <CardTitle className="text-xl flex items-center gap-2">
             ReadyMode
-            <Badge className="text-[10px] px-1.5 py-0.5 bg-orange-500/20 text-orange-300 border-orange-500/30">Dialer</Badge>
+            <Badge className="text-[10px] px-1.5 py-0.5 bg-muted metric-warn border-border">Dialer</Badge>
           </CardTitle>
           <p className="text-sm text-muted-foreground mt-1">
             {q.data?.updatedAt
@@ -6425,8 +6425,8 @@ function ReadyModePanel() {
         )}
 
         {!q.isLoading && !q.error && !hasData && q.data && (
-          <div className="rounded-lg border border-orange-500/20 bg-orange-500/5 p-5 text-sm space-y-3">
-            <p className="font-medium text-orange-300">Session active — no parseable agent table found yet</p>
+          <div className="rounded-lg border border-border bg-muted/40 p-5 text-sm space-y-3">
+            <p className="font-medium metric-warn">Session active — no parseable agent table found yet</p>
             <p className="text-muted-foreground text-xs">
               ReadyMode returned a page but no agent call table could be parsed. This is normal during initial setup.
               Use the "Show raw" button above to inspect the HTML and identify the correct report path.
@@ -6454,13 +6454,13 @@ function ReadyModePanel() {
                     <TableRow>
                       <TableHead className="text-left text-muted-foreground">
                         <button type="button" onClick={() => toggle("name")}
-                          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${sort.col === "name" ? "text-blue-300" : "text-muted-foreground"}`}>
+                          className={`inline-flex items-center gap-1 font-semibold hover:text-foreground ${sort.col === "name" ? "metric-info" : "text-muted-foreground"}`}>
                           Agent {sort.col === "name" ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : <ArrowUpDown className="h-3 w-3 opacity-40" />}
                         </button>
                       </TableHead>
-                      <SortTh col="dialed" label="Dialed" tone="text-sky-400" />
-                      <SortTh col="connected" label="Connected" tone="text-emerald-400" />
-                      <SortTh col="connectRate" label="Connect %" tone="text-blue-400" />
+                      <SortTh col="dialed" label="Dialed" tone="metric-info" />
+                      <SortTh col="connected" label="Connected" tone="metric-good" />
+                      <SortTh col="connectRate" label="Connect %" tone="metric-info" />
                       <SortTh col="talkTime" label="Talk time" />
                       <SortTh col="avgTalk" label="Avg talk" />
                     </TableRow>
@@ -6474,9 +6474,9 @@ function ReadyModePanel() {
                     {visible.map((agent) => (
                       <TableRow key={agent.agentName} className="hover-elevate">
                         <TableCell className="font-medium whitespace-nowrap">{agent.agentName}</TableCell>
-                        <TableCell className={`text-right tabular-nums font-mono ${agent.dialed ? "text-sky-400" : "text-muted-foreground/40"}`}>{agent.dialed || "—"}</TableCell>
-                        <TableCell className={`text-right tabular-nums font-mono ${agent.connected ? "text-emerald-400" : "text-muted-foreground/40"}`}>{agent.connected || "—"}</TableCell>
-                        <TableCell className={`text-right tabular-nums font-mono ${agent.connectRate >= 20 ? "text-blue-400" : agent.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>
+                        <TableCell className={`text-right tabular-nums font-mono ${agent.dialed ? "metric-info" : "text-muted-foreground/40"}`}>{agent.dialed || "—"}</TableCell>
+                        <TableCell className={`text-right tabular-nums font-mono ${agent.connected ? "metric-good" : "text-muted-foreground/40"}`}>{agent.connected || "—"}</TableCell>
+                        <TableCell className={`text-right tabular-nums font-mono ${agent.connectRate >= 20 ? "metric-info" : agent.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>
                           {agent.connectRate > 0 ? `${agent.connectRate}%` : "—"}
                         </TableCell>
                         <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{agent.talkTimeSecs ? formatDuration(agent.talkTimeSecs) : "—"}</TableCell>
@@ -6488,9 +6488,9 @@ function ReadyModePanel() {
                     <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
                       <TableRow>
                         <TableCell className="font-bold">Whole team</TableCell>
-                        <TableCell className="text-right tabular-nums font-mono font-bold text-sky-400">{totals?.dialed || "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums font-mono font-bold text-emerald-400">{totals?.connected || "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums font-mono font-bold text-blue-400">{totals?.connectRate ? `${totals.connectRate}%` : "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totals?.dialed || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono font-bold metric-good">{totals?.connected || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totals?.connectRate ? `${totals.connectRate}%` : "—"}</TableCell>
                         <TableCell className="text-right tabular-nums font-mono font-bold">{totals?.talkTimeSecs ? formatDuration(totals.talkTimeSecs) : "—"}</TableCell>
                         <TableCell />
                       </TableRow>
@@ -6525,7 +6525,7 @@ function PhonesPanel() {
             onClick={() => setSub(t.value)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
               sub === t.value
-                ? "border-blue-500 text-blue-300"
+                ? "border-border metric-info"
                 : "border-transparent text-zinc-400 hover:text-zinc-200"
             }`}
           >
@@ -6558,10 +6558,10 @@ function formatCallTime(iso: string): string {
 
 const TEAM_LABELS: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "Internal CS", backend: "Retention & Internal CS", other: "Other" };
 const TEAM_COLORS: Record<string, string> = {
-  retention: "bg-blue-500/15 text-blue-300 border-blue-500/20",
-  nsf: "bg-sky-500/15 text-sky-300 border-sky-500/20",
-  cs: "bg-emerald-500/15 text-emerald-300 border-emerald-500/20",
-  backend: "bg-blue-500/15 text-blue-300 border-blue-500/20",
+  retention: "bg-muted-foreground/15 metric-info border-border",
+  nsf: "bg-muted/50 metric-info border-border",
+  cs: "bg-muted-foreground/15 metric-good border-border",
+  backend: "bg-muted-foreground/15 metric-info border-border",
   other: "bg-zinc-500/15 text-zinc-300 border-zinc-500/20",
 };
 
@@ -6623,7 +6623,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2">
-            <PhoneOff className="h-4 w-4 text-rose-400" />
+            <PhoneOff className="h-4 w-4 metric-bad" />
             <CardTitle className="text-base">Missed Calls — No Callback</CardTitle>
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -6676,11 +6676,11 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                   className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
                     teamFilter === t
                       ? t === "retention"
-                        ? "bg-blue-500/25 text-blue-200 border-blue-500/40"
+                        ? "bg-muted-foreground/25 metric-info border-border"
                         : t === "cs"
-                        ? "bg-emerald-500/25 text-emerald-200 border-emerald-500/40"
+                        ? "bg-muted-foreground/25 metric-good border-border"
                         : t === "nsf"
-                        ? "bg-sky-500/25 text-sky-200 border-sky-500/40"
+                        ? "bg-muted metric-info border-border"
                         : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
                       : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"
                   }`}
@@ -6700,9 +6700,9 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
               className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
                 sourceFilter === s
                   ? s === "quo"
-                    ? "bg-sky-500/25 text-sky-200 border-sky-500/40"
+                    ? "bg-muted metric-info border-border"
                     : s === "readymode"
-                    ? "bg-amber-500/25 text-amber-200 border-amber-500/40"
+                    ? "bg-muted metric-warn border-border"
                     : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
                   : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"
               }`}
@@ -6778,9 +6778,9 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                     <TableCell>
                       <Badge className={`text-[10px] px-1.5 py-0 border ${
                         it.source === "quo"
-                          ? "bg-sky-500/20 text-sky-300 border-sky-500/30"
+                          ? "bg-muted metric-info border-border"
                           : it.source === "readymode"
-                          ? "bg-amber-500/20 text-amber-300 border-amber-500/30"
+                          ? "bg-muted metric-warn border-border"
                           : "bg-zinc-700/40 text-zinc-300 border-zinc-600/30"
                       }`}>
                         {it.source === "quo" ? "Quo" : it.source === "readymode" ? "Readymode" : "PBX"}
@@ -6797,7 +6797,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                         <Button
                           size="sm"
                           variant="ghost"
-                          className="h-6 px-2 text-[10px] text-emerald-300 hover:text-emerald-200 hover:bg-emerald-500/10"
+                          className="h-6 px-2 text-[10px] metric-good hover:metric-good hover:bg-muted/60"
                           onClick={async () => {
                             await fetch("/api/nsf/readymode-queue/done-by-number", {
                               method: "POST",
@@ -6917,9 +6917,9 @@ function HourlyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) 
             <TableHeader>
               <TableRow className="border-zinc-800 bg-zinc-900/60">
                 <TableHead className="text-xs w-20">Hour</TableHead>
-                <TableHead className="text-xs text-blue-300">Retention</TableHead>
-                <TableHead className="text-xs text-emerald-300">CS</TableHead>
-                <TableHead className="text-xs text-sky-300">NSF</TableHead>
+                <TableHead className="text-xs metric-info">Retention</TableHead>
+                <TableHead className="text-xs metric-good">CS</TableHead>
+                <TableHead className="text-xs metric-info">NSF</TableHead>
                 <TableHead className="text-xs text-right">Total</TableHead>
               </TableRow>
             </TableHeader>
@@ -6929,9 +6929,9 @@ function HourlyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) 
                 return (
                   <TableRow key={h.hour} className="border-zinc-800 hover:bg-zinc-800/20">
                     <TableCell className="text-xs text-zinc-400 tabular-nums">{fmt(h.hour)}</TableCell>
-                    <TableCell className="text-xs text-blue-300 font-medium">{cellVal(h.retention.quo, h.retention.ghost, h.retention.pbx)}</TableCell>
-                    <TableCell className="text-xs text-emerald-300 font-medium">{cellVal(h.cs.quo, h.cs.ghost, h.cs.pbx)}</TableCell>
-                    <TableCell className="text-xs text-sky-300 font-medium">{cellVal(h.nsf.quo, h.nsf.ghost, h.nsf.pbx)}</TableCell>
+                    <TableCell className="text-xs metric-info font-medium">{cellVal(h.retention.quo, h.retention.ghost, h.retention.pbx)}</TableCell>
+                    <TableCell className="text-xs metric-good font-medium">{cellVal(h.cs.quo, h.cs.ghost, h.cs.pbx)}</TableCell>
+                    <TableCell className="text-xs metric-info font-medium">{cellVal(h.nsf.quo, h.nsf.ghost, h.nsf.pbx)}</TableCell>
                     <TableCell className="text-xs text-right font-semibold text-zinc-200">{total}</TableCell>
                   </TableRow>
                 );
@@ -6991,9 +6991,9 @@ function DailyMissedBreakdown({ date }: { date: string }) {
       <div className="flex items-center gap-3 mb-2 text-[10px] flex-wrap">
         <span className="text-zinc-500">{realNumbers.length} unique callers</span>
         {ghostNumbers.length > 0 && <span className="text-zinc-600">{ghostNumbers.length} ghost</span>}
-        <span className="text-emerald-400 font-medium">{connected} talked ({realNumbers.length > 0 ? Math.round(connected / realNumbers.length * 100) : 0}%)</span>
-        {noAnswer > 0 && <span className="text-amber-400">{noAnswer} no answer</span>}
-        <span className="text-rose-400">{notCalled} not called</span>
+        <span className="metric-good font-medium">{connected} talked ({realNumbers.length > 0 ? Math.round(connected / realNumbers.length * 100) : 0}%)</span>
+        {noAnswer > 0 && <span className="metric-warn">{noAnswer} no answer</span>}
+        <span className="metric-bad">{notCalled} not called</span>
         {withCB > 0 && <span className="text-zinc-600">· connect rate: {Math.round(connected / withCB * 100)}%</span>}
       </div>
       <div className="space-y-px max-h-64 overflow-y-auto pr-1">
@@ -7001,19 +7001,19 @@ function DailyMissedBreakdown({ date }: { date: string }) {
           <div key={n.fromNumber + n.firstMissedAt} className={`flex items-center justify-between text-xs py-1 px-2 rounded hover:bg-zinc-800/40 ${n.isGhost ? "opacity-50" : ""}`}>
             <span className="font-mono text-zinc-300 tabular-nums">{n.fromNumber}</span>
             <div className="flex items-center gap-2 shrink-0">
-              <span className={`text-[10px] ${n.team === "retention" ? "text-blue-400" : n.team === "cs" ? "text-emerald-400" : "text-sky-400"}`}>
+              <span className={`text-[10px] ${n.team === "retention" ? "metric-info" : n.team === "cs" ? "metric-good" : "metric-info"}`}>
                 {TEAM_LABELS[n.team] ?? n.team}
               </span>
-              <span className={`text-[10px] px-1 py-0.5 rounded ${n.source === "quo" ? "bg-blue-500/20 text-blue-300" : n.source === "pbx" ? "bg-sky-500/20 text-sky-300" : "bg-zinc-500/20 text-zinc-300"}`}>
+              <span className={`text-[10px] px-1 py-0.5 rounded ${n.source === "quo" ? "bg-muted-foreground/20 metric-info" : n.source === "pbx" ? "bg-muted metric-info" : "bg-zinc-500/20 text-zinc-300"}`}>
                 {n.source === "both" ? "Quo+PBX" : n.source === "quo" ? "Quo" : "PBX"}
               </span>
               {n.isGhost && <span className="text-[9px] px-1 py-0.5 rounded border border-zinc-700 bg-zinc-800 text-zinc-500 uppercase font-medium">ghost</span>}
               {n.missedCount > 1 && <span className="text-zinc-600 text-[10px]">×{n.missedCount}</span>}
               {!n.isGhost && (!n.hasCallback
-                ? <span className="flex items-center gap-0.5 text-rose-400"><PhoneOff className="h-3 w-3" />—</span>
+                ? <span className="flex items-center gap-0.5 metric-bad"><PhoneOff className="h-3 w-3" />—</span>
                 : n.callbackConnected
-                  ? <span className="flex items-center gap-0.5 text-emerald-400 font-medium"><PhoneCall className="h-3 w-3" />{n.responseMinutes !== null ? fmtResponseTime(n.responseMinutes) : ""}</span>
-                  : <span className="flex items-center gap-0.5 text-amber-400"><PhoneCall className="h-3 w-3" />no answer</span>
+                  ? <span className="flex items-center gap-0.5 metric-good font-medium"><PhoneCall className="h-3 w-3" />{n.responseMinutes !== null ? fmtResponseTime(n.responseMinutes) : ""}</span>
+                  : <span className="flex items-center gap-0.5 metric-warn"><PhoneCall className="h-3 w-3" />no answer</span>
               )}
             </div>
           </div>
@@ -7049,9 +7049,9 @@ function DailyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) {
           <TableHeader>
             <TableRow className="border-zinc-800 bg-zinc-900/60">
               <TableHead className="text-xs w-28">Date</TableHead>
-              <TableHead className="text-xs text-blue-300">Retention</TableHead>
-              <TableHead className="text-xs text-emerald-300">CS</TableHead>
-              <TableHead className="text-xs text-sky-300">NSF</TableHead>
+              <TableHead className="text-xs metric-info">Retention</TableHead>
+              <TableHead className="text-xs metric-good">CS</TableHead>
+              <TableHead className="text-xs metric-info">NSF</TableHead>
               <TableHead className="text-xs text-right">Total</TableHead>
             </TableRow>
           </TableHeader>
@@ -7070,7 +7070,7 @@ function DailyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) {
                       {fmt(d.date)}
                     </TableCell>
                     <TableCell className="text-xs">
-                      <span className="text-blue-300 font-medium">{ret || "—"}</span>
+                      <span className="metric-info font-medium">{ret || "—"}</span>
                       {ret > 0 && (
                         <span className="text-zinc-600 ml-1 text-[10px]">
                           {d.retention.quo > 0 && <>{d.retention.quo}q</>}
@@ -7080,7 +7080,7 @@ function DailyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) {
                       )}
                     </TableCell>
                     <TableCell className="text-xs">
-                      <span className="text-emerald-300 font-medium">{cs || "—"}</span>
+                      <span className="metric-good font-medium">{cs || "—"}</span>
                       {cs > 0 && (
                         <span className="text-zinc-600 ml-1 text-[10px]">
                           {d.cs.quo > 0 && <>{d.cs.quo}q</>}
@@ -7090,7 +7090,7 @@ function DailyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) {
                       )}
                     </TableCell>
                     <TableCell className="text-xs">
-                      <span className="text-sky-300 font-medium">{nsf || "—"}</span>
+                      <span className="metric-info font-medium">{nsf || "—"}</span>
                       {nsf > 0 && (
                         <span className="text-zinc-600 ml-1 text-[10px]">
                           {d.nsf.quo > 0 && <>{d.nsf.quo}q</>}
@@ -7229,14 +7229,14 @@ function CallbackReviewPanel() {
     return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
   };
 
-  const btnCls = (active: boolean, activeColor = "bg-blue-500/25 text-blue-200 border-blue-500/40") =>
+  const btnCls = (active: boolean, activeColor = "bg-muted-foreground/25 metric-info border-border") =>
     `text-xs px-3 py-1.5 rounded-md border transition-colors ${active ? activeColor : "bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-500"}`;
 
   return (
     <Card className="border-white/5 bg-card/40 backdrop-blur-sm">
       <CardHeader className="pb-3">
         <CardTitle className="text-base font-semibold flex items-center gap-2">
-          <PhoneCall className="h-4 w-4 text-blue-400" />
+          <PhoneCall className="h-4 w-4 metric-info" />
           Callback Review
         </CardTitle>
       </CardHeader>
@@ -7263,9 +7263,9 @@ function CallbackReviewPanel() {
           {(["all", "retention", "cs", "nsf"] as const).map((t) => (
             <button key={t} onClick={() => setTeamFilter(t)}
               className={btnCls(teamFilter === t,
-                t === "retention" ? "bg-blue-500/25 text-blue-200 border-blue-500/40"
-                : t === "cs" ? "bg-emerald-500/25 text-emerald-200 border-emerald-500/40"
-                : t === "nsf" ? "bg-sky-500/25 text-sky-200 border-sky-500/40"
+                t === "retention" ? "bg-muted-foreground/25 metric-info border-border"
+                : t === "cs" ? "bg-muted-foreground/25 metric-good border-border"
+                : t === "nsf" ? "bg-muted metric-info border-border"
                 : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
               )}>
               {t === "all" ? "All Teams" : TEAM_LABELS[t] ?? t}
@@ -7293,12 +7293,12 @@ function CallbackReviewPanel() {
               <TableHeader>
                 <TableRow className="border-zinc-800 bg-zinc-900/60">
                   <TableHead className="text-xs">Date</TableHead>
-                  <TableHead className="text-xs text-right text-rose-400">Missed</TableHead>
+                  <TableHead className="text-xs text-right metric-bad">Missed</TableHead>
                   <TableHead className="text-xs text-right text-zinc-500">Ghost</TableHead>
-                  <TableHead className="text-xs text-right text-emerald-400">Called Back</TableHead>
-                  <TableHead className="text-xs text-right text-blue-400">CB%</TableHead>
-                  <TableHead className="text-xs text-right text-sky-400">Talked</TableHead>
-                  <TableHead className="text-xs text-right text-amber-400">Connect%</TableHead>
+                  <TableHead className="text-xs text-right metric-good">Called Back</TableHead>
+                  <TableHead className="text-xs text-right metric-info">CB%</TableHead>
+                  <TableHead className="text-xs text-right metric-info">Talked</TableHead>
+                  <TableHead className="text-xs text-right metric-warn">Connect%</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -7309,15 +7309,15 @@ function CallbackReviewPanel() {
                     </TableCell>
                     <TableCell className="text-xs text-right text-zinc-200 tabular-nums font-medium">{d.missed}</TableCell>
                     <TableCell className="text-xs text-right text-zinc-600 tabular-nums">{d.ghost > 0 ? d.ghost : "—"}</TableCell>
-                    <TableCell className="text-xs text-right text-emerald-300 tabular-nums font-medium">{d.withCB}</TableCell>
+                    <TableCell className="text-xs text-right metric-good tabular-nums font-medium">{d.withCB}</TableCell>
                     <TableCell className="text-xs text-right tabular-nums">
-                      <span className={`font-medium ${d.missed === 0 ? "text-zinc-600" : d.withCB / d.missed >= 0.8 ? "text-emerald-300" : d.withCB / d.missed >= 0.6 ? "text-amber-300" : "text-rose-300"}`}>
+                      <span className={`font-medium ${d.missed === 0 ? "text-zinc-600" : d.withCB / d.missed >= 0.8 ? "metric-good" : d.withCB / d.missed >= 0.6 ? "metric-warn" : "metric-bad"}`}>
                         {pct(d.withCB, d.missed)}
                       </span>
                     </TableCell>
-                    <TableCell className="text-xs text-right text-sky-300 tabular-nums font-medium">{d.connected}</TableCell>
+                    <TableCell className="text-xs text-right metric-info tabular-nums font-medium">{d.connected}</TableCell>
                     <TableCell className="text-xs text-right tabular-nums">
-                      <span className={`font-medium ${d.withCB === 0 ? "text-zinc-600" : d.connected / d.withCB >= 0.5 ? "text-emerald-300" : d.connected / d.withCB >= 0.3 ? "text-amber-300" : "text-rose-300"}`}>
+                      <span className={`font-medium ${d.withCB === 0 ? "text-zinc-600" : d.connected / d.withCB >= 0.5 ? "metric-good" : d.connected / d.withCB >= 0.3 ? "metric-warn" : "metric-bad"}`}>
                         {pct(d.connected, d.withCB)}
                       </span>
                     </TableCell>
@@ -7337,9 +7337,9 @@ function CallbackReviewPanel() {
                 <button key={t} onClick={() => setTeamFilter(t)}
                   className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
                     teamFilter === t
-                      ? t === "retention" ? "bg-blue-500/25 text-blue-200 border-blue-500/40"
-                        : t === "cs" ? "bg-emerald-500/25 text-emerald-200 border-emerald-500/40"
-                        : t === "nsf" ? "bg-sky-500/25 text-sky-200 border-sky-500/40"
+                      ? t === "retention" ? "bg-muted-foreground/25 metric-info border-border"
+                        : t === "cs" ? "bg-muted-foreground/25 metric-good border-border"
+                        : t === "nsf" ? "bg-muted metric-info border-border"
                         : "bg-zinc-500/25 text-zinc-200 border-zinc-500/40"
                       : "bg-zinc-800/50 text-zinc-500 border-zinc-700/50 hover:border-zinc-500"
                   }`}>
@@ -7349,8 +7349,8 @@ function CallbackReviewPanel() {
               <span className="text-[10px] text-zinc-600 ml-auto">{teamItems.length} numbers</span>
               <div className="flex gap-3 text-[10px] text-zinc-600">
                 <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-zinc-700 inline-block" />No CB</span>
-                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500/60 inline-block" />No answer</span>
-                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500/60 inline-block" />Talked</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-muted-foreground/60 inline-block" />No answer</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-muted-foreground/60 inline-block" />Talked</span>
               </div>
             </div>
             <div className="max-h-[420px] overflow-y-auto">
@@ -7369,10 +7369,10 @@ function CallbackReviewPanel() {
                   {teamItems.map((item) => {
                     const num = item.fromNumber.replace(/(\+1)(\d{3})(\d{3})(\d{4})/, "$1 ($2) $3-$4");
                     const dot = !item.hasCallback ? "bg-zinc-700"
-                      : item.callbackConnected ? "bg-emerald-500/70" : "bg-amber-500/60";
-                    const teamColor = item.team === "retention" ? "text-blue-300 border-blue-500/30 bg-blue-500/10"
-                      : item.team === "cs" ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/10"
-                      : item.team === "nsf" ? "text-sky-300 border-sky-500/30 bg-sky-500/10"
+                      : item.callbackConnected ? "bg-muted-foreground/70" : "bg-muted-foreground/60";
+                    const teamColor = item.team === "retention" ? "metric-info border-border bg-muted-foreground/10"
+                      : item.team === "cs" ? "metric-good border-border bg-muted/60"
+                      : item.team === "nsf" ? "metric-info border-border bg-muted/50"
                       : "text-zinc-400 border-zinc-600 bg-zinc-800";
                     return (
                       <TableRow key={item.id} className={`border-zinc-800/60 hover:bg-zinc-800/20 ${item.isGhost ? "opacity-50" : ""}`}>
@@ -7401,8 +7401,8 @@ function CallbackReviewPanel() {
                           {!item.hasCallback
                             ? <span className="text-zinc-600">No callback</span>
                             : item.callbackConnected
-                            ? <span className="text-emerald-400">Talked</span>
-                            : <span className="text-amber-400">Called, no answer</span>}
+                            ? <span className="metric-good">Talked</span>
+                            : <span className="metric-warn">Called, no answer</span>}
                         </TableCell>
                         <TableCell className="text-[10px] text-zinc-600 tabular-nums py-2">
                           {item.responseMinutes !== null ? `${item.responseMinutes}m` : "—"}
@@ -7447,9 +7447,9 @@ type ViolationsData = {
 
 function deptBadge(dept: string): string {
   const d = dept.toLowerCase();
-  if (d === "retention") return "bg-blue-500/15 text-blue-300 border-blue-500/30";
-  if (d === "cs") return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
-  if (d === "nsf") return "bg-sky-500/15 text-sky-300 border-sky-500/30";
+  if (d === "retention") return "bg-muted-foreground/15 metric-info border-border";
+  if (d === "cs") return "bg-muted-foreground/15 metric-good border-border";
+  if (d === "nsf") return "bg-muted/50 metric-info border-border";
   return "bg-zinc-700/40 text-zinc-300 border-zinc-600/30";
 }
 
@@ -7608,23 +7608,23 @@ function LiveTransfersCard() {
   const rangeLabel = new Date(`${today}T00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 
   return (
-    <div className="rounded-xl border border-blue-700/30 bg-gradient-to-br from-blue-950/40 to-cyan-950/20 backdrop-blur p-5 space-y-4">
+    <div className="rounded-xl border border-border bg-card backdrop-blur p-5 space-y-4">
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
-            <ArrowLeftRight className="h-5 w-5 text-blue-300" />
+            <ArrowLeftRight className="h-5 w-5 metric-info" />
             Inbound Live Transfers
           </h2>
           <div className="flex items-center gap-2 text-sm text-zinc-400 flex-wrap">
             <span>Partner (Aspire · Resync · Clarity · Concordia) + internal team transfers · {rangeLabel}</span>
-            <span className="flex items-center gap-1 text-blue-300/80">
+            <span className="flex items-center gap-1 metric-info/80">
               <Sparkles className="h-3 w-3" />
               AI-classified from call transcripts
             </span>
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="inline-flex items-center gap-1.5 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-xs font-medium text-blue-200">
+          <span className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-muted-foreground/10 px-3 py-1.5 text-xs font-medium metric-info">
             <CalendarDays className="h-3.5 w-3.5" />Today
           </span>
           <Button size="sm" variant="outline" onClick={() => refreshMutation.mutate()} disabled={running}>
@@ -7641,7 +7641,7 @@ function LiveTransfersCard() {
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-blue-500/15 to-blue-500/5 border-blue-500/30 text-blue-200">
+        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-card to-muted/50 border-border metric-info">
           <div className="flex items-center gap-1.5 text-xs opacity-80"><ArrowLeftRight className="h-3.5 w-3.5" />Total Live Transfers</div>
           <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.totalLive ?? 0).toLocaleString()}</div>
           <div className="text-xs opacity-70 mt-0.5">of {(status?.totalIncoming ?? 0).toLocaleString()} inbound considered</div>
@@ -7650,7 +7650,7 @@ function LiveTransfersCard() {
           <div className="flex items-center gap-1.5 text-xs opacity-80"><PhoneIncoming className="h-3.5 w-3.5" />Partner Transfers</div>
           <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.partnerTotal ?? 0).toLocaleString()}</div>
         </div>
-        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-cyan-500/15 to-cyan-500/5 border-cyan-500/30 text-cyan-200">
+        <div className="rounded-xl border bg-gradient-to-br p-3.5 from-card to-muted/50 border-border metric-info">
           <div className="flex items-center gap-1.5 text-xs opacity-80"><ArrowLeftRight className="h-3.5 w-3.5" />Internal Transfers</div>
           <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.internalTotal ?? 0).toLocaleString()}</div>
         </div>
@@ -7659,19 +7659,19 @@ function LiveTransfersCard() {
       <div className="space-y-1.5">
         <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">Partner companies</div>
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-          <div className="rounded-xl border bg-gradient-to-br p-3.5 from-sky-500/15 to-sky-500/5 border-sky-500/30 text-sky-200">
+          <div className="rounded-xl border bg-gradient-to-br p-3.5 from-card to-muted/50 border-border metric-info">
             <div className="flex items-center gap-1.5 text-xs opacity-80"><PhoneIncoming className="h-3.5 w-3.5" />Aspire</div>
             <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.aspire ?? 0).toLocaleString()}</div>
           </div>
-          <div className="rounded-xl border bg-gradient-to-br p-3.5 from-emerald-500/15 to-emerald-500/5 border-emerald-500/30 text-emerald-200">
+          <div className="rounded-xl border bg-gradient-to-br p-3.5 from-card to-muted/50 border-border metric-good">
             <div className="flex items-center gap-1.5 text-xs opacity-80"><PhoneIncoming className="h-3.5 w-3.5" />Resync</div>
             <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.resync ?? 0).toLocaleString()}</div>
           </div>
-          <div className="rounded-xl border bg-gradient-to-br p-3.5 from-amber-500/15 to-amber-500/5 border-amber-500/30 text-amber-200">
+          <div className="rounded-xl border bg-gradient-to-br p-3.5 from-card to-muted/50 border-border metric-warn">
             <div className="flex items-center gap-1.5 text-xs opacity-80"><PhoneIncoming className="h-3.5 w-3.5" />Clarity</div>
             <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.clarity ?? 0).toLocaleString()}</div>
           </div>
-          <div className="rounded-xl border bg-gradient-to-br p-3.5 from-pink-500/15 to-pink-500/5 border-pink-500/30 text-pink-200">
+          <div className="rounded-xl border bg-gradient-to-br p-3.5 from-card to-muted/50 border-border metric-secondary">
             <div className="flex items-center gap-1.5 text-xs opacity-80"><PhoneIncoming className="h-3.5 w-3.5" />Concordia</div>
             <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{(status?.concordia ?? 0).toLocaleString()}</div>
           </div>
@@ -7687,7 +7687,7 @@ function LiveTransfersCard() {
         {status && status.internalByDept.length > 0 ? (
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
             {status.internalByDept.map((d) => (
-              <div key={d.dept} className="rounded-xl border bg-gradient-to-br p-3.5 from-cyan-500/10 to-cyan-500/5 border-cyan-500/25 text-cyan-200">
+              <div key={d.dept} className="rounded-xl border bg-gradient-to-br p-3.5 from-card to-muted/50 border-border metric-info">
                 <div className="flex items-center gap-1.5 text-xs opacity-80"><ArrowLeftRight className="h-3.5 w-3.5" />{d.dept}</div>
                 <div className="mt-1 text-2xl font-semibold tabular-nums text-white">{d.count.toLocaleString()}</div>
               </div>
@@ -7705,12 +7705,12 @@ function LiveTransfersCard() {
             <span className="tabular-nums">{status.progressDone}/{status.progressTotal} ({progressPct}%)</span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
-            <div className="h-full bg-blue-500 transition-all" style={{ width: `${progressPct}%` }} />
+            <div className="h-full bg-muted-foreground transition-all" style={{ width: `${progressPct}%` }} />
           </div>
         </div>
       )}
       {lastRun && !running && (
-        <div className="text-xs text-emerald-400 flex items-center gap-1">
+        <div className="text-xs metric-good flex items-center gap-1">
           <CheckCircle2 className="h-3 w-3" />
           Last classified {lastRun}
         </div>
@@ -7835,7 +7835,7 @@ function QAPanel() {
             <button
               key={d}
               onClick={() => setDept(d)}
-              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${dept === d ? "bg-blue-600 text-white" : "bg-zinc-900/60 text-zinc-400 hover:text-white"}`}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${dept === d ? "bg-primary text-primary-foreground" : "bg-zinc-900/60 text-zinc-400 hover:text-white"}`}
             >
               {d === "all" ? "All depts" : d}
             </button>
@@ -7847,7 +7847,7 @@ function QAPanel() {
               ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Preparing…</>
               : <><Download className="h-3.5 w-3.5 mr-1.5" />Export Excel</>}
           </Button>
-          <Button onClick={runProcessor} disabled={processing} size="sm" className="bg-blue-600 hover:bg-blue-500">
+          <Button onClick={runProcessor} disabled={processing} size="sm" className="bg-primary hover:bg-primary/90">
             <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${processing ? "animate-spin" : ""}`} />
             {processing ? "Evaluating…" : "Run QA now"}
           </Button>
@@ -7877,13 +7877,13 @@ function QAPanel() {
                   <div>
                     <div className="text-[11px] uppercase tracking-wide text-zinc-500">{d}</div>
                     <div className="text-lg font-semibold text-zinc-100">{b.reviewed} reviewed · avg {b.avgScore}</div>
-                    <div className="text-xs text-amber-300/90 flex items-center gap-1 mt-0.5">
+                    <div className="text-xs metric-warn/90 flex items-center gap-1 mt-0.5">
                       <Receipt className="h-3 w-3" />{b.taxMentions} mention tax
                     </div>
                   </div>
                   <div className="text-right text-xs">
-                    <div className={b.criticalFails > 0 ? "text-rose-400" : "text-zinc-500"}>{b.criticalFails} crit</div>
-                    <div className={b.failed > 0 ? "text-amber-400" : "text-zinc-500"}>{b.failed} fail</div>
+                    <div className={b.criticalFails > 0 ? "metric-bad" : "text-zinc-500"}>{b.criticalFails} crit</div>
+                    <div className={b.failed > 0 ? "metric-warn" : "text-zinc-500"}>{b.failed} fail</div>
                   </div>
                 </CardContent>
               </Card>
@@ -7921,9 +7921,9 @@ function QAPanel() {
                     <TableRow><TableCell colSpan={8} className="text-center text-zinc-500 py-8">No QA reviews in this date range yet. Click "Run QA now" to evaluate recent calls.</TableCell></TableRow>
                   ) : reviewRows.map((r) => {
                     const isOpen = expanded === r.id;
-                    const deptColor = r.department === "Retention" ? "border-blue-700/60 text-blue-300"
-                      : r.department === "CS" ? "border-sky-700/60 text-sky-300"
-                      : "border-amber-700/60 text-amber-300";
+                    const deptColor = r.department === "Retention" ? "border-border metric-info"
+                      : r.department === "CS" ? "border-border metric-info"
+                      : "border-border metric-warn";
                     return (
                       <Fragment key={r.id}>
                         <TableRow className="border-zinc-800/60 hover:bg-zinc-900/40 cursor-pointer" onClick={() => setExpanded(isOpen ? null : r.id)}>
@@ -7932,22 +7932,22 @@ function QAPanel() {
                           <TableCell className="text-xs text-zinc-400">{new Date(r.callDate).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</TableCell>
                           <TableCell className="text-xs text-zinc-400 font-mono">{r.phoneNumber ?? "—"}</TableCell>
                           <TableCell className="text-right">
-                            <span className={`font-semibold ${r.score >= 80 ? "text-emerald-400" : r.score >= 60 ? "text-amber-400" : "text-rose-400"}`}>{r.score}</span>
+                            <span className={`font-semibold ${r.score >= 80 ? "metric-good" : r.score >= 60 ? "metric-warn" : "metric-bad"}`}>{r.score}</span>
                             <span className="text-xs text-zinc-500">/100</span>
                           </TableCell>
                           <TableCell className="text-right text-xs">
-                            <span className={r.protocolScore >= 70 ? "text-emerald-400" : "text-rose-400"}>{r.protocolScore}</span>
+                            <span className={r.protocolScore >= 70 ? "metric-good" : "metric-bad"}>{r.protocolScore}</span>
                           </TableCell>
                           <TableCell>
                             {r.criticalFail
-                              ? <Badge className="bg-rose-600/20 text-rose-300 border-rose-700/50">Critical fail</Badge>
+                              ? <Badge className="bg-muted metric-bad border-border">Critical fail</Badge>
                               : r.pass
-                                ? <Badge className="bg-emerald-600/20 text-emerald-300 border-emerald-700/50">Pass</Badge>
-                                : <Badge className="bg-amber-600/20 text-amber-300 border-amber-700/50">Fail</Badge>}
+                                ? <Badge className="bg-muted metric-good border-border">Pass</Badge>
+                                : <Badge className="bg-muted metric-warn border-border">Fail</Badge>}
                           </TableCell>
                           <TableCell>
                             {r.managerReviewRequired
-                              ? <Badge variant="outline" className="border-blue-700/60 text-blue-300">Manager</Badge>
+                              ? <Badge variant="outline" className="border-border metric-info">Manager</Badge>
                               : <span className="text-xs text-zinc-500">—</span>}
                           </TableCell>
                         </TableRow>
@@ -7958,20 +7958,20 @@ function QAPanel() {
                                 <div>
                                   <div className="text-xs font-medium text-zinc-400 mb-1">Strengths</div>
                                   {r.strengths.length ? (
-                                    <ul className="list-disc list-inside text-emerald-300 space-y-0.5">{r.strengths.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                                    <ul className="list-disc list-inside metric-good space-y-0.5">{r.strengths.map((s, i) => <li key={i}>{s}</li>)}</ul>
                                   ) : <div className="text-zinc-500 italic">None noted</div>}
                                 </div>
                                 <div>
                                   <div className="text-xs font-medium text-zinc-400 mb-1">Missed</div>
                                   {r.missedItems.length ? (
-                                    <ul className="list-disc list-inside text-rose-300 space-y-0.5">{r.missedItems.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                                    <ul className="list-disc list-inside metric-bad space-y-0.5">{r.missedItems.map((s, i) => <li key={i}>{s}</li>)}</ul>
                                   ) : <div className="text-zinc-500 italic">Nothing flagged</div>}
                                 </div>
                               </div>
                               {r.criticalIssues && r.criticalIssues.length > 0 && (
                                 <div className="mt-3">
-                                  <div className="text-xs font-medium text-rose-400 mb-1">Critical issues</div>
-                                  <ul className="list-disc list-inside text-rose-300 space-y-0.5 text-sm">{r.criticalIssues.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                                  <div className="text-xs font-medium metric-bad mb-1">Critical issues</div>
+                                  <ul className="list-disc list-inside metric-bad space-y-0.5 text-sm">{r.criticalIssues.map((s, i) => <li key={i}>{s}</li>)}</ul>
                                 </div>
                               )}
                               {r.reason && <div className="text-sm mt-3 text-zinc-300"><span className="text-zinc-500">Summary: </span>{r.reason}</div>}
@@ -8016,9 +8016,9 @@ function QAPanel() {
                   ) : taskRows.length === 0 ? (
                     <TableRow><TableCell colSpan={7} className="text-center text-zinc-500 py-8">No open manager reviews. Nice.</TableCell></TableRow>
                   ) : taskRows.map((t) => {
-                    const deptColor = t.department === "Retention" ? "border-blue-700/60 text-blue-300"
-                      : t.department === "CS" ? "border-sky-700/60 text-sky-300"
-                      : "border-amber-700/60 text-amber-300";
+                    const deptColor = t.department === "Retention" ? "border-border metric-info"
+                      : t.department === "CS" ? "border-border metric-info"
+                      : "border-border metric-warn";
                     const srcLabel = t.source === "weekly_lowest" ? "Weekly · lowest"
                       : t.source === "weekly_random" ? "Weekly · random"
                       : t.source === "manual" ? "Manual"
@@ -8028,16 +8028,16 @@ function QAPanel() {
                         <TableCell className="font-medium">{t.agentName}</TableCell>
                         <TableCell><Badge variant="outline" className={`${deptColor} text-[10px]`}>{t.department}</Badge></TableCell>
                         <TableCell className="text-right">
-                          <span className={`font-semibold ${t.criticalFail ? "text-rose-400" : t.aiScore < 60 ? "text-rose-400" : "text-amber-400"}`}>{t.aiScore}</span>
+                          <span className={`font-semibold ${t.criticalFail ? "metric-bad" : t.aiScore < 60 ? "metric-bad" : "metric-warn"}`}>{t.aiScore}</span>
                         </TableCell>
                         <TableCell className="text-[11px] text-zinc-400">{srcLabel}</TableCell>
                         <TableCell className="text-sm text-zinc-300 max-w-md">
-                          {t.criticalFail && <Badge className="bg-rose-600/20 text-rose-300 border-rose-700/50 mr-2">Critical</Badge>}
+                          {t.criticalFail && <Badge className="bg-muted metric-bad border-border mr-2">Critical</Badge>}
                           {t.reason}
                         </TableCell>
                         <TableCell className="text-xs text-zinc-400">{new Date(t.createdAt).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</TableCell>
                         <TableCell className="text-right space-x-1">
-                          <Button size="sm" variant="outline" className="border-blue-700/60 text-blue-300 h-7" onClick={() => setReviewingTask(t)}>Review</Button>
+                          <Button size="sm" variant="outline" className="border-border metric-info h-7" onClick={() => setReviewingTask(t)}>Review</Button>
                           <Button size="sm" variant="ghost" className="text-zinc-400 h-7 px-2" onClick={() => resolveTask(t.id)}>Skip</Button>
                         </TableCell>
                       </TableRow>
@@ -8110,7 +8110,7 @@ function ManagerReviewDialog({
             </div>
             <div className="rounded-md bg-zinc-900/60 p-3">
               <div className="text-[11px] uppercase tracking-wide text-zinc-500">Variance</div>
-              <div className={`text-2xl font-semibold ${variance === null ? "text-zinc-500" : variance === 0 ? "text-zinc-300" : variance > 0 ? "text-emerald-400" : "text-rose-400"}`}>
+              <div className={`text-2xl font-semibold ${variance === null ? "text-zinc-500" : variance === 0 ? "text-zinc-300" : variance > 0 ? "metric-good" : "metric-bad"}`}>
                 {variance === null ? "—" : (variance > 0 ? `+${variance}` : variance)}
               </div>
             </div>
@@ -8122,18 +8122,18 @@ function ManagerReviewDialog({
               {review.data.reason && <div className="text-zinc-200">{review.data.reason}</div>}
               {review.data.criticalIssues && review.data.criticalIssues.length > 0 && (
                 <div>
-                  <div className="text-[11px] text-rose-400 font-medium">Critical issues</div>
-                  <ul className="list-disc list-inside text-rose-300 text-xs space-y-0.5">{review.data.criticalIssues.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                  <div className="text-[11px] metric-bad font-medium">Critical issues</div>
+                  <ul className="list-disc list-inside metric-bad text-xs space-y-0.5">{review.data.criticalIssues.map((s, i) => <li key={i}>{s}</li>)}</ul>
                 </div>
               )}
               <div className="grid md:grid-cols-2 gap-3">
                 <div>
-                  <div className="text-[11px] text-emerald-400 font-medium">Strengths</div>
-                  <ul className="list-disc list-inside text-emerald-300 text-xs space-y-0.5">{review.data.strengths.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                  <div className="text-[11px] metric-good font-medium">Strengths</div>
+                  <ul className="list-disc list-inside metric-good text-xs space-y-0.5">{review.data.strengths.map((s, i) => <li key={i}>{s}</li>)}</ul>
                 </div>
                 <div>
-                  <div className="text-[11px] text-amber-400 font-medium">Missed</div>
-                  <ul className="list-disc list-inside text-amber-300 text-xs space-y-0.5">{review.data.missedItems.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                  <div className="text-[11px] metric-warn font-medium">Missed</div>
+                  <ul className="list-disc list-inside metric-warn text-xs space-y-0.5">{review.data.missedItems.map((s, i) => <li key={i}>{s}</li>)}</ul>
                 </div>
               </div>
               {review.data.transcript && (
@@ -8152,7 +8152,7 @@ function ManagerReviewDialog({
               onChange={(e) => setComments(e.target.value)}
               rows={3}
               placeholder="What did the agent do well or poorly? Coaching notes for the agent…"
-              className="w-full mt-1 rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+              className="w-full mt-1 rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-ring/50"
             />
           </div>
 
@@ -8170,7 +8170,7 @@ function ManagerReviewDialog({
               try { await onSubmit({ managerScore: ms, comments, coachingComplete }); }
               finally { setSaving(false); }
             }}
-            className="bg-blue-600 hover:bg-blue-500"
+            className="bg-primary hover:bg-primary/90"
           >{saving ? "Saving…" : "Submit review"}</Button>
         </DialogFooter>
       </DialogContent>
@@ -8179,7 +8179,7 @@ function ManagerReviewDialog({
 }
 
 function QATile({ label, value, accent }: { label: string; value: number | string; accent?: "good" | "warn" | "bad" }) {
-  const color = accent === "good" ? "text-emerald-400" : accent === "warn" ? "text-amber-400" : accent === "bad" ? "text-rose-400" : "text-zinc-100";
+  const color = accent === "good" ? "metric-good" : accent === "warn" ? "metric-warn" : accent === "bad" ? "metric-bad" : "text-zinc-100";
   return (
     <Card className="bg-zinc-950/40 border-zinc-800/60">
       <CardContent className="p-3">
@@ -8377,7 +8377,7 @@ function ViolationsPanel() {
   }, [data, deptFilter, sortMissed, localDismissed]);
 
   const lateMinsColor = (m: number) =>
-    m > 60 ? "text-rose-400 font-bold" : m > 30 ? "text-orange-400 font-semibold" : "text-amber-400";
+    m > 60 ? "metric-bad font-bold" : m > 30 ? "metric-warn font-semibold" : "metric-warn";
 
   const verifiedCount = localVerified.size;
 
@@ -8462,7 +8462,7 @@ function ViolationsPanel() {
         onClick={() => void toggleVerify(vkey, type, member, department, date, details)}
         disabled={busy}
         className={`flex-shrink-0 h-4 w-4 rounded border transition-all ${busy ? "opacity-40 cursor-wait" : "cursor-pointer"} ${
-          checked ? "bg-emerald-500 border-emerald-500" : "bg-transparent border-zinc-600 hover:border-zinc-400"
+          checked ? "bg-muted-foreground border-border" : "bg-transparent border-zinc-600 hover:border-zinc-400"
         }`}
         title={checked ? "Unmark verified" : "Mark as verified"}
       >
@@ -8493,25 +8493,25 @@ function ViolationsPanel() {
       {/* Summary cards */}
       {data && (
         <div className="flex flex-wrap gap-3">
-          <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5">
-            <Clock className="h-4 w-4 text-amber-400" />
-            <div><p className="text-xs text-zinc-400">Late Logins</p><p className="text-xl font-bold text-amber-300">{data.lateLogin.length}</p></div>
+          <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/50 px-4 py-2.5">
+            <Clock className="h-4 w-4 metric-warn" />
+            <div><p className="text-xs text-zinc-400">Late Logins</p><p className="text-xl font-bold metric-warn">{data.lateLogin.length}</p></div>
           </div>
-          <div className="flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5">
-            <ShieldAlert className="h-4 w-4 text-rose-400" />
-            <div><p className="text-xs text-zinc-400">Availability Violations</p><p className="text-xl font-bold text-rose-300">{data.availabilityGaps.reduce((s, r) => s + r.gapCount, 0)}</p></div>
+          <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/50 px-4 py-2.5">
+            <ShieldAlert className="h-4 w-4 metric-bad" />
+            <div><p className="text-xs text-zinc-400">Availability Violations</p><p className="text-xl font-bold metric-bad">{data.availabilityGaps.reduce((s, r) => s + r.gapCount, 0)}</p></div>
           </div>
-          <div className="flex items-center gap-2 rounded-xl border border-orange-500/30 bg-orange-500/10 px-4 py-2.5">
-            <PhoneMissed className="h-4 w-4 text-orange-400" />
-            <div><p className="text-xs text-zinc-400">Missed While Available</p><p className="text-xl font-bold text-orange-300">{data.missedWhileAvail.length}</p></div>
+          <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/50 px-4 py-2.5">
+            <PhoneMissed className="h-4 w-4 metric-warn" />
+            <div><p className="text-xs text-zinc-400">Missed While Available</p><p className="text-xl font-bold metric-warn">{data.missedWhileAvail.length}</p></div>
           </div>
           <div className="flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5">
             <ShieldAlert className="h-4 w-4 text-red-400" />
             <div><p className="text-xs text-zinc-400">Unauthorized Cancels</p><p className="text-xl font-bold text-red-300">{cancelData?.length ?? 0}</p></div>
           </div>
-          <div className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5">
-            <UserCheck className="h-4 w-4 text-emerald-400" />
-            <div><p className="text-xs text-zinc-400">Verified</p><p className="text-xl font-bold text-emerald-300">{verifiedCount}</p></div>
+          <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/60 px-4 py-2.5">
+            <UserCheck className="h-4 w-4 metric-good" />
+            <div><p className="text-xs text-zinc-400">Verified</p><p className="text-xl font-bold metric-good">{verifiedCount}</p></div>
           </div>
         </div>
       )}
@@ -8523,7 +8523,7 @@ function ViolationsPanel() {
             <button key={t.id} onClick={() => setSub(t.id)}
               className={`px-3 py-1.5 text-xs font-medium transition-colors flex items-center gap-1.5 ${
                 sub === t.id
-                  ? t.accent ? "bg-emerald-600 text-white" : t.urgent ? "bg-red-600 text-white" : "bg-blue-600 text-white"
+                  ? t.accent ? "bg-primary text-primary-foreground" : t.urgent ? "bg-destructive text-destructive-foreground" : "bg-primary text-primary-foreground"
                   : "bg-zinc-900/60 text-zinc-400 hover:text-white"
               }`}>
               {t.label}
@@ -8552,13 +8552,13 @@ function ViolationsPanel() {
       </div>
 
       {isLoading && <div className="space-y-2">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}</div>}
-      {isError  && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-rose-300 text-sm">Failed to load violations.</div>}
+      {isError  && <div className="rounded-xl border border-border bg-muted/50 p-4 metric-bad text-sm">Failed to load violations.</div>}
 
       {/* ── Late Login ─────────────────────────────────────────────────── */}
       {!isLoading && !isError && sub === "late" && (
         <div className="rounded-xl border border-white/8 overflow-hidden">
           <div className="px-4 py-2.5 bg-zinc-900/60 border-b border-white/8 flex items-center justify-between">
-            <p className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
+            <p className="text-xs font-semibold metric-warn flex items-center gap-1.5">
               <Clock className="h-3.5 w-3.5" />Late Login — first call {">"} 10 min after shift start
             </p>
             <div className="flex gap-1">
@@ -8592,7 +8592,7 @@ function ViolationsPanel() {
                         <Checkbox vkey={r.key} type="late_login" member={r.member} department={r.department} date={r.date} details={r} />
                       </TableCell>
                       <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(r.date)}</TableCell>
-                      <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "text-emerald-300 line-through decoration-emerald-600/50" : "text-white"}`}>{r.member}</TableCell>
+                      <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"}`}>{r.member}</TableCell>
                       <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.department)}`}>{r.department}</Badge></TableCell>
                       <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtTime(r.shiftStart)}</TableCell>
                       <TableCell className="text-xs text-zinc-300 tabular-nums">{fmtTime(r.firstCallAt)}</TableCell>
@@ -8614,7 +8614,7 @@ function ViolationsPanel() {
       {!isLoading && !isError && sub === "gaps" && (
         <div className="rounded-xl border border-white/8 overflow-hidden">
           <div className="px-4 py-2.5 bg-zinc-900/60 border-b border-white/8 flex items-center justify-between">
-            <p className="text-xs font-semibold text-rose-300 flex items-center gap-1.5">
+            <p className="text-xs font-semibold metric-bad flex items-center gap-1.5">
               <ShieldAlert className="h-3.5 w-3.5" />Availability — gaps {">"} 5 min between consecutive calls
             </p>
             <div className="flex items-center gap-2">
@@ -8689,10 +8689,10 @@ function ViolationsPanel() {
                         <Checkbox vkey={r.key} type="availability_gap" member={r.member} department={r.department} date={r.date} details={r} />
                       </TableCell>
                       <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(r.date)}</TableCell>
-                      <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "text-emerald-300 line-through decoration-emerald-600/50" : "text-white"}`}>{r.member}</TableCell>
+                      <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"}`}>{r.member}</TableCell>
                       <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.department)}`}>{r.department}</Badge></TableCell>
                       <TableCell className="text-xs text-center">
-                        <span className={`font-bold ${r.gapCount >= 5 ? "text-rose-400" : r.gapCount >= 3 ? "text-orange-400" : "text-amber-400"}`}>{r.gapCount}</span>
+                        <span className={`font-bold ${r.gapCount >= 5 ? "metric-bad" : r.gapCount >= 3 ? "metric-warn" : "metric-warn"}`}>{r.gapCount}</span>
                       </TableCell>
                       <TableCell className="text-xs">
                         <div className="flex flex-wrap gap-1">
@@ -8700,7 +8700,7 @@ function ViolationsPanel() {
                             <Tooltip key={j}>
                               <TooltipTrigger asChild>
                                 <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium cursor-default
-                                  ${g.minutes > 30 ? "bg-rose-500/20 text-rose-300" : g.minutes > 15 ? "bg-orange-500/20 text-orange-300" : "bg-amber-500/20 text-amber-300"}`}>
+                                  ${g.minutes > 30 ? "bg-muted metric-bad" : g.minutes > 15 ? "bg-muted metric-warn" : "bg-muted metric-warn"}`}>
                                   {fmtMins(g.minutes)}
                                 </span>
                               </TooltipTrigger>
@@ -8726,7 +8726,7 @@ function ViolationsPanel() {
       {!isLoading && !isError && sub === "missed" && (
         <div className="rounded-xl border border-white/8 overflow-hidden">
           <div className="px-4 py-2.5 bg-zinc-900/60 border-b border-white/8 flex items-center justify-between">
-            <p className="text-xs font-semibold text-orange-300 flex items-center gap-1.5">
+            <p className="text-xs font-semibold metric-warn flex items-center gap-1.5">
               <PhoneMissed className="h-3.5 w-3.5" />Missed calls — agent was on shift and not on another call
             </p>
             <div className="flex gap-1">
@@ -8771,8 +8771,8 @@ function ViolationsPanel() {
                       </TableCell>
                       <TableCell className="text-xs">
                         {r.source === "quo"
-                          ? <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-blue-500/15 text-blue-300 border border-blue-500/25">OpenPhone</span>
-                          : <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-500/15 text-sky-300 border border-sky-500/25">PBX</span>
+                          ? <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-muted-foreground/15 metric-info border border-border">OpenPhone</span>
+                          : <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-muted/50 metric-info border border-border">PBX</span>
                         }
                       </TableCell>
                       <TableCell className="text-xs text-zinc-400 tabular-nums font-mono">
@@ -8781,7 +8781,7 @@ function ViolationsPanel() {
                       <TableCell className="text-xs">
                         <div className="flex flex-wrap gap-1">
                           {r.availableAgents.map((a, j) => (
-                            <span key={j} className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-orange-500/15 text-orange-300 border border-orange-500/25">
+                            <span key={j} className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-muted/60 metric-warn border border-border">
                               {a}
                             </span>
                           ))}
@@ -8866,7 +8866,7 @@ function ViolationsPanel() {
                           <Checkbox vkey={r.key} type="unauthorized_cancel" member={r.agent} department={r.team} date={r.date} details={r} />
                         </TableCell>
                         <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(r.date)}</TableCell>
-                        <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "text-emerald-300 line-through decoration-emerald-600/50" : "text-red-200"}`}>{r.agent}</TableCell>
+                        <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-red-200"}`}>{r.agent}</TableCell>
                         <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.team)}`}>{r.team}</Badge></TableCell>
                         <TableCell className="text-xs font-mono text-zinc-300">{r.fileId || <span className="text-zinc-600">—</span>}</TableCell>
                         <TableCell className="text-xs text-red-400 font-medium">{r.rawStatus}</TableCell>
@@ -8895,7 +8895,7 @@ function ViolationsPanel() {
               disabled={!verifiedData?.items.length}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all
                 ${verifiedData?.items.length
-                  ? copied ? "bg-emerald-600 text-white" : "bg-blue-600 hover:bg-blue-500 text-white"
+                  ? copied ? "bg-primary text-primary-foreground" : "bg-primary hover:bg-primary/90 text-primary-foreground"
                   : "bg-zinc-800 text-zinc-600 cursor-not-allowed"
                 }`}
             >
@@ -8932,10 +8932,10 @@ function ViolationsPanel() {
                       if (it.type === "unauthorized_cancel") { const cd = d as CancelViolation; detail = cd.fileId ? `File ${cd.fileId}` : ""; }
                     } catch { /* ignore */ }
                     const typeBadge =
-                      it.type === "late_login"          ? "bg-amber-500/15 text-amber-300 border-amber-500/30" :
-                      it.type === "availability_gap"    ? "bg-rose-500/15 text-rose-300 border-rose-500/30" :
+                      it.type === "late_login"          ? "bg-muted/60 metric-warn border-border" :
+                      it.type === "availability_gap"    ? "bg-muted/60 metric-bad border-border" :
                       it.type === "unauthorized_cancel" ? "bg-red-500/15 text-red-300 border-red-500/30" :
-                                                          "bg-orange-500/15 text-orange-300 border-orange-500/30";
+                                                          "bg-muted/60 metric-warn border-border";
                     const typeLabel =
                       it.type === "late_login"          ? "Late Login" :
                       it.type === "availability_gap"    ? "Avail Gap" :
@@ -9212,7 +9212,7 @@ function BackendStatsPanel() {
     return (
       <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
         <CardContent className="flex flex-col items-center gap-3 py-16 text-zinc-400">
-          <ShieldAlert className="h-8 w-8 text-rose-400/70" />
+          <ShieldAlert className="h-8 w-8 metric-bad/70" />
           <p className="text-sm">Couldn't load file submissions.</p>
           <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
         </CardContent>
@@ -9225,11 +9225,11 @@ function BackendStatsPanel() {
       {/* Title row */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 text-white shadow-[0_0_24px_-6px_rgba(37,99,235,0.7)]">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-white shadow-lg">
             <BarChart3 className="h-5 w-5" />
           </div>
           <div>
-            <h2 className="text-lg font-bold tracking-tight bg-gradient-to-r from-blue-300 via-cyan-300 to-sky-300 bg-clip-text text-transparent">
+            <h2 className="text-lg font-bold tracking-tight text-foreground">
               Backend Statistics
             </h2>
             <p className="text-xs text-muted-foreground">Every file submitted across all teams.</p>
@@ -9240,7 +9240,7 @@ function BackendStatsPanel() {
             <select
               value={month}
               onChange={(e) => setMonth(e.target.value)}
-              className="appearance-none pl-9 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+              className="appearance-none pl-9 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50"
             >
               <option value="all">All time</option>
               <option value="today">Today</option>
@@ -9258,12 +9258,12 @@ function BackendStatsPanel() {
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        <BStatKpi icon={Layers} label="Total Files" value={stats.totalFiles} accent="bg-blue-500/30" />
-        <BStatKpi icon={Users} label="Contributors" value={stats.contributors} accent="bg-cyan-500/30" />
-        <BStatKpi icon={CheckCircle2} label="Retained" value={stats.retained} accent="bg-emerald-500/30" />
-        <BStatKpi icon={Wrench} label="Fixed" value={stats.fixed} accent="bg-sky-500/30" />
-        <BStatKpi icon={TrendingUp} label="IDP-Handled" value={stats.idp} accent="bg-amber-500/30" />
-        <BStatKpi icon={XCircle} label="Cancelled" value={stats.cancelled} accent="bg-rose-500/30" />
+        <BStatKpi icon={Layers} label="Total Files" value={stats.totalFiles} accent="bg-muted-foreground/30" />
+        <BStatKpi icon={Users} label="Contributors" value={stats.contributors} accent="bg-muted-foreground/20" />
+        <BStatKpi icon={CheckCircle2} label="Retained" value={stats.retained} accent="bg-muted-foreground/30" />
+        <BStatKpi icon={Wrench} label="Fixed" value={stats.fixed} accent="bg-muted-foreground/20" />
+        <BStatKpi icon={TrendingUp} label="IDP-Handled" value={stats.idp} accent="bg-muted-foreground/20" />
+        <BStatKpi icon={XCircle} label="Cancelled" value={stats.cancelled} accent="bg-muted-foreground/20" />
       </div>
 
       {stats.totalFiles === 0 ? (
@@ -9279,7 +9279,7 @@ function BackendStatsPanel() {
           <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
-                <Activity className="h-4 w-4 text-blue-300" /> Files submitted over time
+                <Activity className="h-4 w-4 metric-info" /> Files submitted over time
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -9368,7 +9368,7 @@ function BackendStatsPanel() {
                 <button
                   type="button"
                   onClick={() => setKillersOnly((v) => !v)}
-                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors border ${killersOnly ? "border-rose-500/50 bg-rose-500/15 text-rose-200" : "border-white/10 text-zinc-400 hover:text-white hover:bg-white/5"}`}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors border ${killersOnly ? "border-border bg-muted/60 metric-bad" : "border-white/10 text-zinc-400 hover:text-white hover:bg-white/5"}`}
                 >
                   ⚔ Killers only
                 </button>
@@ -9411,11 +9411,11 @@ function BackendStatsPanel() {
                         </TableCell>
                         <TableCell className="text-right font-semibold tabular-nums text-white">{a.total.toLocaleString()}</TableCell>
                         <TableCell className="text-right tabular-nums text-teal-300/90">{a.idpCancelRetained || "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums text-emerald-300/90">{a.retained || "—"}</TableCell>
-                        <TableCell className="text-right font-semibold tabular-nums text-emerald-200">{(a.retained + a.idpCancelRetained) || "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums text-sky-300/90">{a.fixed || "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums text-amber-300/90">{a.idp || "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums text-rose-300/90">{a.cancelled || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums metric-good/90">{a.retained || "—"}</TableCell>
+                        <TableCell className="text-right font-semibold tabular-nums metric-good">{(a.retained + a.idpCancelRetained) || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums metric-info/90">{a.fixed || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums metric-warn/90">{a.idp || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums metric-bad/90">{a.cancelled || "—"}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -9488,8 +9488,8 @@ function Dashboard() {
   const defaultTab = ta ?? "retention";
 
   const roleBadgeCls =
-    user.role === "admin" ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/30" :
-    user.role === "edit"  ? "bg-amber-500/20 text-amber-300 border-amber-500/30" :
+    user.role === "admin" ? "bg-muted metric-info border-border" :
+    user.role === "edit"  ? "bg-muted metric-warn border-border" :
                             "bg-zinc-500/20 text-zinc-300 border-zinc-500/30";
   const RoleIcon = user.role === "admin" ? ShieldCheck : user.role === "edit" ? Pencil : Eye;
 
@@ -9561,7 +9561,7 @@ function Dashboard() {
                     <button
                       onClick={() => rmFileRef.current?.click()}
                       disabled={rmUploading}
-                      className="p-2 rounded-lg text-zinc-400 hover:text-pink-300 hover:bg-pink-500/10 transition-colors disabled:opacity-50"
+                      className="p-2 rounded-lg text-zinc-400 hover:metric-secondary hover:bg-muted/50 transition-colors disabled:opacity-50"
                     >
                       <Upload className={`h-4 w-4 ${rmUploading ? "animate-pulse" : ""}`} />
                     </button>
@@ -9574,7 +9574,7 @@ function Dashboard() {
               <>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button onClick={() => setShowBlocked(true)} className="p-2 rounded-lg text-zinc-400 hover:text-rose-300 hover:bg-rose-500/10 transition-colors">
+                    <button onClick={() => setShowBlocked(true)} className="p-2 rounded-lg text-zinc-400 hover:metric-bad hover:bg-muted/50 transition-colors">
                       <ShieldCheck className="h-4 w-4" />
                     </button>
                   </TooltipTrigger>
@@ -9582,7 +9582,7 @@ function Dashboard() {
                 </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button onClick={() => setShowAgents(true)} className="p-2 rounded-lg text-zinc-400 hover:text-blue-300 hover:bg-blue-500/10 transition-colors">
+                    <button onClick={() => setShowAgents(true)} className="p-2 rounded-lg text-zinc-400 hover:metric-info hover:bg-muted-foreground/10 transition-colors">
                       <Users className="h-4 w-4" />
                     </button>
                   </TooltipTrigger>
@@ -9590,7 +9590,7 @@ function Dashboard() {
                 </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button onClick={() => setShowUsers(true)} className="p-2 rounded-lg text-zinc-400 hover:text-cyan-300 hover:bg-cyan-500/10 transition-colors">
+                    <button onClick={() => setShowUsers(true)} className="p-2 rounded-lg text-zinc-400 hover:metric-info hover:bg-muted/60 transition-colors">
                       <UserCog className="h-4 w-4" />
                     </button>
                   </TooltipTrigger>
@@ -9600,7 +9600,7 @@ function Dashboard() {
             )}
             <Tooltip>
               <TooltipTrigger asChild>
-                <button onClick={logout} className="p-2 rounded-lg text-zinc-400 hover:text-rose-300 hover:bg-rose-500/10 transition-colors">
+                <button onClick={logout} className="p-2 rounded-lg text-zinc-400 hover:metric-bad hover:bg-muted/50 transition-colors">
                   <LogOut className="h-4 w-4" />
                 </button>
               </TooltipTrigger>
@@ -9872,7 +9872,7 @@ function SamiaChat() {
       {/* Floating bubble */}
       <button
         onClick={() => setOpen((o) => !o)}
-        className="fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 text-white shadow-[0_0_32px_-4px_rgba(37,99,235,0.7)] flex items-center justify-center hover:scale-105 transition-transform"
+        className="fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full bg-primary text-white shadow-lg flex items-center justify-center hover:scale-105 transition-transform"
         aria-label="Open Samia"
       >
         {open ? <X className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
@@ -9888,20 +9888,20 @@ function SamiaChat() {
             : "bottom-24 right-4 sm:right-6 w-[calc(100vw-32px)] sm:w-[360px] max-h-[560px]"
         }`}>
           {/* Header */}
-          <div className="flex items-center gap-3 px-4 py-3 border-b border-white/8 bg-gradient-to-r from-blue-600/20 to-cyan-600/20 flex-shrink-0">
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-white/8 bg-muted/40 flex-shrink-0">
             {(adminView === "users" || adminView === "viewUser" || adminView === "history" || adminView === "viewDate") ? (
               <button onClick={() => adminView === "viewUser" ? setAdminView("users") : adminView === "viewDate" ? setAdminView("history") : setAdminView("chat")} className="text-zinc-400 hover:text-white transition-colors p-1 -ml-1">
                 <ChevronLeft className="h-4 w-4" />
               </button>
             ) : (
-              <div className="h-9 w-9 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-white font-bold text-sm shadow-md flex-shrink-0">S</div>
+              <div className="h-9 w-9 rounded-full bg-primary flex items-center justify-center text-white font-bold text-sm shadow-md flex-shrink-0">S</div>
             )}
             <div>
               <p className="text-sm font-semibold text-white leading-none">
                 {adminView === "users" ? "All Chats" : adminView === "viewUser" ? adminViewUser?.username ?? "User" : adminView === "history" ? "Chat History" : adminView === "viewDate" ? historyGroup?.label ?? "Chat" : "Samia"}
               </p>
-              <p className="text-[10px] text-blue-300 mt-0.5 flex items-center gap-1">
-                {adminView === "chat" && <><span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />AI Analyst · Live data</>}
+              <p className="text-[10px] metric-info mt-0.5 flex items-center gap-1">
+                {adminView === "chat" && <><span className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground animate-pulse" />AI Analyst · Live data</>}
                 {adminView === "users" && "Select a user to view their chat"}
                 {adminView === "viewUser" && "Read-only · Admin view"}
                 {adminView === "history" && "Your past conversations by date"}
@@ -9911,13 +9911,13 @@ function SamiaChat() {
             <div className="ml-auto flex items-center gap-1">
               {/* Personal chat history button */}
               {adminView === "chat" && (
-                <button onClick={openHistory} title="Chat history" className="text-zinc-500 hover:text-blue-300 transition-colors p-1">
+                <button onClick={openHistory} title="Chat history" className="text-zinc-500 hover:metric-info transition-colors p-1">
                   <Clock className="h-4 w-4" />
                 </button>
               )}
               {/* Admin all-chats button */}
               {isAdmin && adminView === "chat" && (
-                <button onClick={openAdminUsers} title="View all user chats" className="text-zinc-500 hover:text-blue-300 transition-colors p-1">
+                <button onClick={openAdminUsers} title="View all user chats" className="text-zinc-500 hover:metric-info transition-colors p-1">
                   <Users className="h-4 w-4" />
                 </button>
               )}
@@ -9947,7 +9947,7 @@ function SamiaChat() {
           {/* Name gate — shown if user hasn't set their display name yet */}
           {!chatName ? (
             <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 gap-5">
-              <div className="h-14 w-14 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-white font-bold text-xl shadow-lg">S</div>
+              <div className="h-14 w-14 rounded-full bg-primary flex items-center justify-center text-white font-bold text-xl shadow-lg">S</div>
               <div className="text-center">
                 <p className="text-sm font-semibold text-white mb-1">Hey, before we start —</p>
                 <p className="text-xs text-zinc-400">What's your name? Samia will use it to remember you.</p>
@@ -9959,12 +9959,12 @@ function SamiaChat() {
                   onChange={(e) => setNameInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") submitName(); }}
                   placeholder="Your first name…"
-                  className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2.5 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2.5 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-ring"
                 />
                 <button
                   onClick={submitName}
                   disabled={!nameInput.trim()}
-                  className="px-4 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 text-white text-sm font-medium disabled:opacity-40 hover:opacity-90 transition-opacity"
+                  className="px-4 rounded-xl bg-primary text-white text-sm font-medium disabled:opacity-40 hover:opacity-90 transition-opacity"
                 >
                   Go
                 </button>
@@ -9974,7 +9974,7 @@ function SamiaChat() {
             <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1 min-h-0">
               {adminLoading && (
                 <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-6">
-                  <div className="h-3 w-3 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
+                  <div className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
                   Loading…
                 </div>
               )}
@@ -9999,7 +9999,7 @@ function SamiaChat() {
             <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
               {adminLoading && (
                 <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-4">
-                  <div className="h-3 w-3 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
+                  <div className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
                   Loading…
                 </div>
               )}
@@ -10009,10 +10009,10 @@ function SamiaChat() {
               {adminMessages.map((m, i) => (
                 <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                   {m.role === "assistant" && (
-                    <div className="h-6 w-6 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
+                    <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
                   )}
                   <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                    m.role === "user" ? "bg-blue-600/70 text-white rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
+                    m.role === "user" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
                   }`}>{m.content}</div>
                 </div>
               ))}
@@ -10021,7 +10021,7 @@ function SamiaChat() {
             <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1 min-h-0">
               {historyLoading && (
                 <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-6">
-                  <div className="h-3 w-3 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
+                  <div className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
                   Loading…
                 </div>
               )}
@@ -10034,7 +10034,7 @@ function SamiaChat() {
                   onClick={() => viewHistoryDate(g)}
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white/5 transition-colors text-left"
                 >
-                  <div className="h-8 w-8 rounded-full bg-zinc-700 flex items-center justify-center text-blue-300 flex-shrink-0">
+                  <div className="h-8 w-8 rounded-full bg-zinc-700 flex items-center justify-center metric-info flex-shrink-0">
                     <Clock className="h-4 w-4" />
                   </div>
                   <div className="min-w-0 flex-1">
@@ -10054,10 +10054,10 @@ function SamiaChat() {
               {(historyGroup?.messages ?? []).map((m, i) => (
                 <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                   {m.role === "assistant" && (
-                    <div className="h-6 w-6 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
+                    <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
                   )}
                   <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                    m.role === "user" ? "bg-blue-600/70 text-white rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
+                    m.role === "user" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
                   }`}>{m.content}</div>
                 </div>
               ))}
@@ -10068,14 +10068,14 @@ function SamiaChat() {
               <div className={`flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0 ${size === "minimized" ? "hidden" : ""}`}>
                 {historyLoading && (
                   <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-4">
-                    <div className="h-3 w-3 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
+                    <div className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
                     Loading memory…
                   </div>
                 )}
                 {messages.map((m, i) => (
                   <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                     {m.role === "assistant" && (
-                      <div className="h-6 w-6 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
+                      <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
                     )}
                     <div className={`max-w-[80%] flex flex-col gap-1.5 ${m.role === "user" ? "items-end" : "items-start"}`}>
                       {m.images?.map((src, idx) => (
@@ -10083,7 +10083,7 @@ function SamiaChat() {
                       ))}
                       {m.content && (
                         <div className={`rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                          m.role === "user" ? "bg-blue-600 text-white rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
+                          m.role === "user" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
                         }`}>{m.content}</div>
                       )}
                     </div>
@@ -10091,7 +10091,7 @@ function SamiaChat() {
                 ))}
                 {loading && (
                   <div className="flex justify-start">
-                    <div className="h-6 w-6 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
+                    <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
                     <div className="bg-zinc-800 rounded-2xl rounded-bl-sm px-3 py-2">
                       <div className="flex gap-1 items-center h-4">
                         <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:0ms]" />
@@ -10125,15 +10125,15 @@ function SamiaChat() {
                   <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
                     onChange={(e) => { if (e.target.files) { void addImages(e.target.files); e.target.value = ""; } }} />
                   <button onClick={() => fileInputRef.current?.click()} disabled={loading} title="Attach image"
-                    className="h-9 w-9 rounded-xl bg-zinc-800 border border-white/10 text-zinc-400 hover:text-blue-400 flex items-center justify-center transition-colors disabled:opacity-40 flex-shrink-0">
+                    className="h-9 w-9 rounded-xl bg-zinc-800 border border-white/10 text-zinc-400 hover:metric-info flex items-center justify-center transition-colors disabled:opacity-40 flex-shrink-0">
                     <Paperclip className="h-4 w-4" />
                   </button>
                   <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
                     onPaste={handlePaste} placeholder="Ask Samia anything… or paste a screenshot" disabled={loading}
-                    className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50" />
+                    className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50" />
                   <button onClick={() => void send()} disabled={(!input.trim() && pendingImages.length === 0) || loading}
-                    className="h-9 w-9 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 text-white flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity flex-shrink-0">
+                    className="h-9 w-9 rounded-xl bg-primary text-white flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity flex-shrink-0">
                     <Send className="h-4 w-4" />
                   </button>
                 </div>
@@ -10163,10 +10163,10 @@ interface AttRecord { id: number; memberId: number; date: string; status: string
 interface AttData { members: AttMember[]; records: AttRecord[]; }
 
 const ATT_STATUS = [
-  { s: "in",   label: "In",        cell: "bg-emerald-500/25 text-emerald-300", badge: "text-emerald-400" },
-  { s: "off",  label: "Off",       cell: "bg-amber-500/25 text-amber-300",     badge: "text-amber-400" },
+  { s: "in",   label: "In",        cell: "bg-muted-foreground/25 metric-good", badge: "metric-good" },
+  { s: "off",  label: "Off",       cell: "bg-muted metric-warn",     badge: "metric-warn" },
   { s: "late", label: "Late",      cell: "bg-yellow-400/25 text-yellow-300",   badge: "text-yellow-400" },
-  { s: "pto",  label: "PTO",       cell: "bg-blue-500/25 text-blue-300",       badge: "text-blue-400" },
+  { s: "pto",  label: "PTO",       cell: "bg-muted-foreground/25 metric-info",       badge: "metric-info" },
   { s: "nsnc", label: "NSNC",      cell: "bg-red-700/30 text-red-400",         badge: "text-red-400" },
   { s: "conf", label: "Confirmed", cell: "bg-teal-500/25 text-teal-300",       badge: "text-teal-400" },
   { s: "",     label: "Clear",     cell: "",                                    badge: "text-zinc-500" },
@@ -10404,10 +10404,10 @@ function AttendancePanel() {
             </Button>
           )}
           {autoMarkResult && (
-            <span className="text-xs text-emerald-400">{autoMarkResult}</span>
+            <span className="text-xs metric-good">{autoMarkResult}</span>
           )}
           {canManage && (
-            <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" onClick={() => setShowAdd((v) => !v)}>
+            <Button size="sm" className="bg-primary hover:bg-primary/90 text-primary-foreground" onClick={() => setShowAdd((v) => !v)}>
               + Add Member
             </Button>
           )}
@@ -10421,7 +10421,7 @@ function AttendancePanel() {
 
       {/* Add Member form */}
       {showAdd && (
-        <Card className="border-blue-500/30 bg-zinc-900/70 p-4">
+        <Card className="border-border bg-zinc-900/70 p-4">
           <div className="flex gap-3 items-end flex-wrap">
             <div className="flex-1 min-w-[160px]">
               <Label className="text-xs text-muted-foreground mb-1 block">Name *</Label>
@@ -10451,10 +10451,10 @@ function AttendancePanel() {
           {/* Overall breakdown */}
           <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 sm:gap-3">
             {[
-              { label: "Present", value: todaySummary.in,     color: "text-emerald-400" },
-              { label: "Off",     value: todaySummary.off,    color: "text-amber-400" },
+              { label: "Present", value: todaySummary.in,     color: "metric-good" },
+              { label: "Off",     value: todaySummary.off,    color: "metric-warn" },
               { label: "Late",    value: todaySummary.late,   color: "text-yellow-400" },
-              { label: "PTO",     value: todaySummary.pto,    color: "text-blue-400" },
+              { label: "PTO",     value: todaySummary.pto,    color: "metric-info" },
               { label: "NSNC",    value: todaySummary.nsnc,   color: "text-red-400" },
               { label: "No Data", value: todaySummary.absent, color: "text-zinc-500" },
             ].map(({ label, value, color }) => (
@@ -10469,11 +10469,11 @@ function AttendancePanel() {
           <div className="flex gap-3 flex-wrap">
             {teamSummary.map(({ dept, present, total }) => {
               const pct = total > 0 ? Math.round((present / total) * 100) : 0;
-              const barColor = pct >= 80 ? "bg-emerald-500" : pct >= 50 ? "bg-yellow-500" : "bg-red-500";
+              const barColor = pct >= 80 ? "bg-muted-foreground" : pct >= 50 ? "bg-yellow-500" : "bg-red-500";
               return (
                 <Card key={dept} className="bg-zinc-900/60 border-white/10 p-3 flex-1 min-w-[120px]">
                   <div className="text-xs text-muted-foreground mb-1">{dept} — Present</div>
-                  <div className={`text-2xl font-bold tabular-nums ${pct >= 80 ? "text-emerald-400" : pct >= 50 ? "text-yellow-400" : "text-red-400"}`}>
+                  <div className={`text-2xl font-bold tabular-nums ${pct >= 80 ? "metric-good" : pct >= 50 ? "text-yellow-400" : "text-red-400"}`}>
                     {present}<span className="text-sm font-normal text-muted-foreground">/{total}</span>
                   </div>
                 </Card>
@@ -10487,14 +10487,14 @@ function AttendancePanel() {
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex gap-1.5 flex-wrap items-center">
           {lockedDept ? (
-            <div className="px-3 py-1 rounded-md text-sm font-medium bg-blue-600/30 text-blue-200 border border-blue-700/40">
+            <div className="px-3 py-1 rounded-md text-sm font-medium bg-muted metric-info border border-border">
               {lockedDept} team
             </div>
           ) : departments.map((d) => (
             <button
               key={d}
               onClick={() => setDeptFilter(d)}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${deptFilter === d ? "bg-blue-600 text-white" : "text-muted-foreground hover:text-white hover:bg-white/5"}`}
+              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${deptFilter === d ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-white hover:bg-white/5"}`}
             >
               {d}
             </button>
@@ -10502,7 +10502,7 @@ function AttendancePanel() {
           {canManage && (
             <button
               onClick={() => setShowInactive((v) => !v)}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors border ${showInactive ? "border-amber-500/50 bg-amber-500/10 text-amber-300" : "border-white/10 text-zinc-500 hover:text-zinc-300 hover:bg-white/5"}`}
+              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors border ${showInactive ? "border-border bg-muted/50 metric-warn" : "border-white/10 text-zinc-500 hover:text-zinc-300 hover:bg-white/5"}`}
             >
               {showInactive ? "Hide inactive" : "Show inactive"}
             </button>
@@ -10537,17 +10537,17 @@ function AttendancePanel() {
                       className={`text-center px-0 py-1 border-b border-white/10 w-12 ${isToday ? "bg-blue-900/40" : isTomorrow ? "bg-teal-900/30" : ""}`}
                       style={isWknd && !isToday && !isTomorrow ? { background: "repeating-linear-gradient(135deg, #0f0f12 0px, #0f0f12 4px, #16141a 4px, #16141a 8px)" } : undefined}
                     >
-                      <div className={`text-[11px] font-semibold ${isToday ? "text-blue-300" : isTomorrow ? "text-teal-300" : isWknd ? "text-amber-700/80" : "text-muted-foreground"}`}>{dt.getDate()}</div>
-                      <div className={`text-[9px] ${isToday ? "text-blue-400" : isTomorrow ? "text-teal-500" : isWknd ? "text-amber-800/70" : "text-zinc-600"}`}>{WDAYS[dt.getDay()]}</div>
+                      <div className={`text-[11px] font-semibold ${isToday ? "metric-info" : isTomorrow ? "text-teal-300" : isWknd ? "text-amber-700/80" : "text-muted-foreground"}`}>{dt.getDate()}</div>
+                      <div className={`text-[9px] ${isToday ? "metric-info" : isTomorrow ? "text-teal-500" : isWknd ? "text-amber-800/70" : "text-zinc-600"}`}>{WDAYS[dt.getDay()]}</div>
                     </th>
                   );
                 })}
                 <th className="text-center text-xs text-emerald-500/70 font-medium px-2 py-2 border-b border-white/10 border-l border-white/10 w-8">In</th>
                 <th className="text-center text-xs text-amber-500/70 font-medium px-2 py-2 border-b border-white/10 w-8">Off</th>
                 <th className="text-center text-xs text-yellow-400/70 font-medium px-2 py-2 border-b border-white/10 w-8">Late</th>
-                <th className="text-center text-xs text-blue-400/70 font-medium px-2 py-2 border-b border-white/10 w-8">PTO</th>
+                <th className="text-center text-xs metric-info/70 font-medium px-2 py-2 border-b border-white/10 w-8">PTO</th>
                 <th className="text-center text-xs text-red-400/70 font-medium px-2 py-2 border-b border-white/10 w-10">NSNC</th>
-                <th className="text-center text-xs text-amber-300/70 font-medium px-2 py-2 border-b border-white/10 w-8" title="Saturdays present this month">Sat</th>
+                <th className="text-center text-xs metric-warn/70 font-medium px-2 py-2 border-b border-white/10 w-8" title="Saturdays present this month">Sat</th>
                 {canManage && <th className="text-center text-xs text-muted-foreground/50 font-medium px-1 py-2 border-b border-white/10 w-6" title="Edit member">⋯</th>}
               </tr>
             </thead>
@@ -10566,17 +10566,17 @@ function AttendancePanel() {
                   <tr key={member.id} className={`${rowBg} hover:bg-white/[0.03] transition-colors ${!member.active ? "opacity-40" : ""}`}>
                     <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-3 py-1.5 text-sm font-medium border-b border-white/5 whitespace-nowrap ${member.active ? "text-white" : "text-zinc-400 line-through"}`}>
                       {member.name}
-                      {!member.active && <span className="ml-1.5 no-underline text-[10px] font-normal text-amber-500/70 bg-amber-500/10 px-1 rounded" style={{textDecoration:"none"}}>inactive</span>}
+                      {!member.active && <span className="ml-1.5 no-underline text-[10px] font-normal text-amber-500/70 bg-muted/50 px-1 rounded" style={{textDecoration:"none"}}>inactive</span>}
                     </td>
                     <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`} title={`Shift ${member.shift} (LA time) · ${member.shiftHours || "8"}h shift`}>
                       <div>{shiftLabel(member.shift)}</div>
                       {member.shiftHours && member.shiftHours !== "8" && (
-                        <span className="text-[9px] font-semibold text-amber-400 bg-amber-400/10 rounded px-1">{member.shiftHours}h</span>
+                        <span className="text-[9px] font-semibold metric-warn bg-muted/60 rounded px-1">{member.shiftHours}h</span>
                       )}
                     </td>
                     <td className={`sticky left-[250px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-2 border-b border-white/5`}>
                       {member.department && (
-                        <Badge className="text-[10px] px-1.5 py-0 bg-blue-500/20 text-blue-300 border-blue-500/30">{member.department}</Badge>
+                        <Badge className="text-[10px] px-1.5 py-0 bg-muted-foreground/20 metric-info border-border">{member.department}</Badge>
                       )}
                     </td>
                     {dateCols.map((d) => {
@@ -10600,12 +10600,12 @@ function AttendancePanel() {
                         </td>
                       );
                     })}
-                    <td className="text-center text-xs font-mono border-b border-white/5 border-l border-white/10 tabular-nums text-emerald-400">{cIn || "—"}</td>
-                    <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-amber-400">{cOff || "—"}</td>
+                    <td className="text-center text-xs font-mono border-b border-white/5 border-l border-white/10 tabular-nums metric-good">{cIn || "—"}</td>
+                    <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums metric-warn">{cOff || "—"}</td>
                     <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-yellow-400">{cLate || "—"}</td>
-                    <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-blue-400">{cPto || "—"}</td>
+                    <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums metric-info">{cPto || "—"}</td>
                     <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-red-400">{cNsnc || "—"}</td>
-                    <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-amber-300" title="Saturdays present (In or Late) this month">{cSat || "—"}</td>
+                    <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums metric-warn" title="Saturdays present (In or Late) this month">{cSat || "—"}</td>
                     <td className="text-center border-b border-white/5">
                       {canManage && <button onClick={() => setEditingMember(member)} className="text-zinc-600 hover:text-zinc-300 transition-colors px-1 text-base leading-none">⋯</button>}
                     </td>
@@ -10616,7 +10616,7 @@ function AttendancePanel() {
                 <tr>
                   <td colSpan={dateCols.length + 9} className="text-center py-16 text-muted-foreground text-sm">
                     {(data?.members.length ?? 0) === 0 ? (
-                      <>No members yet — <button onClick={doImport} disabled={importing} className="text-blue-400 hover:text-blue-300 underline">{importing ? "Importing…" : "import from Google Sheets"}</button> or add one above.</>
+                      <>No members yet — <button onClick={doImport} disabled={importing} className="metric-info hover:metric-info underline">{importing ? "Importing…" : "import from Google Sheets"}</button> or add one above.</>
                     ) : (
                       <>No members in this department.</>
                     )}
@@ -10644,7 +10644,7 @@ function AttendancePanel() {
       {/* Cell editor overlay */}
       {editCell && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={(e) => { if (e.target === e.currentTarget) setEditCell(null); }}>
-          <Card className="w-80 bg-zinc-900 border-blue-500/40 p-5 space-y-4 shadow-2xl">
+          <Card className="w-80 bg-zinc-900 border-border p-5 space-y-4 shadow-2xl">
             <div>
               <div className="font-semibold text-white">{editCell.name}</div>
               <div className="text-xs text-muted-foreground mt-0.5">
@@ -10689,7 +10689,7 @@ function AttendancePanel() {
             </div>
             <div className="flex gap-2 justify-end pt-1">
               <Button size="sm" variant="ghost" onClick={() => setEditCell(null)}>Cancel</Button>
-              <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" onClick={saveCell}>Save</Button>
+              <Button size="sm" className="bg-primary hover:bg-primary/90 text-primary-foreground" onClick={saveCell}>Save</Button>
             </div>
           </Card>
         </div>
@@ -10726,13 +10726,13 @@ function AttendancePanel() {
                   Set inactive
                 </Button>
               ) : (
-                <Button size="sm" className="bg-emerald-700 hover:bg-emerald-600 text-white" onClick={() => { setMemberActive(editingMember.id, true); setEditingMember(null); }}>
+                <Button size="sm" className="bg-emerald-700 hover:bg-primary text-primary-foreground" onClick={() => { setMemberActive(editingMember.id, true); setEditingMember(null); }}>
                   Reactivate
                 </Button>
               )}
               <div className="flex gap-2">
                 <Button size="sm" variant="ghost" onClick={() => setEditingMember(null)}>Cancel</Button>
-                <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" onClick={saveMember}>Save</Button>
+                <Button size="sm" className="bg-primary hover:bg-primary/90 text-primary-foreground" onClick={saveMember}>Save</Button>
               </div>
             </div>
           </Card>
@@ -10760,3 +10760,6 @@ function App() {
 }
 
 export default App;
+
+
+

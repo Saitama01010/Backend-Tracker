@@ -119,11 +119,11 @@ function buildInboundRows(
 
 function StatPill({ label, value, icon: Icon, tone }: { label: string; value: string | number; icon?: React.ElementType; tone: string }) {
   const tones: Record<string, string> = {
-    blue: "from-blue-950/60 to-blue-900/40 border-blue-700/40 text-blue-300",
-    sky: "from-sky-950/60 to-sky-900/40 border-sky-700/40 text-sky-300",
-    emerald: "from-emerald-950/60 to-emerald-900/40 border-emerald-700/40 text-emerald-300",
-    rose: "from-rose-950/60 to-rose-900/40 border-rose-700/40 text-rose-300",
-    amber: "from-amber-950/60 to-amber-900/40 border-amber-700/40 text-amber-300",
+    blue: "from-card to-muted/50 border-border metric-info",
+    sky: "from-card to-muted/50 border-border metric-info",
+    emerald: "from-card to-muted/50 border-border metric-good",
+    rose: "from-card to-muted/50 border-border metric-bad",
+    amber: "from-card to-muted/50 border-border metric-warn",
   };
   return (
     <div className={`rounded-xl border bg-gradient-to-br px-4 py-3 flex flex-col gap-1 ${tones[tone] ?? tones.blue}`}>
@@ -204,16 +204,16 @@ function OnboardingReportCard() {
       : 0;
 
   return (
-    <div className="rounded-xl border border-blue-700/30 bg-gradient-to-br from-blue-950/40 to-cyan-950/20 backdrop-blur p-5 space-y-4">
+    <div className="rounded-xl border border-border bg-card backdrop-blur p-5 space-y-4">
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
-            <FileSpreadsheet className="h-5 w-5 text-blue-300" />
+            <FileSpreadsheet className="h-5 w-5 metric-info" />
             Onboarding Line Report
           </h2>
           <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
             <span>(949) 315-7441 · Connection vs Onboarded + tax mentions</span>
-            <span className="flex items-center gap-1 text-blue-300/80">
+            <span className="flex items-center gap-1 metric-info/80">
               <Sparkles className="h-3 w-3" />
               AI-classified from call transcripts
             </span>
@@ -258,7 +258,7 @@ function OnboardingReportCard() {
             <span className="tabular-nums">{status.progressDone}/{status.progressTotal} ({progressPct}%)</span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-            <div className="h-full bg-blue-500 transition-all" style={{ width: `${progressPct}%` }} />
+            <div className="h-full bg-primary transition-all" style={{ width: `${progressPct}%` }} />
           </div>
         </div>
       )}
@@ -271,7 +271,7 @@ function OnboardingReportCard() {
 
       <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
         {lastRun && !running && (
-          <span className="flex items-center gap-1 text-emerald-400">
+          <span className="flex items-center gap-1 metric-good">
             <CheckCircle className="h-3 w-3" />
             Last refreshed {lastRun}
           </span>
@@ -280,7 +280,7 @@ function OnboardingReportCard() {
           <span>{status.classified.toLocaleString()} calls classified</span>
         )}
         {status?.lastError && (
-          <span className="text-rose-400">Last error: {status.lastError.slice(0, 120)}</span>
+          <span className="metric-bad">Last error: {status.lastError.slice(0, 120)}</span>
         )}
       </div>
     </div>
@@ -300,9 +300,9 @@ function AgentTable({ rows }: { rows: AgentRow[] }) {
             <TableHead className="text-right">Total</TableHead>
             <TableHead className="text-right">Outbound</TableHead>
             <TableHead className="text-right">Inbound</TableHead>
-            <TableHead className="text-right text-emerald-400">Answered</TableHead>
-            <TableHead className="text-right text-rose-400">Missed</TableHead>
-            <TableHead className="text-right text-amber-400">Voicemail</TableHead>
+            <TableHead className="text-right metric-good">Answered</TableHead>
+            <TableHead className="text-right metric-bad">Missed</TableHead>
+            <TableHead className="text-right metric-warn">Voicemail</TableHead>
             <TableHead className="text-right">CX Reached</TableHead>
             <TableHead className="text-right">Talk Time</TableHead>
             <TableHead className="text-right">Answer Rate</TableHead>
@@ -312,15 +312,15 @@ function AgentTable({ rows }: { rows: AgentRow[] }) {
           {rows.map((r) => (
             <TableRow key={r.name} className="hover:bg-muted/30">
               <TableCell className="font-medium">{r.name}</TableCell>
-              <TableCell className="text-right tabular-nums font-mono text-blue-300">{r.totalCalls}</TableCell>
-              <TableCell className="text-right tabular-nums font-mono text-sky-300">{r.outbound}</TableCell>
+              <TableCell className="text-right tabular-nums font-mono metric-info">{r.totalCalls}</TableCell>
+              <TableCell className="text-right tabular-nums font-mono metric-info">{r.outbound}</TableCell>
               <TableCell className="text-right tabular-nums font-mono">{r.inbound}</TableCell>
-              <TableCell className="text-right tabular-nums font-mono text-emerald-300">{r.answered}</TableCell>
-              <TableCell className="text-right tabular-nums font-mono text-rose-400">{r.missed}</TableCell>
-              <TableCell className="text-right tabular-nums font-mono text-amber-300">{r.voicemail}</TableCell>
+              <TableCell className="text-right tabular-nums font-mono metric-good">{r.answered}</TableCell>
+              <TableCell className="text-right tabular-nums font-mono metric-bad">{r.missed}</TableCell>
+              <TableCell className="text-right tabular-nums font-mono metric-warn">{r.voicemail}</TableCell>
               <TableCell className="text-right tabular-nums font-mono">{r.uniqueContacts}</TableCell>
               <TableCell className="text-right tabular-nums font-mono">{formatDur(r.talkSeconds)}</TableCell>
-              <TableCell className="text-right tabular-nums font-mono text-emerald-300">{pct(r.answered, r.totalCalls)}</TableCell>
+              <TableCell className="text-right tabular-nums font-mono metric-good">{pct(r.answered, r.totalCalls)}</TableCell>
             </TableRow>
           ))}
         </TableBody>
@@ -349,9 +349,9 @@ function InboundTable({ rows }: { rows: InboundRow[] }) {
             <TableHead>Line</TableHead>
             <TableHead>Date</TableHead>
             <TableHead className="text-right">Received</TableHead>
-            <TableHead className="text-right text-emerald-400">Answered</TableHead>
-            <TableHead className="text-right text-rose-400">Missed</TableHead>
-            <TableHead className="text-right text-amber-400">Voicemail</TableHead>
+            <TableHead className="text-right metric-good">Answered</TableHead>
+            <TableHead className="text-right metric-bad">Missed</TableHead>
+            <TableHead className="text-right metric-warn">Voicemail</TableHead>
             <TableHead className="text-right">Answer Rate</TableHead>
           </TableRow>
         </TableHeader>
@@ -360,20 +360,20 @@ function InboundTable({ rows }: { rows: InboundRow[] }) {
             <TableRow key={i} className="hover:bg-muted/30">
               <TableCell className="font-medium">{r.lineName}</TableCell>
               <TableCell className="text-muted-foreground">{r.date}</TableCell>
-              <TableCell className="text-right tabular-nums font-mono text-blue-300">{r.received}</TableCell>
-              <TableCell className="text-right tabular-nums font-mono text-emerald-300">{r.answered}</TableCell>
-              <TableCell className="text-right tabular-nums font-mono text-rose-400">{r.missed}</TableCell>
-              <TableCell className="text-right tabular-nums font-mono text-amber-300">{r.voicemail}</TableCell>
-              <TableCell className="text-right tabular-nums font-mono text-emerald-300">{pct(r.answered, r.received)}</TableCell>
+              <TableCell className="text-right tabular-nums font-mono metric-info">{r.received}</TableCell>
+              <TableCell className="text-right tabular-nums font-mono metric-good">{r.answered}</TableCell>
+              <TableCell className="text-right tabular-nums font-mono metric-bad">{r.missed}</TableCell>
+              <TableCell className="text-right tabular-nums font-mono metric-warn">{r.voicemail}</TableCell>
+              <TableCell className="text-right tabular-nums font-mono metric-good">{pct(r.answered, r.received)}</TableCell>
             </TableRow>
           ))}
           <TableRow className="bg-primary/5 font-semibold">
             <TableCell colSpan={2}>Total</TableCell>
-            <TableCell className="text-right tabular-nums font-mono text-blue-300">{totals.received}</TableCell>
-            <TableCell className="text-right tabular-nums font-mono text-emerald-300">{totals.answered}</TableCell>
-            <TableCell className="text-right tabular-nums font-mono text-rose-400">{totals.missed}</TableCell>
-            <TableCell className="text-right tabular-nums font-mono text-amber-300">{totals.voicemail}</TableCell>
-            <TableCell className="text-right tabular-nums font-mono text-emerald-300">{pct(totals.answered, totals.received)}</TableCell>
+            <TableCell className="text-right tabular-nums font-mono metric-info">{totals.received}</TableCell>
+            <TableCell className="text-right tabular-nums font-mono metric-good">{totals.answered}</TableCell>
+            <TableCell className="text-right tabular-nums font-mono metric-bad">{totals.missed}</TableCell>
+            <TableCell className="text-right tabular-nums font-mono metric-warn">{totals.voicemail}</TableCell>
+            <TableCell className="text-right tabular-nums font-mono metric-good">{pct(totals.answered, totals.received)}</TableCell>
           </TableRow>
         </TableBody>
       </Table>
@@ -482,7 +482,7 @@ export function PhoneTab() {
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <span>Quo phone system · synced from OpenPhone</span>
               {lastSync && (
-                <span className="flex items-center gap-1 text-emerald-400">
+                <span className="flex items-center gap-1 metric-good">
                   <CheckCircle className="h-3 w-3" />
                   Last sync: {lastSync}
                 </span>
@@ -542,12 +542,12 @@ export function PhoneTab() {
           </div>
         )}
         {error && (
-          <div className="text-center py-8 text-rose-400 text-sm">
+          <div className="text-center py-8 metric-bad text-sm">
             Error loading data: {String(error)}
           </div>
         )}
         {!isLoading && data && data.totalRows === 0 && (
-          <div className="text-center py-6 text-amber-400/80 text-sm">
+          <div className="text-center py-6 metric-warn/80 text-sm">
             No call data yet for this date range. The background sync is populating data from Quo — click Sync to fetch this period now.
           </div>
         )}
@@ -574,3 +574,6 @@ export function PhoneTab() {
     </div>
   );
 }
+
+
+
