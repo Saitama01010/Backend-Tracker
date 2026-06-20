@@ -47,3 +47,12 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+.config/
+.agents/
+.canvas/
+attached_assets/
+.env
+.env.*
+!.env.example
+.replit
+PRIVATE_KEYS_BACKUP_DO_NOT_UPLOAD.txt

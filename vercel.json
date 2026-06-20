@@ -1,0 +1,15 @@
+{
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm --filter @workspace/agent-dashboard run build",
+  "outputDirectory": "artifacts/agent-dashboard/dist/public",
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/[...path]"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

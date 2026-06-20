@@ -1,25 +1,28 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
-const rawPort = process.env.PORT;
+const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+const rootEnv = loadEnv(process.env.NODE_ENV ?? "development", repoRoot, "");
 const isBuild = process.argv.includes("build");
 
-if (!rawPort && !isBuild) {
-  throw new Error(
-    "PORT environment variable is required but was not provided.",
-  );
+function envValue(name: string): string | undefined {
+  const value = process.env[name] ?? rootEnv[name];
+  return value && value.trim() ? value : undefined;
 }
 
+const rawPort = envValue("DASHBOARD_PORT");
 const port = rawPort ? Number(rawPort) : 3000;
 
 if (!isBuild && (Number.isNaN(port) || port <= 0)) {
-  throw new Error(`Invalid PORT value: "${rawPort}"`);
+  throw new Error(`Invalid DASHBOARD_PORT value: "${rawPort}"`);
 }
 
-const basePath = process.env.BASE_PATH ?? "/";
+const basePath = envValue("BASE_PATH") ?? "/";
+const apiPort = envValue("API_PORT") ?? envValue("PORT") ?? "8080";
+const apiProxyTarget = envValue("API_PROXY_TARGET") ?? `http://localhost:${apiPort}`;
 
 export default defineConfig({
   base: basePath,
@@ -58,6 +61,12 @@ export default defineConfig({
     strictPort: true,
     host: "0.0.0.0",
     allowedHosts: true,
+    proxy: {
+      "/api": {
+        target: apiProxyTarget,
+        changeOrigin: true,
+      },
+    },
     fs: {
       strict: true,
     },
