@@ -4,8 +4,8 @@
   "outputDirectory": "artifacts/agent-dashboard/dist/public",
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/[...path]"
+      "source": "/api/:path*",
+      "destination": "https://backend-tracker.fly.dev/api/:path*"
     },
     {
       "source": "/(.*)",
