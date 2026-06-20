@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db, phoneCallsTable } from "@workspace/db";
 import { and, eq, gte, lte, desc, ne } from "drizzle-orm";
-import { runSync, startBackgroundSync, getSyncState, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES, canonicalAgentName } from "./quoSync.js";
+import { runSync, getSyncState, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES, canonicalAgentName } from "./quoSync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { logger } from "../lib/logger.js";
 import { liveWebhookCalls } from "./quoWebhook.js";
@@ -641,13 +641,25 @@ async function runLivePoll(): Promise<void> {
   }
 }
 
-// Start the 60-second live poller immediately on module load
-runLivePoll().catch(() => {});
-setInterval(() => { runLivePoll().catch(() => {}); }, 60_000);
+const isVercel = process.env["VERCEL"] === "1";
+const backgroundJobsEnabled =
+  process.env["ENABLE_BACKGROUND_JOBS"] === "true" ||
+  (process.env["ENABLE_BACKGROUND_JOBS"] !== "false" && !isVercel);
+
+if (backgroundJobsEnabled) {
+  runLivePoll().catch(() => {});
+  setInterval(() => { runLivePoll().catch(() => {}); }, 60_000);
+}
 
 
 router.get("/quo/live", async (req, res) => {
   try {
+    // Vercel serverless functions do not keep background timers alive, so make
+    // the live endpoint refresh itself before returning the merged live state.
+    if (!backgroundJobsEnabled) {
+      await runLivePoll();
+    }
+
     const active = new Set<string>();
 
     // Source 1: webhook in-memory state — instant, set by quoWebhook.ts on call.ringing/answered.
@@ -738,8 +750,6 @@ router.get("/quo/calls", async (req, res) => {
     res.status(500).json({ error: String(err) });
   }
 });
-
-startBackgroundSync();
 
 export { router as quoRouter };
 export default router;

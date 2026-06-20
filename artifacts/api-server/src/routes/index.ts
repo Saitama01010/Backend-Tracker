@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import healthRouter from "./health";
 import quoRouter from "./quo";
+import { startBackgroundSync } from "./quoSync.js";
 import quoWebhookRouter from "./quoWebhook";
 import attendanceRouter from "./attendance";
 import authRouter from "./auth";
@@ -49,6 +50,8 @@ router.use(liveTransfersRouter);
 if (backgroundJobsEnabled) {
   // Kick off background QA processor (evaluates new retention calls every 5 min).
   startQaBackgroundProcessor();
+  // Kick off background OpenPhone sync for always-on hosts.
+  startBackgroundSync();
   // Kick off background live-transfer classifier (Aspire/Resync inbound transfers).
   startLiveTransfersBackground();
 }
