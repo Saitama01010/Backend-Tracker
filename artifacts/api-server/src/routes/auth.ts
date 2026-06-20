@@ -8,6 +8,23 @@ import { signToken, requireAuth } from "../middleware/auth.js";
 
 const router = Router();
 
+async function seedAdminUser() {
+  const defaultPass = process.env["DASHBOARD_PASSWORD"] ?? "tracker2026";
+  const hash = await bcrypt.hash(defaultPass, 10);
+  const [user] = await db
+    .insert(portalUsersTable)
+    .values({
+      username: "admin",
+      passwordHash: hash,
+      role: "admin",
+      permissions: JSON.stringify([...ALL_PERMISSIONS]),
+      active: true,
+    })
+    .onConflictDoNothing()
+    .returning();
+  return user;
+}
+
 function parsePermissions(raw: string | null | undefined, role: string): Permission[] {
   if (role === "admin") return [...ALL_PERMISSIONS];
   if (!raw) return [];
@@ -31,11 +48,16 @@ router.post("/auth/login", async (req, res) => {
     res.status(400).json({ error: "username and password required" });
     return;
   }
-  const [user] = await db
+  const normalizedUsername = username.trim().toLowerCase();
+  let [user] = await db
     .select()
     .from(portalUsersTable)
-    .where(eq(portalUsersTable.username, username.trim().toLowerCase()))
+    .where(eq(portalUsersTable.username, normalizedUsername))
     .limit(1);
+
+  if (!user && normalizedUsername === "admin") {
+    user = await seedAdminUser();
+  }
 
   if (!user || !user.active) {
     res.status(401).json({ error: "Invalid credentials" });
