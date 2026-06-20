@@ -18,7 +18,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import Papa from "papaparse";
-import companyLogo from "@assets/WhatsApp_Image_2026-01-12_at_10.33.41_PM_1781812846940.jpeg";
+import companyLogo from "./assets/company-logo.jpeg";
 import { createContext, useContext, Fragment, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
   ArrowDown,
