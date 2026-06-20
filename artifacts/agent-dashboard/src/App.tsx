@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 import {
   Table,
   TableBody,
@@ -56,8 +57,10 @@ import {
   Trash2,
   PhoneOff,
   Filter,
+  Moon,
   MessageCircle,
   Send,
+  Sun,
   Sparkles,
   Paperclip,
   Minimize2,
@@ -92,6 +95,92 @@ import {
   Legend as RLegend,
 } from "recharts";
 import { OnboardingPanel } from "./OnboardingPanel";
+
+type ThemeMode = "light" | "dark";
+
+const ThemeContext = createContext<{
+  theme: ThemeMode;
+  toggleTheme: () => void;
+} | null>(null);
+
+function getInitialTheme(): ThemeMode {
+  if (typeof window === "undefined") return "dark";
+  const saved = window.localStorage.getItem("backend-tracker-theme");
+  if (saved === "light" || saved === "dark") return saved;
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
+function applyTheme(theme: ThemeMode) {
+  const root = document.documentElement;
+  root.dataset.theme = theme;
+  root.classList.toggle("dark", theme === "dark");
+}
+
+function ThemeProvider({ children }: { children: React.ReactNode }) {
+  const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
+  const [hasSavedPreference, setHasSavedPreference] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const saved = window.localStorage.getItem("backend-tracker-theme");
+    return saved === "light" || saved === "dark";
+  });
+
+  useEffect(() => {
+    applyTheme(theme);
+    if (hasSavedPreference) {
+      window.localStorage.setItem("backend-tracker-theme", theme);
+    }
+  }, [hasSavedPreference, theme]);
+
+  useEffect(() => {
+    if (hasSavedPreference) return;
+    const media = window.matchMedia("(prefers-color-scheme: light)");
+    const handleChange = (event: MediaQueryListEvent) => {
+      setTheme(event.matches ? "light" : "dark");
+    };
+    media.addEventListener("change", handleChange);
+    return () => media.removeEventListener("change", handleChange);
+  }, [hasSavedPreference]);
+
+  const toggleTheme = useCallback(() => {
+    setHasSavedPreference(true);
+    setTheme((current) => (current === "dark" ? "light" : "dark"));
+  }, []);
+
+  return (
+    <ThemeContext.Provider value={{ theme, toggleTheme }}>
+      {children}
+    </ThemeContext.Provider>
+  );
+}
+
+function useThemeMode() {
+  const context = useContext(ThemeContext);
+  if (!context) throw new Error("useThemeMode must be used within ThemeProvider");
+  return context;
+}
+
+function ThemeToggle({ className }: { className?: string }) {
+  const { theme, toggleTheme } = useThemeMode();
+  const isDark = theme === "dark";
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={toggleTheme}
+          aria-label={`Switch to ${isDark ? "light" : "dark"} mode`}
+          className={cn(
+            "inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-secondary text-secondary-foreground shadow-xs",
+            className,
+          )}
+        >
+          {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{isDark ? "Light mode" : "Dark mode"}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -4353,17 +4442,20 @@ function LoginGate({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-background flex items-center justify-center relative overflow-hidden">
       <div className="pointer-events-none absolute inset-0">
-        <div className="absolute -top-32 -left-32 h-[500px] w-[500px] rounded-full bg-blue-600/20 blur-[120px]" />
-        <div className="absolute bottom-0 right-0 h-[400px] w-[400px] rounded-full bg-cyan-500/15 blur-[120px]" />
+        <div className="theme-ambient theme-ambient-primary absolute -top-32 -left-32 h-[500px] w-[500px]" />
+        <div className="theme-ambient theme-ambient-secondary absolute bottom-0 right-0 h-[400px] w-[400px]" />
       </div>
       <div className="relative w-full max-w-sm mx-4">
         <div className="rounded-2xl border border-white/10 bg-card/80 backdrop-blur-xl p-8 space-y-6 shadow-2xl">
+          <div className="flex justify-end">
+            <ThemeToggle />
+          </div>
           <div className="flex flex-col items-center gap-3">
             <div className="h-12 w-12 rounded-xl overflow-hidden ring-1 ring-white/10 shadow-[0_0_24px_-6px_rgba(59,130,246,0.6)]">
               <img src={companyLogo} alt="Company logo" className="h-full w-full object-cover" />
             </div>
             <div className="text-center">
-              <h1 className="text-xl font-bold bg-gradient-to-r from-blue-300 via-cyan-300 to-sky-300 bg-clip-text text-transparent">
+              <h1 className="text-xl font-bold text-foreground">
                 Backend Tracker
               </h1>
               <p className="text-sm text-muted-foreground mt-1">Sign in to continue</p>
@@ -4393,7 +4485,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
               />
             </div>
             {error && <p className="text-sm text-rose-400 text-center">{error}</p>}
-            <Button type="submit" className="w-full bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white" disabled={loading || !username || !password}>
+            <Button type="submit" className="w-full" disabled={loading || !username || !password}>
               {loading ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Sign in"}
             </Button>
           </form>
@@ -9408,9 +9500,9 @@ function Dashboard() {
       {showAgents && <AgentRosterPanel onClose={() => setShowAgents(false)} />}
 
       <div className="pointer-events-none absolute inset-0 -z-0">
-        <div className="absolute -top-32 -left-32 h-[500px] w-[500px] rounded-full bg-blue-600/20 blur-[120px]" />
-        <div className="absolute top-20 right-0 h-[400px] w-[400px] rounded-full bg-sky-500/15 blur-[120px]" />
-        <div className="absolute bottom-0 left-1/3 h-[400px] w-[400px] rounded-full bg-cyan-500/10 blur-[120px]" />
+        <div className="theme-ambient theme-ambient-primary absolute -top-32 -left-32 h-[500px] w-[500px]" />
+        <div className="theme-ambient theme-ambient-secondary absolute top-20 right-0 h-[400px] w-[400px]" />
+        <div className="theme-ambient theme-ambient-muted absolute bottom-0 left-1/3 h-[400px] w-[400px]" />
       </div>
 
       <header className="relative border-b border-white/5 bg-card/60 backdrop-blur-xl">
@@ -9419,7 +9511,7 @@ function Dashboard() {
             <img src={companyLogo} alt="Company logo" className="h-full w-full object-cover" />
           </div>
           <div className="flex-1 min-w-0">
-            <h1 className="text-base sm:text-xl font-bold tracking-tight bg-gradient-to-r from-blue-300 via-cyan-300 to-sky-300 bg-clip-text text-transparent truncate">
+            <h1 className="text-base sm:text-xl font-bold tracking-tight text-foreground truncate">
               Backend Tracker
             </h1>
             <p className="text-xs text-muted-foreground hidden sm:block">Retention, NSF &amp; CS team metrics at a glance</p>
@@ -9431,7 +9523,7 @@ function Dashboard() {
               <select
                 value={view}
                 onChange={(e) => setView(e.target.value as DashView)}
-                className="appearance-none pl-4 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                className="appearance-none pl-4 pr-9 py-2 rounded-lg bg-secondary border border-border text-sm font-medium text-secondary-foreground cursor-pointer hover:bg-accent transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50"
               >
                 {canSeeTab("backend-stats") && <option value="backend-stats">📊 Backend Statistics</option>}
                 {can("view_metrics") && <option value="metrics">📈 Metrics</option>}
@@ -9444,8 +9536,9 @@ function Dashboard() {
 
           {/* User info */}
           <div className="flex items-center gap-2 pl-2 border-l border-white/10">
+            <ThemeToggle />
             <div className="text-right hidden sm:block">
-              <p className="text-xs font-medium text-white leading-tight">{user.username}</p>
+              <p className="text-xs font-medium text-foreground leading-tight">{user.username}</p>
               <Badge className={`text-[10px] px-1.5 py-0 flex items-center gap-1 border w-fit ml-auto mt-0.5 ${roleBadgeCls}`}>
                 <RoleIcon className="h-2.5 w-2.5" />{user.role}
               </Badge>
@@ -9532,7 +9625,7 @@ function Dashboard() {
                     key={t.value}
                     value={t.value}
                     data-testid={`tab-${t.value}`}
-                    className="group gap-2 whitespace-nowrap rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm font-medium text-zinc-400 backdrop-blur transition-all hover:border-white/20 hover:bg-white/[0.07] hover:text-zinc-100 data-[state=active]:border-transparent data-[state=active]:bg-gradient-to-r data-[state=active]:from-blue-500 data-[state=active]:to-cyan-500 data-[state=active]:text-white data-[state=active]:shadow-[0_0_22px_-4px_rgba(37,99,235,0.75)]"
+                    className="group gap-2 whitespace-nowrap rounded-full border border-border bg-card/70 px-4 py-2 text-sm font-medium text-muted-foreground backdrop-blur transition-all hover:border-border hover:bg-accent hover:text-accent-foreground data-[state=active]:border-primary-border data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md"
                   >
                     <Icon className="h-3.5 w-3.5 shrink-0" />
                     {t.label}
@@ -10652,14 +10745,16 @@ function AttendancePanel() {
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <LoginGate>
-          <RosterProvider>
-            <Dashboard />
-          </RosterProvider>
-        </LoginGate>
-        <Toaster />
-      </TooltipProvider>
+      <ThemeProvider>
+        <TooltipProvider>
+          <LoginGate>
+            <RosterProvider>
+              <Dashboard />
+            </RosterProvider>
+          </LoginGate>
+          <Toaster />
+        </TooltipProvider>
+      </ThemeProvider>
     </QueryClientProvider>
   );
 }
