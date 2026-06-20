@@ -106,6 +106,21 @@ PORT=8080
 
 Add the optional integration variables from `.env.example` only when the matching feature needs them.
 
+For private Google Sheet submissions, add one of these setups in Vercel:
+
+```env
+GOOGLE_SERVICE_ACCOUNT_JSON=<the full service account JSON as one secret value>
+```
+
+Or split the same key into:
+
+```env
+GOOGLE_SERVICE_ACCOUNT_EMAIL=<service account client_email>
+GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY=<service account private_key>
+```
+
+Then share every source Google Sheet with the service account email as a viewer. Google Form submissions will appear on the dashboard after the form writes a row to one of those shared sheets.
+
 ## 8. Deploy
 
 Deploy from Vercel after the GitHub repo is connected.
