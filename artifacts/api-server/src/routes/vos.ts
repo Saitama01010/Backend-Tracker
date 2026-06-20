@@ -17,8 +17,8 @@ let cookieExpiry = 0;
 
 async function getSession(): Promise<string> {
   if (cachedCookie && Date.now() < cookieExpiry) return cachedCookie;
-  const email = process.env["VOSLOGIC_EMAIL"];
-  const password = process.env["VOSLOGIC_PASSWORD"];
+  const email = (process.env["VOSLOGIC_EMAIL"] ?? "").trim().replace(/^["']|["']$/g, "");
+  const password = (process.env["VOSLOGIC_PASSWORD"] ?? "").trim().replace(/^["']|["']$/g, "");
   if (!email || !password) throw new Error("VOSLOGIC_EMAIL / VOSLOGIC_PASSWORD not set");
   const res = await fetch(`${VOS_BASE}/api/auth/login`, {
     method: "POST",

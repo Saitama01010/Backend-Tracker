@@ -5,7 +5,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://backend-tracker.fly.dev/api/:path*"
+      "destination": "/api/[...path]"
     },
     {
       "source": "/(.*)",

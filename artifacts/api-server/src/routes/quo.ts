@@ -47,7 +47,11 @@ function parseDateRange(from: string, to: string): { fromDate: Date; toDate: Dat
 const QUO_BASE = "https://api.openphone.com/v1";
 
 function quoHeaders(): Record<string, string> {
-  const key = process.env["QUO_API_KEY"];
+  const key = (process.env["QUO_API_KEY"] ?? "")
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .replace(/^Bearer\s+/i, "")
+    .trim();
   if (!key) throw new Error("QUO_API_KEY not configured");
   return { Authorization: key, Accept: "application/json" };
 }
