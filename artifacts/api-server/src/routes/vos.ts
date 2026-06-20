@@ -851,8 +851,15 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
   }
 }
 
-void refreshCallHistory(rootLogger);
-setInterval(() => void refreshCallHistory(rootLogger), 2 * 60 * 1000);
+const isVercel = process.env["VERCEL"] === "1";
+const backgroundJobsEnabled =
+  process.env["ENABLE_BACKGROUND_JOBS"] === "true" ||
+  (process.env["ENABLE_BACKGROUND_JOBS"] !== "false" && !isVercel);
+
+if (backgroundJobsEnabled) {
+  void refreshCallHistory(rootLogger);
+  setInterval(() => void refreshCallHistory(rootLogger), 2 * 60 * 1000);
+}
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 

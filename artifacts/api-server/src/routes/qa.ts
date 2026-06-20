@@ -12,10 +12,19 @@ const router: IRouter = Router();
 // QA scoring runs through OpenRouter on DeepSeek (much cheaper than GPT-4.1).
 // Override with QA_MODEL if a different model is ever needed.
 const QA_MODEL = process.env["QA_MODEL"] ?? "deepseek/deepseek-chat";
-const openai = new OpenAI({
-  baseURL: process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"],
-  apiKey: process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"],
-});
+let openai: OpenAI | null = null;
+
+function getQaClient(): OpenAI {
+  const apiKey = process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"];
+  if (!apiKey) {
+    throw new Error("AI_INTEGRATIONS_OPENROUTER_API_KEY not set");
+  }
+  openai ??= new OpenAI({
+    baseURL: process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"],
+    apiKey,
+  });
+  return openai;
+}
 
 // ── Departments ─────────────────────────────────────────────────────────────
 export type Department = "Retention" | "CS" | "NSF";
@@ -197,7 +206,7 @@ async function evaluateCall(callId: string, opts?: { source?: string }): Promise
 
   const agentName = canonicalAgentName(call.agentName) ?? "Unknown";
 
-  const completion = await openai.chat.completions.create({
+  const completion = await getQaClient().chat.completions.create({
     model: QA_MODEL,
     response_format: { type: "json_object" },
     temperature: 0.2,

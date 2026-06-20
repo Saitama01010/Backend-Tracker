@@ -1,6 +1,6 @@
 {
   "installCommand": "pnpm install --frozen-lockfile",
-  "buildCommand": "pnpm --filter @workspace/agent-dashboard run build",
+  "buildCommand": "pnpm run vercel-build",
   "outputDirectory": "artifacts/agent-dashboard/dist/public",
   "rewrites": [
     {

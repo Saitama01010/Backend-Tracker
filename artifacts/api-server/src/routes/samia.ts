@@ -254,25 +254,37 @@ router.get("/samia/call-analysis", async (req, res) => {
   }
 });
 
-const openai = new OpenAI({
-  baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
-  apiKey: process.env["AI_INTEGRATIONS_OPENAI_API_KEY"],
-});
+let openai: OpenAI | null = null;
+let openrouter: OpenAI | null = null;
 
 // OpenRouter client — kept available for cheaper experiments (e.g. DeepSeek),
 // but Samia runs on the OpenAI client below by default. DeepSeek was unreliable
 // at tool-calling: in the full multi-tool context it fabricated call/transcript
 // data instead of actually invoking analyze_calls, which is dangerous for a
 // coaching tool. Override the model with SAMIA_MODEL if needed.
-const openrouter = new OpenAI({
-  baseURL: process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"],
-  apiKey: process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"],
-});
 const SAMIA_MODEL = process.env["SAMIA_MODEL"] ?? "gpt-4.1";
 // Client Samia talks to. Defaults to OpenAI (reliable tool-calling / grounding).
 // If SAMIA_MODEL is pointed at an OpenRouter model (e.g. "deepseek/..."), route
 // through the openrouter client instead.
-const samiaClient = SAMIA_MODEL.includes("/") ? openrouter : openai;
+function getSamiaClient(): OpenAI {
+  if (SAMIA_MODEL.includes("/")) {
+    const apiKey = process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"];
+    if (!apiKey) throw new Error("AI_INTEGRATIONS_OPENROUTER_API_KEY not set");
+    openrouter ??= new OpenAI({
+      baseURL: process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"],
+      apiKey,
+    });
+    return openrouter;
+  }
+
+  const apiKey = process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
+  if (!apiKey) throw new Error("AI_INTEGRATIONS_OPENAI_API_KEY not set");
+  openai ??= new OpenAI({
+    baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
+    apiKey,
+  });
+  return openai;
+}
 // 0.8 keeps personality while staying coherent and tool-reliable. Tunable via env.
 const SAMIA_TEMPERATURE = Number(process.env["SAMIA_TEMPERATURE"] ?? "0.8");
 
@@ -1153,7 +1165,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
     let attendanceMarked = false;
 
     for (let round = 0; round < 4; round++) {
-      const completion = await samiaClient.chat.completions.create({
+      const completion = await getSamiaClient().chat.completions.create({
         model: SAMIA_MODEL,
         messages: currentMessages,
         tools,

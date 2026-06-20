@@ -5,9 +5,9 @@
   "packageManager": "pnpm@10.23.0",
   "scripts": {
     "preinstall": "node ./scripts/preinstall.mjs",
-    "build": "pnpm --filter @workspace/agent-dashboard run build",
+    "build": "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/agent-dashboard run build",
     "build:full": "pnpm run typecheck && pnpm -r --if-present run build",
-    "vercel-build": "pnpm --filter @workspace/agent-dashboard run build",
+    "vercel-build": "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/agent-dashboard run build",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
   },
