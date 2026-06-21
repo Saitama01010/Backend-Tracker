@@ -248,7 +248,7 @@ type AnimatedSelectOption<T extends string> = {
   value: T;
   label: string;
   description?: string;
-  icon: LucideIcon;
+  icon?: LucideIcon;
   emoji?: string;
 };
 
@@ -338,7 +338,7 @@ function AnimatedDashboardSelect<T extends string>({
               </div>
               <div className="max-h-[320px] overflow-y-auto px-1">
                 {options.map((item, index) => {
-                  const Icon = item.icon;
+                  const Icon = item.icon ?? Layers;
                   const active = item.value === value;
                   return (
                     <motion.button
@@ -376,6 +376,126 @@ function AnimatedDashboardSelect<T extends string>({
                   );
                 })}
               </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </MotionConfig>
+  );
+}
+
+function AnimatedValueSelect<T extends string>({
+  value,
+  options,
+  onChange,
+  ariaLabel,
+  className,
+  triggerClassName,
+  menuClassName,
+  align = "left",
+  disabled = false,
+}: {
+  value: T;
+  options: AnimatedSelectOption<T>[];
+  onChange: (value: T) => void;
+  ariaLabel: string;
+  className?: string;
+  triggerClassName?: string;
+  menuClassName?: string;
+  align?: "left" | "right";
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const shouldReduceMotion = useReducedMotion();
+  const selected = options.find((item) => item.value === value) ?? options[0];
+
+  useEffect(() => {
+    if (!open) return;
+
+    function onPointerDown(event: PointerEvent) {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <MotionConfig transition={shouldReduceMotion ? { duration: 0 } : { type: "spring", stiffness: 340, damping: 28 }}>
+      <div ref={ref} className={cn("relative z-[70] inline-block", className)}>
+        <motion.button
+          type="button"
+          whileTap={shouldReduceMotion ? undefined : { scale: 0.97 }}
+          onClick={() => !disabled && setOpen((current) => !current)}
+          disabled={disabled}
+          className={cn(
+            "flex h-8 min-w-[120px] items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 text-left text-sm font-medium text-foreground shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+            disabled && "cursor-not-allowed opacity-50 hover:bg-card hover:text-foreground",
+            triggerClassName,
+          )}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-label={ariaLabel}
+        >
+          <span className="flex min-w-0 items-center gap-1.5">
+            {selected?.emoji && <span className="shrink-0 leading-none" aria-hidden="true">{selected.emoji}</span>}
+            <span className="truncate">{selected?.label}</span>
+          </span>
+          <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 transition-transform duration-200", open && "rotate-180")} />
+        </motion.button>
+
+        <AnimatePresence>
+          {open && (
+            <motion.div
+              initial={{ opacity: 0, y: -6, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -6, scale: 0.98 }}
+              transition={shouldReduceMotion ? { duration: 0 } : { duration: 0.17, ease: "easeOut" }}
+              className={cn(
+                "absolute top-full z-[140] mt-2 max-h-72 min-w-full overflow-y-auto rounded-xl border border-border bg-popover p-1 text-popover-foreground shadow-xl",
+                align === "right" ? "right-0" : "left-0",
+                menuClassName,
+              )}
+              role="listbox"
+            >
+              {options.map((item, index) => {
+                const active = item.value === value;
+                return (
+                  <motion.button
+                    key={item.value}
+                    type="button"
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 8 }}
+                    transition={shouldReduceMotion ? { duration: 0 } : { delay: index * 0.025, duration: 0.18 }}
+                    onClick={() => {
+                      onChange(item.value);
+                      setOpen(false);
+                    }}
+                    className={cn(
+                      "flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+                      active && "bg-accent text-accent-foreground",
+                    )}
+                    role="option"
+                    aria-selected={active}
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      {item.emoji && <span className="shrink-0 leading-none" aria-hidden="true">{item.emoji}</span>}
+                      <span className="truncate">{item.label}</span>
+                    </span>
+                    {active && <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-primary" />}
+                  </motion.button>
+                );
+              })}
             </motion.div>
           )}
         </AnimatePresence>
@@ -2407,19 +2527,18 @@ function ByDayView({ data }: { data: Aggregated }) {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-muted-foreground">Filter by agent:</span>
-        <select
+        <AnimatedValueSelect
           value={agentFilter}
-          onChange={(e) => setAgentFilter(e.target.value)}
-          className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-        >
-          <option value="">All agents</option>
-          {agentOptions.some((n) => isKillerAgentKey(normalizeAgent(n))) && (
-            <option value={KILLERS_FILTER}>⚔ Killers</option>
-          )}
-          {agentOptions.map((n) => (
-            <option key={n} value={n}>{n}</option>
-          ))}
-        </select>
+          onChange={setAgentFilter}
+          ariaLabel="Filter by agent"
+          triggerClassName="min-w-[180px]"
+          menuClassName="w-64"
+          options={[
+            { value: "", label: "All agents", emoji: "??" },
+            ...(agentOptions.some((n) => isKillerAgentKey(normalizeAgent(n))) ? [{ value: KILLERS_FILTER, label: "Killers", emoji: "??" }] : []),
+            ...agentOptions.map((n) => ({ value: n, label: n, emoji: "??" })),
+          ]}
+        />
         {agentFilter && (
           <button
             type="button"
@@ -5323,13 +5442,14 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                 placeholder="Shift (e.g. 9–5, Night)"
                 className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-ring/50"
               />
-              <select
+              <AnimatedValueSelect
                 value={newTeam}
-                onChange={(e) => setNewTeam(e.target.value as RosterTeam)}
-                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-ring/50"
-              >
-                {TEAMS.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
-              </select>
+                onChange={(value) => setNewTeam(value as RosterTeam)}
+                ariaLabel="Choose agent team"
+                triggerClassName="h-10 min-w-[140px] rounded-lg border-white/10 bg-zinc-800/80 text-white"
+                menuClassName="w-44"
+                options={TEAMS.map((t) => ({ value: t.key, label: t.label, emoji: "🏷️" }))}
+              />
               <button
                 onClick={() => void addAgent()}
                 disabled={saving || !newName.trim()}
@@ -5363,14 +5483,15 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                   {sortedAgents.map(a => (
                     <tr key={a.id} className={`border-t border-white/5 ${a.active ? "" : "opacity-50"}`}>
                       <td className="px-3 py-2">
-                        <select
+                        <AnimatedValueSelect
                           value={a.team}
                           disabled={busyId === a.id}
-                          onChange={(e) => void patchAgent(a.id, { team: e.target.value })}
-                          className={`text-xs rounded-full border px-2 py-1 cursor-pointer focus:outline-none ${teamBadge[a.team] ?? "bg-zinc-700 text-zinc-300 border-zinc-600"}`}
-                        >
-                          {TEAMS.map(t => <option key={t.key} value={t.key} className="bg-zinc-900 text-white">{t.label}</option>)}
-                        </select>
+                          onChange={(value) => void patchAgent(a.id, { team: value })}
+                          ariaLabel={`Choose team for ${a.name}`}
+                          triggerClassName={cn("h-7 min-w-[120px] rounded-full px-2 py-1 text-xs", teamBadge[a.team] ?? "bg-zinc-700 text-zinc-300 border-zinc-600")}
+                          menuClassName="w-44"
+                          options={TEAMS.map((t) => ({ value: t.key, label: t.label, emoji: "🏷️" }))}
+                        />
                       </td>
                       <td className="px-3 py-2">
                         <input
@@ -5563,17 +5684,31 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
             <div className="flex gap-2 flex-wrap">
               <Input placeholder="Username" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} className="h-8 text-sm flex-1 min-w-[130px]" />
               <Input placeholder="Password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="h-8 text-sm flex-1 min-w-[130px]" />
-              <select value={newRole} onChange={(e) => { const r = e.target.value as "admin"|"edit"|"view"; setNewRole(r); setNewPerms(DEFAULT_PERMS[r]); }} className="h-8 rounded-md bg-zinc-800 border border-white/10 text-sm text-white px-2 focus:outline-none focus:ring-2 focus:ring-ring/50">
-                <option value="view">View</option>
-                <option value="edit">Edit</option>
-                <option value="admin">Admin</option>
-              </select>
-              <select value={newTeamAccess} onChange={(e) => setNewTeamAccess(e.target.value as TeamAccess | "")} className="h-8 rounded-md bg-zinc-800 border border-white/10 text-sm text-white px-2 focus:outline-none focus:ring-2 focus:ring-ring/50">
-                <option value="">All Teams</option>
-                <option value="retention">Retention</option>
-                <option value="nsf">NSF</option>
-                <option value="cs">Internal CS</option>
-              </select>
+              <AnimatedValueSelect
+                value={newRole}
+                onChange={(value) => { const r = value as "admin"|"edit"|"view"; setNewRole(r); setNewPerms(DEFAULT_PERMS[r]); }}
+                ariaLabel="Choose new user role"
+                triggerClassName="h-8 min-w-[110px] bg-zinc-800 border-white/10 text-sm text-white"
+                menuClassName="w-36"
+                options={[
+                  { value: "view", label: "View", emoji: "👁️" },
+                  { value: "edit", label: "Edit", emoji: "✏️" },
+                  { value: "admin", label: "Admin", emoji: "🛡️" },
+                ]}
+              />
+              <AnimatedValueSelect
+                value={newTeamAccess}
+                onChange={(value) => setNewTeamAccess(value as TeamAccess | "")}
+                ariaLabel="Choose new user team access"
+                triggerClassName="h-8 min-w-[140px] bg-zinc-800 border-white/10 text-sm text-white"
+                menuClassName="w-44"
+                options={[
+                  { value: "", label: "All Teams", emoji: "🌐" },
+                  { value: "retention", label: "Retention", emoji: "🛡️" },
+                  { value: "nsf", label: "NSF", emoji: "🧾" },
+                  { value: "cs", label: "Internal CS", emoji: "💬" },
+                ]}
+              />
             </div>
             {newRole !== "admin" && (
               <div className="space-y-3">
@@ -5668,17 +5803,31 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                   <div className="px-3 pb-3 pt-0 space-y-3 border-t border-white/5">
                     <div className="flex gap-2 items-center flex-wrap pt-2">
                       <Input placeholder="New password (optional)" type="password" value={editPw} onChange={(e) => setEditPw(e.target.value)} className="h-7 text-xs flex-1 min-w-[140px]" />
-                      <select value={editRole} onChange={(e) => { const r = e.target.value as "admin"|"edit"|"view"; setEditRole(r); if (r === "admin") setEditPerms(DEFAULT_PERMS["admin"]); }} className="h-7 rounded-md bg-zinc-800 border border-white/10 text-xs text-white px-2 focus:outline-none focus:ring-2 focus:ring-ring/50">
-                        <option value="view">View</option>
-                        <option value="edit">Edit</option>
-                        <option value="admin">Admin</option>
-                      </select>
-                      <select value={editTeamAccess} onChange={(e) => setEditTeamAccess(e.target.value as TeamAccess | "")} className="h-7 rounded-md bg-zinc-800 border border-white/10 text-xs text-white px-2 focus:outline-none focus:ring-2 focus:ring-ring/50">
-                        <option value="">All Teams</option>
-                        <option value="retention">Retention</option>
-                        <option value="nsf">NSF</option>
-                        <option value="cs">Internal CS</option>
-                      </select>
+                      <AnimatedValueSelect
+                        value={editRole}
+                        onChange={(value) => { const r = value as "admin"|"edit"|"view"; setEditRole(r); if (r === "admin") setEditPerms(DEFAULT_PERMS["admin"]); }}
+                        ariaLabel="Choose user role"
+                        triggerClassName="h-7 min-w-[105px] bg-zinc-800 border-white/10 text-xs text-white"
+                        menuClassName="w-36"
+                        options={[
+                          { value: "view", label: "View", emoji: "👁️" },
+                          { value: "edit", label: "Edit", emoji: "✏️" },
+                          { value: "admin", label: "Admin", emoji: "🛡️" },
+                        ]}
+                      />
+                      <AnimatedValueSelect
+                        value={editTeamAccess}
+                        onChange={(value) => setEditTeamAccess(value as TeamAccess | "")}
+                        ariaLabel="Choose user team access"
+                        triggerClassName="h-7 min-w-[135px] bg-zinc-800 border-white/10 text-xs text-white"
+                        menuClassName="w-44"
+                        options={[
+                          { value: "", label: "All Teams", emoji: "🌐" },
+                          { value: "retention", label: "Retention", emoji: "🛡️" },
+                          { value: "nsf", label: "NSF", emoji: "🧾" },
+                          { value: "cs", label: "Internal CS", emoji: "💬" },
+                        ]}
+                      />
                     </div>
                     {editRole !== "admin" && (
                       <div className="space-y-3">
@@ -6192,29 +6341,29 @@ function QuoLinesPanel() {
           <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />
           {!statsQ.isLoading && allAgentNames.length > 0 && (
             <div className="flex flex-wrap items-center gap-2">
-              <select
+              <AnimatedValueSelect
                 value={agentFilter}
-                onChange={(e) => setAgentFilter(e.target.value)}
-                className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                <option value="">All agents</option>
-                {allAgentNames.some((n) => isKillerAgentKey(normalizeAgent(n))) && (
-                  <option value={KILLERS_FILTER}>⚔ Killers</option>
-                )}
-                {allAgentNames.map((n) => (
-                  <option key={n} value={n}>{n}</option>
-                ))}
-              </select>
-              <select
+                onChange={setAgentFilter}
+                ariaLabel="Filter line stats by agent"
+                triggerClassName="min-w-[180px]"
+                menuClassName="w-64"
+                options={[
+                  { value: "", label: "All agents", emoji: "👥" },
+                  ...(allAgentNames.some((n) => isKillerAgentKey(normalizeAgent(n))) ? [{ value: KILLERS_FILTER, label: "Killers", emoji: "⚔️" }] : []),
+                  ...allAgentNames.map((n) => ({ value: n, label: n, emoji: "👤" })),
+                ]}
+              />
+              <AnimatedValueSelect
                 value={dayFilter}
-                onChange={(e) => setDayFilter(e.target.value)}
-                className="text-sm rounded-md border border-white/10 bg-card px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                <option value="">All days</option>
-                {availableDays.map((d) => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
-              </select>
+                onChange={setDayFilter}
+                ariaLabel="Filter line stats by day"
+                triggerClassName="min-w-[150px]"
+                menuClassName="w-48"
+                options={[
+                  { value: "", label: "All days", emoji: "🗓️" },
+                  ...availableDays.map((d) => ({ value: d, label: d, emoji: "📅" })),
+                ]}
+              />
               {isFiltered && (
                 <button
                   type="button"
@@ -7485,16 +7634,17 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
               <div className="flex items-center gap-1.5">
                 <span className="text-xs text-muted-foreground">Line:</span>
               </div>
-              <select
+              <AnimatedValueSelect
                 value={lineFilter}
-                onChange={(e) => setLineFilter(e.target.value)}
-                className="h-7 rounded-md border border-zinc-700/50 bg-zinc-800/50 text-xs text-zinc-300 px-2 focus:outline-none focus:border-zinc-500 cursor-pointer"
-              >
-                <option value="all">All lines</option>
-                {lines.map((l) => (
-                  <option key={l} value={l}>{l}</option>
-                ))}
-              </select>
+                onChange={setLineFilter}
+                ariaLabel="Filter by line"
+                triggerClassName="h-7 min-w-[150px] border-zinc-700/50 bg-zinc-800/50 text-xs text-zinc-300"
+                menuClassName="w-60"
+                options={[
+                  { value: "all", label: "All lines", emoji: "📞" },
+                  ...lines.map((l) => ({ value: l, label: l, emoji: "☎️" })),
+                ]}
+              />
             </>
           )}
           <div className={`${lockedTeam && lines.length === 0 ? "" : "ml-auto"} flex items-center gap-2`}>
@@ -9390,25 +9540,23 @@ function ViolationsPanel() {
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-1 text-[10px] text-zinc-400">
                 <span>Hours</span>
-                <select
-                  value={gapHourFrom}
-                  onChange={(e) => setGapHourFrom(Number(e.target.value))}
-                  className="bg-zinc-800 border border-white/10 rounded px-1 py-0.5 text-[10px] text-zinc-200"
-                >
-                  {Array.from({ length: 24 }, (_, h) => (
-                    <option key={h} value={h}>{fmtHourLabel(h)}</option>
-                  ))}
-                </select>
+                <AnimatedValueSelect
+                  value={String(gapHourFrom)}
+                  onChange={(value) => setGapHourFrom(Number(value))}
+                  ariaLabel="Choose start hour"
+                  triggerClassName="h-6 min-w-[76px] rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-200"
+                  menuClassName="w-28"
+                  options={Array.from({ length: 24 }, (_, h) => ({ value: String(h), label: fmtHourLabel(h), emoji: "🕒" }))}
+                />
                 <span>→</span>
-                <select
-                  value={gapHourTo}
-                  onChange={(e) => setGapHourTo(Number(e.target.value))}
-                  className="bg-zinc-800 border border-white/10 rounded px-1 py-0.5 text-[10px] text-zinc-200"
-                >
-                  {Array.from({ length: 24 }, (_, h) => h + 1).map((h) => (
-                    <option key={h} value={h}>{fmtHourLabel(h)}</option>
-                  ))}
-                </select>
+                <AnimatedValueSelect
+                  value={String(gapHourTo)}
+                  onChange={(value) => setGapHourTo(Number(value))}
+                  ariaLabel="Choose end hour"
+                  triggerClassName="h-6 min-w-[76px] rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-200"
+                  menuClassName="w-28"
+                  options={Array.from({ length: 24 }, (_, h) => h + 1).map((h) => ({ value: String(h), label: fmtHourLabel(h), emoji: "🕒" }))}
+                />
                 {gapHourActive && (
                   <button
                     onClick={() => { setGapHourFrom(0); setGapHourTo(24); }}
@@ -10006,19 +10154,19 @@ function BackendStatsPanel() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <div className="relative">
-            <select
-              value={month}
-              onChange={(e) => setMonth(e.target.value)}
-              className="appearance-none pl-9 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50"
-            >
-              <option value="all">All time</option>
-              <option value="today">Today</option>
-              {monthOptions.map((m) => <option key={m} value={m}>{bstatMonthLabel(m)}</option>)}
-            </select>
-            <Calendar className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
-            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs">▾</span>
-          </div>
+          <AnimatedValueSelect
+            value={month}
+            onChange={setMonth}
+            ariaLabel="Choose backend statistics month"
+            triggerClassName="h-10 min-w-[150px] rounded-lg bg-zinc-800/80 border-white/10 text-sm font-medium text-white hover:bg-zinc-700/80"
+            menuClassName="w-52"
+            align="right"
+            options={[
+              { value: "all", label: "All time", emoji: "??" },
+              { value: "today", label: "Today", emoji: "??" },
+              ...monthOptions.map((m) => ({ value: m, label: bstatMonthLabel(m), emoji: "??" })),
+            ]}
+          />
           <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching} className="gap-2">
             <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
             Refresh
