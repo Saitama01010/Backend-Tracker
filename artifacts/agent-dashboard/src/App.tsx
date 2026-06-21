@@ -281,7 +281,7 @@ function AnimatedDashboardSelect<T extends string>({
     <MotionConfig
       transition={shouldReduceMotion ? { duration: 0 } : { type: "spring", stiffness: 320, damping: 28 }}
     >
-      <div ref={ref} className={cn("relative", className)}>
+      <div ref={ref} className={cn("relative z-[120]", className)}>
         <motion.button
           type="button"
           layoutId="dashboard-view-dropdown"
@@ -308,7 +308,7 @@ function AnimatedDashboardSelect<T extends string>({
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -8, scale: 0.98 }}
               transition={shouldReduceMotion ? { duration: 0 } : { duration: 0.18, ease: "easeOut" }}
-              className="absolute right-0 top-full z-[80] mt-2 w-[min(400px,calc(100vw-1.5rem))] overflow-hidden rounded-2xl border border-border bg-popover py-2 text-popover-foreground shadow-xl"
+              className="absolute right-0 top-full z-[130] mt-2 w-[min(400px,calc(100vw-1.5rem))] overflow-hidden rounded-2xl border border-border bg-popover py-2 text-popover-foreground shadow-xl"
               role="listbox"
             >
               <div className="flex items-center justify-between px-4 pb-2 pt-2">
@@ -5028,7 +5028,7 @@ function AnimatedActionMenu({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <div ref={ref} className="relative h-16 w-16" data-expanded={expanded}>
+    <div ref={ref} className="relative z-[120] h-16 w-16" data-expanded={expanded}>
       <button
         type="button"
         aria-label={expanded ? "Close account menu" : "Open account menu"}
@@ -5036,7 +5036,7 @@ function AnimatedActionMenu({ children }: { children: React.ReactNode }) {
         aria-expanded={expanded}
         onClick={() => setExpanded((v) => !v)}
         className={cn(
-          "relative z-50 flex h-16 w-16 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm",
+          "relative z-[130] flex h-16 w-16 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm",
           "transition-all duration-300 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           expanded && "bg-accent text-foreground",
         )}
@@ -5054,7 +5054,7 @@ function AnimatedActionMenu({ children }: { children: React.ReactNode }) {
                 transform: `translateY(${expanded ? offset : 0}px)`,
                 opacity: expanded ? 1 : 0,
                 pointerEvents: expanded ? "auto" : "none",
-                zIndex: 40 - index,
+                zIndex: 129 - index,
                 clipPath: index === items.length - 1 ? "circle(50% at 50% 50%)" : "circle(50% at 50% 55%)",
                 transition: "transform 300ms cubic-bezier(0.4, 0, 0.2, 1), opacity 300ms",
                 backfaceVisibility: "hidden",
@@ -10275,7 +10275,7 @@ function Dashboard() {
   const RoleIcon = user.role === "admin" ? ShieldCheck : user.role === "edit" ? Pencil : Eye;
 
   return (
-    <div className="min-h-screen bg-background relative overflow-hidden">
+    <div className="min-h-screen bg-background relative overflow-x-hidden overflow-y-visible">
       {showUsers && <UserManagementPanel onClose={() => setShowUsers(false)} />}
       {showBlocked && <BlockedNumbersPanel onClose={() => setShowBlocked(false)} />}
       {showAgents && <AgentRosterPanel onClose={() => setShowAgents(false)} />}
@@ -10286,7 +10286,7 @@ function Dashboard() {
         <div className="theme-ambient theme-ambient-muted absolute bottom-0 left-1/3 h-[400px] w-[400px]" />
       </div>
 
-      <header className="relative border-b border-white/5 bg-card/60 backdrop-blur-xl">
+      <header className="relative z-[100] overflow-visible border-b border-white/5 bg-card/60 backdrop-blur-xl">
         <div className="max-w-[1400px] mx-auto px-3 py-3 sm:px-6 sm:py-4 flex items-center gap-3">
           <div className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-lg overflow-hidden ring-1 ring-white/10 shadow-[0_0_24px_-6px_rgba(59,130,246,0.6)]">
             <img src={companyLogo} alt="Company logo" className="h-full w-full object-cover" />
@@ -10381,7 +10381,7 @@ function Dashboard() {
         </div>
       </header>
 
-      <main className="max-w-[1400px] mx-auto px-3 py-4 sm:px-6 sm:py-8">
+      <main className="relative z-10 max-w-[1400px] mx-auto px-3 py-4 sm:px-6 sm:py-8">
         {view === "phones" && user.role === "admin" ? (
           <PhonesPanel />
         ) : view === "backend-stats" && canSeeTab("backend-stats") ? (
