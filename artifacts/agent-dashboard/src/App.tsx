@@ -47,6 +47,7 @@ import {
   ShieldCheck,
   UserCog,
   Eye,
+  EyeOff,
   Pencil,
   ShieldAlert,
   X,
@@ -4345,6 +4346,244 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
   );
 }
 
+function AnimatedEye({
+  size = 18,
+  pupilSize = 7,
+  maxDistance = 5,
+  blinking = false,
+  forceLookX,
+  forceLookY,
+}: {
+  size?: number;
+  pupilSize?: number;
+  maxDistance?: number;
+  blinking?: boolean;
+  forceLookX?: number;
+  forceLookY?: number;
+}) {
+  const [mouse, setMouse] = useState({ x: 0, y: 0 });
+  const eyeRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => setMouse({ x: e.clientX, y: e.clientY });
+    window.addEventListener("mousemove", onMove);
+    return () => window.removeEventListener("mousemove", onMove);
+  }, []);
+
+  const position = (() => {
+    if (forceLookX !== undefined && forceLookY !== undefined) return { x: forceLookX, y: forceLookY };
+    if (!eyeRef.current) return { x: 0, y: 0 };
+    const rect = eyeRef.current.getBoundingClientRect();
+    const dx = mouse.x - (rect.left + rect.width / 2);
+    const dy = mouse.y - (rect.top + rect.height / 2);
+    const distance = Math.min(Math.hypot(dx, dy), maxDistance);
+    const angle = Math.atan2(dy, dx);
+    return { x: Math.cos(angle) * distance, y: Math.sin(angle) * distance };
+  })();
+
+  return (
+    <div
+      ref={eyeRef}
+      className="flex items-center justify-center rounded-full bg-white shadow-inner transition-all duration-150"
+      style={{ width: size, height: blinking ? 2 : size, overflow: "hidden" }}
+    >
+      {!blinking && (
+        <div
+          className="rounded-full bg-stone-900 transition-transform duration-100"
+          style={{ width: pupilSize, height: pupilSize, transform: `translate(${position.x}px, ${position.y}px)` }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AnimatedPupil({
+  size = 12,
+  maxDistance = 5,
+  forceLookX,
+  forceLookY,
+}: {
+  size?: number;
+  maxDistance?: number;
+  forceLookX?: number;
+  forceLookY?: number;
+}) {
+  const [mouse, setMouse] = useState({ x: 0, y: 0 });
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => setMouse({ x: e.clientX, y: e.clientY });
+    window.addEventListener("mousemove", onMove);
+    return () => window.removeEventListener("mousemove", onMove);
+  }, []);
+
+  const position = (() => {
+    if (forceLookX !== undefined && forceLookY !== undefined) return { x: forceLookX, y: forceLookY };
+    if (!ref.current) return { x: 0, y: 0 };
+    const rect = ref.current.getBoundingClientRect();
+    const dx = mouse.x - (rect.left + rect.width / 2);
+    const dy = mouse.y - (rect.top + rect.height / 2);
+    const distance = Math.min(Math.hypot(dx, dy), maxDistance);
+    const angle = Math.atan2(dy, dx);
+    return { x: Math.cos(angle) * distance, y: Math.sin(angle) * distance };
+  })();
+
+  return (
+    <div
+      ref={ref}
+      className="rounded-full bg-stone-900 transition-transform duration-100"
+      style={{ width: size, height: size, transform: `translate(${position.x}px, ${position.y}px)` }}
+    />
+  );
+}
+
+function LoginAnimation({ isTyping, passwordVisible, hasPassword }: { isTyping: boolean; passwordVisible: boolean; hasPassword: boolean }) {
+  const [mouse, setMouse] = useState({ x: 0, y: 0 });
+  const [tallBlink, setTallBlink] = useState(false);
+  const [darkBlink, setDarkBlink] = useState(false);
+  const [peeking, setPeeking] = useState(false);
+  const tallRef = useRef<HTMLDivElement>(null);
+  const darkRef = useRef<HTMLDivElement>(null);
+  const clayRef = useRef<HTMLDivElement>(null);
+  const goldRef = useRef<HTMLDivElement>(null);
+  const lookingAtEachOther = isTyping;
+  const coveringPassword = hasPassword && !passwordVisible;
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => setMouse({ x: e.clientX, y: e.clientY });
+    window.addEventListener("mousemove", onMove);
+    return () => window.removeEventListener("mousemove", onMove);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const schedule = () => {
+      const timer = window.setTimeout(() => {
+        if (!active) return;
+        setTallBlink(true);
+        window.setTimeout(() => setTallBlink(false), 150);
+        schedule();
+      }, 3000 + Math.random() * 3500);
+      return timer;
+    };
+    const timer = schedule();
+    return () => { active = false; window.clearTimeout(timer); };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const schedule = () => {
+      const timer = window.setTimeout(() => {
+        if (!active) return;
+        setDarkBlink(true);
+        window.setTimeout(() => setDarkBlink(false), 150);
+        schedule();
+      }, 3200 + Math.random() * 3800);
+      return timer;
+    };
+    const timer = schedule();
+    return () => { active = false; window.clearTimeout(timer); };
+  }, []);
+
+  useEffect(() => {
+    if (!hasPassword || !passwordVisible) {
+      setPeeking(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setPeeking(true);
+      window.setTimeout(() => setPeeking(false), 800);
+    }, 1200 + Math.random() * 2200);
+    return () => window.clearTimeout(timer);
+  }, [hasPassword, passwordVisible, peeking]);
+
+  const position = (ref: React.RefObject<HTMLDivElement | null>) => {
+    if (!ref.current) return { faceX: 0, faceY: 0, skew: 0 };
+    const rect = ref.current.getBoundingClientRect();
+    const dx = mouse.x - (rect.left + rect.width / 2);
+    const dy = mouse.y - (rect.top + rect.height / 3);
+    return {
+      faceX: Math.max(-14, Math.min(14, dx / 24)),
+      faceY: Math.max(-9, Math.min(9, dy / 34)),
+      skew: Math.max(-5, Math.min(5, -dx / 140)),
+    };
+  };
+
+  const tall = position(tallRef);
+  const dark = position(darkRef);
+  const clay = position(clayRef);
+  const gold = position(goldRef);
+
+  return (
+    <div className="relative h-[390px] w-[520px] max-w-full" aria-hidden="true">
+      <div
+        ref={tallRef}
+        className="absolute bottom-0 rounded-t-xl bg-stone-700 transition-all duration-700 ease-out"
+        style={{
+          left: "70px",
+          width: "170px",
+          height: coveringPassword ? "420px" : "375px",
+          transform: passwordVisible && hasPassword ? "skewX(0deg)" : coveringPassword ? `skewX(${tall.skew - 10}deg) translateX(34px)` : `skewX(${tall.skew}deg)`,
+          transformOrigin: "bottom center",
+          zIndex: 1,
+        }}
+      >
+        <div
+          className="absolute flex gap-7 transition-all duration-500"
+          style={{ left: passwordVisible && hasPassword ? 22 : lookingAtEachOther ? 54 : 44 + tall.faceX, top: passwordVisible && hasPassword ? 34 : lookingAtEachOther ? 62 : 40 + tall.faceY }}
+        >
+          <AnimatedEye blinking={tallBlink} forceLookX={passwordVisible && hasPassword ? (peeking ? 4 : -4) : lookingAtEachOther ? 3 : undefined} forceLookY={passwordVisible && hasPassword ? (peeking ? 5 : -4) : lookingAtEachOther ? 4 : undefined} />
+          <AnimatedEye blinking={tallBlink} forceLookX={passwordVisible && hasPassword ? (peeking ? 4 : -4) : lookingAtEachOther ? 3 : undefined} forceLookY={passwordVisible && hasPassword ? (peeking ? 5 : -4) : lookingAtEachOther ? 4 : undefined} />
+        </div>
+      </div>
+
+      <div
+        ref={darkRef}
+        className="absolute bottom-0 rounded-t-lg bg-neutral-950 transition-all duration-700 ease-out"
+        style={{
+          left: "232px",
+          width: "118px",
+          height: "300px",
+          transform: passwordVisible && hasPassword ? "skewX(0deg)" : lookingAtEachOther ? `skewX(${dark.skew * 1.4 + 8}deg) translateX(18px)` : `skewX(${dark.skew}deg)`,
+          transformOrigin: "bottom center",
+          zIndex: 2,
+        }}
+      >
+        <div
+          className="absolute flex gap-5 transition-all duration-500"
+          style={{ left: passwordVisible && hasPassword ? 12 : lookingAtEachOther ? 32 : 26 + dark.faceX, top: passwordVisible && hasPassword ? 28 : lookingAtEachOther ? 14 : 32 + dark.faceY }}
+        >
+          <AnimatedEye size={16} pupilSize={6} maxDistance={4} blinking={darkBlink} forceLookX={passwordVisible && hasPassword ? -4 : lookingAtEachOther ? 0 : undefined} forceLookY={passwordVisible && hasPassword ? -4 : lookingAtEachOther ? -4 : undefined} />
+          <AnimatedEye size={16} pupilSize={6} maxDistance={4} blinking={darkBlink} forceLookX={passwordVisible && hasPassword ? -4 : lookingAtEachOther ? 0 : undefined} forceLookY={passwordVisible && hasPassword ? -4 : lookingAtEachOther ? -4 : undefined} />
+        </div>
+      </div>
+
+      <div
+        ref={clayRef}
+        className="absolute bottom-0 rounded-t-full bg-[#b77858] transition-all duration-700 ease-out"
+        style={{ left: "0px", width: "230px", height: "190px", transform: passwordVisible && hasPassword ? "skewX(0deg)" : `skewX(${clay.skew}deg)`, transformOrigin: "bottom center", zIndex: 3 }}
+      >
+        <div className="absolute flex gap-8 transition-all duration-200" style={{ left: passwordVisible && hasPassword ? 50 : 80 + clay.faceX, top: passwordVisible && hasPassword ? 82 : 88 + clay.faceY }}>
+          <AnimatedPupil forceLookX={passwordVisible && hasPassword ? -5 : undefined} forceLookY={passwordVisible && hasPassword ? -4 : undefined} />
+          <AnimatedPupil forceLookX={passwordVisible && hasPassword ? -5 : undefined} forceLookY={passwordVisible && hasPassword ? -4 : undefined} />
+        </div>
+      </div>
+
+      <div
+        ref={goldRef}
+        className="absolute bottom-0 rounded-t-full bg-[#c6ad67] transition-all duration-700 ease-out"
+        style={{ left: "306px", width: "140px", height: "220px", transform: passwordVisible && hasPassword ? "skewX(0deg)" : `skewX(${gold.skew}deg)`, transformOrigin: "bottom center", zIndex: 4 }}
+      >
+        <div className="absolute flex gap-6 transition-all duration-200" style={{ left: passwordVisible && hasPassword ? 20 : 52 + gold.faceX, top: passwordVisible && hasPassword ? 36 : 42 + gold.faceY }}>
+          <AnimatedPupil forceLookX={passwordVisible && hasPassword ? -5 : undefined} forceLookY={passwordVisible && hasPassword ? -4 : undefined} />
+          <AnimatedPupil forceLookX={passwordVisible && hasPassword ? -5 : undefined} forceLookY={passwordVisible && hasPassword ? -4 : undefined} />
+        </div>
+        <div className="absolute h-1 w-20 rounded-full bg-stone-900 transition-all duration-200" style={{ left: passwordVisible && hasPassword ? 10 : 40 + gold.faceX, top: passwordVisible && hasPassword ? 88 : 88 + gold.faceY }} />
+      </div>
+    </div>
+  );
+}
+
 function LoginGate({ children }: { children: React.ReactNode }) {
   const stored = localStorage.getItem("tracker_token");
   const storedUser = localStorage.getItem("tracker_user");
@@ -4356,6 +4595,8 @@ function LoginGate({ children }: { children: React.ReactNode }) {
   });
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [isTypingLogin, setIsTypingLogin] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -4440,52 +4681,89 @@ function LoginGate({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center relative overflow-hidden">
-      <div className="pointer-events-none absolute inset-0">
-        <div className="theme-ambient theme-ambient-primary absolute -top-32 -left-32 h-[500px] w-[500px]" />
-        <div className="theme-ambient theme-ambient-secondary absolute bottom-0 right-0 h-[400px] w-[400px]" />
+    <div className="min-h-screen bg-background grid lg:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)] relative overflow-hidden">
+      <div className="hidden lg:flex relative min-h-screen flex-col justify-between overflow-hidden border-r border-border bg-muted/40 p-10">
+        <div className="relative z-10 flex items-center gap-3">
+          <div className="h-11 w-11 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+            <img src={companyLogo} alt="Dial Expert logo" className="h-full w-full object-cover" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-foreground">Dial Expert</p>
+            <p className="text-xs text-muted-foreground">Backend Tracker</p>
+          </div>
+        </div>
+
+        <div className="relative z-10 flex flex-1 items-end justify-center pb-8">
+          <LoginAnimation isTyping={isTypingLogin} passwordVisible={showPassword} hasPassword={password.length > 0} />
+        </div>
+
+        <div className="relative z-10 max-w-md text-sm text-muted-foreground">
+          Real-time tracking for submissions, calls, teams, and reviews.
+        </div>
       </div>
-      <div className="relative w-full max-w-sm mx-4">
-        <div className="rounded-2xl border border-white/10 bg-card/80 backdrop-blur-xl p-8 space-y-6 shadow-2xl">
-          <div className="flex justify-end">
-            <ThemeToggle />
+
+      <div className="relative flex min-h-screen items-center justify-center p-6 sm:p-8">
+        <div className="absolute right-5 top-5">
+          <ThemeToggle />
+        </div>
+        <div className="w-full max-w-[420px] space-y-8">
+          <div className="flex flex-col items-center gap-4 text-center">
+            <div className="h-16 w-16 overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+              <img src={companyLogo} alt="Dial Expert logo" className="h-full w-full object-cover" />
+            </div>
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight text-foreground">Welcome back</h1>
+              <p className="mt-2 text-sm text-muted-foreground">Sign in to Dial Expert Backend Tracker</p>
+            </div>
           </div>
-          <div className="flex flex-col items-center gap-3">
-            <div className="h-12 w-12 rounded-xl overflow-hidden ring-1 ring-white/10 shadow-[0_0_24px_-6px_rgba(59,130,246,0.6)]">
-              <img src={companyLogo} alt="Company logo" className="h-full w-full object-cover" />
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="tracker-username" className="text-sm font-medium">Username</Label>
+              <div className="relative">
+                <Users className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="tracker-username"
+                  placeholder="Username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  onFocus={() => setIsTypingLogin(true)}
+                  onBlur={() => setIsTypingLogin(false)}
+                  className="h-12 pl-10"
+                  autoFocus
+                  autoComplete="username"
+                />
+              </div>
             </div>
-            <div className="text-center">
-              <h1 className="text-xl font-bold text-foreground">
-                Backend Tracker
-              </h1>
-              <p className="text-sm text-muted-foreground mt-1">Sign in to continue</p>
+
+            <div className="space-y-2">
+              <Label htmlFor="tracker-password" className="text-sm font-medium">Password</Label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="tracker-password"
+                  type={showPassword ? "text" : "password"}
+                  placeholder="Password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onFocus={() => setIsTypingLogin(true)}
+                  onBlur={() => setIsTypingLogin(false)}
+                  className="h-12 pl-10 pr-11"
+                  autoComplete="current-password"
+                />
+                <button
+                  type="button"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  onClick={() => setShowPassword((v) => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
-          </div>
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <div className="relative">
-              <Users className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="pl-10"
-                autoFocus
-                autoComplete="username"
-              />
-            </div>
-            <div className="relative">
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                type="password"
-                placeholder="Password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="pl-10"
-                autoComplete="current-password"
-              />
-            </div>
-            {error && <p className="text-sm metric-bad text-center">{error}</p>}
-            <Button type="submit" className="w-full" disabled={loading || !username || !password}>
+
+            {error && <p className="rounded-lg border border-border bg-muted/50 px-3 py-2 text-center text-sm metric-bad">{error}</p>}
+            <Button type="submit" className="h-12 w-full text-base" disabled={loading || !username || !password}>
               {loading ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Sign in"}
             </Button>
           </form>
