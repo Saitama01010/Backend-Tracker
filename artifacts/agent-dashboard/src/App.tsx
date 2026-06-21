@@ -232,11 +232,24 @@ const TAB_ICONS: Record<string, LucideIcon> = {
   onboarding:        UserCheck,
 };
 
+const TAB_EMOJIS: Record<string, string> = {
+  retention: "🛡️",
+  cs: "💬",
+  nsf: "🧾",
+  rmk: "🚀",
+  "missed-no-cb": "☎️",
+  "callback-review": "🔁",
+  violations: "⚠️",
+  qa: "✅",
+  onboarding: "👋",
+};
+
 type AnimatedSelectOption<T extends string> = {
   value: T;
   label: string;
   description?: string;
   icon: LucideIcon;
+  emoji?: string;
 };
 
 function AnimatedDashboardSelect<T extends string>({
@@ -294,8 +307,9 @@ function AnimatedDashboardSelect<T extends string>({
         >
           <span className="flex min-w-0 items-center gap-2">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-background/70">
-              <SelectedIcon className="h-3.5 w-3.5" />
+              <span className="text-sm leading-none" aria-hidden="true">{selected?.emoji ?? "📌"}</span>
             </span>
+            <SelectedIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             <span className="truncate text-sm font-semibold">{selected?.label}</span>
           </span>
           <ChevronDown className={cn("h-4 w-4 shrink-0 transition-transform duration-200", open && "rotate-180")} />
@@ -347,8 +361,9 @@ function AnimatedDashboardSelect<T extends string>({
                     >
                       <span className="flex min-w-0 items-center gap-3">
                         <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border bg-background/70 transition-transform duration-200 group-hover:scale-105">
-                          <Icon className="h-4 w-4" />
+                          <span className="text-lg leading-none" aria-hidden="true">{item.emoji ?? "📌"}</span>
                         </span>
+                        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <span className="min-w-0">
                           <span className="block text-sm font-semibold text-foreground">{item.label}</span>
                           {item.description && (
@@ -385,6 +400,7 @@ function AnimatedMetricsNav({
       <div className="flex w-full min-w-[960px] items-stretch rounded-2xl border border-border bg-card/70 p-1 shadow-sm backdrop-blur">
         {tabs.map((tab) => {
           const Icon = TAB_ICONS[tab.value] ?? Layers;
+          const emoji = TAB_EMOJIS[tab.value] ?? "📌";
           const active = tab.value === value;
           return (
             <button
@@ -406,6 +422,7 @@ function AnimatedMetricsNav({
                 />
               )}
               <span className="relative z-10 flex min-w-0 items-center justify-center gap-2">
+                <span className="text-base leading-none" aria-hidden="true">{emoji}</span>
                 <Icon className="h-4 w-4 shrink-0" />
                 <span className="truncate">{tab.label}</span>
               </span>
@@ -4966,11 +4983,13 @@ function LoginGate({ children }: { children: React.ReactNode }) {
 function AnimatedMenuItem({
   label,
   icon,
+  emoji,
   onClick,
   tone = "neutral",
 }: {
   label: string;
   icon: React.ReactNode;
+  emoji?: string;
   onClick: () => void;
   tone?: "neutral" | "danger";
 }) {
@@ -4990,6 +5009,11 @@ function AnimatedMenuItem({
       <span className="flex h-6 w-6 items-center justify-center transition-all duration-200 group-hover:[&_svg]:stroke-[2.5] [&_svg]:h-5 [&_svg]:w-5">
         {icon}
       </span>
+      {emoji && (
+        <span className="absolute -right-1 -top-1 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-background text-sm shadow-sm" aria-hidden="true">
+          {emoji}
+        </span>
+      )}
       <span className="pointer-events-none absolute right-[calc(100%+10px)] top-1/2 hidden -translate-y-1/2 whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-xs font-medium text-popover-foreground shadow-sm opacity-0 transition-opacity group-hover:block group-hover:opacity-100 group-focus-visible:block group-focus-visible:opacity-100">
         {label}
       </span>
@@ -10240,24 +10264,28 @@ function Dashboard() {
       label: "Metrics",
       description: "Retention, CS, NSF and QA views",
       icon: TrendingUp,
+      emoji: "📈",
     }] : []),
     ...(canSeeTab("backend-stats") ? [{
       value: "backend-stats" as const,
       label: "Backend Stats",
       description: "Submission and backend health overview",
       icon: BarChart3,
+      emoji: "📊",
     }] : []),
     ...(can("view_metrics") && user.role === "admin" ? [{
       value: "phones" as const,
       label: "Phones",
       description: "Live QUO line and phone data",
       icon: Phone,
+      emoji: "📞",
     }] : []),
     ...(can("view_attendance") ? [{
       value: "attendance" as const,
       label: "Attendance",
       description: "Team shifts and attendance tracking",
       icon: CalendarDays,
+      emoji: "🗓️",
     }] : []),
   ];
 
@@ -10351,6 +10379,7 @@ function Dashboard() {
                   <AnimatedMenuItem
                     label="Blocked numbers"
                     icon={<ShieldCheck />}
+                    emoji="🚫"
                     onClick={() => setShowBlocked(true)}
                     tone="danger"
                   />
@@ -10359,6 +10388,7 @@ function Dashboard() {
                   <AnimatedMenuItem
                     label="Manage agents"
                     icon={<Users />}
+                    emoji="👥"
                     onClick={() => setShowAgents(true)}
                   />
                 )}
@@ -10366,12 +10396,14 @@ function Dashboard() {
                   <AnimatedMenuItem
                     label="Manage users"
                     icon={<UserCog />}
+                    emoji="⚙️"
                     onClick={() => setShowUsers(true)}
                   />
                 )}
                 <AnimatedMenuItem
                   label="Sign out"
                   icon={<LogOut />}
+                  emoji="👋"
                   onClick={logout}
                   tone="danger"
                 />
