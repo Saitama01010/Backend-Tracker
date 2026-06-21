@@ -504,6 +504,93 @@ function AnimatedValueSelect<T extends string>({
   );
 }
 
+const AVATAR_PALETTES = [
+  "from-rose-500 to-orange-400",
+  "from-amber-400 to-lime-500",
+  "from-emerald-400 to-teal-500",
+  "from-sky-400 to-blue-500",
+  "from-violet-400 to-fuchsia-500",
+  "from-pink-400 to-rose-500",
+  "from-cyan-400 to-indigo-500",
+  "from-stone-400 to-zinc-600",
+];
+
+function hashString(value: string) {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function personInitials(name: string) {
+  const clean = name.replace(/[^a-zA-Z0-9\s-]/g, " ").trim();
+  const parts = clean.split(/[\s-]+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+function AvatarIcon({
+  name,
+  size = "md",
+  className,
+}: {
+  name: string;
+  size?: "xs" | "sm" | "md" | "lg";
+  className?: string;
+}) {
+  const palette = AVATAR_PALETTES[hashString(name || "user") % AVATAR_PALETTES.length];
+  const sizeClass =
+    size === "xs" ? "h-6 w-6 text-[10px]" :
+    size === "sm" ? "h-7 w-7 text-[11px]" :
+    size === "lg" ? "h-10 w-10 text-sm" :
+                    "h-8 w-8 text-xs";
+
+  return (
+    <motion.span
+      initial={{ scale: 0.82, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      transition={{ type: "spring", stiffness: 350, damping: 28 }}
+      className={cn(
+        "inline-flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br font-bold text-white shadow-sm ring-1 ring-white/15",
+        palette,
+        sizeClass,
+        className,
+      )}
+      aria-hidden="true"
+    >
+      {personInitials(name)}
+    </motion.span>
+  );
+}
+
+function AvatarName({
+  name,
+  subtitle,
+  size = "md",
+  className,
+  textClassName,
+  subtitleClassName,
+}: {
+  name: string;
+  subtitle?: React.ReactNode;
+  size?: "xs" | "sm" | "md" | "lg";
+  className?: string;
+  textClassName?: string;
+  subtitleClassName?: string;
+}) {
+  return (
+    <span className={cn("inline-flex min-w-0 items-center gap-2", className)}>
+      <AvatarIcon name={name} size={size} />
+      <span className="min-w-0">
+        <span className={cn("block truncate", textClassName)}>{name}</span>
+        {subtitle && <span className={cn("block truncate text-xs text-muted-foreground", subtitleClassName)}>{subtitle}</span>}
+      </span>
+    </span>
+  );
+}
+
 function AnimatedMetricsNav({
   tabs,
   value,
@@ -2899,7 +2986,9 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
               )}
               {visible.map((a) => (
                 <TableRow key={a.agent} className="hover-elevate">
-                  <TableCell className="font-medium whitespace-nowrap">{a.agent}</TableCell>
+                  <TableCell className="font-medium whitespace-nowrap">
+                    <AvatarName name={a.agent} size="sm" textClassName="text-foreground" />
+                  </TableCell>
                   {data.statuses.map((s) => {
                     const v = a.byStatus.get(s) ?? 0;
                     return (
@@ -3452,7 +3541,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                             </span>
                           )
                         )}
-                        {agent}
+                        <AvatarName name={agent} size="sm" textClassName="text-foreground" />
                         <ShiftDot agentName={agent} />
                         {dept && (
                           <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold leading-none ${dept === "Retention" ? "bg-muted-foreground/20 metric-info border border-border" : "bg-muted metric-good border border-border"}`}>
@@ -4652,7 +4741,9 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
                   <TableCell className="tabular-nums font-mono text-xs text-muted-foreground whitespace-nowrap">
                     {new Date(c.createdAt).toLocaleString("en-US", { timeZone: CA_TZ, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: true })}
                   </TableCell>
-                  <TableCell className="font-medium whitespace-nowrap">{c.agentName ?? "—"}</TableCell>
+                  <TableCell className="font-medium whitespace-nowrap">
+                    <AvatarName name={c.agentName ?? "Unknown"} size="sm" textClassName="text-foreground" />
+                  </TableCell>
                   <TableCell className="text-muted-foreground text-xs whitespace-nowrap">{c.lineName}</TableCell>
                   <TableCell>{directionIcon(c.direction)}</TableCell>
                   <TableCell>{statusIcon(c.status)}</TableCell>
@@ -5494,13 +5585,16 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                         />
                       </td>
                       <td className="px-3 py-2">
-                        <input
-                          value={getDraft(a, "name")}
-                          onChange={(e) => setDraft(a.id, "name", e.target.value)}
-                          onBlur={() => void commitDraft(a, "name")}
-                          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                          className={`w-full bg-transparent px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-border focus:outline-none ${a.active ? "text-zinc-100" : "text-zinc-500 line-through"}`}
-                        />
+                        <div className="flex items-center gap-2">
+                          <AvatarIcon name={getDraft(a, "name") || a.name} size="sm" />
+                          <input
+                            value={getDraft(a, "name")}
+                            onChange={(e) => setDraft(a.id, "name", e.target.value)}
+                            onBlur={() => void commitDraft(a, "name")}
+                            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                            className={`w-full bg-transparent px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-border focus:outline-none ${a.active ? "text-zinc-100" : "text-zinc-500 line-through"}`}
+                          />
+                        </div>
                       </td>
                       <td className="px-3 py-2">
                         <input
@@ -5766,7 +5860,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
                 {/* Header row */}
                 <div className="flex items-center justify-between gap-2 px-3 pt-3 pb-2">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-medium text-white">{u.username}</span>
+                    <AvatarName name={u.username} size="sm" textClassName="text-sm font-medium text-white" />
                     <Badge className={`text-[10px] px-1.5 py-0 flex items-center gap-1 border ${roleBadge(u.role)}`}>
                       {roleIcon(u.role)}{u.role}
                     </Badge>
@@ -6678,7 +6772,7 @@ function VoSPanel() {
                         <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-muted-foreground opacity-75" />
                         <span className="relative inline-flex rounded-full h-2 w-2 bg-muted-foreground" />
                       </span>
-                      <span className="metric-good font-medium">{c.agentName ?? "Unknown"}</span>
+                      <AvatarName name={c.agentName ?? "Unknown"} size="xs" textClassName="metric-good font-medium" />
                       <span className="text-zinc-500">·</span>
                       <span className="text-zinc-400">{c.direction === "outbound" ? "↑" : "↓"} {formatDuration(c.duration)}</span>
                     </div>
@@ -6746,7 +6840,7 @@ function VoSPanel() {
                                   <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-muted-foreground" />
                                 </span>
                               )}
-                              <span>{agent.agentName}</span>
+                              <AvatarName name={agent.agentName} size="sm" textClassName="text-foreground" />
                               {group && <Badge className="text-[9px] px-1 py-0 bg-muted-foreground/15 metric-info border-border">{group}</Badge>}
                             </div>
                           </TableCell>
@@ -7135,7 +7229,9 @@ function ReadyModeKillersPanel() {
                   <TableBody>
                     {rows.map((r) => (
                       <TableRow key={r.key} className="hover-elevate">
-                        <TableCell className="font-medium whitespace-nowrap">{r.name}</TableCell>
+                        <TableCell className="font-medium whitespace-nowrap">
+                          <AvatarName name={r.name} size="sm" textClassName="text-foreground" />
+                        </TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${r.dialed ? "metric-info" : "text-muted-foreground/40"}`}>{r.dialed || "—"}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${r.connected ? "metric-good" : "text-muted-foreground/40"}`}>{r.connected || "—"}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${r.connectRate >= 20 ? "metric-info" : r.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>{r.connectRate > 0 ? `${r.connectRate}%` : "—"}</TableCell>
@@ -7191,7 +7287,9 @@ function ReadyModeKillersPanel() {
                   <TableBody>
                     {subRows.map((r) => (
                       <TableRow key={r.key} className="hover-elevate">
-                        <TableCell className="font-medium whitespace-nowrap">{r.name}</TableCell>
+                        <TableCell className="font-medium whitespace-nowrap">
+                          <AvatarName name={r.name} size="sm" textClassName="text-foreground" />
+                        </TableCell>
                         {subsBreakdown.statuses.map((s) => (
                           <TableCell key={s} className={`text-right tabular-nums font-mono ${r.counts[s] ? rmkStatusTone(s) : "text-muted-foreground/40"}`}>{r.counts[s] || "—"}</TableCell>
                         ))}
@@ -7392,7 +7490,9 @@ function ReadyModePanel() {
                     )}
                     {visible.map((agent) => (
                       <TableRow key={agent.agentName} className="hover-elevate">
-                        <TableCell className="font-medium whitespace-nowrap">{agent.agentName}</TableCell>
+                        <TableCell className="font-medium whitespace-nowrap">
+                          <AvatarName name={agent.agentName} size="sm" textClassName="text-foreground" />
+                        </TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${agent.dialed ? "metric-info" : "text-muted-foreground/40"}`}>{agent.dialed || "—"}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${agent.connected ? "metric-good" : "text-muted-foreground/40"}`}>{agent.connected || "—"}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${agent.connectRate >= 20 ? "metric-info" : agent.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>
@@ -8847,7 +8947,9 @@ function QAPanel() {
                     return (
                       <Fragment key={r.id}>
                         <TableRow className="border-zinc-800/60 hover:bg-zinc-900/40 cursor-pointer" onClick={() => setExpanded(isOpen ? null : r.id)}>
-                          <TableCell className="font-medium">{r.agentName}</TableCell>
+                        <TableCell className="font-medium">
+                          <AvatarName name={r.agentName} size="sm" textClassName="text-foreground" />
+                        </TableCell>
                           <TableCell><Badge variant="outline" className={`${deptColor} text-[10px]`}>{r.department}</Badge></TableCell>
                           <TableCell className="text-xs text-zinc-400">{new Date(r.callDate).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</TableCell>
                           <TableCell className="text-xs text-zinc-400 font-mono">{r.phoneNumber ?? "—"}</TableCell>
@@ -8945,7 +9047,9 @@ function QAPanel() {
                       : "Auto flag";
                     return (
                       <TableRow key={t.id} className="border-zinc-800/60">
-                        <TableCell className="font-medium">{t.agentName}</TableCell>
+                        <TableCell className="font-medium">
+                          <AvatarName name={t.agentName} size="sm" textClassName="text-foreground" />
+                        </TableCell>
                         <TableCell><Badge variant="outline" className={`${deptColor} text-[10px]`}>{t.department}</Badge></TableCell>
                         <TableCell className="text-right">
                           <span className={`font-semibold ${t.criticalFail ? "metric-bad" : t.aiScore < 60 ? "metric-bad" : "metric-warn"}`}>{t.aiScore}</span>
@@ -9512,7 +9616,9 @@ function ViolationsPanel() {
                         <Checkbox vkey={r.key} type="late_login" member={r.member} department={r.department} date={r.date} details={r} />
                       </TableCell>
                       <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(r.date)}</TableCell>
-                      <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"}`}>{r.member}</TableCell>
+                      <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"}`}>
+                        <AvatarName name={r.member} size="xs" textClassName={localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"} />
+                      </TableCell>
                       <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.department)}`}>{r.department}</Badge></TableCell>
                       <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtTime(r.shiftStart)}</TableCell>
                       <TableCell className="text-xs text-zinc-300 tabular-nums">{fmtTime(r.firstCallAt)}</TableCell>
@@ -9607,7 +9713,9 @@ function ViolationsPanel() {
                         <Checkbox vkey={r.key} type="availability_gap" member={r.member} department={r.department} date={r.date} details={r} />
                       </TableCell>
                       <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(r.date)}</TableCell>
-                      <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"}`}>{r.member}</TableCell>
+                      <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"}`}>
+                        <AvatarName name={r.member} size="xs" textClassName={localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"} />
+                      </TableCell>
                       <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.department)}`}>{r.department}</Badge></TableCell>
                       <TableCell className="text-xs text-center">
                         <span className={`font-bold ${r.gapCount >= 5 ? "metric-bad" : r.gapCount >= 3 ? "metric-warn" : "metric-warn"}`}>{r.gapCount}</span>
@@ -9784,7 +9892,9 @@ function ViolationsPanel() {
                           <Checkbox vkey={r.key} type="unauthorized_cancel" member={r.agent} department={r.team} date={r.date} details={r} />
                         </TableCell>
                         <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(r.date)}</TableCell>
-                        <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-red-200"}`}>{r.agent}</TableCell>
+                        <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-red-200"}`}>
+                          <AvatarName name={r.agent} size="xs" textClassName={localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-red-200"} />
+                        </TableCell>
                         <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.team)}`}>{r.team}</Badge></TableCell>
                         <TableCell className="text-xs font-mono text-zinc-300">{r.fileId || <span className="text-zinc-600">—</span>}</TableCell>
                         <TableCell className="text-xs text-red-400 font-medium">{r.rawStatus}</TableCell>
@@ -9864,7 +9974,9 @@ function ViolationsPanel() {
                           <Badge className={`text-[10px] px-1.5 py-0 border ${typeBadge}`}>{typeLabel}</Badge>
                           {detail && <span className="ml-1.5 text-zinc-500 text-[10px]">{detail}</span>}
                         </TableCell>
-                        <TableCell className="text-xs font-medium text-white">{it.member}</TableCell>
+                        <TableCell className="text-xs font-medium text-white">
+                          <AvatarName name={it.member} size="xs" textClassName="text-white" />
+                        </TableCell>
                         <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(it.department)}`}>{it.department}</Badge></TableCell>
                         <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(it.date)}</TableCell>
                         <TableCell className="text-xs text-right text-zinc-500">{it.verifiedBy}</TableCell>
@@ -10315,7 +10427,7 @@ function BackendStatsPanel() {
                         <TableCell className="text-zinc-500 tabular-nums">{i + 1}</TableCell>
                         <TableCell className="font-medium text-zinc-100">
                           <span className="inline-flex items-center gap-2">
-                            {a.agent}
+                            <AvatarName name={a.agent} size="sm" textClassName="text-zinc-100" />
                             {a.team === "killers" && (
                               <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-teal-500/30 bg-teal-500/15 text-teal-300">Killer</span>
                             )}
@@ -10489,7 +10601,9 @@ function Dashboard() {
           <div className="flex items-center gap-2 pl-2 border-l border-white/10">
             <ThemeToggle />
             <div className="text-right hidden sm:block">
-              <p className="text-xs font-medium text-foreground leading-tight">{user.username}</p>
+              <div className="flex justify-end">
+                <AvatarName name={user.username} size="xs" textClassName="text-xs font-medium text-foreground leading-tight" className="max-w-[140px]" />
+              </div>
               <Badge className={`text-[10px] px-1.5 py-0 flex items-center gap-1 border w-fit ml-auto mt-0.5 ${roleBadgeCls}`}>
                 <RoleIcon className="h-2.5 w-2.5" />{user.role}
               </Badge>
@@ -10923,10 +11037,7 @@ function SamiaChat() {
                   onClick={() => viewUserChat(u)}
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white/5 transition-colors text-left"
                 >
-                  <div className="h-8 w-8 rounded-full bg-zinc-700 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-                    {u.username.slice(0, 1).toUpperCase()}
-                  </div>
-                  <span className="text-sm text-white">{u.username}</span>
+                  <AvatarName name={u.username} size="md" textClassName="text-sm text-white" />
                   <ChevronRight className="h-4 w-4 text-zinc-600 ml-auto" />
                 </button>
               ))}
@@ -11501,7 +11612,7 @@ function AttendancePanel() {
                 return (
                   <tr key={member.id} className={`${rowBg} hover:bg-white/[0.03] transition-colors ${!member.active ? "opacity-40" : ""}`}>
                     <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-3 py-1.5 text-sm font-medium border-b border-white/5 whitespace-nowrap ${member.active ? "text-white" : "text-zinc-400 line-through"}`}>
-                      {member.name}
+                      <AvatarName name={member.name} size="sm" textClassName={member.active ? "text-white" : "text-zinc-400 line-through"} />
                       {!member.active && <span className="ml-1.5 no-underline text-[10px] font-normal text-amber-500/70 bg-muted/50 px-1 rounded" style={{textDecoration:"none"}}>inactive</span>}
                     </td>
                     <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`} title={`Shift ${member.shift} (LA time) · ${member.shiftHours || "8"}h shift`}>
@@ -11582,7 +11693,7 @@ function AttendancePanel() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={(e) => { if (e.target === e.currentTarget) setEditCell(null); }}>
           <Card className="w-80 bg-zinc-900 border-border p-5 space-y-4 shadow-2xl">
             <div>
-              <div className="font-semibold text-white">{editCell.name}</div>
+              <AvatarName name={editCell.name} size="md" textClassName="font-semibold text-white" />
               <div className="text-xs text-muted-foreground mt-0.5">
                 {new Date(editCell.date + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
               </div>
