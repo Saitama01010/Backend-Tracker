@@ -21,7 +21,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import Papa from "papaparse";
 import companyLogo from "./assets/company-logo.jpeg";
 import * as React from "react";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { AnimatePresence, motion, MotionConfig, useReducedMotion } from "framer-motion";
 import { createContext, useContext, Fragment, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
   ArrowDown,
@@ -231,6 +231,191 @@ const TAB_ICONS: Record<string, LucideIcon> = {
   qa:                CheckCircle2,
   onboarding:        UserCheck,
 };
+
+type AnimatedSelectOption<T extends string> = {
+  value: T;
+  label: string;
+  description?: string;
+  icon: LucideIcon;
+};
+
+function AnimatedDashboardSelect<T extends string>({
+  value,
+  options,
+  onChange,
+  label = "Choose view",
+  className,
+}: {
+  value: T;
+  options: AnimatedSelectOption<T>[];
+  onChange: (value: T) => void;
+  label?: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const shouldReduceMotion = useReducedMotion();
+  const selected = options.find((item) => item.value === value) ?? options[0];
+  const SelectedIcon = selected?.icon ?? Layers;
+
+  useEffect(() => {
+    if (!open) return;
+
+    function onPointerDown(event: PointerEvent) {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <MotionConfig
+      transition={shouldReduceMotion ? { duration: 0 } : { type: "spring", stiffness: 320, damping: 28 }}
+    >
+      <div ref={ref} className={cn("relative", className)}>
+        <motion.button
+          type="button"
+          layoutId="dashboard-view-dropdown"
+          onClick={() => setOpen((current) => !current)}
+          whileTap={shouldReduceMotion ? undefined : { scale: 0.97 }}
+          className="group flex h-10 min-w-[168px] items-center justify-between gap-3 rounded-full border border-border bg-secondary px-3 text-left text-secondary-foreground shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-label={label}
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-background/70">
+              <SelectedIcon className="h-3.5 w-3.5" />
+            </span>
+            <span className="truncate text-sm font-semibold">{selected?.label}</span>
+          </span>
+          <ChevronDown className={cn("h-4 w-4 shrink-0 transition-transform duration-200", open && "rotate-180")} />
+        </motion.button>
+
+        <AnimatePresence>
+          {open && (
+            <motion.div
+              initial={{ opacity: 0, y: -8, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -8, scale: 0.98 }}
+              transition={shouldReduceMotion ? { duration: 0 } : { duration: 0.18, ease: "easeOut" }}
+              className="absolute right-0 top-full z-[80] mt-2 w-[min(400px,calc(100vw-1.5rem))] overflow-hidden rounded-2xl border border-border bg-popover py-2 text-popover-foreground shadow-xl"
+              role="listbox"
+            >
+              <div className="flex items-center justify-between px-4 pb-2 pt-2">
+                <strong className="text-sm text-foreground">{label}</strong>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="flex h-7 w-7 items-center justify-center rounded-full bg-secondary text-secondary-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                  aria-label="Close view menu"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <div className="max-h-[320px] overflow-y-auto px-1">
+                {options.map((item, index) => {
+                  const Icon = item.icon;
+                  const active = item.value === value;
+                  return (
+                    <motion.button
+                      key={item.value}
+                      type="button"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 10 }}
+                      transition={shouldReduceMotion ? { duration: 0 } : { delay: index * 0.035, duration: 0.22 }}
+                      onClick={() => {
+                        onChange(item.value);
+                        setOpen(false);
+                      }}
+                      className={cn(
+                        "group flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+                        active && "bg-accent text-accent-foreground",
+                      )}
+                      role="option"
+                      aria-selected={active}
+                    >
+                      <span className="flex min-w-0 items-center gap-3">
+                        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border bg-background/70 transition-transform duration-200 group-hover:scale-105">
+                          <Icon className="h-4 w-4" />
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block text-sm font-semibold text-foreground">{item.label}</span>
+                          {item.description && (
+                            <span className="block truncate text-xs text-muted-foreground">{item.description}</span>
+                          )}
+                        </span>
+                      </span>
+                      {active && <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />}
+                    </motion.button>
+                  );
+                })}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </MotionConfig>
+  );
+}
+
+function AnimatedMetricsNav({
+  tabs,
+  value,
+  onChange,
+}: {
+  tabs: { value: string; label: string }[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const shouldReduceMotion = useReducedMotion();
+
+  return (
+    <div className="w-full overflow-x-auto pb-1">
+      <div className="flex w-full min-w-[960px] items-stretch rounded-2xl border border-border bg-card/70 p-1 shadow-sm backdrop-blur">
+        {tabs.map((tab) => {
+          const Icon = TAB_ICONS[tab.value] ?? Layers;
+          const active = tab.value === value;
+          return (
+            <button
+              key={tab.value}
+              type="button"
+              data-testid={`tab-${tab.value}`}
+              onClick={() => onChange(tab.value)}
+              className={cn(
+                "relative flex min-h-12 flex-1 items-center justify-center gap-2 overflow-hidden rounded-xl px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                active ? "text-primary-foreground" : "text-muted-foreground hover:bg-accent/70 hover:text-accent-foreground",
+              )}
+              aria-pressed={active}
+            >
+              {active && (
+                <motion.span
+                  layoutId="metrics-tab-active"
+                  className="absolute inset-0 rounded-xl bg-primary shadow-md"
+                  transition={shouldReduceMotion ? { duration: 0 } : { type: "spring", stiffness: 420, damping: 34 }}
+                />
+              )}
+              <span className="relative z-10 flex min-w-0 items-center justify-center gap-2">
+                <Icon className="h-4 w-4 shrink-0" />
+                <span className="truncate">{tab.label}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 type TeamAccess = "retention" | "nsf" | "cs";
 interface AuthUser { id: number; username: string; role: "admin" | "edit" | "view"; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; allowedSubTabs?: string[] | null; lockToToday?: boolean; hideBackendStats?: boolean; }
@@ -10047,6 +10232,41 @@ function Dashboard() {
   // Backend Statistics is its own top-level view (header dropdown), not a metrics subtab.
   const metricsTabs = ALL_TABS.filter((t) => t.value !== "backend-stats" && canSeeTab(t.value));
   const defaultTab = ta ?? "retention";
+  const [metricsTab, setMetricsTab] = useState(metricsTabs[0]?.value ?? defaultTab);
+  const metricsTabValues = metricsTabs.map((t) => t.value).join("|");
+  const viewOptions: AnimatedSelectOption<DashView>[] = [
+    ...(can("view_metrics") ? [{
+      value: "metrics" as const,
+      label: "Metrics",
+      description: "Retention, CS, NSF and QA views",
+      icon: TrendingUp,
+    }] : []),
+    ...(canSeeTab("backend-stats") ? [{
+      value: "backend-stats" as const,
+      label: "Backend Stats",
+      description: "Submission and backend health overview",
+      icon: BarChart3,
+    }] : []),
+    ...(can("view_metrics") && user.role === "admin" ? [{
+      value: "phones" as const,
+      label: "Phones",
+      description: "Live QUO line and phone data",
+      icon: Phone,
+    }] : []),
+    ...(can("view_attendance") ? [{
+      value: "attendance" as const,
+      label: "Attendance",
+      description: "Team shifts and attendance tracking",
+      icon: CalendarDays,
+    }] : []),
+  ];
+
+  useEffect(() => {
+    if (view !== "metrics") return;
+    if (!metricsTabs.some((t) => t.value === metricsTab)) {
+      setMetricsTab(metricsTabs[0]?.value ?? defaultTab);
+    }
+  }, [view, metricsTab, metricsTabValues, defaultTab]);
 
   const roleBadgeCls =
     user.role === "admin" ? "bg-muted metric-info border-border" :
@@ -10080,19 +10300,13 @@ function Dashboard() {
 
           {/* View switcher — only show tabs user has access to */}
           {(can("view_metrics") || can("view_attendance") || canSeeTab("backend-stats")) && (
-            <div className="relative">
-              <select
-                value={view}
-                onChange={(e) => setView(e.target.value as DashView)}
-                className="appearance-none pl-4 pr-9 py-2 rounded-lg bg-secondary border border-border text-sm font-medium text-secondary-foreground cursor-pointer hover:bg-accent transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50"
-              >
-                {canSeeTab("backend-stats") && <option value="backend-stats">📊 Backend Statistics</option>}
-                {can("view_metrics") && <option value="metrics">📈 Metrics</option>}
-                {can("view_metrics") && user.role === "admin" && <option value="phones">📞 Phones</option>}
-                {can("view_attendance") && <option value="attendance">🗓 Attendance</option>}
-              </select>
-              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs">▾</span>
-            </div>
+            <AnimatedDashboardSelect
+              value={view}
+              options={viewOptions}
+              onChange={setView}
+              label="Choose dashboard view"
+              className="shrink-0"
+            />
           )}
 
           {/* User info */}
@@ -10173,23 +10387,8 @@ function Dashboard() {
         ) : view === "backend-stats" && canSeeTab("backend-stats") ? (
           <BackendStatsPanel />
         ) : view === "metrics" && can("view_metrics") ? (
-          <Tabs defaultValue={metricsTabs[0]?.value ?? defaultTab} className="space-y-6">
-            <TabsList className="flex h-auto flex-wrap justify-start gap-2 bg-transparent p-0">
-              {metricsTabs.map((t) => {
-                const Icon = TAB_ICONS[t.value] ?? Layers;
-                return (
-                  <TabsTrigger
-                    key={t.value}
-                    value={t.value}
-                    data-testid={`tab-${t.value}`}
-                    className="group gap-2 whitespace-nowrap rounded-full border border-border bg-card/70 px-4 py-2 text-sm font-medium text-muted-foreground backdrop-blur transition-all hover:border-border hover:bg-accent hover:text-accent-foreground data-[state=active]:border-primary-border data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md"
-                  >
-                    <Icon className="h-3.5 w-3.5 shrink-0" />
-                    {t.label}
-                  </TabsTrigger>
-                );
-              })}
-            </TabsList>
+          <Tabs value={metricsTab} onValueChange={setMetricsTab} className="space-y-6">
+            <AnimatedMetricsNav tabs={metricsTabs} value={metricsTab} onChange={setMetricsTab} />
             {canSeeTab("retention") && (
               <TabsContent value="retention">
                 <RetentionPanel />
