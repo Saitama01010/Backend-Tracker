@@ -21,6 +21,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import Papa from "papaparse";
 import companyLogo from "./assets/company-logo.jpeg";
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion, MotionConfig, useReducedMotion } from "framer-motion";
 import { createContext, useContext, Fragment, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
@@ -161,6 +162,54 @@ function useThemeMode() {
   const context = useContext(ThemeContext);
   if (!context) throw new Error("useThemeMode must be used within ThemeProvider");
   return context;
+}
+
+const BOLD_DIGIT_MAP: Record<string, string> = {
+  "0": "𝟎",
+  "1": "𝟏",
+  "2": "𝟐",
+  "3": "𝟑",
+  "4": "𝟒",
+  "5": "𝟓",
+  "6": "𝟔",
+  "7": "𝟕",
+  "8": "𝟖",
+  "9": "𝟗",
+};
+
+function useBoldDigitDisplay() {
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const skipTags = new Set(["SCRIPT", "STYLE", "TEXTAREA", "INPUT", "SELECT", "OPTION"]);
+    const digitRe = /[0-9]/g;
+    const convertNode = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const parent = node.parentElement;
+        if (!parent || skipTags.has(parent.tagName) || parent.closest("[data-keep-plain-digits]")) return;
+        const text = node.nodeValue ?? "";
+        if (digitRe.test(text)) node.nodeValue = text.replace(/[0-9]/g, (d) => BOLD_DIGIT_MAP[d] ?? d);
+        digitRe.lastIndex = 0;
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const el = node as Element;
+      if (skipTags.has(el.tagName) || el.closest("[data-keep-plain-digits]")) return;
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      const textNodes: Node[] = [];
+      while (walker.nextNode()) textNodes.push(walker.currentNode);
+      textNodes.forEach(convertNode);
+    };
+
+    convertNode(document.body);
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        mutation.addedNodes.forEach(convertNode);
+        if (mutation.type === "characterData") convertNode(mutation.target);
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    return () => observer.disconnect();
+  }, []);
 }
 
 function ThemeToggle({ className }: { className?: string }) {
@@ -403,14 +452,34 @@ function AnimatedValueSelect<T extends string>({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuRect, setMenuRect] = useState<React.CSSProperties>({});
   const shouldReduceMotion = useReducedMotion();
   const selected = options.find((item) => item.value === value) ?? options[0];
 
+  const updateMenuRect = useCallback(() => {
+    const trigger = ref.current?.getBoundingClientRect();
+    if (!trigger) return;
+    const minWidth = Math.max(trigger.width, 120);
+    const left = align === "right"
+      ? Math.max(12, Math.min(window.innerWidth - minWidth - 12, trigger.right - minWidth))
+      : Math.max(12, Math.min(window.innerWidth - minWidth - 12, trigger.left));
+    setMenuRect({
+      position: "fixed",
+      top: trigger.bottom + 8,
+      left,
+      minWidth,
+      zIndex: 9999,
+    });
+  }, [align]);
+
   useEffect(() => {
     if (!open) return;
+    updateMenuRect();
 
     function onPointerDown(event: PointerEvent) {
-      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (!ref.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
     }
 
     function onKeyDown(event: KeyboardEvent) {
@@ -419,11 +488,65 @@ function AnimatedValueSelect<T extends string>({
 
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", updateMenuRect);
+    window.addEventListener("scroll", updateMenuRect, true);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", updateMenuRect);
+      window.removeEventListener("scroll", updateMenuRect, true);
     };
-  }, [open]);
+  }, [open, updateMenuRect]);
+
+  const menu = (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          ref={menuRef}
+          initial={{ opacity: 0, y: -6, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: -6, scale: 0.98 }}
+          transition={shouldReduceMotion ? { duration: 0 } : { duration: 0.17, ease: "easeOut" }}
+          style={menuRect}
+          className={cn(
+            "max-h-72 overflow-y-auto rounded-xl border border-border bg-popover p-1 text-popover-foreground shadow-xl",
+            menuClassName,
+          )}
+          role="listbox"
+        >
+          {options.map((item, index) => {
+            const active = item.value === value;
+            return (
+              <motion.button
+                key={item.value}
+                type="button"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 8 }}
+                transition={shouldReduceMotion ? { duration: 0 } : { delay: index * 0.025, duration: 0.18 }}
+                onClick={() => {
+                  onChange(item.value);
+                  setOpen(false);
+                }}
+                className={cn(
+                  "flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+                  active && "bg-accent text-accent-foreground",
+                )}
+                role="option"
+                aria-selected={active}
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  {item.emoji && <span className="shrink-0 leading-none" aria-hidden="true">{item.emoji}</span>}
+                  <span className="truncate">{item.label}</span>
+                </span>
+                {active && <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-primary" />}
+              </motion.button>
+            );
+          })}
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
 
   return (
     <MotionConfig transition={shouldReduceMotion ? { duration: 0 } : { type: "spring", stiffness: 340, damping: 28 }}>
@@ -448,53 +571,7 @@ function AnimatedValueSelect<T extends string>({
           </span>
           <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 transition-transform duration-200", open && "rotate-180")} />
         </motion.button>
-
-        <AnimatePresence>
-          {open && (
-            <motion.div
-              initial={{ opacity: 0, y: -6, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -6, scale: 0.98 }}
-              transition={shouldReduceMotion ? { duration: 0 } : { duration: 0.17, ease: "easeOut" }}
-              className={cn(
-                "absolute top-full z-[140] mt-2 max-h-72 min-w-full overflow-y-auto rounded-xl border border-border bg-popover p-1 text-popover-foreground shadow-xl",
-                align === "right" ? "right-0" : "left-0",
-                menuClassName,
-              )}
-              role="listbox"
-            >
-              {options.map((item, index) => {
-                const active = item.value === value;
-                return (
-                  <motion.button
-                    key={item.value}
-                    type="button"
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 8 }}
-                    transition={shouldReduceMotion ? { duration: 0 } : { delay: index * 0.025, duration: 0.18 }}
-                    onClick={() => {
-                      onChange(item.value);
-                      setOpen(false);
-                    }}
-                    className={cn(
-                      "flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
-                      active && "bg-accent text-accent-foreground",
-                    )}
-                    role="option"
-                    aria-selected={active}
-                  >
-                    <span className="flex min-w-0 items-center gap-2">
-                      {item.emoji && <span className="shrink-0 leading-none" aria-hidden="true">{item.emoji}</span>}
-                      <span className="truncate">{item.label}</span>
-                    </span>
-                    {active && <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-primary" />}
-                  </motion.button>
-                );
-              })}
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {typeof document === "undefined" ? menu : createPortal(menu, document.body)}
       </div>
     </MotionConfig>
   );
@@ -2615,9 +2692,9 @@ function ByDayView({ data }: { data: Aggregated }) {
           triggerClassName="min-w-[180px]"
           menuClassName="w-64"
           options={[
-            { value: "", label: "All agents", emoji: "??" },
-            ...(agentOptions.some((n) => isKillerAgentKey(normalizeAgent(n))) ? [{ value: KILLERS_FILTER, label: "Killers", emoji: "??" }] : []),
-            ...agentOptions.map((n) => ({ value: n, label: n, emoji: "??" })),
+            { value: "", label: "All agents" },
+            ...(agentOptions.some((n) => isKillerAgentKey(normalizeAgent(n))) ? [{ value: KILLERS_FILTER, label: "Killers" }] : []),
+            ...agentOptions.map((n) => ({ value: n, label: n })),
           ]}
         />
         {agentFilter && (
@@ -2798,6 +2875,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
   const showRate = data.mode === "retention";
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>({ column: "__total__", dir: "desc" });
+  const [selectedAgent, setSelectedAgent] = useState<AgentBreakdown | null>(null);
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -2953,7 +3031,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
             <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
               <TableRow>
                 <TableHead className="whitespace-nowrap min-w-[200px]">
-                  <SortHeader id="__agent__" label="Agent" sort={sort} onToggle={toggle} />
+                  <SortHeader id="__agent__" label="Agent Name-Alias Name" sort={sort} onToggle={toggle} />
                 </TableHead>
                 {data.statuses.map((s) => (
                   <TableHead key={s} className={`whitespace-nowrap text-right ${statusTone(s)}`}>
@@ -2968,12 +3046,13 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
                     <SortHeader id="__rate__" label="Retention rate" align="right" sort={sort} onToggle={toggle} />
                   </TableHead>
                 )}
+                <TableHead className="whitespace-nowrap text-center">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {visible.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={data.statuses.length + 2 + (showRate ? 1 : 0)} className="text-center py-12 text-muted-foreground">
+                  <TableCell colSpan={data.statuses.length + 3 + (showRate ? 1 : 0)} className="text-center py-12 text-muted-foreground">
                     No agents match the current filters.
                   </TableCell>
                 </TableRow>
@@ -2997,6 +3076,12 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
                       {retentionRate(sumRetained(a.byStatus, data.retainedStatuses), a.total)}
                     </TableCell>
                   )}
+                  <TableCell className="text-center">
+                    <Button size="sm" variant="outline" className="h-8" onClick={() => setSelectedAgent(a)}>
+                      <Eye className="mr-1 h-3.5 w-3.5" />
+                      View Details
+                    </Button>
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -3015,12 +3100,47 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
                       {retentionRate(data.totals.retained, data.totals.grand)}
                     </TableCell>
                   )}
+                  <TableCell />
                 </TableRow>
               </TableHeader>
             )}
           </Table>
         </div>
       </div>
+      {selectedAgent && (
+        <Dialog open={!!selectedAgent} onOpenChange={(open) => !open && setSelectedAgent(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Agent Details</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 text-sm">
+              <AvatarName name={selectedAgent.agent} subtitle="Agent Name-Alias Name" size="lg" textClassName="text-foreground" />
+              <div className="grid gap-2 sm:grid-cols-3">
+                <div>
+                  <div className="text-xs text-muted-foreground">Status</div>
+                  <Badge variant="outline" className="metric-good border-border">Active in report</Badge>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Submissions</div>
+                  <div className="font-medium tabular-nums">{selectedAgent.total}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Call time</div>
+                  <div className="font-medium tabular-nums">{formatDuration(selectedAgent.seconds)}</div>
+                </div>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {data.statuses.map((s) => (
+                  <div key={s} className="flex items-center justify-between rounded-md border border-border bg-muted/30 px-3 py-2">
+                    <span className={statusTone(s)}>{s}</span>
+                    <span className="font-semibold tabular-nums">{selectedAgent.byStatus.get(s) ?? 0}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }
@@ -5568,7 +5688,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                 ariaLabel="Choose agent team"
                 triggerClassName="h-10 min-w-[140px] rounded-lg border-white/10 bg-zinc-800/80 text-white"
                 menuClassName="w-44"
-                options={TEAMS.map((t) => ({ value: t.key, label: t.label, emoji: "🏷️" }))}
+                options={TEAMS.map((t) => ({ value: t.key, label: t.label }))}
               />
               <button
                 onClick={() => void addAgent()}
@@ -5614,7 +5734,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                           ariaLabel={`Choose team for ${a.name}`}
                           triggerClassName={cn("h-7 min-w-[120px] rounded-full px-2 py-1 text-xs", teamBadge[a.team] ?? "bg-zinc-700 text-zinc-300 border-zinc-600")}
                           menuClassName="w-44"
-                          options={TEAMS.map((t) => ({ value: t.key, label: t.label, emoji: "🏷️" }))}
+                          options={TEAMS.map((t) => ({ value: t.key, label: t.label }))}
                         />
                       </td>
                       <td className="px-3 py-2">
@@ -5731,7 +5851,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                       ariaLabel="Choose agent detail team"
                       triggerClassName="h-9 w-full"
                       menuClassName="w-full"
-                      options={TEAMS.map((t) => ({ value: t.key, label: t.label, emoji: "???" }))}
+                      options={TEAMS.map((t) => ({ value: t.key, label: t.label }))}
                     />
                   </label>
                   <label className="space-y-1.5">
@@ -7333,7 +7453,7 @@ function ReadyModeKillersPanel() {
                 <Table>
                   <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
                     <TableRow>
-                      <TableHead className="text-left text-muted-foreground">Agent</TableHead>
+                      <TableHead className="text-left text-muted-foreground">Agent Name-Alias Name</TableHead>
                       <TableHead className="text-right metric-info">Dialed</TableHead>
                       <TableHead className="text-right metric-good">Connected</TableHead>
                       <TableHead className="text-right metric-info">Connect %</TableHead>
@@ -7393,7 +7513,7 @@ function ReadyModeKillersPanel() {
                 <Table>
                   <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
                     <TableRow>
-                      <TableHead className="text-left text-muted-foreground">Agent</TableHead>
+                      <TableHead className="text-left text-muted-foreground">Agent Name-Alias Name</TableHead>
                       {subsBreakdown.statuses.map((s) => (
                         <TableHead key={s} className={`text-right ${rmkStatusTone(s)}`}>{s}</TableHead>
                       ))}
@@ -9040,7 +9160,7 @@ function QAPanel() {
               <Table>
                 <TableHeader>
                   <TableRow className="border-zinc-800 hover:bg-transparent">
-                    <TableHead className="text-zinc-400">Agent</TableHead>
+                    <TableHead className="text-zinc-400">Agent Name-Alias Name</TableHead>
                     <TableHead className="text-zinc-400">Dept</TableHead>
                     <TableHead className="text-zinc-400">When</TableHead>
                     <TableHead className="text-zinc-400">Customer</TableHead>
@@ -9139,7 +9259,7 @@ function QAPanel() {
               <Table>
                 <TableHeader>
                   <TableRow className="border-zinc-800 hover:bg-transparent">
-                    <TableHead className="text-zinc-400">Agent</TableHead>
+                    <TableHead className="text-zinc-400">Agent Name-Alias Name</TableHead>
                     <TableHead className="text-zinc-400">Dept</TableHead>
                     <TableHead className="text-zinc-400 text-right">AI</TableHead>
                     <TableHead className="text-zinc-400">Source</TableHead>
@@ -9717,7 +9837,7 @@ function ViolationsPanel() {
                   <TableRow className="border-white/8 bg-zinc-900/40">
                     <TableHead className="w-8" />
                     <TableHead className="text-xs w-28">Date</TableHead>
-                    <TableHead className="text-xs">Agent</TableHead>
+                    <TableHead className="text-xs">Agent Name-Alias Name</TableHead>
                     <TableHead className="text-xs">Dept</TableHead>
                     <TableHead className="text-xs">Shift Start</TableHead>
                     <TableHead className="text-xs">First Call</TableHead>
@@ -9815,7 +9935,7 @@ function ViolationsPanel() {
                   <TableRow className="border-white/8 bg-zinc-900/40">
                     <TableHead className="w-8" />
                     <TableHead className="text-xs w-28">Date</TableHead>
-                    <TableHead className="text-xs">Agent</TableHead>
+                    <TableHead className="text-xs">Agent Name-Alias Name</TableHead>
                     <TableHead className="text-xs">Dept</TableHead>
                     <TableHead className="text-xs text-center">Gaps</TableHead>
                     <TableHead className="text-xs">Gap Durations (LA time)</TableHead>
@@ -9994,7 +10114,7 @@ function ViolationsPanel() {
                     <TableRow className="border-white/8 bg-zinc-900/40">
                       <TableHead className="w-8" />
                       <TableHead className="text-xs w-28">Date</TableHead>
-                      <TableHead className="text-xs">Agent</TableHead>
+                      <TableHead className="text-xs">Agent Name-Alias Name</TableHead>
                       <TableHead className="text-xs">Team</TableHead>
                       <TableHead className="text-xs">File ID</TableHead>
                       <TableHead className="text-xs">Status</TableHead>
@@ -10058,7 +10178,7 @@ function ViolationsPanel() {
                 <TableHeader>
                   <TableRow className="border-white/8 bg-zinc-900/40">
                     <TableHead className="text-xs">Type</TableHead>
-                    <TableHead className="text-xs">Agent / Info</TableHead>
+                    <TableHead className="text-xs">Agent Name-Alias Name / Info</TableHead>
                     <TableHead className="text-xs">Dept</TableHead>
                     <TableHead className="text-xs w-28">Date</TableHead>
                     <TableHead className="text-xs text-right">Verified By</TableHead>
@@ -10390,9 +10510,9 @@ function BackendStatsPanel() {
             menuClassName="w-52"
             align="right"
             options={[
-              { value: "all", label: "All time", emoji: "??" },
-              { value: "today", label: "Today", emoji: "??" },
-              ...monthOptions.map((m) => ({ value: m, label: bstatMonthLabel(m), emoji: "??" })),
+              { value: "all", label: "All time" },
+              { value: "today", label: "Today" },
+              ...monthOptions.map((m) => ({ value: m, label: bstatMonthLabel(m) })),
             ]}
           />
           <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching} className="gap-2">
@@ -10526,7 +10646,7 @@ function BackendStatsPanel() {
                   <TableHeader>
                     <TableRow className="border-white/5 hover:bg-transparent">
                       <TableHead className="w-10 text-zinc-400">#</TableHead>
-                      <TableHead className="text-zinc-400">Agent</TableHead>
+                      <TableHead className="text-zinc-400">Agent Name-Alias Name</TableHead>
                       <TableHead className="text-zinc-400">Team</TableHead>
                       <TableHead className="text-right text-zinc-400">Total</TableHead>
                       <TableHead className="text-right text-zinc-400">IDP-Cancel-Retained</TableHead>
@@ -11377,6 +11497,7 @@ function AttendancePanel() {
   const [autoMarking, setAutoMarking] = useState(false);
   const [autoMarkResult, setAutoMarkResult] = useState<string | null>(null);
   const [editingMember, setEditingMember] = useState<AttMember | null>(null);
+  const [viewingMember, setViewingMember] = useState<AttMember | null>(null);
   const [showInactive, setShowInactive] = useState(false);
 
   const monthStart = new Date(today.getFullYear(), today.getMonth() + monthOff, 1);
@@ -11552,7 +11673,7 @@ function AttendancePanel() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-xl font-semibold text-white">Attendance</h2>
-          <p className="text-sm text-muted-foreground">Track daily presence, mark status, and add notes per member</p>
+          <p className="text-sm text-muted-foreground">Track daily presence, mark status, and add notes per agent</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {canManage && (data?.members.length ?? 0) === 0 && (
@@ -11686,7 +11807,7 @@ function AttendancePanel() {
           <table className="border-collapse text-sm" style={{ minWidth: `${260 + dateCols.length * 50}px` }}>
             <thead>
               <tr className="bg-zinc-950">
-                <th className="sticky left-0 z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-3 py-2 border-b border-white/10 min-w-[160px]">Member</th>
+                <th className="sticky left-0 z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-3 py-2 border-b border-white/10 min-w-[160px]">Agent Name-Alias Name</th>
                 <th className="sticky left-[160px] z-20 bg-zinc-950 text-center text-xs text-muted-foreground font-medium px-1 py-2 border-b border-white/10 w-[90px]">Shift / Hrs</th>
                 <th className="sticky left-[250px] z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-2 py-2 border-b border-white/10 w-24">Dept</th>
                 {dateCols.map((d) => {
@@ -11711,7 +11832,8 @@ function AttendancePanel() {
                 <th className="text-center text-xs metric-info/70 font-medium px-2 py-2 border-b border-white/10 w-8">PTO</th>
                 <th className="text-center text-xs text-red-400/70 font-medium px-2 py-2 border-b border-white/10 w-10">NSNC</th>
                 <th className="text-center text-xs metric-warn/70 font-medium px-2 py-2 border-b border-white/10 w-8" title="Saturdays present this month">Sat</th>
-                {canManage && <th className="text-center text-xs text-muted-foreground/50 font-medium px-1 py-2 border-b border-white/10 w-6" title="Edit member">⋯</th>}
+                <th className="text-center text-xs text-muted-foreground/50 font-medium px-1 py-2 border-b border-white/10 w-10" title="View agent details">View</th>
+                {canManage && <th className="text-center text-xs text-muted-foreground/50 font-medium px-1 py-2 border-b border-white/10 w-6" title="Edit agent">⋯</th>}
               </tr>
             </thead>
             <tbody>
@@ -11770,14 +11892,26 @@ function AttendancePanel() {
                     <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums text-red-400">{cNsnc || "—"}</td>
                     <td className="text-center text-xs font-mono border-b border-white/5 tabular-nums metric-warn" title="Saturdays present (In or Late) this month">{cSat || "—"}</td>
                     <td className="text-center border-b border-white/5">
-                      {canManage && <button onClick={() => setEditingMember(member)} className="text-zinc-600 hover:text-zinc-300 transition-colors px-1 text-base leading-none">⋯</button>}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => setViewingMember(member)}
+                      >
+                        <Eye className="mr-1 h-3 w-3" />
+                        View
+                      </Button>
                     </td>
+                    {canManage && <td className="text-center border-b border-white/5">
+                      {canManage && <button onClick={() => setEditingMember(member)} className="text-zinc-600 hover:text-zinc-300 transition-colors px-1 text-base leading-none">⋯</button>}
+                    </td>}
                   </tr>
                 );
               })}
               {visible.length === 0 && !isLoading && (
                 <tr>
-                  <td colSpan={dateCols.length + 9} className="text-center py-16 text-muted-foreground text-sm">
+                  <td colSpan={dateCols.length + 10 + (canManage ? 1 : 0)} className="text-center py-16 text-muted-foreground text-sm">
                     {(data?.members.length ?? 0) === 0 ? (
                       <>No members yet — <button onClick={doImport} disabled={importing} className="metric-info hover:metric-info underline">{importing ? "Importing…" : "import from Google Sheets"}</button> or add one above.</>
                     ) : (
@@ -11795,14 +11929,47 @@ function AttendancePanel() {
       <div className="flex items-center gap-4 text-xs text-muted-foreground pt-1">
         <span className="font-medium">Legend:</span>
         {ATT_STATUS.filter((x) => x.s).map(({ s, label, badge }) => (
-          <span key={s} className={`flex items-center gap-1 ${badge}`}>
-            <AttCell status={s} /> {label}
+          <span key={s} className={`flex items-center gap-1 ${badge}`} title={label}>
+            <AttCell status={s} />
           </span>
         ))}
         <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> Has note</span>
         <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-indigo-400 inline-block" /> Got coaching</span>
         <span className="ml-auto italic">Click any past cell to mark attendance or add a note</span>
       </div>
+
+      {viewingMember && (
+        <Dialog open={!!viewingMember} onOpenChange={(open) => !open && setViewingMember(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Agent Details</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 text-sm">
+              <AvatarName name={viewingMember.name} subtitle={viewingMember.department || "No department"} size="lg" textClassName="text-foreground" />
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div>
+                  <div className="text-xs text-muted-foreground">Agent Name-Alias Name</div>
+                  <div className="font-medium">{viewingMember.name}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Status</div>
+                  <Badge variant="outline" className={viewingMember.active ? "metric-good border-border" : "metric-warn border-border"}>
+                    {viewingMember.active ? "Active" : "Inactive"}
+                  </Badge>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Shift</div>
+                  <div className="font-medium">{shiftLabel(viewingMember.shift) || "—"}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Hours</div>
+                  <div className="font-medium">{viewingMember.shiftHours || "8"}h</div>
+                </div>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {/* Cell editor overlay */}
       {editCell && (
@@ -11906,6 +12073,7 @@ function AttendancePanel() {
 }
 
 function App() {
+  useBoldDigitDisplay();
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>

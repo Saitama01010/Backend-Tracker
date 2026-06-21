@@ -1,6 +1,10 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -311,6 +315,7 @@ export function OnboardingPanel() {
   const [month, setMonth] = useState(thisMonth);
   const [day, setDay] = useState(today);
   const [downloading, setDownloading] = useState(false);
+  const [selectedAgent, setSelectedAgent] = useState<AnalyticsAgent | null>(null);
 
   const { from, to } = useMemo(() => {
     if (gran === "month") return { from: `${month}-01`, to: lastDayOfMonth(month) };
@@ -496,7 +501,7 @@ export function OnboardingPanel() {
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
                       <TableHead className="w-12">#</TableHead>
-                      <TableHead>Agent</TableHead>
+                      <TableHead>Agent Name-Alias Name</TableHead>
                       <TableHead className="text-right">Calls</TableHead>
                       <TableHead className="text-right">Inbound</TableHead>
                       <TableHead className="text-right">Answered</TableHead>
@@ -505,6 +510,7 @@ export function OnboardingPanel() {
                       <TableHead className="text-right">Avg Gap</TableHead>
                       <TableHead className="text-right">Talk</TableHead>
                       <TableHead className="text-right">Onboarded %</TableHead>
+                      <TableHead className="text-center">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -532,6 +538,11 @@ export function OnboardingPanel() {
                             <TableCell className="text-right tabular-nums">{a.avgGapMin}m</TableCell>
                             <TableCell className="text-right tabular-nums">{fmtDur(a.talkSeconds)}</TableCell>
                             <TableCell className="text-right tabular-nums">{a.onboardedRate}%</TableCell>
+                            <TableCell className="text-center">
+                              <Button size="sm" variant="outline" className="h-8" onClick={() => setSelectedAgent(a)}>
+                                View Details
+                              </Button>
+                            </TableCell>
                           </TableRow>
                         );
                       });
@@ -547,6 +558,32 @@ export function OnboardingPanel() {
                 missed inbound calls land, not a working agent.
               </p>
             </div>
+            {selectedAgent && (
+              <Dialog open={!!selectedAgent} onOpenChange={(open) => !open && setSelectedAgent(null)}>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Agent Details</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-3 text-sm">
+                    <div>
+                      <div className="text-xs text-muted-foreground">Agent Name-Alias Name</div>
+                      <div className="font-semibold">{selectedAgent.name}</div>
+                    </div>
+                    <Badge variant="outline" className={selectedAgent.ranked ? "metric-good border-border" : "metric-warn border-border"}>
+                      {selectedAgent.ranked ? "Ranked" : "Low inbound volume"}
+                    </Badge>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>Calls: <span className="font-semibold tabular-nums">{selectedAgent.totalCalls}</span></div>
+                      <div>Answered: <span className="font-semibold tabular-nums metric-good">{selectedAgent.answered}</span></div>
+                      <div>Missed: <span className="font-semibold tabular-nums metric-bad">{selectedAgent.missed}</span></div>
+                      <div>Onboarded: <span className="font-semibold tabular-nums metric-info">{selectedAgent.onboarded}</span></div>
+                      <div>Response: <span className="font-semibold tabular-nums">{selectedAgent.responseRate}%</span></div>
+                      <div>Talk: <span className="font-semibold tabular-nums">{fmtDur(selectedAgent.talkSeconds)}</span></div>
+                    </div>
+                  </div>
+                </DialogContent>
+              </Dialog>
+            )}
           </>
         )}
       </div>

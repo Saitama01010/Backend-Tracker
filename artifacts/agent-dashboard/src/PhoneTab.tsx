@@ -7,6 +7,10 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 import { RefreshCw, Phone, PhoneIncoming, PhoneMissed, Clock, Users, Database, CheckCircle, Loader2, FileSpreadsheet, Download, Sparkles, Receipt } from "lucide-react";
 
 const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
@@ -288,6 +292,7 @@ function OnboardingReportCard() {
 }
 
 function AgentTable({ rows }: { rows: AgentRow[] }) {
+  const [selectedAgent, setSelectedAgent] = useState<AgentRow | null>(null);
   if (rows.length === 0) {
     return <p className="text-center text-muted-foreground py-10 text-sm">No call data in this date range. Data populates as calls sync from Quo.</p>;
   }
@@ -296,7 +301,7 @@ function AgentTable({ rows }: { rows: AgentRow[] }) {
       <Table>
         <TableHeader>
           <TableRow className="bg-card/40">
-            <TableHead>Agent</TableHead>
+            <TableHead>Agent Name-Alias Name</TableHead>
             <TableHead className="text-right">Total</TableHead>
             <TableHead className="text-right">Outbound</TableHead>
             <TableHead className="text-right">Inbound</TableHead>
@@ -306,6 +311,7 @@ function AgentTable({ rows }: { rows: AgentRow[] }) {
             <TableHead className="text-right">CX Reached</TableHead>
             <TableHead className="text-right">Talk Time</TableHead>
             <TableHead className="text-right">Answer Rate</TableHead>
+            <TableHead className="text-center">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -321,10 +327,37 @@ function AgentTable({ rows }: { rows: AgentRow[] }) {
               <TableCell className="text-right tabular-nums font-mono">{r.uniqueContacts}</TableCell>
               <TableCell className="text-right tabular-nums font-mono">{formatDur(r.talkSeconds)}</TableCell>
               <TableCell className="text-right tabular-nums font-mono metric-good">{pct(r.answered, r.totalCalls)}</TableCell>
+              <TableCell className="text-center">
+                <Button size="sm" variant="outline" className="h-8" onClick={() => setSelectedAgent(r)}>
+                  View Details
+                </Button>
+              </TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
+      {selectedAgent && (
+        <Dialog open={!!selectedAgent} onOpenChange={(open) => !open && setSelectedAgent(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Agent Details</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 text-sm">
+              <div>
+                <div className="text-xs text-muted-foreground">Agent Name-Alias Name</div>
+                <div className="font-semibold">{selectedAgent.name}</div>
+              </div>
+              <Badge variant="outline" className="metric-good border-border">Active in report</Badge>
+              <div className="grid grid-cols-2 gap-2">
+                <div>Total: <span className="font-semibold tabular-nums">{selectedAgent.totalCalls}</span></div>
+                <div>Answered: <span className="font-semibold tabular-nums metric-good">{selectedAgent.answered}</span></div>
+                <div>Missed: <span className="font-semibold tabular-nums metric-bad">{selectedAgent.missed}</span></div>
+                <div>Talk Time: <span className="font-semibold tabular-nums">{formatDur(selectedAgent.talkSeconds)}</span></div>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }

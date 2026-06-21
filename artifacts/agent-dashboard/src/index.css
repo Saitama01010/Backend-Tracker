@@ -4,6 +4,28 @@
 
 @custom-variant dark (&:is(.dark *));
 
+@keyframes calendar-panel-pop {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes calendar-day-pop {
+  from {
+    opacity: .72;
+    transform: scale(.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 @theme inline {
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
@@ -436,4 +458,25 @@
   [role="button"]:not([aria-disabled="true"]):active {
     transform: none;
   }
+}
+
+.tabular-nums,
+.font-mono {
+  font-weight: 800;
+}
+
+input[type="date"],
+input[type="month"],
+[data-slot="calendar"] {
+  animation: calendar-panel-pop .22s ease-out both;
+  transform-origin: top center;
+}
+
+input[type="date"]:focus,
+input[type="month"]:focus {
+  animation: calendar-panel-pop .18s ease-out both;
+}
+
+[data-slot="calendar"] button[data-day] {
+  animation: calendar-day-pop .18s ease-out both;
 }
