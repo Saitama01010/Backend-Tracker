@@ -20,6 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import Papa from "papaparse";
 import companyLogo from "./assets/company-logo.jpeg";
+import * as React from "react";
 import { createContext, useContext, Fragment, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
   ArrowDown,
@@ -78,6 +79,7 @@ import {
   FileSpreadsheet,
   Loader2,
   ArrowLeftRight,
+  MoreVertical,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -4774,6 +4776,112 @@ function LoginGate({ children }: { children: React.ReactNode }) {
 }
 
 // ─── User Management Panel (Admin only) ──────────────────────────────────────
+
+function AnimatedMenuItem({
+  label,
+  icon,
+  onClick,
+  tone = "neutral",
+}: {
+  label: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+  tone?: "neutral" | "danger";
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className={cn(
+        "group relative flex h-16 w-16 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm",
+        "transition-colors duration-200 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        tone === "danger" && "hover:metric-bad",
+      )}
+    >
+      <span className="flex h-6 w-6 items-center justify-center transition-all duration-200 group-hover:[&_svg]:stroke-[2.5] [&_svg]:h-5 [&_svg]:w-5">
+        {icon}
+      </span>
+      <span className="pointer-events-none absolute right-[calc(100%+10px)] top-1/2 hidden -translate-y-1/2 whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-xs font-medium text-popover-foreground shadow-sm opacity-0 transition-opacity group-hover:block group-hover:opacity-100 group-focus-visible:block group-focus-visible:opacity-100">
+        {label}
+      </span>
+    </button>
+  );
+}
+
+function AnimatedActionMenu({ children }: { children: React.ReactNode }) {
+  const [expanded, setExpanded] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const items = React.Children.toArray(children);
+
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) setExpanded(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExpanded(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
+
+  const closeAfter = (child: React.ReactNode) => {
+    if (!React.isValidElement<{ onClick?: () => void }>(child)) return child;
+    return React.cloneElement(child, {
+      onClick: () => {
+        child.props.onClick?.();
+        setExpanded(false);
+      },
+    });
+  };
+
+  return (
+    <div ref={ref} className="relative h-16 w-16" data-expanded={expanded}>
+      <button
+        type="button"
+        aria-label={expanded ? "Close account menu" : "Open account menu"}
+        aria-haspopup="menu"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((v) => !v)}
+        className={cn(
+          "relative z-50 flex h-16 w-16 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm",
+          "transition-all duration-300 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          expanded && "bg-accent text-foreground",
+        )}
+      >
+        <MoreVertical className={cn("h-5 w-5 transition-transform duration-300", expanded && "rotate-90")} />
+      </button>
+      <div role="menu" aria-orientation="vertical">
+        {items.map((child, index) => {
+          const offset = (index + 1) * 48;
+          return (
+            <div
+              key={index}
+              className="absolute left-0 top-0 h-16 w-16 will-change-transform"
+              style={{
+                transform: `translateY(${expanded ? offset : 0}px)`,
+                opacity: expanded ? 1 : 0,
+                pointerEvents: expanded ? "auto" : "none",
+                zIndex: 40 - index,
+                clipPath: index === items.length - 1 ? "circle(50% at 50% 50%)" : "circle(50% at 50% 55%)",
+                transition: "transform 300ms cubic-bezier(0.4, 0, 0.2, 1), opacity 300ms",
+                backfaceVisibility: "hidden",
+              }}
+            >
+              {closeAfter(child)}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 interface PortalUser { id: number; username: string; role: string; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; allowedSubTabs?: string[] | null; lockToToday?: boolean; samiaCurse?: boolean; hideBackendStats?: boolean; active: boolean; }
 
@@ -9848,42 +9956,38 @@ function Dashboard() {
                 </Tooltip>
               </>
             )}
-            {user.role === "admin" && (
-              <>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button onClick={() => setShowBlocked(true)} className="p-2 rounded-lg text-zinc-400 hover:metric-bad hover:bg-muted/50 transition-colors">
-                      <ShieldCheck className="h-4 w-4" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>Blocked numbers</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button onClick={() => setShowAgents(true)} className="p-2 rounded-lg text-zinc-400 hover:metric-info hover:bg-muted-foreground/10 transition-colors">
-                      <Users className="h-4 w-4" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>Manage agents</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button onClick={() => setShowUsers(true)} className="p-2 rounded-lg text-zinc-400 hover:metric-info hover:bg-muted/60 transition-colors">
-                      <UserCog className="h-4 w-4" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>Manage users</TooltipContent>
-                </Tooltip>
-              </>
-            )}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button onClick={logout} className="p-2 rounded-lg text-zinc-400 hover:metric-bad hover:bg-muted/50 transition-colors">
-                  <LogOut className="h-4 w-4" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>Sign out</TooltipContent>
-            </Tooltip>
+            <div className="relative z-50 -my-3">
+              <AnimatedActionMenu>
+                {user.role === "admin" && (
+                  <AnimatedMenuItem
+                    label="Blocked numbers"
+                    icon={<ShieldCheck />}
+                    onClick={() => setShowBlocked(true)}
+                    tone="danger"
+                  />
+                )}
+                {user.role === "admin" && (
+                  <AnimatedMenuItem
+                    label="Manage agents"
+                    icon={<Users />}
+                    onClick={() => setShowAgents(true)}
+                  />
+                )}
+                {user.role === "admin" && (
+                  <AnimatedMenuItem
+                    label="Manage users"
+                    icon={<UserCog />}
+                    onClick={() => setShowUsers(true)}
+                  />
+                )}
+                <AnimatedMenuItem
+                  label="Sign out"
+                  icon={<LogOut />}
+                  onClick={logout}
+                  tone="danger"
+                />
+              </AnimatedActionMenu>
+            </div>
           </div>
         </div>
       </header>
