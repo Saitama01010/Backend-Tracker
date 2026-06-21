@@ -10,6 +10,7 @@ export const teamAgentsTable = pgTable("team_agents", {
   name: text("name").notNull(),
   arabicName: text("arabic_name"),
   shift: text("shift"),
+  notes: text("notes"),
   team: text("team", { enum: VALID_TEAMS }).notNull(),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

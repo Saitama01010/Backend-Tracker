@@ -269,7 +269,6 @@ function AnimatedDashboardSelect<T extends string>({
   const ref = useRef<HTMLDivElement>(null);
   const shouldReduceMotion = useReducedMotion();
   const selected = options.find((item) => item.value === value) ?? options[0];
-  const SelectedIcon = selected?.icon ?? Layers;
 
   useEffect(() => {
     if (!open) return;
@@ -309,7 +308,6 @@ function AnimatedDashboardSelect<T extends string>({
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-background/70">
               <span className="text-sm leading-none" aria-hidden="true">{selected?.emoji ?? "📌"}</span>
             </span>
-            <SelectedIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             <span className="truncate text-sm font-semibold">{selected?.label}</span>
           </span>
           <ChevronDown className={cn("h-4 w-4 shrink-0 transition-transform duration-200", open && "rotate-180")} />
@@ -338,7 +336,6 @@ function AnimatedDashboardSelect<T extends string>({
               </div>
               <div className="max-h-[320px] overflow-y-auto px-1">
                 {options.map((item, index) => {
-                  const Icon = item.icon ?? Layers;
                   const active = item.value === value;
                   return (
                     <motion.button
@@ -363,7 +360,6 @@ function AnimatedDashboardSelect<T extends string>({
                         <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border bg-background/70 transition-transform duration-200 group-hover:scale-105">
                           <span className="text-lg leading-none" aria-hidden="true">{item.emoji ?? "📌"}</span>
                         </span>
-                        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <span className="min-w-0">
                           <span className="block text-sm font-semibold text-foreground">{item.label}</span>
                           {item.description && (
@@ -553,7 +549,7 @@ function AvatarIcon({
       animate={{ scale: 1, opacity: 1 }}
       transition={{ type: "spring", stiffness: 350, damping: 28 }}
       className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br font-bold text-white shadow-sm ring-1 ring-white/15",
+        "avatar-initial inline-flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br font-bold text-white shadow-sm ring-1 ring-white/15",
         palette,
         sizeClass,
         className,
@@ -606,7 +602,6 @@ function AnimatedMetricsNav({
     <div className="w-full overflow-x-auto pb-1">
       <div className="flex w-full min-w-[960px] items-stretch rounded-2xl border border-border bg-card/70 p-1 shadow-sm backdrop-blur">
         {tabs.map((tab) => {
-          const Icon = TAB_ICONS[tab.value] ?? Layers;
           const emoji = TAB_EMOJIS[tab.value] ?? "📌";
           const active = tab.value === value;
           return (
@@ -630,7 +625,6 @@ function AnimatedMetricsNav({
               )}
               <span className="relative z-10 flex min-w-0 items-center justify-center gap-2">
                 <span className="text-base leading-none" aria-hidden="true">{emoji}</span>
-                <Icon className="h-4 w-4 shrink-0" />
                 <span className="truncate">{tab.label}</span>
               </span>
             </button>
@@ -5384,7 +5378,7 @@ function TabCheckboxes({ tabs, onChange }: { tabs: string[]; onChange: (t: strin
   );
 }
 
-type TeamAgent = { id: number; name: string; team: string; active: boolean; arabicName?: string | null; shift?: string | null };
+type TeamAgent = { id: number; name: string; team: string; active: boolean; arabicName?: string | null; shift?: string | null; notes?: string | null };
 
 function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   const { token } = useUser();
@@ -5398,6 +5392,15 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<TeamAgent | null>(null);
+  const [agentDetail, setAgentDetail] = useState({
+    name: "",
+    arabicName: "",
+    team: "retention" as RosterTeam,
+    shift: "",
+    notes: "",
+    active: true,
+  });
   // Local drafts for inline-edited arabic/shift cells so typing is smooth.
   const [drafts, setDrafts] = useState<Record<number, { name?: string; arabicName?: string; shift?: string }>>({});
 
@@ -5427,6 +5430,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
         team: newTeam,
         arabicName: newArabic.trim() || null,
         shift: newShift.trim() || null,
+        notes: null,
       }),
     });
     if (r.ok) {
@@ -5453,6 +5457,31 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   async function removeAgent(id: number) {
     await fetch(`/api/team-agents/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
     await load();
+  }
+
+  function openAgentDetail(agent: TeamAgent) {
+    setSelectedAgent(agent);
+    setAgentDetail({
+      name: agent.name,
+      arabicName: agent.arabicName ?? "",
+      team: agent.team as RosterTeam,
+      shift: agent.shift ?? "",
+      notes: agent.notes ?? "",
+      active: agent.active,
+    });
+  }
+
+  async function saveAgentDetail() {
+    if (!selectedAgent || !agentDetail.name.trim()) return;
+    await patchAgent(selectedAgent.id, {
+      name: agentDetail.name.trim(),
+      arabicName: agentDetail.arabicName.trim() || null,
+      team: agentDetail.team,
+      shift: agentDetail.shift.trim() || null,
+      notes: agentDetail.notes.trim() || null,
+      active: agentDetail.active,
+    });
+    setSelectedAgent(null);
   }
 
   function getDraft(a: TeamAgent, field: "name" | "arabicName" | "shift"): string {
@@ -5572,8 +5601,12 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                 </thead>
                 <tbody>
                   {sortedAgents.map(a => (
-                    <tr key={a.id} className={`border-t border-white/5 ${a.active ? "" : "opacity-50"}`}>
-                      <td className="px-3 py-2">
+                    <tr
+                      key={a.id}
+                      onClick={() => openAgentDetail(a)}
+                      className={`cursor-pointer border-t border-white/5 align-middle transition-colors hover:bg-white/5 ${a.active ? "" : "opacity-50"}`}
+                    >
+                      <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                         <AnimatedValueSelect
                           value={a.team}
                           disabled={busyId === a.id}
@@ -5588,6 +5621,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                         <div className="flex items-center gap-2">
                           <AvatarIcon name={getDraft(a, "name") || a.name} size="sm" />
                           <input
+                            onClick={(e) => e.stopPropagation()}
                             value={getDraft(a, "name")}
                             onChange={(e) => setDraft(a.id, "name", e.target.value)}
                             onBlur={() => void commitDraft(a, "name")}
@@ -5598,6 +5632,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                       </td>
                       <td className="px-3 py-2">
                         <input
+                          onClick={(e) => e.stopPropagation()}
                           value={getDraft(a, "arabicName")}
                           onChange={(e) => setDraft(a.id, "arabicName", e.target.value)}
                           onBlur={() => void commitDraft(a, "arabicName")}
@@ -5609,6 +5644,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                       </td>
                       <td className="px-3 py-2">
                         <input
+                          onClick={(e) => e.stopPropagation()}
                           value={getDraft(a, "shift")}
                           onChange={(e) => setDraft(a.id, "shift", e.target.value)}
                           onBlur={() => void commitDraft(a, "shift")}
@@ -5619,7 +5655,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                       </td>
                       <td className="px-3 py-2 text-center">
                         <button
-                          onClick={() => void patchAgent(a.id, { active: !a.active })}
+                          onClick={(e) => { e.stopPropagation(); void patchAgent(a.id, { active: !a.active }); }}
                           title={a.active ? "Deactivate" : "Activate"}
                           className={`inline-flex items-center justify-center rounded-md p-1.5 transition-colors ${a.active ? "metric-good hover:bg-muted/60" : "text-zinc-500 hover:bg-muted/50 hover:metric-warn"}`}
                         >
@@ -5628,7 +5664,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                       </td>
                       <td className="px-3 py-2 text-right">
                         <button
-                          onClick={() => { if (confirm(`Remove ${a.name}?`)) void removeAgent(a.id); }}
+                          onClick={(e) => { e.stopPropagation(); if (confirm(`Remove ${a.name}?`)) void removeAgent(a.id); }}
                           title="Remove agent"
                           className="inline-flex items-center justify-center rounded-md p-1.5 text-zinc-500 hover:metric-bad hover:bg-muted/50 transition-colors"
                         >
@@ -5646,6 +5682,86 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
             This roster is the canonical identity registry. Agents added here are automatically matched in the Google Sheets data <em>and</em> in OpenPhone/PBX call data — no code change required. Arabic names are matched as aliases for the same agent.
           </p>
         </div>
+        <AnimatePresence>
+          {selectedAgent && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 z-20 flex items-center justify-center rounded-2xl bg-background/70 p-4 backdrop-blur-sm"
+              onClick={(e) => e.target === e.currentTarget && setSelectedAgent(null)}
+            >
+              <motion.div
+                initial={{ y: 18, scale: 0.98 }}
+                animate={{ y: 0, scale: 1 }}
+                exit={{ y: 18, scale: 0.98 }}
+                transition={{ type: "spring", stiffness: 360, damping: 30 }}
+                className="w-full max-w-2xl overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+              >
+                <div className="flex items-center justify-between border-b border-border px-5 py-4">
+                  <AvatarName
+                    name={agentDetail.name || selectedAgent.name}
+                    subtitle="Agent details"
+                    size="lg"
+                    textClassName="font-semibold text-foreground"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setSelectedAgent(null)}
+                    className="flex h-8 w-8 items-center justify-center rounded-full bg-secondary text-secondary-foreground hover:bg-accent"
+                    aria-label="Close agent details"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="grid gap-4 p-5 sm:grid-cols-2">
+                  <label className="space-y-1.5">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">English name</span>
+                    <Input value={agentDetail.name} onChange={(e) => setAgentDetail((prev) => ({ ...prev, name: e.target.value }))} className="h-9" />
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Arabic name</span>
+                    <Input value={agentDetail.arabicName} onChange={(e) => setAgentDetail((prev) => ({ ...prev, arabicName: e.target.value }))} dir="rtl" className="h-9" />
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Department</span>
+                    <AnimatedValueSelect
+                      value={agentDetail.team}
+                      onChange={(value) => setAgentDetail((prev) => ({ ...prev, team: value as RosterTeam }))}
+                      ariaLabel="Choose agent detail team"
+                      triggerClassName="h-9 w-full"
+                      menuClassName="w-full"
+                      options={TEAMS.map((t) => ({ value: t.key, label: t.label, emoji: "???" }))}
+                    />
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Shift</span>
+                    <Input value={agentDetail.shift} onChange={(e) => setAgentDetail((prev) => ({ ...prev, shift: e.target.value }))} placeholder="e.g. 8, 9-5, Night" className="h-9" />
+                  </label>
+                  <label className="space-y-1.5 sm:col-span-2">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Additional notes</span>
+                    <textarea
+                      value={agentDetail.notes}
+                      onChange={(e) => setAgentDetail((prev) => ({ ...prev, notes: e.target.value }))}
+                      placeholder="Add anything useful about this agent..."
+                      className="min-h-24 w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/50"
+                    />
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-foreground">
+                    <input type="checkbox" checked={agentDetail.active} onChange={(e) => setAgentDetail((prev) => ({ ...prev, active: e.target.checked }))} className="h-4 w-4 accent-current" />
+                    Active agent
+                  </label>
+                </div>
+                <div className="flex justify-end gap-2 border-t border-border px-5 py-4">
+                  <Button variant="ghost" onClick={() => setSelectedAgent(null)}>Cancel</Button>
+                  <Button onClick={() => void saveAgentDetail()} disabled={!agentDetail.name.trim() || busyId === selectedAgent.id}>
+                    {busyId === selectedAgent.id ? "Saving..." : "Save changes"}
+                  </Button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );
