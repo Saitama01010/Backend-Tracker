@@ -21,6 +21,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import Papa from "papaparse";
 import companyLogo from "./assets/company-logo.jpeg";
 import * as React from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { createContext, useContext, Fragment, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
   ArrowDown,
@@ -5545,6 +5546,9 @@ function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
   const [newNote, setNewNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [hoveredNumber, setHoveredNumber] = useState<string | null>(null);
+  const [selectedNumber, setSelectedNumber] = useState<{ number: string; note: string | null; createdAt: string } | null>(null);
+  const shouldReduceMotion = useReducedMotion();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -5555,6 +5559,12 @@ function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
   }, [token]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (!selectedNumber) return;
+    const updated = items.find((item) => item.number === selectedNumber.number);
+    setSelectedNumber(updated ?? null);
+  }, [items, selectedNumber]);
 
   async function addNumber() {
     const num = newNumber.trim();
@@ -5575,12 +5585,33 @@ function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
       method: "DELETE",
       headers: { Authorization: `Bearer ${token}` },
     });
+    if (selectedNumber?.number === num) setSelectedNumber(null);
     await load();
   }
 
+  const activeCount = items.length;
+  const latestBlocked = items[0]?.createdAt
+    ? new Date(items[0].createdAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : "None";
+  const rowVariants = shouldReduceMotion
+    ? {
+        hidden: { opacity: 0 },
+        visible: { opacity: 1 },
+      }
+    : {
+        hidden: { opacity: 0, x: -22, scale: 0.97, filter: "blur(4px)" },
+        visible: {
+          opacity: 1,
+          x: 0,
+          scale: 1,
+          filter: "blur(0px)",
+          transition: { type: "spring", stiffness: 420, damping: 30, mass: 0.6 },
+        },
+      };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="relative w-full max-w-md mx-4 rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl">
+      <div className="relative w-full max-w-4xl mx-4 rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl">
         <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-white/10">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-5 w-5 metric-bad" />
@@ -5589,7 +5620,20 @@ function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
           <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors"><X className="h-5 w-5" /></button>
         </div>
         <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
-          <p className="text-xs text-zinc-500">Numbers added here are excluded from all missed-call lists and stats.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="rounded-xl border border-white/8 bg-zinc-900/60 p-3">
+              <p className="text-xs uppercase tracking-wider text-zinc-500">Blocked</p>
+              <p className="mt-1 text-2xl font-bold tabular-nums text-white">{activeCount}</p>
+            </div>
+            <div className="rounded-xl border border-white/8 bg-zinc-900/60 p-3">
+              <p className="text-xs uppercase tracking-wider text-zinc-500">Latest</p>
+              <p className="mt-1 text-sm font-medium text-zinc-200">{latestBlocked}</p>
+            </div>
+            <div className="rounded-xl border border-white/8 bg-zinc-900/60 p-3">
+              <p className="text-xs uppercase tracking-wider text-zinc-500">Rule</p>
+              <p className="mt-1 text-sm font-medium text-zinc-200">Excluded from missed-call lists</p>
+            </div>
+          </div>
           <div className="space-y-2">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Add Number</p>
             <div className="flex gap-2">
@@ -5605,19 +5649,150 @@ function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Blocked ({items.length})</p>
             {loading ? <Skeleton className="h-16 w-full" /> : items.length === 0 ? (
               <p className="text-xs text-zinc-600 py-3 text-center">No numbers blocked yet.</p>
-            ) : items.map((item) => (
-              <div key={item.number} className="flex items-center justify-between gap-2 rounded-lg border border-white/8 bg-zinc-900/60 px-3 py-2">
-                <div>
-                  <p className="text-sm font-mono text-white">{item.number}</p>
-                  {item.note && <p className="text-xs text-zinc-500">{item.note}</p>}
+            ) : (
+              <motion.div
+                className="space-y-2"
+                variants={{ visible: { transition: { staggerChildren: shouldReduceMotion ? 0 : 0.055, delayChildren: shouldReduceMotion ? 0 : 0.05 } } }}
+                initial="hidden"
+                animate="visible"
+              >
+                <div className="hidden sm:grid grid-cols-12 gap-4 px-4 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  <div className="col-span-1">No</div>
+                  <div className="col-span-4">Number</div>
+                  <div className="col-span-4">Note</div>
+                  <div className="col-span-2">Added</div>
+                  <div className="col-span-1 text-right">Action</div>
                 </div>
-                <button onClick={() => removeNumber(item.number)} className="p-1 rounded text-zinc-600 hover:metric-bad transition-colors flex-shrink-0">
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            ))}
+                {items.map((item, index) => {
+                  const added = new Date(item.createdAt).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+                  const isHovered = hoveredNumber === item.number;
+                  return (
+                    <motion.div
+                      key={item.number}
+                      variants={rowVariants}
+                      className="relative cursor-pointer"
+                      onMouseEnter={() => setHoveredNumber(item.number)}
+                      onMouseLeave={() => setHoveredNumber(null)}
+                      onClick={() => setSelectedNumber(item)}
+                    >
+                      <motion.div
+                        className="relative overflow-hidden rounded-xl border border-white/8 bg-zinc-900/60 p-4"
+                        whileHover={shouldReduceMotion ? undefined : { y: -1, transition: { type: "spring", stiffness: 420, damping: 26 } }}
+                      >
+                        <div
+                          className={cn(
+                            "pointer-events-none absolute inset-0 bg-gradient-to-l from-red-500/10 to-transparent opacity-0 transition-opacity",
+                            isHovered && "opacity-100",
+                          )}
+                          style={{ backgroundSize: "30% 100%", backgroundPosition: "right", backgroundRepeat: "no-repeat" }}
+                        />
+                        <div className="relative grid grid-cols-1 sm:grid-cols-12 gap-3 sm:gap-4 sm:items-center">
+                          <div className="hidden sm:block sm:col-span-1">
+                            <span className="text-2xl font-bold text-zinc-600 tabular-nums">{String(index + 1).padStart(2, "0")}</span>
+                          </div>
+                          <div className="sm:col-span-4">
+                            <p className="text-xs text-zinc-500 sm:hidden">Number</p>
+                            <p className="text-sm font-mono font-semibold text-white">{item.number}</p>
+                          </div>
+                          <div className="sm:col-span-4 min-w-0">
+                            <p className="text-xs text-zinc-500 sm:hidden">Note</p>
+                            <p className="truncate text-sm text-zinc-300">{item.note || "No note added"}</p>
+                          </div>
+                          <div className="sm:col-span-2">
+                            <p className="text-xs text-zinc-500 sm:hidden">Added</p>
+                            <p className="text-sm text-zinc-300">{added}</p>
+                          </div>
+                          <div className="sm:col-span-1 sm:text-right">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); void removeNumber(item.number); }}
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/8 bg-background/50 text-zinc-500 transition-colors hover:metric-bad hover:bg-muted/60"
+                              title="Unblock number"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      </motion.div>
+                    </motion.div>
+                  );
+                })}
+              </motion.div>
+            )}
           </div>
         </div>
+        <AnimatePresence>
+          {selectedNumber && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
+              className="absolute inset-0 z-10 flex flex-col overflow-hidden rounded-2xl bg-zinc-950/80 backdrop-blur-sm"
+            >
+              <div className="flex items-center justify-between border-b border-white/10 bg-gradient-to-r from-muted/50 to-transparent p-4">
+                <div className="flex items-center gap-4">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-zinc-900 text-zinc-500">
+                    <PhoneOff className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold font-mono text-white">{selectedNumber.number}</h3>
+                    <p className="text-sm text-zinc-500">Blocked number detail</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <motion.button
+                    className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/50 px-3 py-1.5 text-sm metric-bad transition-colors hover:bg-muted"
+                    onClick={() => void removeNumber(selectedNumber.number)}
+                    whileHover={shouldReduceMotion ? undefined : { scale: 1.02 }}
+                    whileTap={shouldReduceMotion ? undefined : { scale: 0.98 }}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    Unblock
+                  </motion.button>
+                  <motion.button
+                    className="ml-1 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/80 hover:bg-background"
+                    onClick={() => setSelectedNumber(null)}
+                    whileHover={shouldReduceMotion ? undefined : { scale: 1.05 }}
+                    whileTap={shouldReduceMotion ? undefined : { scale: 0.95 }}
+                    aria-label="Close number detail"
+                  >
+                    <X className="h-4 w-4" />
+                  </motion.button>
+                </div>
+              </div>
+              <div className="flex-1 space-y-4 overflow-y-auto p-5">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="rounded-lg border border-white/8 bg-zinc-900/60 p-3">
+                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Number</label>
+                    <div className="mt-1 text-sm font-mono font-medium text-white">{selectedNumber.number}</div>
+                  </div>
+                  <div className="rounded-lg border border-white/8 bg-zinc-900/60 p-3">
+                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Added</label>
+                    <div className="mt-1 text-sm font-medium text-white">
+                      {new Date(selectedNumber.createdAt).toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-white/8 bg-zinc-900/60 p-3">
+                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Status</label>
+                    <div className="mt-1 inline-flex rounded-lg border border-border bg-muted/50 px-2.5 py-1 text-sm font-medium metric-bad">Blocked</div>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-white/8 bg-zinc-900/60 p-3">
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Note</label>
+                  <div className="mt-2 text-sm text-zinc-200">{selectedNumber.note || "No note was added for this number."}</div>
+                </div>
+                <div className="rounded-lg border border-white/8 bg-zinc-900/60 p-3">
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Recent Activity</label>
+                  <div className="mt-2 space-y-1 font-mono text-xs">
+                    <div className="metric-bad">[{new Date(selectedNumber.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}] Number added to blocklist</div>
+                    <div className="text-zinc-500">Missed-call reports will ignore this number.</div>
+                    <div className="text-zinc-500">Dashboard stats are recalculated after refresh.</div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );
