@@ -58,6 +58,12 @@ function pct(a: number, b: number): string {
   return `${Math.round((a / b) * 100)}%`;
 }
 
+function splitAgentAlias(rawName: string): { agentName: string; aliasName: string } {
+  const parts = rawName.split(/\s*-\s*/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length > 1) return { agentName: parts[0], aliasName: parts.slice(1).join(" - ") };
+  return { agentName: rawName, aliasName: "" };
+}
+
 interface AgentRow {
   name: string;
   totalCalls: number;
@@ -293,6 +299,9 @@ function OnboardingReportCard() {
 
 function AgentTable({ rows }: { rows: AgentRow[] }) {
   const [selectedAgent, setSelectedAgent] = useState<AgentRow | null>(null);
+  const [detailName, setDetailName] = useState("");
+  const [detailAlias, setDetailAlias] = useState("");
+  const [detailNotes, setDetailNotes] = useState("");
   if (rows.length === 0) {
     return <p className="text-center text-muted-foreground py-10 text-sm">No call data in this date range. Data populates as calls sync from Quo.</p>;
   }
@@ -301,7 +310,8 @@ function AgentTable({ rows }: { rows: AgentRow[] }) {
       <Table>
         <TableHeader>
           <TableRow className="bg-card/40">
-            <TableHead>Agent Name-Alias Name</TableHead>
+            <TableHead>Agent Name</TableHead>
+            <TableHead>Alias Name</TableHead>
             <TableHead className="text-right">Total</TableHead>
             <TableHead className="text-right">Outbound</TableHead>
             <TableHead className="text-right">Inbound</TableHead>
@@ -315,9 +325,12 @@ function AgentTable({ rows }: { rows: AgentRow[] }) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {rows.map((r) => (
+          {rows.map((r) => {
+            const parts = splitAgentAlias(r.name);
+            return (
             <TableRow key={r.name} className="hover:bg-muted/30">
-              <TableCell className="font-medium">{r.name}</TableCell>
+              <TableCell className="font-medium">{parts.agentName}</TableCell>
+              <TableCell className="text-muted-foreground">{parts.aliasName || "—"}</TableCell>
               <TableCell className="text-right tabular-nums font-mono metric-info">{r.totalCalls}</TableCell>
               <TableCell className="text-right tabular-nums font-mono metric-info">{r.outbound}</TableCell>
               <TableCell className="text-right tabular-nums font-mono">{r.inbound}</TableCell>
@@ -328,12 +341,18 @@ function AgentTable({ rows }: { rows: AgentRow[] }) {
               <TableCell className="text-right tabular-nums font-mono">{formatDur(r.talkSeconds)}</TableCell>
               <TableCell className="text-right tabular-nums font-mono metric-good">{pct(r.answered, r.totalCalls)}</TableCell>
               <TableCell className="text-center">
-                <Button size="sm" variant="outline" className="h-8" onClick={() => setSelectedAgent(r)}>
+                <Button size="sm" variant="outline" className="h-8" onClick={() => {
+                  setSelectedAgent(r);
+                  setDetailName(parts.agentName);
+                  setDetailAlias(parts.aliasName);
+                  setDetailNotes("");
+                }}>
                   View Details
                 </Button>
               </TableCell>
             </TableRow>
-          ))}
+            );
+          })}
         </TableBody>
       </Table>
       {selectedAgent && (
@@ -344,9 +363,14 @@ function AgentTable({ rows }: { rows: AgentRow[] }) {
             </DialogHeader>
             <div className="space-y-3 text-sm">
               <div>
-                <div className="text-xs text-muted-foreground">Agent Name-Alias Name</div>
-                <div className="font-semibold">{selectedAgent.name}</div>
+                <div className="text-xs text-muted-foreground">Agent Name</div>
+                <input value={detailName} onChange={(e) => setDetailName(e.target.value)} className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
               </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Alias Name</div>
+                <input value={detailAlias} onChange={(e) => setDetailAlias(e.target.value)} className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+              </div>
+              <textarea value={detailNotes} onChange={(e) => setDetailNotes(e.target.value)} placeholder="Additional notes" className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
               <Badge variant="outline" className="metric-good border-border">Active in report</Badge>
               <div className="grid grid-cols-2 gap-2">
                 <div>Total: <span className="font-semibold tabular-nums">{selectedAgent.totalCalls}</span></div>

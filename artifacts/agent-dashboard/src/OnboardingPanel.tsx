@@ -110,6 +110,12 @@ function fmtDur(secs: number): string {
 function hr(h: number | null): string {
   return h === null ? "—" : `${String(h).padStart(2, "0")}:00`;
 }
+function splitAgentAlias(rawName: string): { agentName: string; aliasName: string } {
+  const parts = rawName.split(/\s*-\s*/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length > 1) return { agentName: parts[0], aliasName: parts.slice(1).join(" - ") };
+  return { agentName: rawName, aliasName: "" };
+}
+
 function lastDayOfMonth(ym: string): string {
   const [y, m] = ym.split("-").map(Number);
   const d = new Date(y!, m!, 0).getDate();
@@ -316,6 +322,9 @@ export function OnboardingPanel() {
   const [day, setDay] = useState(today);
   const [downloading, setDownloading] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<AnalyticsAgent | null>(null);
+  const [detailName, setDetailName] = useState("");
+  const [detailAlias, setDetailAlias] = useState("");
+  const [detailNotes, setDetailNotes] = useState("");
 
   const { from, to } = useMemo(() => {
     if (gran === "month") return { from: `${month}-01`, to: lastDayOfMonth(month) };
@@ -501,7 +510,8 @@ export function OnboardingPanel() {
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
                       <TableHead className="w-12">#</TableHead>
-                      <TableHead>Agent Name-Alias Name</TableHead>
+                      <TableHead>Agent Name</TableHead>
+                      <TableHead>Alias Name</TableHead>
                       <TableHead className="text-right">Calls</TableHead>
                       <TableHead className="text-right">Inbound</TableHead>
                       <TableHead className="text-right">Answered</TableHead>
@@ -519,17 +529,19 @@ export function OnboardingPanel() {
                       return data.agents.map((a) => {
                         if (a.ranked) rank++;
                         const rrColor = a.responseRate >= 85 ? "metric-good" : a.responseRate >= 70 ? "metric-warn" : "metric-bad";
+                        const parts = splitAgentAlias(a.name);
                         return (
                           <TableRow key={a.name} className={a.ranked ? "" : "opacity-50"}>
                             <TableCell className="tabular-nums">{a.ranked ? rank : "—"}</TableCell>
                             <TableCell className="font-medium whitespace-nowrap">
-                              {a.name}
+                              {parts.agentName}
                               {a.overflow && (
                                 <span className="ml-2 text-[10px] uppercase tracking-wide metric-bad/80 font-normal">
                                   unanswered overflow
                                 </span>
                               )}
                             </TableCell>
+                            <TableCell className="text-muted-foreground whitespace-nowrap">{parts.aliasName || "—"}</TableCell>
                             <TableCell className="text-right tabular-nums">{a.totalCalls}</TableCell>
                             <TableCell className="text-right tabular-nums">{a.inbound}</TableCell>
                             <TableCell className="text-right tabular-nums">{a.answered}</TableCell>
@@ -539,7 +551,12 @@ export function OnboardingPanel() {
                             <TableCell className="text-right tabular-nums">{fmtDur(a.talkSeconds)}</TableCell>
                             <TableCell className="text-right tabular-nums">{a.onboardedRate}%</TableCell>
                             <TableCell className="text-center">
-                              <Button size="sm" variant="outline" className="h-8" onClick={() => setSelectedAgent(a)}>
+                              <Button size="sm" variant="outline" className="h-8" onClick={() => {
+                                setSelectedAgent(a);
+                                setDetailName(parts.agentName);
+                                setDetailAlias(parts.aliasName);
+                                setDetailNotes("");
+                              }}>
                                 View Details
                               </Button>
                             </TableCell>
@@ -566,9 +583,14 @@ export function OnboardingPanel() {
                   </DialogHeader>
                   <div className="space-y-3 text-sm">
                     <div>
-                      <div className="text-xs text-muted-foreground">Agent Name-Alias Name</div>
-                      <div className="font-semibold">{selectedAgent.name}</div>
+                      <div className="text-xs text-muted-foreground">Agent Name</div>
+                      <input value={detailName} onChange={(e) => setDetailName(e.target.value)} className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
                     </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground">Alias Name</div>
+                      <input value={detailAlias} onChange={(e) => setDetailAlias(e.target.value)} className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+                    </div>
+                    <textarea value={detailNotes} onChange={(e) => setDetailNotes(e.target.value)} placeholder="Additional notes" className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
                     <Badge variant="outline" className={selectedAgent.ranked ? "metric-good border-border" : "metric-warn border-border"}>
                       {selectedAgent.ranked ? "Ranked" : "Low inbound volume"}
                     </Badge>

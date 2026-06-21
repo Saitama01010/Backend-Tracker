@@ -550,7 +550,7 @@ function AnimatedValueSelect<T extends string>({
 
   return (
     <MotionConfig transition={shouldReduceMotion ? { duration: 0 } : { type: "spring", stiffness: 340, damping: 28 }}>
-      <div ref={ref} className={cn("relative z-[70] inline-block", className)}>
+      <div ref={ref} data-animated-select className={cn("relative z-[70] inline-block", className)}>
         <motion.button
           type="button"
           whileTap={shouldReduceMotion ? undefined : { scale: 0.97 }}
@@ -731,7 +731,7 @@ function authHeaders(token: string) {
 // AND OpenPhone/PBX call matching — no code change required.
 
 type RosterTeam = "retention" | "nsf" | "cs" | "killers";
-interface RosterAgent { id: number; name: string; arabicName: string | null; shift: string | null; team: RosterTeam; active: boolean; }
+interface RosterAgent { id: number; name: string; arabicName: string | null; shift: string | null; team: RosterTeam; active: boolean; notes?: string | null; }
 interface RosterIndex {
   agents: RosterAgent[];
   version: number; // bump on any roster mutation; included in React Query keys for invalidation
@@ -770,7 +770,7 @@ function buildRosterIndex(agents: RosterAgent[]): RosterIndex {
   // Mutation-sensitive hash: changes on any add/remove/team/active/name/arabic/shift edit
   // so React Query keys keyed on `version` reliably re-fetch dependent sheet queries.
   idx.version = agents.reduce((acc, a) => {
-    const s = `${a.id}|${a.team}|${a.active ? 1 : 0}|${a.name}|${a.arabicName ?? ""}|${a.shift ?? ""}`;
+    const s = `${a.id}|${a.team}|${a.active ? 1 : 0}|${a.name}|${a.arabicName ?? ""}|${a.shift ?? ""}|${a.notes ?? ""}`;
     let h = 0;
     for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
     return (acc + h) | 0;
@@ -2562,6 +2562,105 @@ function statusTone(s: string): string {
   return "text-foreground";
 }
 
+function RosterAgentDetailsDialog({
+  rawName,
+  open,
+  onOpenChange,
+  children,
+}: {
+  rawName: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  children?: React.ReactNode;
+}) {
+  const { token, user } = useUser();
+  const qc = useQueryClient();
+  const roster = useRoster();
+  const hit = roster.lookupByAnyName(rawName);
+  const parts = agentNameParts(rawName, roster);
+  const [agentName, setAgentName] = useState(parts.agentName);
+  const [aliasName, setAliasName] = useState(parts.aliasName);
+  const [notes, setNotes] = useState(hit?.notes ?? "");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const nextHit = roster.lookupByAnyName(rawName);
+    const nextParts = agentNameParts(rawName, roster);
+    setAgentName(nextParts.agentName);
+    setAliasName(nextParts.aliasName);
+    setNotes(nextHit?.notes ?? "");
+  }, [open, rawName, roster.version]);
+
+  const canSave = !!hit && user.role === "admin";
+
+  async function save() {
+    if (!hit || !agentName.trim()) return;
+    setSaving(true);
+    try {
+      await fetch(`/api/team-agents/${hit.id}`, {
+        method: "PATCH",
+        headers: authHeaders(token),
+        body: JSON.stringify({
+          name: agentName.trim(),
+          arabicName: aliasName.trim() || null,
+          notes: notes.trim() || null,
+        }),
+      });
+      await qc.invalidateQueries({ queryKey: ["roster"] });
+      onOpenChange(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Agent Details</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 text-sm">
+          <AvatarName name={agentName || rawName} subtitle={aliasName ? `Alias: ${aliasName}` : "No alias name"} size="lg" textClassName="text-foreground" />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1.5">
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Agent Name</span>
+              <Input value={agentName} onChange={(e) => setAgentName(e.target.value)} disabled={!canSave} className="h-9" />
+            </label>
+            <label className="space-y-1.5">
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Alias Name</span>
+              <Input value={aliasName} onChange={(e) => setAliasName(e.target.value)} disabled={!canSave} className="h-9" />
+            </label>
+          </div>
+          <label className="block space-y-1.5">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Additional notes</span>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              disabled={!canSave}
+              placeholder={hit ? "Add notes for this agent..." : "Add this agent in Manage Agents before saving notes."}
+              className="min-h-24 w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/50 disabled:opacity-60"
+            />
+          </label>
+          <div>
+            <div className="text-xs text-muted-foreground">Status</div>
+            <Badge variant="outline" className={hit?.active === false ? "metric-warn border-border" : "metric-good border-border"}>
+              {hit ? (hit.active ? "Active" : "Inactive") : "Not in roster"}
+            </Badge>
+          </div>
+          {children}
+          <div className="flex justify-end gap-2 border-t border-border pt-4">
+            <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button onClick={() => void save()} disabled={!canSave || saving || !agentName.trim()}>
+              {saving ? "Saving..." : "Save details"}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 type SortState = { column: string; dir: "asc" | "desc" } | null;
 
 function SortHeader({
@@ -2873,6 +2972,7 @@ function avgDuration(seconds: number, calls: number): string {
 
 function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate }: { data: Aggregated; hideTeamRow?: boolean; phoneData?: Map<string, PhoneAgentMetrics>; sheetData?: SheetData; fromDate?: Date | null; toDate?: Date | null }) {
   const showRate = data.mode === "retention";
+  const roster = useRoster();
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>({ column: "__total__", dir: "desc" });
   const [selectedAgent, setSelectedAgent] = useState<AgentBreakdown | null>(null);
@@ -3030,9 +3130,10 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
           <Table>
             <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
               <TableRow>
-                <TableHead className="whitespace-nowrap min-w-[200px]">
-                  <SortHeader id="__agent__" label="Agent Name-Alias Name" sort={sort} onToggle={toggle} />
+                <TableHead className="whitespace-nowrap min-w-[180px]">
+                  <SortHeader id="__agent__" label="Agent Name" sort={sort} onToggle={toggle} />
                 </TableHead>
+                <TableHead className="whitespace-nowrap min-w-[160px]">Alias Name</TableHead>
                 {data.statuses.map((s) => (
                   <TableHead key={s} className={`whitespace-nowrap text-right ${statusTone(s)}`}>
                     <SortHeader id={s} label={s} align="right" sort={sort} onToggle={toggle} />
@@ -3052,16 +3153,19 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
             <TableBody>
               {visible.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={data.statuses.length + 3 + (showRate ? 1 : 0)} className="text-center py-12 text-muted-foreground">
+                  <TableCell colSpan={data.statuses.length + 4 + (showRate ? 1 : 0)} className="text-center py-12 text-muted-foreground">
                     No agents match the current filters.
                   </TableCell>
                 </TableRow>
               )}
-              {visible.map((a) => (
+              {visible.map((a) => {
+                const parts = agentNameParts(a.agent, roster);
+                return (
                 <TableRow key={a.agent} className="hover-elevate">
                   <TableCell className="font-medium whitespace-nowrap">
-                    <AvatarName name={a.agent} size="sm" textClassName="text-foreground" />
+                    <AvatarName name={parts.agentName} size="sm" textClassName="text-foreground" />
                   </TableCell>
+                  <TableCell className="whitespace-nowrap text-muted-foreground">{parts.aliasName || "—"}</TableCell>
                   {data.statuses.map((s) => {
                     const v = a.byStatus.get(s) ?? 0;
                     return (
@@ -3083,12 +3187,14 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
                     </Button>
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
             {visible.length > 0 && !hideTeamRow && (
               <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
                 <TableRow>
                   <TableCell className="font-bold whitespace-nowrap">Whole team</TableCell>
+                  <TableCell />
                   {data.statuses.map((s) => (
                     <TableCell key={s} className="text-right tabular-nums font-mono font-bold">
                       {data.totals.byStatus.get(s) ?? 0}
@@ -3108,41 +3214,37 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
         </div>
       </div>
       {selectedAgent && (
-        <Dialog open={!!selectedAgent} onOpenChange={(open) => !open && setSelectedAgent(null)}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Agent Details</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-4 text-sm">
-              <AvatarName name={selectedAgent.agent} subtitle="Agent Name-Alias Name" size="lg" textClassName="text-foreground" />
-              <div className="grid gap-2 sm:grid-cols-3">
-                <div>
-                  <div className="text-xs text-muted-foreground">Status</div>
-                  <Badge variant="outline" className="metric-good border-border">Active in report</Badge>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">Submissions</div>
-                  <div className="font-medium tabular-nums">{selectedAgent.total}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">Call time</div>
-                  <div className="font-medium tabular-nums">{formatDuration(selectedAgent.seconds)}</div>
-                </div>
-              </div>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {data.statuses.map((s) => (
-                  <div key={s} className="flex items-center justify-between rounded-md border border-border bg-muted/30 px-3 py-2">
-                    <span className={statusTone(s)}>{s}</span>
-                    <span className="font-semibold tabular-nums">{selectedAgent.byStatus.get(s) ?? 0}</span>
-                  </div>
-                ))}
-              </div>
+        <RosterAgentDetailsDialog rawName={selectedAgent.agent} open={!!selectedAgent} onOpenChange={(open) => !open && setSelectedAgent(null)}>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div>
+              <div className="text-xs text-muted-foreground">Submissions</div>
+              <div className="font-medium tabular-nums">{selectedAgent.total}</div>
             </div>
-          </DialogContent>
-        </Dialog>
+            <div>
+              <div className="text-xs text-muted-foreground">Call time</div>
+              <div className="font-medium tabular-nums">{formatDuration(selectedAgent.seconds)}</div>
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {data.statuses.map((s) => (
+              <div key={s} className="flex items-center justify-between rounded-md border border-border bg-muted/30 px-3 py-2">
+                <span className={statusTone(s)}>{s}</span>
+                <span className="font-semibold tabular-nums">{selectedAgent.byStatus.get(s) ?? 0}</span>
+              </div>
+            ))}
+          </div>
+        </RosterAgentDetailsDialog>
       )}
     </div>
   );
+}
+
+function agentNameParts(rawName: string, roster?: RosterIndex | null): { agentName: string; aliasName: string } {
+  const hit = roster?.lookupByAnyName(rawName);
+  if (hit) return { agentName: hit.name, aliasName: hit.arabicName ?? "" };
+  const parts = rawName.split(/\s*-\s*/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length > 1) return { agentName: parts[0], aliasName: parts.slice(1).join(" - ") };
+  return { agentName: rawName, aliasName: "" };
 }
 
 // PBX agent name (normalized) → canonical display name used in the phone/sheet tables.
@@ -7231,6 +7333,7 @@ function ReadyModeKillersPanel() {
   const [to, setTo] = useState(todayIso);
   const [subView, setSubView] = useState<"calls" | "subs">("calls");
   const { user } = useUser();
+  const roster = useRoster();
   const lockToToday = !!user.lockToToday;
   useEffect(() => {
     if (lockToToday) { setFrom(todayPDT()); setTo(todayPDT()); }
@@ -7453,7 +7556,8 @@ function ReadyModeKillersPanel() {
                 <Table>
                   <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
                     <TableRow>
-                      <TableHead className="text-left text-muted-foreground">Agent Name-Alias Name</TableHead>
+                      <TableHead className="text-left text-muted-foreground">Agent Name</TableHead>
+                      <TableHead className="text-left text-muted-foreground">Alias Name</TableHead>
                       <TableHead className="text-right metric-info">Dialed</TableHead>
                       <TableHead className="text-right metric-good">Connected</TableHead>
                       <TableHead className="text-right metric-info">Connect %</TableHead>
@@ -7463,11 +7567,14 @@ function ReadyModeKillersPanel() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {rows.map((r) => (
+                    {rows.map((r) => {
+                      const parts = agentNameParts(r.name, roster);
+                      return (
                       <TableRow key={r.key} className="hover-elevate">
                         <TableCell className="font-medium whitespace-nowrap">
-                          <AvatarName name={r.name} size="sm" textClassName="text-foreground" />
+                          <AvatarName name={parts.agentName} size="sm" textClassName="text-foreground" />
                         </TableCell>
+                        <TableCell className="whitespace-nowrap text-muted-foreground">{parts.aliasName || "—"}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${r.dialed ? "metric-info" : "text-muted-foreground/40"}`}>{r.dialed || "—"}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${r.connected ? "metric-good" : "text-muted-foreground/40"}`}>{r.connected || "—"}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${r.connectRate >= 20 ? "metric-info" : r.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>{r.connectRate > 0 ? `${r.connectRate}%` : "—"}</TableCell>
@@ -7475,11 +7582,13 @@ function ReadyModeKillersPanel() {
                         <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{r.avgTalkSecs ? formatDuration(r.avgTalkSecs) : "—"}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${r.submissions ? "metric-good" : "text-muted-foreground/40"}`}>{r.submissions || "—"}</TableCell>
                       </TableRow>
-                    ))}
+                      );
+                    })}
                   </TableBody>
                   <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
                     <TableRow>
                       <TableCell className="font-bold">Whole team</TableCell>
+                      <TableCell />
                       <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totals.dialed || "—"}</TableCell>
                       <TableCell className="text-right tabular-nums font-mono font-bold metric-good">{totals.connected || "—"}</TableCell>
                       <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totals.connectRate ? `${totals.connectRate}%` : "—"}</TableCell>
@@ -7513,7 +7622,8 @@ function ReadyModeKillersPanel() {
                 <Table>
                   <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
                     <TableRow>
-                      <TableHead className="text-left text-muted-foreground">Agent Name-Alias Name</TableHead>
+                      <TableHead className="text-left text-muted-foreground">Agent Name</TableHead>
+                      <TableHead className="text-left text-muted-foreground">Alias Name</TableHead>
                       {subsBreakdown.statuses.map((s) => (
                         <TableHead key={s} className={`text-right ${rmkStatusTone(s)}`}>{s}</TableHead>
                       ))}
@@ -7521,21 +7631,26 @@ function ReadyModeKillersPanel() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {subRows.map((r) => (
+                    {subRows.map((r) => {
+                      const parts = agentNameParts(r.name, roster);
+                      return (
                       <TableRow key={r.key} className="hover-elevate">
                         <TableCell className="font-medium whitespace-nowrap">
-                          <AvatarName name={r.name} size="sm" textClassName="text-foreground" />
+                          <AvatarName name={parts.agentName} size="sm" textClassName="text-foreground" />
                         </TableCell>
+                        <TableCell className="whitespace-nowrap text-muted-foreground">{parts.aliasName || "—"}</TableCell>
                         {subsBreakdown.statuses.map((s) => (
                           <TableCell key={s} className={`text-right tabular-nums font-mono ${r.counts[s] ? rmkStatusTone(s) : "text-muted-foreground/40"}`}>{r.counts[s] || "—"}</TableCell>
                         ))}
                         <TableCell className="text-right tabular-nums font-mono font-semibold">{r.total || "—"}</TableCell>
                       </TableRow>
-                    ))}
+                      );
+                    })}
                   </TableBody>
                   <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
                     <TableRow>
                       <TableCell className="font-bold">Whole team</TableCell>
+                      <TableCell />
                       {subsBreakdown.statuses.map((s) => (
                         <TableCell key={s} className={`text-right tabular-nums font-mono font-bold ${rmkStatusTone(s)}`}>{subTotals.counts[s] || "—"}</TableCell>
                       ))}
@@ -8977,6 +9092,7 @@ function LiveTransfersCard() {
 
 function QAPanel() {
   const { token, user } = useUser();
+  const qaRoster = useRoster();
   const qc = useQueryClient();
   const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
   // QA filter is locked to today.
@@ -9160,7 +9276,8 @@ function QAPanel() {
               <Table>
                 <TableHeader>
                   <TableRow className="border-zinc-800 hover:bg-transparent">
-                    <TableHead className="text-zinc-400">Agent Name-Alias Name</TableHead>
+                    <TableHead className="text-zinc-400">Agent Name</TableHead>
+                    <TableHead className="text-zinc-400">Alias Name</TableHead>
                     <TableHead className="text-zinc-400">Dept</TableHead>
                     <TableHead className="text-zinc-400">When</TableHead>
                     <TableHead className="text-zinc-400">Customer</TableHead>
@@ -9172,20 +9289,22 @@ function QAPanel() {
                 </TableHeader>
                 <TableBody>
                   {reviews.isLoading ? (
-                    <TableRow><TableCell colSpan={8}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={9}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
                   ) : reviewRows.length === 0 ? (
-                    <TableRow><TableCell colSpan={8} className="text-center text-zinc-500 py-8">No QA reviews in this date range yet. Click "Run QA now" to evaluate recent calls.</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={9} className="text-center text-zinc-500 py-8">No QA reviews in this date range yet. Click "Run QA now" to evaluate recent calls.</TableCell></TableRow>
                   ) : reviewRows.map((r) => {
                     const isOpen = expanded === r.id;
                     const deptColor = r.department === "Retention" ? "border-border metric-info"
                       : r.department === "CS" ? "border-border metric-info"
                       : "border-border metric-warn";
+                    const parts = agentNameParts(r.agentName, qaRoster);
                     return (
                       <Fragment key={r.id}>
                         <TableRow className="border-zinc-800/60 hover:bg-zinc-900/40 cursor-pointer" onClick={() => setExpanded(isOpen ? null : r.id)}>
                         <TableCell className="font-medium">
-                          <AvatarName name={r.agentName} size="sm" textClassName="text-foreground" />
+                          <AvatarName name={parts.agentName} size="sm" textClassName="text-foreground" />
                         </TableCell>
+                          <TableCell className="text-sm text-zinc-400">{parts.aliasName || "—"}</TableCell>
                           <TableCell><Badge variant="outline" className={`${deptColor} text-[10px]`}>{r.department}</Badge></TableCell>
                           <TableCell className="text-xs text-zinc-400">{new Date(r.callDate).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</TableCell>
                           <TableCell className="text-xs text-zinc-400 font-mono">{r.phoneNumber ?? "—"}</TableCell>
@@ -9259,7 +9378,8 @@ function QAPanel() {
               <Table>
                 <TableHeader>
                   <TableRow className="border-zinc-800 hover:bg-transparent">
-                    <TableHead className="text-zinc-400">Agent Name-Alias Name</TableHead>
+                    <TableHead className="text-zinc-400">Agent Name</TableHead>
+                    <TableHead className="text-zinc-400">Alias Name</TableHead>
                     <TableHead className="text-zinc-400">Dept</TableHead>
                     <TableHead className="text-zinc-400 text-right">AI</TableHead>
                     <TableHead className="text-zinc-400">Source</TableHead>
@@ -9270,9 +9390,9 @@ function QAPanel() {
                 </TableHeader>
                 <TableBody>
                   {tasks.isLoading ? (
-                    <TableRow><TableCell colSpan={7}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={8}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
                   ) : taskRows.length === 0 ? (
-                    <TableRow><TableCell colSpan={7} className="text-center text-zinc-500 py-8">No open manager reviews. Nice.</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={8} className="text-center text-zinc-500 py-8">No open manager reviews. Nice.</TableCell></TableRow>
                   ) : taskRows.map((t) => {
                     const deptColor = t.department === "Retention" ? "border-border metric-info"
                       : t.department === "CS" ? "border-border metric-info"
@@ -9281,11 +9401,13 @@ function QAPanel() {
                       : t.source === "weekly_random" ? "Weekly · random"
                       : t.source === "manual" ? "Manual"
                       : "Auto flag";
+                    const parts = agentNameParts(t.agentName, qaRoster);
                     return (
                       <TableRow key={t.id} className="border-zinc-800/60">
                         <TableCell className="font-medium">
-                          <AvatarName name={t.agentName} size="sm" textClassName="text-foreground" />
+                          <AvatarName name={parts.agentName} size="sm" textClassName="text-foreground" />
                         </TableCell>
+                        <TableCell className="text-sm text-zinc-400">{parts.aliasName || "—"}</TableCell>
                         <TableCell><Badge variant="outline" className={`${deptColor} text-[10px]`}>{t.department}</Badge></TableCell>
                         <TableCell className="text-right">
                           <span className={`font-semibold ${t.criticalFail ? "metric-bad" : t.aiScore < 60 ? "metric-bad" : "metric-warn"}`}>{t.aiScore}</span>
@@ -9837,7 +9959,8 @@ function ViolationsPanel() {
                   <TableRow className="border-white/8 bg-zinc-900/40">
                     <TableHead className="w-8" />
                     <TableHead className="text-xs w-28">Date</TableHead>
-                    <TableHead className="text-xs">Agent Name-Alias Name</TableHead>
+                    <TableHead className="text-xs">Agent Name</TableHead>
+                    <TableHead className="text-xs">Alias Name</TableHead>
                     <TableHead className="text-xs">Dept</TableHead>
                     <TableHead className="text-xs">Shift Start</TableHead>
                     <TableHead className="text-xs">First Call</TableHead>
@@ -9846,15 +9969,18 @@ function ViolationsPanel() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {lateRows.map((r, i) => (
+                  {lateRows.map((r, i) => {
+                    const parts = agentNameParts(r.member, violationsRoster);
+                    return (
                     <TableRow key={i} className={`border-white/5 transition-colors group ${localVerified.has(r.key) ? "bg-emerald-950/20" : "hover:bg-zinc-800/20"}`}>
                       <TableCell className="pl-3 pr-1">
                         <Checkbox vkey={r.key} type="late_login" member={r.member} department={r.department} date={r.date} details={r} />
                       </TableCell>
                       <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(r.date)}</TableCell>
                       <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"}`}>
-                        <AvatarName name={r.member} size="xs" textClassName={localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"} />
+                        <AvatarName name={parts.agentName} size="xs" textClassName={localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"} />
                       </TableCell>
+                      <TableCell className="text-xs text-zinc-400">{parts.aliasName || "—"}</TableCell>
                       <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.department)}`}>{r.department}</Badge></TableCell>
                       <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtTime(r.shiftStart)}</TableCell>
                       <TableCell className="text-xs text-zinc-300 tabular-nums">{fmtTime(r.firstCallAt)}</TableCell>
@@ -9865,7 +9991,8 @@ function ViolationsPanel() {
                         </button>
                       </TableCell>
                     </TableRow>
-                  ))}
+                    );
+                  })}
                 </TableBody>
               </Table>
           }
@@ -9935,7 +10062,8 @@ function ViolationsPanel() {
                   <TableRow className="border-white/8 bg-zinc-900/40">
                     <TableHead className="w-8" />
                     <TableHead className="text-xs w-28">Date</TableHead>
-                    <TableHead className="text-xs">Agent Name-Alias Name</TableHead>
+                    <TableHead className="text-xs">Agent Name</TableHead>
+                    <TableHead className="text-xs">Alias Name</TableHead>
                     <TableHead className="text-xs">Dept</TableHead>
                     <TableHead className="text-xs text-center">Gaps</TableHead>
                     <TableHead className="text-xs">Gap Durations (LA time)</TableHead>
@@ -9943,15 +10071,18 @@ function ViolationsPanel() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {displayGapRows.map((r, i) => (
+                  {displayGapRows.map((r, i) => {
+                    const parts = agentNameParts(r.member, violationsRoster);
+                    return (
                     <TableRow key={i} className={`border-white/5 transition-colors group ${localVerified.has(r.key) ? "bg-emerald-950/20" : "hover:bg-zinc-800/20"}`}>
                       <TableCell className="pl-3 pr-1">
                         <Checkbox vkey={r.key} type="availability_gap" member={r.member} department={r.department} date={r.date} details={r} />
                       </TableCell>
                       <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(r.date)}</TableCell>
                       <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"}`}>
-                        <AvatarName name={r.member} size="xs" textClassName={localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"} />
+                        <AvatarName name={parts.agentName} size="xs" textClassName={localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"} />
                       </TableCell>
+                      <TableCell className="text-xs text-zinc-400">{parts.aliasName || "—"}</TableCell>
                       <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.department)}`}>{r.department}</Badge></TableCell>
                       <TableCell className="text-xs text-center">
                         <span className={`font-bold ${r.gapCount >= 5 ? "metric-bad" : r.gapCount >= 3 ? "metric-warn" : "metric-warn"}`}>{r.gapCount}</span>
@@ -9977,7 +10108,8 @@ function ViolationsPanel() {
                         </button>
                       </TableCell>
                     </TableRow>
-                  ))}
+                    );
+                  })}
                 </TableBody>
               </Table>
           }
@@ -10114,7 +10246,8 @@ function ViolationsPanel() {
                     <TableRow className="border-white/8 bg-zinc-900/40">
                       <TableHead className="w-8" />
                       <TableHead className="text-xs w-28">Date</TableHead>
-                      <TableHead className="text-xs">Agent Name-Alias Name</TableHead>
+                      <TableHead className="text-xs">Agent Name</TableHead>
+                      <TableHead className="text-xs">Alias Name</TableHead>
                       <TableHead className="text-xs">Team</TableHead>
                       <TableHead className="text-xs">File ID</TableHead>
                       <TableHead className="text-xs">Status</TableHead>
@@ -10122,15 +10255,18 @@ function ViolationsPanel() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {cancelRows.map((r, i) => (
+                    {cancelRows.map((r, i) => {
+                      const parts = agentNameParts(r.agent, violationsRoster);
+                      return (
                       <TableRow key={i} className={`border-white/5 transition-colors group ${localVerified.has(r.key) ? "bg-emerald-950/20" : "bg-red-950/10 hover:bg-red-950/20"}`}>
                         <TableCell className="pl-3 pr-1">
                           <Checkbox vkey={r.key} type="unauthorized_cancel" member={r.agent} department={r.team} date={r.date} details={r} />
                         </TableCell>
                         <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(r.date)}</TableCell>
                         <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-red-200"}`}>
-                          <AvatarName name={r.agent} size="xs" textClassName={localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-red-200"} />
+                          <AvatarName name={parts.agentName} size="xs" textClassName={localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-red-200"} />
                         </TableCell>
+                        <TableCell className="text-xs text-zinc-400">{parts.aliasName || "—"}</TableCell>
                         <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.team)}`}>{r.team}</Badge></TableCell>
                         <TableCell className="text-xs font-mono text-zinc-300">{r.fileId || <span className="text-zinc-600">—</span>}</TableCell>
                         <TableCell className="text-xs text-red-400 font-medium">{r.rawStatus}</TableCell>
@@ -10140,7 +10276,8 @@ function ViolationsPanel() {
                           </button>
                         </TableCell>
                       </TableRow>
-                    ))}
+                      );
+                    })}
                   </TableBody>
                 </Table>
           }
@@ -10178,7 +10315,8 @@ function ViolationsPanel() {
                 <TableHeader>
                   <TableRow className="border-white/8 bg-zinc-900/40">
                     <TableHead className="text-xs">Type</TableHead>
-                    <TableHead className="text-xs">Agent Name-Alias Name / Info</TableHead>
+                    <TableHead className="text-xs">Agent Name / Info</TableHead>
+                    <TableHead className="text-xs">Alias Name</TableHead>
                     <TableHead className="text-xs">Dept</TableHead>
                     <TableHead className="text-xs w-28">Date</TableHead>
                     <TableHead className="text-xs text-right">Verified By</TableHead>
@@ -10204,6 +10342,7 @@ function ViolationsPanel() {
                       it.type === "late_login"          ? "Late Login" :
                       it.type === "availability_gap"    ? "Avail Gap" :
                       it.type === "unauthorized_cancel" ? "Cancel" : "Missed Call";
+                    const parts = agentNameParts(it.member, violationsRoster);
                     return (
                       <TableRow key={i} className="border-white/5 hover:bg-zinc-800/20 group">
                         <TableCell className="text-xs">
@@ -10211,8 +10350,9 @@ function ViolationsPanel() {
                           {detail && <span className="ml-1.5 text-zinc-500 text-[10px]">{detail}</span>}
                         </TableCell>
                         <TableCell className="text-xs font-medium text-white">
-                          <AvatarName name={it.member} size="xs" textClassName="text-white" />
+                          <AvatarName name={parts.agentName} size="xs" textClassName="text-white" />
                         </TableCell>
+                        <TableCell className="text-xs text-zinc-400">{parts.aliasName || "—"}</TableCell>
                         <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(it.department)}`}>{it.department}</Badge></TableCell>
                         <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(it.date)}</TableCell>
                         <TableCell className="text-xs text-right text-zinc-500">{it.verifiedBy}</TableCell>
@@ -10646,7 +10786,8 @@ function BackendStatsPanel() {
                   <TableHeader>
                     <TableRow className="border-white/5 hover:bg-transparent">
                       <TableHead className="w-10 text-zinc-400">#</TableHead>
-                      <TableHead className="text-zinc-400">Agent Name-Alias Name</TableHead>
+                      <TableHead className="text-zinc-400">Agent Name</TableHead>
+                      <TableHead className="text-zinc-400">Alias Name</TableHead>
                       <TableHead className="text-zinc-400">Team</TableHead>
                       <TableHead className="text-right text-zinc-400">Total</TableHead>
                       <TableHead className="text-right text-zinc-400">IDP-Cancel-Retained</TableHead>
@@ -10658,17 +10799,20 @@ function BackendStatsPanel() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {leaderboardAgents.map((a, i) => (
+                    {leaderboardAgents.map((a, i) => {
+                      const parts = agentNameParts(a.agent, roster);
+                      return (
                       <TableRow key={a.agent} className="border-white/5">
                         <TableCell className="text-zinc-500 tabular-nums">{i + 1}</TableCell>
                         <TableCell className="font-medium text-zinc-100">
                           <span className="inline-flex items-center gap-2">
-                            <AvatarName name={a.agent} size="sm" textClassName="text-zinc-100" />
+                            <AvatarName name={parts.agentName} size="sm" textClassName="text-zinc-100" />
                             {a.team === "killers" && (
                               <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-teal-500/30 bg-teal-500/15 text-teal-300">Killer</span>
                             )}
                           </span>
                         </TableCell>
+                        <TableCell className="text-sm text-zinc-400">{parts.aliasName || "—"}</TableCell>
                         <TableCell>
                           <span className="inline-flex items-center gap-1.5 text-xs text-zinc-300">
                             <span className="h-2 w-2 rounded-full" style={{ background: BSTAT_TEAM_META[a.team].color }} />
@@ -10683,7 +10827,8 @@ function BackendStatsPanel() {
                         <TableCell className="text-right tabular-nums metric-warn/90">{a.idp || "—"}</TableCell>
                         <TableCell className="text-right tabular-nums metric-bad/90">{a.cancelled || "—"}</TableCell>
                       </TableRow>
-                    ))}
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>
@@ -11474,6 +11619,7 @@ const WDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
 function AttendancePanel() {
   const { token, can, user } = useUser();
+  const roster = useRoster();
   const canEdit = can("edit_attendance");
   const canManage = can("manage_members");
   // Lock attendance view to the user's team when teamAccess is set (admins/unrestricted = null → see all).
@@ -11807,9 +11953,10 @@ function AttendancePanel() {
           <table className="border-collapse text-sm" style={{ minWidth: `${260 + dateCols.length * 50}px` }}>
             <thead>
               <tr className="bg-zinc-950">
-                <th className="sticky left-0 z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-3 py-2 border-b border-white/10 min-w-[160px]">Agent Name-Alias Name</th>
-                <th className="sticky left-[160px] z-20 bg-zinc-950 text-center text-xs text-muted-foreground font-medium px-1 py-2 border-b border-white/10 w-[90px]">Shift / Hrs</th>
-                <th className="sticky left-[250px] z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-2 py-2 border-b border-white/10 w-24">Dept</th>
+                <th className="sticky left-0 z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-3 py-2 border-b border-white/10 min-w-[160px]">Agent Name</th>
+                <th className="sticky left-[160px] z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-3 py-2 border-b border-white/10 min-w-[140px]">Alias Name</th>
+                <th className="sticky left-[300px] z-20 bg-zinc-950 text-center text-xs text-muted-foreground font-medium px-1 py-2 border-b border-white/10 w-[90px]">Shift / Hrs</th>
+                <th className="sticky left-[390px] z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-2 py-2 border-b border-white/10 w-24">Dept</th>
                 {dateCols.map((d) => {
                   const dt = new Date(d + "T12:00:00");
                   const isToday = d === todayStr;
@@ -11847,19 +11994,23 @@ function AttendancePanel() {
                   if ((s === "in" || s === "late") && new Date(d + "T12:00:00").getDay() === 6) cSat++;
                 }
                 const rowBg = mi % 2 === 0 ? "bg-zinc-900/20" : "bg-zinc-900/50";
+                const parts = agentNameParts(member.name, roster);
                 return (
                   <tr key={member.id} className={`${rowBg} hover:bg-white/[0.03] transition-colors ${!member.active ? "opacity-40" : ""}`}>
                     <td className={`sticky left-0 z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-3 py-1.5 text-sm font-medium border-b border-white/5 whitespace-nowrap ${member.active ? "text-white" : "text-zinc-400 line-through"}`}>
-                      <AvatarName name={member.name} size="sm" textClassName={member.active ? "text-white" : "text-zinc-400 line-through"} />
+                      <AvatarName name={parts.agentName} size="sm" textClassName={member.active ? "text-white" : "text-zinc-400 line-through"} />
                       {!member.active && <span className="ml-1.5 no-underline text-[10px] font-normal text-amber-500/70 bg-muted/50 px-1 rounded" style={{textDecoration:"none"}}>inactive</span>}
                     </td>
-                    <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`} title={`Shift ${member.shift} (LA time) · ${member.shiftHours || "8"}h shift`}>
+                    <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-3 py-1.5 text-xs text-zinc-400 border-b border-white/5 whitespace-nowrap`}>
+                      {parts.aliasName || "—"}
+                    </td>
+                    <td className={`sticky left-[300px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`} title={`Shift ${member.shift} (LA time) · ${member.shiftHours || "8"}h shift`}>
                       <div>{shiftLabel(member.shift)}</div>
                       {member.shiftHours && member.shiftHours !== "8" && (
                         <span className="text-[9px] font-semibold metric-warn bg-muted/60 rounded px-1">{member.shiftHours}h</span>
                       )}
                     </td>
-                    <td className={`sticky left-[250px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-2 border-b border-white/5`}>
+                    <td className={`sticky left-[390px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-2 border-b border-white/5`}>
                       {member.department && (
                         <Badge className="text-[10px] px-1.5 py-0 bg-muted-foreground/20 metric-info border-border">{member.department}</Badge>
                       )}
@@ -11911,7 +12062,7 @@ function AttendancePanel() {
               })}
               {visible.length === 0 && !isLoading && (
                 <tr>
-                  <td colSpan={dateCols.length + 10 + (canManage ? 1 : 0)} className="text-center py-16 text-muted-foreground text-sm">
+                  <td colSpan={dateCols.length + 11 + (canManage ? 1 : 0)} className="text-center py-16 text-muted-foreground text-sm">
                     {(data?.members.length ?? 0) === 0 ? (
                       <>No members yet — <button onClick={doImport} disabled={importing} className="metric-info hover:metric-info underline">{importing ? "Importing…" : "import from Google Sheets"}</button> or add one above.</>
                     ) : (
@@ -11939,36 +12090,18 @@ function AttendancePanel() {
       </div>
 
       {viewingMember && (
-        <Dialog open={!!viewingMember} onOpenChange={(open) => !open && setViewingMember(null)}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Agent Details</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-3 text-sm">
-              <AvatarName name={viewingMember.name} subtitle={viewingMember.department || "No department"} size="lg" textClassName="text-foreground" />
-              <div className="grid gap-2 sm:grid-cols-2">
-                <div>
-                  <div className="text-xs text-muted-foreground">Agent Name-Alias Name</div>
-                  <div className="font-medium">{viewingMember.name}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">Status</div>
-                  <Badge variant="outline" className={viewingMember.active ? "metric-good border-border" : "metric-warn border-border"}>
-                    {viewingMember.active ? "Active" : "Inactive"}
-                  </Badge>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">Shift</div>
-                  <div className="font-medium">{shiftLabel(viewingMember.shift) || "—"}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">Hours</div>
-                  <div className="font-medium">{viewingMember.shiftHours || "8"}h</div>
-                </div>
-              </div>
+        <RosterAgentDetailsDialog rawName={viewingMember.name} open={!!viewingMember} onOpenChange={(open) => !open && setViewingMember(null)}>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div>
+              <div className="text-xs text-muted-foreground">Department</div>
+              <div className="font-medium">{viewingMember.department || "—"}</div>
             </div>
-          </DialogContent>
-        </Dialog>
+            <div>
+              <div className="text-xs text-muted-foreground">Shift</div>
+              <div className="font-medium">{shiftLabel(viewingMember.shift) || "—"} · {viewingMember.shiftHours || "8"}h</div>
+            </div>
+          </div>
+        </RosterAgentDetailsDialog>
       )}
 
       {/* Cell editor overlay */}
