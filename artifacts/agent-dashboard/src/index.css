@@ -489,6 +489,7 @@
 
 input[type="date"],
 input[type="month"],
+[data-calendar-date-input],
 [data-animated-select],
 [data-animated-calendar-menu],
 [data-slot="calendar"] {
@@ -497,8 +498,53 @@ input[type="month"],
 }
 
 input[type="date"]:focus,
+[data-calendar-date-input]:focus,
 input[type="month"]:focus {
   animation: calendar-panel-pop .18s ease-out both, calendar-focus-pulse .7s ease-out;
+}
+
+.calendar-filter-strip {
+  animation: calendar-nav-slide .24s ease-out both;
+}
+
+.calendar-filter-strip [data-calendar-date-input],
+.calendar-filter-strip input[type="date"],
+.calendar-filter-strip input[type="month"] {
+  transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease, background-color 150ms ease;
+}
+
+.calendar-filter-strip [data-calendar-date-input]:hover,
+.calendar-filter-strip input[type="date"]:hover,
+.calendar-filter-strip input[type="month"]:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px -20px hsl(var(--primary) / .75);
+}
+
+.calendar-month-nav {
+  animation: calendar-panel-pop .24s ease-out both;
+}
+
+.calendar-month-label {
+  animation: calendar-nav-slide .22s ease-out both;
+}
+
+.attendance-calendar-grid {
+  animation: calendar-panel-pop .26s ease-out both;
+  transform-origin: top center;
+}
+
+.calendar-day-header {
+  animation: calendar-nav-slide .22s ease-out both;
+}
+
+.calendar-day-cell {
+  animation: calendar-day-pop .2s ease-out both;
+  transition: background-color 150ms ease, box-shadow 150ms ease, opacity 150ms ease, transform 150ms ease;
+}
+
+.calendar-day-cell:hover {
+  transform: scale(1.04);
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / .3), 0 8px 18px -16px hsl(var(--primary) / .7);
 }
 
 .calendar-animated,

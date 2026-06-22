@@ -3852,7 +3852,7 @@ function DateFilters({
   const minIso = minDate ? toIsoDate(minDate) : undefined;
   const maxIso = maxDate ? toIsoDate(maxDate) : undefined;
   return (
-    <div className="flex flex-col sm:flex-row sm:items-end gap-3 flex-wrap">
+    <div className="calendar-filter-strip flex flex-col sm:flex-row sm:items-end gap-3 flex-wrap">
       <div className="flex items-center gap-2 text-muted-foreground">
         <Calendar className="h-4 w-4" />
         <span className="text-sm font-medium">Date range</span>
@@ -3867,6 +3867,7 @@ function DateFilters({
           max={maxIso}
           onChange={(e) => setFrom(e.target.value)}
           className="w-[170px]"
+          data-calendar-date-input
           data-testid="input-from"
         />
       </div>
@@ -3880,6 +3881,7 @@ function DateFilters({
           max={maxIso}
           onChange={(e) => setTo(e.target.value)}
           className="w-[170px]"
+          data-calendar-date-input
           data-testid="input-to"
         />
       </div>
@@ -3963,7 +3965,7 @@ function PresetFilter({ from, to, setFrom, setTo }: { from: string; to: string; 
   const active = presets.find((p) => p.from === from && p.to === to)?.label;
   const todayIso = todayPDT();
   return (
-    <div className="flex gap-2 flex-wrap items-center">
+    <div className="calendar-filter-strip flex gap-2 flex-wrap items-center">
       <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
       {presets.map((p) => (
         <Button
@@ -3983,6 +3985,7 @@ function PresetFilter({ from, to, setFrom, setTo }: { from: string; to: string; 
         max={todayIso}
         onChange={(e) => { if (e.target.value) setFrom(e.target.value); }}
         className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring w-[130px]"
+        data-calendar-date-input
         title="From date"
       />
       <span className="text-muted-foreground text-xs">–</span>
@@ -3992,6 +3995,7 @@ function PresetFilter({ from, to, setFrom, setTo }: { from: string; to: string; 
         max={todayIso}
         onChange={(e) => { if (e.target.value) setTo(e.target.value); }}
         className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring w-[130px]"
+        data-calendar-date-input
         title="To date"
       />
     </div>
@@ -11939,10 +11943,10 @@ function AttendancePanel() {
             </button>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setMonthOff((v) => v - 1)} className="px-2 py-1 rounded text-muted-foreground hover:text-white hover:bg-white/5 transition-colors">←</button>
-          <span className="text-sm font-medium text-white w-32 text-center">{monthLabel}</span>
-          <button onClick={() => setMonthOff((v) => v + 1)} className="px-2 py-1 rounded text-muted-foreground hover:text-white hover:bg-white/5 transition-colors">→</button>
+        <div className="calendar-month-nav flex items-center gap-2">
+          <button onClick={() => setMonthOff((v) => v - 1)} className="calendar-animated-control px-2 py-1 rounded text-muted-foreground hover:text-white hover:bg-white/5 transition-colors">←</button>
+          <span className="calendar-month-label text-sm font-medium text-white w-32 text-center">{monthLabel}</span>
+          <button onClick={() => setMonthOff((v) => v + 1)} className="calendar-animated-control px-2 py-1 rounded text-muted-foreground hover:text-white hover:bg-white/5 transition-colors">→</button>
         </div>
       </div>
 
@@ -11950,7 +11954,7 @@ function AttendancePanel() {
       {isLoading ? (
         <Skeleton className="h-56 w-full" />
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-white/10">
+        <div className="attendance-calendar-grid overflow-x-auto rounded-lg border border-white/10">
           <table className="border-collapse text-sm" style={{ minWidth: `${260 + dateCols.length * 50}px` }}>
             <thead>
               <tr className="bg-zinc-950">
@@ -11966,7 +11970,7 @@ function AttendancePanel() {
                   return (
                     <th
                       key={d}
-                      className={`text-center px-0 py-1 border-b border-white/10 w-12 ${isToday ? "bg-blue-900/40" : isTomorrow ? "bg-teal-900/30" : ""}`}
+                      className={`calendar-day-header text-center px-0 py-1 border-b border-white/10 w-12 ${isToday ? "bg-blue-900/40" : isTomorrow ? "bg-teal-900/30" : ""}`}
                       style={isWknd && !isToday && !isTomorrow ? { background: "repeating-linear-gradient(135deg, #0f0f12 0px, #0f0f12 4px, #16141a 4px, #16141a 8px)" } : undefined}
                     >
                       <div className={`text-[11px] font-semibold ${isToday ? "metric-info" : isTomorrow ? "text-teal-300" : isWknd ? "text-amber-700/80" : "text-muted-foreground"}`}>{dt.getDate()}</div>
@@ -12028,7 +12032,7 @@ function AttendancePanel() {
                           key={d}
                           onClick={() => canEdit && openCell(member, d)}
                           title={rec?.note ? `📝 ${rec.note}` : undefined}
-                          className={`text-center border-b border-white/5 w-12 h-8 transition-colors
+                          className={`calendar-day-cell text-center border-b border-white/5 w-12 h-8 transition-colors
                             ${isToday ? "bg-blue-950/40" : isTomorrow ? "bg-teal-950/30" : ""}
                             ${!canEdit ? "cursor-default opacity-20" : "cursor-pointer hover:bg-white/5"}`}
                           style={isWknd && !isToday && !isTomorrow ? { background: "repeating-linear-gradient(135deg, #0f0f12 0px, #0f0f12 4px, #16141a 4px, #16141a 8px)" } : undefined}
