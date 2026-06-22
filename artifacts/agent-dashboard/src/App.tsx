@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
+import { Calendar as CalendarPicker } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import {
   Table,
@@ -3859,30 +3861,26 @@ function DateFilters({
       </div>
       <div className="space-y-1">
         <Label htmlFor="from" className="text-xs text-muted-foreground">From</Label>
-        <Input
-          id="from"
-          type="date"
+        <AnimatedDatePicker
           value={from}
           min={minIso}
           max={maxIso}
-          onChange={(e) => setFrom(e.target.value)}
+          onChange={setFrom}
           className="w-[170px]"
-          data-calendar-date-input
-          data-testid="input-from"
+          ariaLabel="From date"
+          title="From date"
         />
       </div>
       <div className="space-y-1">
         <Label htmlFor="to" className="text-xs text-muted-foreground">To</Label>
-        <Input
-          id="to"
-          type="date"
+        <AnimatedDatePicker
           value={to}
           min={minIso}
           max={maxIso}
-          onChange={(e) => setTo(e.target.value)}
+          onChange={setTo}
           className="w-[170px]"
-          data-calendar-date-input
-          data-testid="input-to"
+          ariaLabel="To date"
+          title="To date"
         />
       </div>
       <div className="flex gap-2 flex-wrap">
@@ -3943,6 +3941,85 @@ function DateFilters({
 
 type Preset = { label: string; from: string; to: string };
 
+function dateFromIso(value: string | null | undefined): Date | undefined {
+  if (!value) return undefined;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return undefined;
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12);
+}
+
+function formatPickerDate(value: string): string {
+  const date = dateFromIso(value);
+  if (!date) return "Select date";
+  return date.toLocaleDateString("en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    year: "numeric",
+  });
+}
+
+function AnimatedDatePicker({
+  value,
+  onChange,
+  min,
+  max,
+  className,
+  ariaLabel,
+  title,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  min?: string;
+  max?: string;
+  className?: string;
+  ariaLabel: string;
+  title?: string;
+}) {
+  const selected = dateFromIso(value);
+  const minDate = dateFromIso(min);
+  const maxDate = dateFromIso(max);
+  const disabled = [
+    ...(minDate ? [{ before: minDate }] : []),
+    ...(maxDate ? [{ after: maxDate }] : []),
+  ];
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          aria-label={ariaLabel}
+          title={title ?? ariaLabel}
+          data-calendar-date-input
+          className={cn(
+            "h-8 justify-between gap-2 rounded-md border border-input bg-background px-2 text-xs font-semibold text-foreground hover:bg-accent hover:text-accent-foreground",
+            className,
+          )}
+        >
+          <span className="tabular-nums">{formatPickerDate(value)}</span>
+          <Calendar className="h-3.5 w-3.5 shrink-0 opacity-80" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-auto p-0 overflow-hidden border-white/10 bg-zinc-900/95"
+        data-animated-calendar-menu
+      >
+        <CalendarPicker
+          mode="single"
+          selected={selected}
+          defaultMonth={selected ?? maxDate ?? new Date()}
+          disabled={disabled}
+          onSelect={(day) => {
+            if (day) onChange(toIsoDate(day));
+          }}
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function getPresets(): Preset[] {
   const { year, month, date } = nowPDTParts();
   const today = todayPDT();
@@ -3979,23 +4056,21 @@ function PresetFilter({ from, to, setFrom, setTo }: { from: string; to: string; 
         </Button>
       ))}
       <span className="text-muted-foreground text-xs mx-1">|</span>
-      <input
-        type="date"
+      <AnimatedDatePicker
         value={from}
         max={todayIso}
-        onChange={(e) => { if (e.target.value) setFrom(e.target.value); }}
-        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring w-[130px]"
-        data-calendar-date-input
+        onChange={setFrom}
+        className="w-[130px]"
+        ariaLabel="From date"
         title="From date"
       />
       <span className="text-muted-foreground text-xs">–</span>
-      <input
-        type="date"
+      <AnimatedDatePicker
         value={to}
         max={todayIso}
-        onChange={(e) => { if (e.target.value) setTo(e.target.value); }}
-        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring w-[130px]"
-        data-calendar-date-input
+        onChange={setTo}
+        className="w-[130px]"
+        ariaLabel="To date"
         title="To date"
       />
     </div>
@@ -8624,16 +8699,22 @@ function CallbackReviewPanel() {
           <button onClick={() => setPreset("week")} className={btnCls(preset === "week")}>This Week</button>
           <button onClick={() => setPreset("month")} className={btnCls(preset === "month")}>This Month</button>
           <div className="w-px h-5 bg-zinc-700" />
-          <input
-            type="date" value={customFrom} max={todayStr}
-            onChange={e => { setCustomFrom(e.target.value); setPreset("custom"); }}
-            className="text-xs bg-zinc-800/50 border border-zinc-700/50 rounded-md px-2 py-1 text-zinc-300 focus:outline-none focus:border-zinc-500"
+          <AnimatedDatePicker
+            value={customFrom}
+            max={todayStr}
+            onChange={(next) => { setCustomFrom(next); setPreset("custom"); }}
+            className="w-[132px] bg-zinc-800/50 border-zinc-700/50 text-zinc-300 hover:border-zinc-500"
+            ariaLabel="Callback review from date"
+            title="From date"
           />
           <span className="text-zinc-600 text-xs">—</span>
-          <input
-            type="date" value={customTo} max={todayStr}
-            onChange={e => { setCustomTo(e.target.value); setPreset("custom"); }}
-            className="text-xs bg-zinc-800/50 border border-zinc-700/50 rounded-md px-2 py-1 text-zinc-300 focus:outline-none focus:border-zinc-500"
+          <AnimatedDatePicker
+            value={customTo}
+            max={todayStr}
+            onChange={(next) => { setCustomTo(next); setPreset("custom"); }}
+            className="w-[132px] bg-zinc-800/50 border-zinc-700/50 text-zinc-300 hover:border-zinc-500"
+            ariaLabel="Callback review to date"
+            title="To date"
           />
           <div className="w-px h-5 bg-zinc-700" />
           {(["all", "retention", "cs", "nsf"] as const).map((t) => (
@@ -9865,11 +9946,24 @@ function ViolationsPanel() {
         <div className="flex items-center gap-2 text-sm text-zinc-400">
           <Calendar className="h-4 w-4" />
           <span>From</span>
-          <Input type="date" value={from} max={to} onChange={e => setFrom(e.target.value)}
-            className="h-8 w-36 bg-zinc-900/60 border-white/10 text-white text-xs" />
+          <AnimatedDatePicker
+            value={from}
+            max={to}
+            onChange={setFrom}
+            className="w-36 bg-zinc-900/60 border-white/10 text-white"
+            ariaLabel="Violations from date"
+            title="From date"
+          />
           <span>to</span>
-          <Input type="date" value={to} min={from} max={todayLA} onChange={e => setTo(e.target.value)}
-            className="h-8 w-36 bg-zinc-900/60 border-white/10 text-white text-xs" />
+          <AnimatedDatePicker
+            value={to}
+            min={from}
+            max={todayLA}
+            onChange={setTo}
+            className="w-36 bg-zinc-900/60 border-white/10 text-white"
+            ariaLabel="Violations to date"
+            title="To date"
+          />
         </div>
         <button onClick={() => void refetch()}
           className="ml-auto p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-700/60 transition-colors">
