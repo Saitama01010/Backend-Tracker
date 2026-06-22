@@ -4003,11 +4003,12 @@ function AnimatedDatePicker({
       </PopoverTrigger>
       <PopoverContent
         align="start"
-        className="w-auto p-0 overflow-hidden border-white/10 bg-zinc-900/95"
+        className="animated-date-popover w-auto p-0 overflow-hidden border-white/10 bg-zinc-900/95"
         data-animated-calendar-menu
       >
         <CalendarPicker
           mode="single"
+          className="animated-date-calendar"
           selected={selected}
           defaultMonth={selected ?? maxDate ?? new Date()}
           disabled={disabled}

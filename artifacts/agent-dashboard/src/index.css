@@ -547,6 +547,42 @@ input[type="month"]:focus {
   box-shadow: inset 0 0 0 1px hsl(var(--primary) / .3), 0 8px 18px -16px hsl(var(--primary) / .7);
 }
 
+.animated-date-popover {
+  min-width: 23rem;
+}
+
+.animated-date-calendar {
+  --cell-size: 2.75rem;
+  padding: 1rem;
+}
+
+.animated-date-calendar .rdp-month {
+  gap: .65rem;
+}
+
+.animated-date-calendar .rdp-caption_label {
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.animated-date-calendar .rdp-weekday {
+  font-size: .82rem;
+  font-weight: 800;
+}
+
+.animated-date-calendar button[data-day] {
+  min-width: var(--cell-size);
+  min-height: var(--cell-size);
+  font-size: .95rem;
+  font-weight: 800;
+}
+
+.animated-date-calendar .rdp-button_previous,
+.animated-date-calendar .rdp-button_next {
+  width: var(--cell-size);
+  height: var(--cell-size);
+}
+
 .calendar-animated,
 [data-slot="calendar"] {
   border-radius: .75rem;
