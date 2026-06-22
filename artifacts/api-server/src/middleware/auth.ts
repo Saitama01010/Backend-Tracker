@@ -23,7 +23,16 @@ declare global {
   }
 }
 
-const secret = () => process.env["SESSION_SECRET"] ?? "dev-secret-change-me";
+const isProduction = () => process.env["NODE_ENV"] === "production" || process.env["VERCEL"] === "1";
+
+const secret = () => {
+  const value = process.env["SESSION_SECRET"];
+  if (value) return value;
+  if (isProduction()) {
+    throw new Error("SESSION_SECRET is required in production.");
+  }
+  return "dev-secret-change-me";
+};
 
 export function signToken(payload: AuthPayload): string {
   return jwt.sign(payload, secret(), { expiresIn: "30d" });

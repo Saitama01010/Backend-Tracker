@@ -26,10 +26,15 @@ function webhookSecret(): string {
   return process.env["QUO_WEBHOOK_SECRET"] ?? "";
 }
 
+function isProduction(): boolean {
+  return process.env["NODE_ENV"] === "production" || process.env["VERCEL"] === "1";
+}
+
 // ─── Signature verification ───────────────────────────────────────────────────
 function verifySignature(body: unknown, header: string | undefined): boolean {
   const secret = webhookSecret();
-  if (!header || !secret) return !secret; // if no secret configured, pass through (dev)
+  if (!secret) return !isProduction();
+  if (!header) return false;
   const parts = header.split(";");
   if (parts.length < 4) return false;
   const timestamp = parts[2];

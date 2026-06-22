@@ -19,11 +19,22 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
+const isProduction = () => process.env["NODE_ENV"] === "production" || process.env["VERCEL"] === "1";
+
+function dashboardPassword(): string {
+  const value = process.env["DASHBOARD_PASSWORD"];
+  if (value) return value;
+  if (isProduction()) {
+    throw new Error("DASHBOARD_PASSWORD is required in production.");
+  }
+  return "tracker2026";
+}
+
 async function seedAdminUser() {
   const [{ value }] = await db.select({ value: count() }).from(portalUsersTable);
+  const defaultPass = dashboardPassword();
+  const hash = await bcrypt.hash(defaultPass, 10);
   if (value === 0) {
-    const defaultPass = process.env["DASHBOARD_PASSWORD"] ?? "tracker2026";
-    const hash = await bcrypt.hash(defaultPass, 10);
     await db.insert(portalUsersTable).values({
       username: "admin",
       passwordHash: hash,
@@ -32,6 +43,16 @@ async function seedAdminUser() {
       active: true,
     });
     logger.info("Seeded default admin user (username: admin)");
+    return;
+  }
+
+  if (process.env["DASHBOARD_PASSWORD"]) {
+    const [updated] = await db
+      .update(portalUsersTable)
+      .set({ passwordHash: hash })
+      .where(eq(portalUsersTable.username, "admin"))
+      .returning({ id: portalUsersTable.id });
+    if (updated) logger.info("Updated admin password from DASHBOARD_PASSWORD");
   }
 }
 
