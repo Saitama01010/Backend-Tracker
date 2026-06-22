@@ -11967,7 +11967,7 @@ function AttendancePanel() {
             </div>
             <div className="w-44">
               <Label className="text-xs text-muted-foreground mb-1 block">Department</Label>
-              <Input value={newDept} onChange={(e) => setNewDept(e.target.value)} placeholder="e.g. Backend" className="h-8" />
+              <Input value={newDept} onChange={(e) => setNewDept(e.target.value)} placeholder="e.g. Retention" className="h-8" />
             </div>
             <Button size="sm" onClick={addMember} disabled={!newName.trim()}>Add</Button>
             <Button size="sm" variant="ghost" onClick={() => setShowAdd(false)}>Cancel</Button>
@@ -12280,7 +12280,7 @@ function AttendancePanel() {
               </div>
               <div>
                 <Label className="text-xs text-muted-foreground mb-1 block">Department</Label>
-                <Input value={editingMember.department} onChange={(e) => setEditingMember({ ...editingMember, department: e.target.value })} className="h-8" placeholder="e.g. Backend" />
+                <Input value={editingMember.department} onChange={(e) => setEditingMember({ ...editingMember, department: e.target.value })} className="h-8" placeholder="e.g. Retention" />
               </div>
             </div>
             <div className="flex gap-2 justify-between pt-1">

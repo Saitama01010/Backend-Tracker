@@ -169,7 +169,7 @@ router.post("/attendance/import", async (req, res) => {
       },
       {
         url: "https://docs.google.com/spreadsheets/d/1qF5Dc5quGrAywf5Rtx4q7DrX91VlNIFOfKr-REoSkII/export?format=csv&gid=655352634",
-        department: "Backend",
+        department: "Retention",
       },
     ];
 
