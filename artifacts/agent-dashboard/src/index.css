@@ -7,22 +7,44 @@
 @keyframes calendar-panel-pop {
   from {
     opacity: 0;
-    transform: translateY(8px) scale(.98);
+    filter: blur(6px);
+    transform: translateY(10px) scale(.96);
   }
   to {
     opacity: 1;
+    filter: blur(0);
     transform: translateY(0) scale(1);
   }
 }
 
 @keyframes calendar-day-pop {
   from {
-    opacity: .72;
-    transform: scale(.9);
+    opacity: 0;
+    transform: translateY(4px) scale(.88);
   }
   to {
     opacity: 1;
     transform: scale(1);
+  }
+}
+
+@keyframes calendar-nav-slide {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes calendar-focus-pulse {
+  0% {
+    box-shadow: 0 0 0 0 hsl(var(--ring) / .32);
+  }
+  100% {
+    box-shadow: 0 0 0 5px hsl(var(--ring) / 0);
   }
 }
 
@@ -468,6 +490,7 @@
 input[type="date"],
 input[type="month"],
 [data-animated-select],
+[data-animated-calendar-menu],
 [data-slot="calendar"] {
   animation: calendar-panel-pop .22s ease-out both;
   transform-origin: top center;
@@ -475,9 +498,59 @@ input[type="month"],
 
 input[type="date"]:focus,
 input[type="month"]:focus {
-  animation: calendar-panel-pop .18s ease-out both;
+  animation: calendar-panel-pop .18s ease-out both, calendar-focus-pulse .7s ease-out;
+}
+
+.calendar-animated,
+[data-slot="calendar"] {
+  border-radius: .75rem;
+}
+
+.calendar-animated-months,
+[data-slot="calendar"] .rdp-months {
+  animation: calendar-panel-pop .22s ease-out both;
+}
+
+.calendar-animated-nav,
+[data-slot="calendar"] .rdp-nav {
+  animation: calendar-nav-slide .2s ease-out both;
+}
+
+.calendar-animated-control,
+[data-slot="calendar"] .rdp-button_previous,
+[data-slot="calendar"] .rdp-button_next {
+  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+
+.calendar-animated-control:hover,
+[data-slot="calendar"] .rdp-button_previous:hover,
+[data-slot="calendar"] .rdp-button_next:hover {
+  transform: translateY(-1px) scale(1.02);
+}
+
+.calendar-animated-weekday {
+  animation: calendar-nav-slide .24s ease-out both;
+}
+
+.calendar-animated-day,
+[data-slot="calendar"] button[data-day],
+[data-slot="calendar"] .rdp-day {
+  animation: calendar-day-pop .2s ease-out both;
 }
 
 [data-slot="calendar"] button[data-day] {
-  animation: calendar-day-pop .18s ease-out both;
+  border-radius: .5rem;
+  transition-property: color, background-color, border-radius, box-shadow, transform, opacity;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(.2, .8, .2, 1);
+}
+
+[data-slot="calendar"] button[data-day]:hover {
+  transform: scale(1.04);
+}
+
+[data-slot="calendar"] button[data-day][data-selected-single="true"],
+[data-slot="calendar"] button[data-day][data-range-start="true"],
+[data-slot="calendar"] button[data-day][data-range-end="true"] {
+  box-shadow: 0 8px 18px -12px hsl(var(--primary) / .65);
 }
