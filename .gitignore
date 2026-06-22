@@ -56,5 +56,6 @@ attached_assets/
 !.env.example
 .replit
 PRIVATE_KEYS_BACKUP_DO_NOT_UPLOAD.txt
+artifacts/db-backups/
 
 .vercel
