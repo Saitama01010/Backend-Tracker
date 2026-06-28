@@ -2,10 +2,11 @@ import { Router } from "express";
 import { db, blockedNumbersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { invalidateBlockedNumbersCache } from "../lib/blockedNumbers.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
 
-router.get("/blocked-numbers", async (req, res) => {
+router.get("/blocked-numbers", requireAuth, async (req, res) => {
   try {
     const rows = await db.select().from(blockedNumbersTable).orderBy(blockedNumbersTable.createdAt);
     return res.json({ data: rows });
@@ -15,7 +16,7 @@ router.get("/blocked-numbers", async (req, res) => {
   }
 });
 
-router.post("/blocked-numbers", async (req, res) => {
+router.post("/blocked-numbers", requireAuth, requireRole("admin", "edit"), async (req, res) => {
   try {
     const { number, note } = req.body as { number?: string; note?: string };
     if (!number || typeof number !== "string") {
@@ -31,9 +32,10 @@ router.post("/blocked-numbers", async (req, res) => {
   }
 });
 
-router.delete("/blocked-numbers/:number", async (req, res) => {
+router.delete("/blocked-numbers/:number", requireAuth, requireRole("admin", "edit"), async (req, res) => {
   try {
-    const number = decodeURIComponent(req.params["number"] ?? "");
+    const rawNumber = req.params["number"];
+    const number = decodeURIComponent(Array.isArray(rawNumber) ? rawNumber[0] ?? "" : rawNumber ?? "");
     await db.delete(blockedNumbersTable).where(eq(blockedNumbersTable.number, number));
     invalidateBlockedNumbersCache();
     return res.json({ ok: true });

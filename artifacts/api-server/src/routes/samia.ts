@@ -254,39 +254,34 @@ router.get("/samia/call-analysis", async (req, res) => {
   }
 });
 
-let openai: OpenAI | null = null;
-let openrouter: OpenAI | null = null;
-
 // OpenRouter client — kept available for cheaper experiments (e.g. DeepSeek),
 // but Samia runs on the OpenAI client below by default. DeepSeek was unreliable
 // at tool-calling: in the full multi-tool context it fabricated call/transcript
 // data instead of actually invoking analyze_calls, which is dangerous for a
 // coaching tool. Override the model with SAMIA_MODEL if needed.
 const SAMIA_MODEL = process.env["SAMIA_MODEL"] ?? "gpt-4.1";
-// Client Samia talks to. Defaults to OpenAI (reliable tool-calling / grounding).
-// If SAMIA_MODEL is pointed at an OpenRouter model (e.g. "deepseek/..."), route
-// through the openrouter client instead.
-function getSamiaClient(): OpenAI {
-  if (SAMIA_MODEL.includes("/")) {
-    const apiKey = process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"];
-    if (!apiKey) throw new Error("AI_INTEGRATIONS_OPENROUTER_API_KEY not set");
-    openrouter ??= new OpenAI({
-      baseURL: process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"],
-      apiKey,
-    });
-    return openrouter;
-  }
-
-  const apiKey = process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
-  if (!apiKey) throw new Error("AI_INTEGRATIONS_OPENAI_API_KEY not set");
-  openai ??= new OpenAI({
-    baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
-    apiKey,
-  });
-  return openai;
-}
 // 0.8 keeps personality while staying coherent and tool-reliable. Tunable via env.
 const SAMIA_TEMPERATURE = Number(process.env["SAMIA_TEMPERATURE"] ?? "0.8");
+
+function getSamiaClient(): OpenAI {
+  const useOpenRouter = SAMIA_MODEL.includes("/");
+  const apiKey = useOpenRouter
+    ? process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"]
+    : process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
+  if (!apiKey) {
+    throw new Error(
+      useOpenRouter
+        ? "AI_INTEGRATIONS_OPENROUTER_API_KEY is not set"
+        : "AI_INTEGRATIONS_OPENAI_API_KEY is not set",
+    );
+  }
+  return new OpenAI({
+    baseURL: useOpenRouter
+      ? process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"]
+      : process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
+    apiKey,
+  });
+}
 
 // ── One-swear-per-message post-processor ─────────────────────────────────────
 // If the model output contains no heavy word at all, slip one in naturally

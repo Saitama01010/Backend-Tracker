@@ -5,7 +5,7 @@ import {
   agentBreaksTable,
 } from "@workspace/db";
 import { and, gte, lte, or, eq, inArray } from "drizzle-orm";
-import { vosCallSpansCache } from "./vos";
+import { vosCallSpansCache, vosCallTimestampsCache } from "./vos";
 
 const TEAM_QUO_LINES = ["Retention", "CS Team", "Main NSF"];
 
@@ -109,7 +109,8 @@ router.get("/violations", async (req, res) => {
 
     // ── Build per-agent call maps ─────────────────────────────────────────────
     // callsByAgentDate: for first-call and gap detection
-    const callsByAgentDate = new Map<string, Date[]>();
+    type AgentCallEvent = { at: Date; source: "quo" | "pbx"; id: string };
+    const callsByAgentDate = new Map<string, AgentCallEvent[]>();
     // agentCallSpans: for "was busy at time T" detection
     const agentCallSpans = new Map<string, { start: number; end: number }[]>();
 
@@ -128,7 +129,7 @@ router.get("/violations", async (req, res) => {
       const dateLA = t.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
       const dateKey = `${lower}|${dateLA}`;
       const dateArr = callsByAgentDate.get(dateKey) ?? [];
-      dateArr.push(t);
+      dateArr.push({ at: t, source: "quo", id: `quo:${lower}:${t.toISOString()}` });
       callsByAgentDate.set(dateKey, dateArr);
 
       // spans map for busy check
@@ -151,7 +152,30 @@ router.get("/violations", async (req, res) => {
         agentCallSpans.set(lower, spanArr);
       }
     }
-    for (const arr of callsByAgentDate.values()) arr.sort((a, b) => a.getTime() - b.getTime());
+    for (const [agentLower, events] of vosCallTimestampsCache.entries()) {
+      if (!allAgentLower.has(agentLower)) continue;
+      for (const ev of events) {
+        const t = new Date(ev.at);
+        if (t < rangeStart || t > rangeEnd) continue;
+        const dateLA = t.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+        const dateKey = `${agentLower}|${dateLA}`;
+        const dateArr = callsByAgentDate.get(dateKey) ?? [];
+        dateArr.push({ at: t, source: "pbx", id: ev.id });
+        callsByAgentDate.set(dateKey, dateArr);
+      }
+    }
+    for (const [key, arr] of callsByAgentDate) {
+      const seen = new Set<string>();
+      const deduped: AgentCallEvent[] = [];
+      for (const ev of arr.sort((a, b) => a.at.getTime() - b.at.getTime())) {
+        const bucket = Math.floor(ev.at.getTime() / 1000);
+        const dedupeKey = String(bucket);
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        deduped.push(ev);
+      }
+      callsByAgentDate.set(key, deduped);
+    }
 
     function isAgentBusy(agentLower: string, atMs: number): boolean {
       // Check OpenPhone (phone_calls DB) spans first
@@ -169,7 +193,7 @@ router.get("/violations", async (req, res) => {
     };
     type GapRow = {
       key: string; member: string; department: string; date: string;
-      gapCount: number; gaps: { start: string; end: string; minutes: number }[];
+      gapCount: number; gaps: { start: string; end: string; minutes: number; source: "quo" | "pbx" | "combined" }[];
     };
     type MissedCallEntry = {
       key: string; pbxCallId: number | null; source: "pbx" | "quo"; date: string; missedAt: string;
@@ -191,21 +215,21 @@ router.get("/violations", async (req, res) => {
         if (shiftStartUtc > nowUtc) continue;
 
         const memberNames = agentNamesForMember(member.name);
-        const allCalls: Date[] = [];
+        const allCalls: AgentCallEvent[] = [];
         for (const n of memberNames) {
           for (const t of callsByAgentDate.get(`${n.toLowerCase()}|${date}`) ?? []) allCalls.push(t);
         }
-        allCalls.sort((a, b) => a.getTime() - b.getTime());
+        allCalls.sort((a, b) => a.at.getTime() - b.at.getTime());
 
         // ── Late Login ──────────────────────────────────────────────
-        const firstCall = allCalls.find((t) => t >= dayStart) ?? null;
+        const firstCall = allCalls.find((t) => t.at >= dayStart) ?? null;
         if (firstCall) {
-          const minsLate = Math.round((firstCall.getTime() - shiftStartUtc.getTime()) / 60000);
+          const minsLate = Math.round((firstCall.at.getTime() - shiftStartUtc.getTime()) / 60000);
           if (minsLate > 10) {
             lateLogin.push({
               key: `late:${member.name}:${date}`,
               member: member.name, department: member.department, date,
-              shiftStart: shiftStartUtc.toISOString(), firstCallAt: firstCall.toISOString(), minutesLate: minsLate,
+              shiftStart: shiftStartUtc.toISOString(), firstCallAt: firstCall.at.toISOString(), minutesLate: minsLate,
             });
           }
         }
@@ -213,12 +237,15 @@ router.get("/violations", async (req, res) => {
         // ── Availability Gaps ───────────────────────────────────────
         const shiftDurHours = Math.max(1, parseInt(member.shiftHours || "8"));
         const shiftEndUtc = new Date(shiftStartUtc.getTime() + shiftDurHours * 3600 * 1000);
-        const shiftCalls  = allCalls.filter((t) => t >= shiftStartUtc && t <= shiftEndUtc);
+        const shiftCalls  = allCalls.filter((t) => t.at >= shiftStartUtc && t.at <= shiftEndUtc);
         if (shiftCalls.length >= 2) {
-          const gaps: { start: string; end: string; minutes: number }[] = [];
+          const gaps: { start: string; end: string; minutes: number; source: "quo" | "pbx" | "combined" }[] = [];
           for (let i = 0; i < shiftCalls.length - 1; i++) {
-            const gapMins = Math.round((shiftCalls[i + 1].getTime() - shiftCalls[i].getTime()) / 60000);
-            if (gapMins > 5) gaps.push({ start: shiftCalls[i].toISOString(), end: shiftCalls[i + 1].toISOString(), minutes: gapMins });
+            const prev = shiftCalls[i];
+            const next = shiftCalls[i + 1];
+            const gapMins = Math.round((next.at.getTime() - prev.at.getTime()) / 60000);
+            const source = prev.source === next.source ? prev.source : "combined";
+            if (gapMins > 5) gaps.push({ start: prev.at.toISOString(), end: next.at.toISOString(), minutes: gapMins, source });
           }
           if (gaps.length > 0) {
             availabilityGaps.push({

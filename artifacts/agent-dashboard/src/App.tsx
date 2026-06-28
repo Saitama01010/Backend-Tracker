@@ -166,54 +166,6 @@ function useThemeMode() {
   return context;
 }
 
-const BOLD_DIGIT_MAP: Record<string, string> = {
-  "0": "𝟎",
-  "1": "𝟏",
-  "2": "𝟐",
-  "3": "𝟑",
-  "4": "𝟒",
-  "5": "𝟓",
-  "6": "𝟔",
-  "7": "𝟕",
-  "8": "𝟖",
-  "9": "𝟗",
-};
-
-function useBoldDigitDisplay() {
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const skipTags = new Set(["SCRIPT", "STYLE", "TEXTAREA", "INPUT", "SELECT", "OPTION"]);
-    const digitRe = /[0-9]/g;
-    const convertNode = (node: Node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        const parent = node.parentElement;
-        if (!parent || skipTags.has(parent.tagName) || parent.closest("[data-keep-plain-digits]")) return;
-        const text = node.nodeValue ?? "";
-        if (digitRe.test(text)) node.nodeValue = text.replace(/[0-9]/g, (d) => BOLD_DIGIT_MAP[d] ?? d);
-        digitRe.lastIndex = 0;
-        return;
-      }
-      if (node.nodeType !== Node.ELEMENT_NODE) return;
-      const el = node as Element;
-      if (skipTags.has(el.tagName) || el.closest("[data-keep-plain-digits]")) return;
-      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-      const textNodes: Node[] = [];
-      while (walker.nextNode()) textNodes.push(walker.currentNode);
-      textNodes.forEach(convertNode);
-    };
-
-    convertNode(document.body);
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        mutation.addedNodes.forEach(convertNode);
-        if (mutation.type === "characterData") convertNode(mutation.target);
-      }
-    });
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-    return () => observer.disconnect();
-  }, []);
-}
-
 function ThemeToggle({ className }: { className?: string }) {
   const { theme, toggleTheme } = useThemeMode();
   const isDark = theme === "dark";
@@ -929,6 +881,10 @@ const NSF = {
 
 type Row = Record<string, string>;
 type SheetData = { headers: string[]; rows: Row[] };
+const SHEET_STALE_MS = 30_000;
+const SHEET_REFETCH_MS = 60_000;
+const PHONE_STALE_MS = 30_000;
+const PHONE_REFETCH_MS = 60_000;
 
 // Reads a Google Sheet tab through the API server's authenticated Sheets
 // endpoint (/api/sheet), so the source spreadsheets can stay private. Accepts
@@ -941,7 +897,14 @@ async function fetchHeaderCsv(url: string): Promise<SheetData> {
   if (!idMatch) throw new Error("Unrecognized Google Sheets URL.");
   const id = idMatch[1];
   const gid = gidMatch?.[1] ?? "0";
-  const res = await fetch(`/api/sheet?id=${encodeURIComponent(id)}&gid=${encodeURIComponent(gid)}`);
+  const params = new URLSearchParams({ id, gid, _: String(Date.now()) });
+  const res = await fetch(`/api/sheet?${params.toString()}`, {
+    cache: "no-store",
+    headers: {
+      "Cache-Control": "no-cache",
+      "Pragma": "no-cache",
+    },
+  });
   if (!res.ok) throw new Error(`Failed to load sheet (HTTP ${res.status}).`);
   const data = (await res.json()) as SheetData;
   return { headers: data.headers ?? [], rows: data.rows ?? [] };
@@ -2122,16 +2085,16 @@ function formatHours(sec: number): string {
   return h >= 10 ? `${Math.round(h)}h` : `${h.toFixed(1)}h`;
 }
 
-function formatTimeSince(isoStr: string, now: number): string {
+function formatElapsedSince(isoStr: string, now: number): string {
   const diff = Math.max(0, now - new Date(isoStr).getTime());
   const totalSecs = Math.floor(diff / 1000);
   const d = Math.floor(totalSecs / 86400);
   const h = Math.floor((totalSecs % 86400) / 3600);
   const m = Math.floor((totalSecs % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h ago`;
-  if (h > 0) return `${h}h ${m}m ago`;
-  if (m > 0) return `${m}m ago`;
-  return "just now";
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return "<1m";
 }
 
 function useNow(intervalMs = 30000): number {
@@ -2143,13 +2106,17 @@ function useNow(intervalMs = 30000): number {
   return now;
 }
 
-function TimeSince({ isoStr }: { isoStr?: string }) {
-  const now = useNow(30000);
+function AvailableSince({ isoStr }: { isoStr?: string }) {
+  const now = useNow(15000);
   if (!isoStr) return <span className="text-muted-foreground/40">—</span>;
-  const diff = Date.now() - new Date(isoStr).getTime();
+  const diff = now - new Date(isoStr).getTime();
   const mins = Math.floor(diff / 60000);
   const color = mins < 30 ? "metric-good" : mins < 120 ? "metric-warn" : "metric-bad";
-  return <span className={`tabular-nums font-mono ${color}`}>{formatTimeSince(isoStr, now)}</span>;
+  return (
+    <span className={`tabular-nums font-mono ${color}`} title={`Last valid call ${formatPDTTime(isoStr)}`}>
+      {formatElapsedSince(isoStr, now)}
+    </span>
+  );
 }
 
 // ---------- Aggregation ----------
@@ -2487,34 +2454,34 @@ type TileTone = "blue" | "emerald" | "amber" | "sky" | "rose" | "slate" | "zinc"
 
 const TONE_STYLES: Record<TileTone, { bg: string; ring: string; text: string; glow: string }> = {
   blue: {
-    bg: "bg-card",
-    ring: "border-border",
-    text: "metric-info",
-    glow: "shadow-sm",
+    bg: "bg-blue-950/45",
+    ring: "border-blue-500/25",
+    text: "text-blue-50",
+    glow: "shadow-sm shadow-blue-950/20",
   },
   emerald: {
-    bg: "bg-card",
-    ring: "border-border",
-    text: "metric-good",
-    glow: "shadow-sm",
+    bg: "bg-emerald-950/45",
+    ring: "border-emerald-500/25",
+    text: "text-emerald-50",
+    glow: "shadow-sm shadow-emerald-950/20",
   },
   amber: {
-    bg: "bg-card",
-    ring: "border-border",
-    text: "metric-warn",
-    glow: "shadow-sm",
+    bg: "bg-amber-950/40",
+    ring: "border-amber-500/25",
+    text: "text-amber-50",
+    glow: "shadow-sm shadow-amber-950/20",
   },
   sky: {
-    bg: "bg-card",
-    ring: "border-border",
-    text: "metric-info",
-    glow: "shadow-sm",
+    bg: "bg-sky-950/45",
+    ring: "border-sky-500/25",
+    text: "text-sky-50",
+    glow: "shadow-sm shadow-sky-950/20",
   },
   rose: {
-    bg: "bg-card",
-    ring: "border-border",
-    text: "metric-bad",
-    glow: "shadow-sm",
+    bg: "bg-rose-950/45",
+    ring: "border-rose-500/25",
+    text: "text-rose-50",
+    glow: "shadow-sm shadow-rose-950/20",
   },
   slate: {
     bg: "bg-card",
@@ -2546,12 +2513,12 @@ function StatTile({
   const s = TONE_STYLES[tone];
   return (
     <div className={`rounded-xl border p-4 ${s.bg} ${s.ring} ${s.glow}`}>
-      <div className={`flex items-center gap-2 text-xs uppercase tracking-wide ${tone === "slate" ? "text-muted-foreground" : s.text}`}>
+      <div className={`flex items-center gap-2 text-xs uppercase tracking-wide ${tone === "slate" ? "text-muted-foreground" : "text-white/75"}`}>
         {icon}
         <span>{label}</span>
       </div>
       <div className={`mt-1 text-2xl font-bold tabular-nums font-mono ${tone === "slate" ? "" : s.text}`}>{value}</div>
-      {sub && <div className="mt-0.5 text-xs text-muted-foreground">{sub}</div>}
+      {sub && <div className={`mt-0.5 text-xs ${tone === "slate" ? "text-muted-foreground" : "text-white/65"}`}>{sub}</div>}
     </div>
   );
 }
@@ -2582,7 +2549,6 @@ function RosterAgentDetailsDialog({
   const hit = roster.lookupByAnyName(rawName);
   const parts = agentNameParts(rawName, roster);
   const [agentName, setAgentName] = useState(parts.agentName);
-  const [aliasName, setAliasName] = useState(parts.aliasName);
   const [notes, setNotes] = useState(hit?.notes ?? "");
   const [saving, setSaving] = useState(false);
 
@@ -2591,7 +2557,6 @@ function RosterAgentDetailsDialog({
     const nextHit = roster.lookupByAnyName(rawName);
     const nextParts = agentNameParts(rawName, roster);
     setAgentName(nextParts.agentName);
-    setAliasName(nextParts.aliasName);
     setNotes(nextHit?.notes ?? "");
   }, [open, rawName, roster.version]);
 
@@ -2606,7 +2571,6 @@ function RosterAgentDetailsDialog({
         headers: authHeaders(token),
         body: JSON.stringify({
           name: agentName.trim(),
-          arabicName: aliasName.trim() || null,
           notes: notes.trim() || null,
         }),
       });
@@ -2624,17 +2588,11 @@ function RosterAgentDetailsDialog({
           <DialogTitle>Agent Details</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 text-sm">
-          <AvatarName name={agentName || rawName} subtitle={aliasName ? `Alias: ${aliasName}` : "No alias name"} size="lg" textClassName="text-foreground" />
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="space-y-1.5">
-              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Agent Name</span>
-              <Input value={agentName} onChange={(e) => setAgentName(e.target.value)} disabled={!canSave} className="h-9" />
-            </label>
-            <label className="space-y-1.5">
-              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Alias Name</span>
-              <Input value={aliasName} onChange={(e) => setAliasName(e.target.value)} disabled={!canSave} className="h-9" />
-            </label>
-          </div>
+          <AvatarName name={agentName || rawName} size="lg" textClassName="text-foreground" />
+          <label className="block space-y-1.5">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Agent Name</span>
+            <Input value={agentName} onChange={(e) => setAgentName(e.target.value)} disabled={!canSave} className="h-9" />
+          </label>
           <label className="block space-y-1.5">
             <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Additional notes</span>
             <textarea
@@ -3136,7 +3094,6 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
                 <TableHead className="whitespace-nowrap min-w-[180px]">
                   <SortHeader id="__agent__" label="Agent Name" sort={sort} onToggle={toggle} />
                 </TableHead>
-                <TableHead className="whitespace-nowrap min-w-[160px]">Alias Name</TableHead>
                 {data.statuses.map((s) => (
                   <TableHead key={s} className={`whitespace-nowrap text-right ${statusTone(s)}`}>
                     <SortHeader id={s} label={s} align="right" sort={sort} onToggle={toggle} />
@@ -3156,7 +3113,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
             <TableBody>
               {visible.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={data.statuses.length + 4 + (showRate ? 1 : 0)} className="text-center py-12 text-muted-foreground">
+                  <TableCell colSpan={data.statuses.length + 3 + (showRate ? 1 : 0)} className="text-center py-12 text-muted-foreground">
                     No agents match the current filters.
                   </TableCell>
                 </TableRow>
@@ -3168,7 +3125,6 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
                   <TableCell className="font-medium whitespace-nowrap">
                     <AvatarName name={parts.agentName} size="sm" textClassName="text-foreground" />
                   </TableCell>
-                  <TableCell className="whitespace-nowrap text-muted-foreground">{parts.aliasName || "—"}</TableCell>
                   {data.statuses.map((s) => {
                     const v = a.byStatus.get(s) ?? 0;
                     return (
@@ -3197,7 +3153,6 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
               <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
                 <TableRow>
                   <TableCell className="font-bold whitespace-nowrap">Whole team</TableCell>
-                  <TableCell />
                   {data.statuses.map((s) => (
                     <TableCell key={s} className="text-right tabular-nums font-mono font-bold">
                       {data.totals.byStatus.get(s) ?? 0}
@@ -3244,9 +3199,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
 
 function agentNameParts(rawName: string, roster?: RosterIndex | null): { agentName: string; aliasName: string } {
   const hit = roster?.lookupByAnyName(rawName);
-  if (hit) return { agentName: hit.name, aliasName: hit.arabicName ?? "" };
-  const parts = rawName.split(/\s*-\s*/).map((part) => part.trim()).filter(Boolean);
-  if (parts.length > 1) return { agentName: parts[0], aliasName: parts.slice(1).join(" - ") };
+  if (hit) return { agentName: hit.name, aliasName: "" };
   return { agentName: rawName, aliasName: "" };
 }
 
@@ -3589,8 +3542,8 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const withCalls = agentList.filter((a) => (getPhone(a)?.calls ?? 0) > 0 || (getPbx(a)?.calls ?? 0) > 0);
-    const list = q ? withCalls.filter((a) => a.toLowerCase().includes(q)) : withCalls;
+    const list = (q ? agentList.filter((a) => a.toLowerCase().includes(q)) : agentList)
+      .filter((a) => ((getPhone(a)?.calls ?? 0) + (getPbx(a)?.calls ?? 0) + (getRm(a)?.calls ?? 0)) > 0);
     return [...list].sort((a, b) => {
       const phA = getPhone(a);
       const phB = getPhone(b);
@@ -3609,7 +3562,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
       else if (sort.col === "__agent__") { return sort.dir === "asc" ? a.localeCompare(b) : b.localeCompare(a); }
       return sort.dir === "asc" ? av - bv : bv - av;
     });
-  }, [agentList, search, sort, phoneData, pbxData]);
+  }, [agentList, search, sort, phoneData, pbxData, readymodeByKey, rosterPhoneAliases]);
 
   function toggle(col: string) {
     setSort((s) => s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: col === "__agent__" ? "asc" : "desc" });
@@ -3654,7 +3607,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
   const totUniq = visible.reduce((s, a) => s + (getPhone(a)?.uniqueContacts ?? 0), 0);
   const totSecs = visible.reduce((s, a) => s + (getPhone(a)?.seconds ?? 0) + (getPbx(a)?.durationSeconds ?? 0), 0);
 
-  const liveInView = agentList.filter((a) => liveAgents.any.has(normalizeAgent(a)));
+  const liveInView = visible.filter((a) => liveAgents.any.has(normalizeAgent(a)));
 
   return (
     <div className="space-y-4">
@@ -3698,7 +3651,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
             <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
               <TableRow>
                 <Th id="__agent__" label="Agent" align="left" />
-                <TableHead className="whitespace-nowrap text-right metric-info">Last call</TableHead>
+                <TableHead className="whitespace-nowrap text-right metric-info">Available</TableHead>
                 <Th id="__calls__" label="Calls" tip="Total calls across all phone systems (Quo + PBX + ReadyMode) in the selected period." />
                 {pbxData && <Th id="__pbx__" label="PBX" tone="metric-info" tip="Calls via the PBX phone system only." />}
                 {readymodeByKey && <Th id="__readymode__" label="ReadyMode" tone="metric-secondary" tip="Outbound dialer calls from the ReadyMode CSV (operator-uploaded Google Sheet)." />}
@@ -3787,7 +3740,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                           <span className={cls}>{label}</span>
                         );
                       })() : (
-                        <TimeSince isoStr={lastCall ?? undefined} />
+                        <AvailableSince isoStr={lastCall ?? undefined} />
                       )}
                     </TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!combinedCalls ? "text-muted-foreground/40" : ""}`}>{combinedCalls || "—"}</TableCell>
@@ -3822,7 +3775,6 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                   <TableCell className="text-right tabular-nums font-mono font-bold metric-warn">{totVmBrief || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totUniq || "—"}</TableCell>
                   <TableCell className="text-right tabular-nums font-mono font-bold">{totSecs ? formatDuration(totSecs) : "—"}</TableCell>
-                  <TableCell />
                   <TableCell className="text-right tabular-nums font-mono font-bold metric-warn">{responseRate(totAns, totCalls)}</TableCell>
                 </TableRow>
               </TableHeader>
@@ -4133,6 +4085,19 @@ interface PhoneStatsResponse {
   agentLastCall?: Record<string, Record<string, string>>;
 }
 
+async function fetchPhoneStats(pFrom: string, pTo: string): Promise<PhoneStatsResponse | null> {
+  const params = new URLSearchParams({ from: pFrom, to: pTo, _: String(Date.now()) });
+  const res = await fetch(`/api/quo/stats?${params.toString()}`, {
+    cache: "no-store",
+    headers: {
+      "Cache-Control": "no-cache",
+      "Pragma": "no-cache",
+    },
+  });
+  if (!res.ok) return null;
+  return res.json() as Promise<PhoneStatsResponse>;
+}
+
 /**
  * Fetch ReadyMode dialer per-agent call totals (CSV-backed) and resolve each
  * CSV name to its canonical dashboard key via RM_CSV_SKIP/RM_CSV_ALIASES,
@@ -4206,9 +4171,9 @@ function TeamPanel({
   const statusQ = useQuery({
     queryKey: ["status", sheetKey, roster.version, includeInactive],
     queryFn: statusQueryFn ? () => statusQueryFn(roster, { includeInactive }) : (() => fetchHeaderCsv(urls.status)),
-    staleTime: 30 * 1000,
+    staleTime: SHEET_STALE_MS,
     refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    refetchInterval: SHEET_REFETCH_MS,
   });
   const isLoading = statusQ.isLoading;
   const isFetching = statusQ.isFetching;
@@ -4223,13 +4188,11 @@ function TeamPanel({
     queryFn: async () => {
       const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
       const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
-      const res = await fetch(`/api/quo/stats?from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`);
-      if (!res.ok) return null;
-      return res.json() as Promise<PhoneStatsResponse>;
+      return fetchPhoneStats(pFrom, pTo);
     },
-    staleTime: 30 * 1000,
+    staleTime: PHONE_STALE_MS,
     refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    refetchInterval: PHONE_REFETCH_MS,
   });
 
   const readymodeByKey = useReadymodeByKey(from, to, roster);
@@ -4306,6 +4269,15 @@ function TeamPanel({
     const rosterDrives = rosterDrivesTeam(roster, mode as "retention" | "nsf" | "cs");
     const inRoster = (rawKey: string) =>
       !rosterDrives || (roster.allowlist[mode as RosterTeam]?.has(rawKey) ?? false);
+
+    // Roster-driven mode should still show active team members even before
+    // they have calls or sheet rows in the selected range.
+    if (rosterDrives) {
+      for (const a of roster.agentsForTeam(mode as RosterTeam)) {
+        const key = normalizeAgent(a.name);
+        if (!addedKeys.has(key)) { result.push(a.name); addedKeys.add(key); }
+      }
+    }
 
     // Sheet agents — prefer their display names
     if (aggregated && !("error" in aggregated)) {
@@ -7436,9 +7408,9 @@ function ReadyModeKillersPanel() {
   const subsQ = useQuery<SheetData>({
     queryKey: ["rmkSubmissions"],
     queryFn: fetchRMKSubmissions,
-    staleTime: 30 * 1000,
+    staleTime: SHEET_STALE_MS,
     refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    refetchInterval: SHEET_REFETCH_MS,
   });
 
   // ReadyMode dialer stats keyed by normalized name, restricted to the team.
@@ -7638,7 +7610,6 @@ function ReadyModeKillersPanel() {
                   <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
                     <TableRow>
                       <TableHead className="text-left text-muted-foreground">Agent Name</TableHead>
-                      <TableHead className="text-left text-muted-foreground">Alias Name</TableHead>
                       <TableHead className="text-right metric-info">Dialed</TableHead>
                       <TableHead className="text-right metric-good">Connected</TableHead>
                       <TableHead className="text-right metric-info">Connect %</TableHead>
@@ -7655,7 +7626,6 @@ function ReadyModeKillersPanel() {
                         <TableCell className="font-medium whitespace-nowrap">
                           <AvatarName name={parts.agentName} size="sm" textClassName="text-foreground" />
                         </TableCell>
-                        <TableCell className="whitespace-nowrap text-muted-foreground">{parts.aliasName || "—"}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${r.dialed ? "metric-info" : "text-muted-foreground/40"}`}>{r.dialed || "—"}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${r.connected ? "metric-good" : "text-muted-foreground/40"}`}>{r.connected || "—"}</TableCell>
                         <TableCell className={`text-right tabular-nums font-mono ${r.connectRate >= 20 ? "metric-info" : r.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>{r.connectRate > 0 ? `${r.connectRate}%` : "—"}</TableCell>
@@ -7669,7 +7639,6 @@ function ReadyModeKillersPanel() {
                   <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
                     <TableRow>
                       <TableCell className="font-bold">Whole team</TableCell>
-                      <TableCell />
                       <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totals.dialed || "—"}</TableCell>
                       <TableCell className="text-right tabular-nums font-mono font-bold metric-good">{totals.connected || "—"}</TableCell>
                       <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totals.connectRate ? `${totals.connectRate}%` : "—"}</TableCell>
@@ -7704,7 +7673,6 @@ function ReadyModeKillersPanel() {
                   <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
                     <TableRow>
                       <TableHead className="text-left text-muted-foreground">Agent Name</TableHead>
-                      <TableHead className="text-left text-muted-foreground">Alias Name</TableHead>
                       {subsBreakdown.statuses.map((s) => (
                         <TableHead key={s} className={`text-right ${rmkStatusTone(s)}`}>{s}</TableHead>
                       ))}
@@ -7719,7 +7687,6 @@ function ReadyModeKillersPanel() {
                         <TableCell className="font-medium whitespace-nowrap">
                           <AvatarName name={parts.agentName} size="sm" textClassName="text-foreground" />
                         </TableCell>
-                        <TableCell className="whitespace-nowrap text-muted-foreground">{parts.aliasName || "—"}</TableCell>
                         {subsBreakdown.statuses.map((s) => (
                           <TableCell key={s} className={`text-right tabular-nums font-mono ${r.counts[s] ? rmkStatusTone(s) : "text-muted-foreground/40"}`}>{r.counts[s] || "—"}</TableCell>
                         ))}
@@ -7731,7 +7698,6 @@ function ReadyModeKillersPanel() {
                   <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
                     <TableRow>
                       <TableCell className="font-bold">Whole team</TableCell>
-                      <TableCell />
                       {subsBreakdown.statuses.map((s) => (
                         <TableCell key={s} className={`text-right tabular-nums font-mono font-bold ${rmkStatusTone(s)}`}>{subTotals.counts[s] || "—"}</TableCell>
                       ))}
@@ -8884,7 +8850,7 @@ type LateLoginRow = {
   key: string; member: string; department: string; date: string;
   shiftStart: string; firstCallAt: string; minutesLate: number;
 };
-type GapEntry = { start: string; end: string; minutes: number };
+type GapEntry = { start: string; end: string; minutes: number; source?: "quo" | "pbx" | "combined" };
 type AvailGapRow = {
   key: string; member: string; department: string; date: string;
   gapCount: number; gaps: GapEntry[];
@@ -9364,7 +9330,6 @@ function QAPanel() {
                 <TableHeader>
                   <TableRow className="border-zinc-800 hover:bg-transparent">
                     <TableHead className="text-zinc-400">Agent Name</TableHead>
-                    <TableHead className="text-zinc-400">Alias Name</TableHead>
                     <TableHead className="text-zinc-400">Dept</TableHead>
                     <TableHead className="text-zinc-400">When</TableHead>
                     <TableHead className="text-zinc-400">Customer</TableHead>
@@ -9376,9 +9341,9 @@ function QAPanel() {
                 </TableHeader>
                 <TableBody>
                   {reviews.isLoading ? (
-                    <TableRow><TableCell colSpan={9}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={8}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
                   ) : reviewRows.length === 0 ? (
-                    <TableRow><TableCell colSpan={9} className="text-center text-zinc-500 py-8">No QA reviews in this date range yet. Click "Run QA now" to evaluate recent calls.</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={8} className="text-center text-zinc-500 py-8">No QA reviews in this date range yet. Click "Run QA now" to evaluate recent calls.</TableCell></TableRow>
                   ) : reviewRows.map((r) => {
                     const isOpen = expanded === r.id;
                     const deptColor = r.department === "Retention" ? "border-border metric-info"
@@ -9391,7 +9356,6 @@ function QAPanel() {
                         <TableCell className="font-medium">
                           <AvatarName name={parts.agentName} size="sm" textClassName="text-foreground" />
                         </TableCell>
-                          <TableCell className="text-sm text-zinc-400">{parts.aliasName || "—"}</TableCell>
                           <TableCell><Badge variant="outline" className={`${deptColor} text-[10px]`}>{r.department}</Badge></TableCell>
                           <TableCell className="text-xs text-zinc-400">{new Date(r.callDate).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</TableCell>
                           <TableCell className="text-xs text-zinc-400 font-mono">{r.phoneNumber ?? "—"}</TableCell>
@@ -9466,7 +9430,6 @@ function QAPanel() {
                 <TableHeader>
                   <TableRow className="border-zinc-800 hover:bg-transparent">
                     <TableHead className="text-zinc-400">Agent Name</TableHead>
-                    <TableHead className="text-zinc-400">Alias Name</TableHead>
                     <TableHead className="text-zinc-400">Dept</TableHead>
                     <TableHead className="text-zinc-400 text-right">AI</TableHead>
                     <TableHead className="text-zinc-400">Source</TableHead>
@@ -9477,9 +9440,9 @@ function QAPanel() {
                 </TableHeader>
                 <TableBody>
                   {tasks.isLoading ? (
-                    <TableRow><TableCell colSpan={8}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={7}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
                   ) : taskRows.length === 0 ? (
-                    <TableRow><TableCell colSpan={8} className="text-center text-zinc-500 py-8">No open manager reviews. Nice.</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={7} className="text-center text-zinc-500 py-8">No open manager reviews. Nice.</TableCell></TableRow>
                   ) : taskRows.map((t) => {
                     const deptColor = t.department === "Retention" ? "border-border metric-info"
                       : t.department === "CS" ? "border-border metric-info"
@@ -9494,7 +9457,6 @@ function QAPanel() {
                         <TableCell className="font-medium">
                           <AvatarName name={parts.agentName} size="sm" textClassName="text-foreground" />
                         </TableCell>
-                        <TableCell className="text-sm text-zinc-400">{parts.aliasName || "—"}</TableCell>
                         <TableCell><Badge variant="outline" className={`${deptColor} text-[10px]`}>{t.department}</Badge></TableCell>
                         <TableCell className="text-right">
                           <span className={`font-semibold ${t.criticalFail ? "metric-bad" : t.aiScore < 60 ? "metric-bad" : "metric-warn"}`}>{t.aiScore}</span>
@@ -9849,6 +9811,35 @@ function ViolationsPanel() {
     m > 60 ? "metric-bad font-bold" : m > 30 ? "metric-warn font-semibold" : "metric-warn";
 
   const verifiedCount = localVerified.size;
+  const availabilityViolationCount = displayGapRows.reduce((s, r) => s + r.gapCount, 0);
+
+  function ViolationMetricCard({
+    icon,
+    label,
+    value,
+    tone,
+  }: {
+    icon: React.ReactNode;
+    label: string;
+    value: number;
+    tone: "amber" | "rose" | "emerald" | "sky";
+  }) {
+    const toneClass = {
+      amber: "border-amber-500/25 bg-amber-950/35 text-amber-50",
+      rose: "border-rose-500/25 bg-rose-950/40 text-rose-50",
+      emerald: "border-emerald-500/25 bg-emerald-950/35 text-emerald-50",
+      sky: "border-sky-500/25 bg-sky-950/35 text-sky-50",
+    }[tone];
+    return (
+      <div className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 ${toneClass}`}>
+        {icon}
+        <div>
+          <p className="text-xs text-white/70">{label}</p>
+          <p className="text-xl font-bold text-white">{value}</p>
+        </div>
+      </div>
+    );
+  }
 
   const handleSend = useCallback(() => {
     const items = verifiedData?.items ?? [];
@@ -9914,10 +9905,10 @@ function ViolationsPanel() {
   }, [verifiedData, from, to]);
 
   const SUB_TABS = [
-    { id: "late"     as const, label: "Late Login",    count: data?.lateLogin.length },
-    { id: "gaps"     as const, label: "Availability",  count: data?.availabilityGaps.length },
-    { id: "missed"   as const, label: "Missed Calls",  count: data?.missedWhileAvail.length },
-    { id: "cancels"  as const, label: "Cancels",       count: cancelData?.length, urgent: (cancelData?.length ?? 0) > 0 },
+    { id: "late"     as const, label: "Late Login",    count: lateRows.length },
+    { id: "gaps"     as const, label: "Availability",  count: availabilityViolationCount },
+    { id: "missed"   as const, label: "Missed Calls",  count: missedRows.length },
+    { id: "cancels"  as const, label: "Cancels",       count: cancelRows.length, urgent: cancelRows.length > 0 },
     { id: "verified" as const, label: "Verified",      count: verifiedCount, accent: true },
   ];
 
@@ -9975,26 +9966,11 @@ function ViolationsPanel() {
       {/* Summary cards */}
       {data && (
         <div className="flex flex-wrap gap-3">
-          <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/50 px-4 py-2.5">
-            <Clock className="h-4 w-4 metric-warn" />
-            <div><p className="text-xs text-zinc-400">Late Logins</p><p className="text-xl font-bold metric-warn">{data.lateLogin.length}</p></div>
-          </div>
-          <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/50 px-4 py-2.5">
-            <ShieldAlert className="h-4 w-4 metric-bad" />
-            <div><p className="text-xs text-zinc-400">Availability Violations</p><p className="text-xl font-bold metric-bad">{data.availabilityGaps.reduce((s, r) => s + r.gapCount, 0)}</p></div>
-          </div>
-          <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/50 px-4 py-2.5">
-            <PhoneMissed className="h-4 w-4 metric-warn" />
-            <div><p className="text-xs text-zinc-400">Missed While Available</p><p className="text-xl font-bold metric-warn">{data.missedWhileAvail.length}</p></div>
-          </div>
-          <div className="flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5">
-            <ShieldAlert className="h-4 w-4 text-red-400" />
-            <div><p className="text-xs text-zinc-400">Unauthorized Cancels</p><p className="text-xl font-bold text-red-300">{cancelData?.length ?? 0}</p></div>
-          </div>
-          <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/60 px-4 py-2.5">
-            <UserCheck className="h-4 w-4 metric-good" />
-            <div><p className="text-xs text-zinc-400">Verified</p><p className="text-xl font-bold metric-good">{verifiedCount}</p></div>
-          </div>
+          <ViolationMetricCard icon={<Clock className="h-4 w-4 text-amber-200" />} label="Late Logins" value={lateRows.length} tone="amber" />
+          <ViolationMetricCard icon={<ShieldAlert className="h-4 w-4 text-rose-200" />} label="Availability Violations" value={availabilityViolationCount} tone="rose" />
+          <ViolationMetricCard icon={<PhoneMissed className="h-4 w-4 text-amber-200" />} label="Missed While Available" value={missedRows.length} tone="amber" />
+          <ViolationMetricCard icon={<ShieldAlert className="h-4 w-4 text-rose-200" />} label="Unauthorized Cancels" value={cancelRows.length} tone="rose" />
+          <ViolationMetricCard icon={<UserCheck className="h-4 w-4 text-emerald-200" />} label="Verified" value={verifiedCount} tone="emerald" />
         </div>
       )}
 
@@ -10060,7 +10036,6 @@ function ViolationsPanel() {
                     <TableHead className="w-8" />
                     <TableHead className="text-xs w-28">Date</TableHead>
                     <TableHead className="text-xs">Agent Name</TableHead>
-                    <TableHead className="text-xs">Alias Name</TableHead>
                     <TableHead className="text-xs">Dept</TableHead>
                     <TableHead className="text-xs">Shift Start</TableHead>
                     <TableHead className="text-xs">First Call</TableHead>
@@ -10080,7 +10055,6 @@ function ViolationsPanel() {
                       <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"}`}>
                         <AvatarName name={parts.agentName} size="xs" textClassName={localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"} />
                       </TableCell>
-                      <TableCell className="text-xs text-zinc-400">{parts.aliasName || "—"}</TableCell>
                       <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.department)}`}>{r.department}</Badge></TableCell>
                       <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtTime(r.shiftStart)}</TableCell>
                       <TableCell className="text-xs text-zinc-300 tabular-nums">{fmtTime(r.firstCallAt)}</TableCell>
@@ -10163,7 +10137,6 @@ function ViolationsPanel() {
                     <TableHead className="w-8" />
                     <TableHead className="text-xs w-28">Date</TableHead>
                     <TableHead className="text-xs">Agent Name</TableHead>
-                    <TableHead className="text-xs">Alias Name</TableHead>
                     <TableHead className="text-xs">Dept</TableHead>
                     <TableHead className="text-xs text-center">Gaps</TableHead>
                     <TableHead className="text-xs">Gap Durations (LA time)</TableHead>
@@ -10182,7 +10155,6 @@ function ViolationsPanel() {
                       <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"}`}>
                         <AvatarName name={parts.agentName} size="xs" textClassName={localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-white"} />
                       </TableCell>
-                      <TableCell className="text-xs text-zinc-400">{parts.aliasName || "—"}</TableCell>
                       <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.department)}`}>{r.department}</Badge></TableCell>
                       <TableCell className="text-xs text-center">
                         <span className={`font-bold ${r.gapCount >= 5 ? "metric-bad" : r.gapCount >= 3 ? "metric-warn" : "metric-warn"}`}>{r.gapCount}</span>
@@ -10194,7 +10166,7 @@ function ViolationsPanel() {
                               <TooltipTrigger asChild>
                                 <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium cursor-default
                                   ${g.minutes > 30 ? "bg-muted metric-bad" : g.minutes > 15 ? "bg-muted metric-warn" : "bg-muted metric-warn"}`}>
-                                  {fmtMins(g.minutes)}
+                                  {fmtMins(g.minutes)}{g.source ? ` · ${g.source === "combined" ? "QUO+PBX" : g.source.toUpperCase()}` : ""}
                                 </span>
                               </TooltipTrigger>
                               <TooltipContent className="text-xs">{fmtTime(g.start)} → {fmtTime(g.end)}</TooltipContent>
@@ -10347,7 +10319,6 @@ function ViolationsPanel() {
                       <TableHead className="w-8" />
                       <TableHead className="text-xs w-28">Date</TableHead>
                       <TableHead className="text-xs">Agent Name</TableHead>
-                      <TableHead className="text-xs">Alias Name</TableHead>
                       <TableHead className="text-xs">Team</TableHead>
                       <TableHead className="text-xs">File ID</TableHead>
                       <TableHead className="text-xs">Status</TableHead>
@@ -10366,7 +10337,6 @@ function ViolationsPanel() {
                         <TableCell className={`text-xs font-medium ${localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-red-200"}`}>
                           <AvatarName name={parts.agentName} size="xs" textClassName={localVerified.has(r.key) ? "metric-good line-through decoration-emerald-600/50" : "text-red-200"} />
                         </TableCell>
-                        <TableCell className="text-xs text-zinc-400">{parts.aliasName || "—"}</TableCell>
                         <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(r.team)}`}>{r.team}</Badge></TableCell>
                         <TableCell className="text-xs font-mono text-zinc-300">{r.fileId || <span className="text-zinc-600">—</span>}</TableCell>
                         <TableCell className="text-xs text-red-400 font-medium">{r.rawStatus}</TableCell>
@@ -10416,7 +10386,6 @@ function ViolationsPanel() {
                   <TableRow className="border-white/8 bg-zinc-900/40">
                     <TableHead className="text-xs">Type</TableHead>
                     <TableHead className="text-xs">Agent Name / Info</TableHead>
-                    <TableHead className="text-xs">Alias Name</TableHead>
                     <TableHead className="text-xs">Dept</TableHead>
                     <TableHead className="text-xs w-28">Date</TableHead>
                     <TableHead className="text-xs text-right">Verified By</TableHead>
@@ -10452,7 +10421,6 @@ function ViolationsPanel() {
                         <TableCell className="text-xs font-medium text-white">
                           <AvatarName name={parts.agentName} size="xs" textClassName="text-white" />
                         </TableCell>
-                        <TableCell className="text-xs text-zinc-400">{parts.aliasName || "—"}</TableCell>
                         <TableCell className="text-xs"><Badge className={`text-[10px] px-1.5 py-0 border ${deptBadge(it.department)}`}>{it.department}</Badge></TableCell>
                         <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(it.date)}</TableCell>
                         <TableCell className="text-xs text-right text-zinc-500">{it.verifiedBy}</TableCell>
@@ -10568,6 +10536,10 @@ function BackendStatsPanel() {
         fetchNSFCombinedSheet(roster, { includeInactive: true }),
         fetchCSCombinedSheet(roster, { includeInactive: true }),
       ]);
+      // Killers have their own submission source (4 sheets, fixed roster). Fetch
+      // it sequentially after the others — it shares the 11kOhk8x workbook, which
+      // silently drops concurrent requests.
+      const rmk = await fetchRMKSubmissions();
       const out: BStatRow[] = [];
       // Dedupe true duplicates that can bleed across overlapping loaders/shared
       // tabs (crossover, IDP). A submission is uniquely identified by its File ID
@@ -10577,7 +10549,7 @@ function BackendStatsPanel() {
       // upgrade the kept row's flag — that tab is authoritative for the
       // IDP-Cancel classification, so it must win the split column.
       const seen = new Map<string, BStatRow>();
-      const add = (sd: SheetData, team: TeamMode) => {
+      const add = (sd: SheetData, team: RosterTeam) => {
         for (const r of sd.rows) {
           const raw = String(r["Agent"] ?? "").trim();
           if (!raw) continue;
@@ -10608,6 +10580,7 @@ function BackendStatsPanel() {
       add(ret, "retention");
       add(nsf, "nsf");
       add(cs, "cs");
+      add(rmk, "killers");
       return out;
     },
     staleTime: 60_000,
@@ -10718,7 +10691,7 @@ function BackendStatsPanel() {
     return (
       <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
         <CardContent className="flex flex-col items-center gap-3 py-16 text-zinc-400">
-          <ShieldAlert className="h-8 w-8 metric-bad/70" />
+          <ShieldAlert className="h-8 w-8 text-rose-400/70" />
           <p className="text-sm">Couldn't load file submissions.</p>
           <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
         </CardContent>
@@ -10731,30 +10704,30 @@ function BackendStatsPanel() {
       {/* Title row */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-white shadow-lg">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 text-white shadow-[0_0_24px_-6px_rgba(37,99,235,0.7)]">
             <BarChart3 className="h-5 w-5" />
           </div>
           <div>
-            <h2 className="text-lg font-bold tracking-tight text-foreground">
+            <h2 className="text-lg font-bold tracking-tight bg-gradient-to-r from-blue-300 via-cyan-300 to-sky-300 bg-clip-text text-transparent">
               Backend Statistics
             </h2>
             <p className="text-xs text-muted-foreground">Every file submitted across all teams.</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <AnimatedValueSelect
-            value={month}
-            onChange={setMonth}
-            ariaLabel="Choose backend statistics month"
-            triggerClassName="h-10 min-w-[150px] rounded-lg bg-zinc-800/80 border-white/10 text-sm font-medium text-white hover:bg-zinc-700/80"
-            menuClassName="w-52"
-            align="right"
-            options={[
-              { value: "all", label: "All time" },
-              { value: "today", label: "Today" },
-              ...monthOptions.map((m) => ({ value: m, label: bstatMonthLabel(m) })),
-            ]}
-          />
+          <div className="relative">
+            <select
+              value={month}
+              onChange={(e) => setMonth(e.target.value)}
+              className="appearance-none pl-9 pr-9 py-2 rounded-lg bg-zinc-800/80 border border-white/10 text-sm font-medium text-white cursor-pointer hover:bg-zinc-700/80 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+            >
+              <option value="all">All time</option>
+              <option value="today">Today</option>
+              {monthOptions.map((m) => <option key={m} value={m}>{bstatMonthLabel(m)}</option>)}
+            </select>
+            <Calendar className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs">▾</span>
+          </div>
           <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching} className="gap-2">
             <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
             Refresh
@@ -10764,12 +10737,12 @@ function BackendStatsPanel() {
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        <BStatKpi icon={Layers} label="Total Files" value={stats.totalFiles} accent="bg-muted-foreground/30" />
-        <BStatKpi icon={Users} label="Contributors" value={stats.contributors} accent="bg-muted-foreground/20" />
-        <BStatKpi icon={CheckCircle2} label="Retained" value={stats.retained} accent="bg-muted-foreground/30" />
-        <BStatKpi icon={Wrench} label="Fixed" value={stats.fixed} accent="bg-muted-foreground/20" />
-        <BStatKpi icon={TrendingUp} label="IDP-Handled" value={stats.idp} accent="bg-muted-foreground/20" />
-        <BStatKpi icon={XCircle} label="Cancelled" value={stats.cancelled} accent="bg-muted-foreground/20" />
+        <BStatKpi icon={Layers} label="Total Files" value={stats.totalFiles} accent="bg-blue-500/30" />
+        <BStatKpi icon={Users} label="Contributors" value={stats.contributors} accent="bg-cyan-500/30" />
+        <BStatKpi icon={CheckCircle2} label="Retained" value={stats.retained} accent="bg-emerald-500/30" />
+        <BStatKpi icon={Wrench} label="Fixed" value={stats.fixed} accent="bg-sky-500/30" />
+        <BStatKpi icon={TrendingUp} label="IDP-Handled" value={stats.idp} accent="bg-amber-500/30" />
+        <BStatKpi icon={XCircle} label="Cancelled" value={stats.cancelled} accent="bg-rose-500/30" />
       </div>
 
       {stats.totalFiles === 0 ? (
@@ -10785,7 +10758,7 @@ function BackendStatsPanel() {
           <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
-                <Activity className="h-4 w-4 metric-info" /> Files submitted over time
+                <Activity className="h-4 w-4 text-blue-300" /> Files submitted over time
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -10874,7 +10847,7 @@ function BackendStatsPanel() {
                 <button
                   type="button"
                   onClick={() => setKillersOnly((v) => !v)}
-                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors border ${killersOnly ? "border-border bg-muted/60 metric-bad" : "border-white/10 text-zinc-400 hover:text-white hover:bg-white/5"}`}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors border ${killersOnly ? "border-rose-500/50 bg-rose-500/15 text-rose-200" : "border-white/10 text-zinc-400 hover:text-white hover:bg-white/5"}`}
                 >
                   ⚔ Killers only
                 </button>
@@ -10886,8 +10859,7 @@ function BackendStatsPanel() {
                   <TableHeader>
                     <TableRow className="border-white/5 hover:bg-transparent">
                       <TableHead className="w-10 text-zinc-400">#</TableHead>
-                      <TableHead className="text-zinc-400">Agent Name</TableHead>
-                      <TableHead className="text-zinc-400">Alias Name</TableHead>
+                      <TableHead className="text-zinc-400">Agent</TableHead>
                       <TableHead className="text-zinc-400">Team</TableHead>
                       <TableHead className="text-right text-zinc-400">Total</TableHead>
                       <TableHead className="text-right text-zinc-400">IDP-Cancel-Retained</TableHead>
@@ -10899,20 +10871,10 @@ function BackendStatsPanel() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {leaderboardAgents.map((a, i) => {
-                      const parts = agentNameParts(a.agent, roster);
-                      return (
+                    {leaderboardAgents.map((a, i) => (
                       <TableRow key={a.agent} className="border-white/5">
                         <TableCell className="text-zinc-500 tabular-nums">{i + 1}</TableCell>
-                        <TableCell className="font-medium text-zinc-100">
-                          <span className="inline-flex items-center gap-2">
-                            <AvatarName name={parts.agentName} size="sm" textClassName="text-zinc-100" />
-                            {a.team === "killers" && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-teal-500/30 bg-teal-500/15 text-teal-300">Killer</span>
-                            )}
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-sm text-zinc-400">{parts.aliasName || "—"}</TableCell>
+                        <TableCell className="font-medium text-zinc-100">{a.agent}</TableCell>
                         <TableCell>
                           <span className="inline-flex items-center gap-1.5 text-xs text-zinc-300">
                             <span className="h-2 w-2 rounded-full" style={{ background: BSTAT_TEAM_META[a.team].color }} />
@@ -10921,14 +10883,13 @@ function BackendStatsPanel() {
                         </TableCell>
                         <TableCell className="text-right font-semibold tabular-nums text-white">{a.total.toLocaleString()}</TableCell>
                         <TableCell className="text-right tabular-nums text-teal-300/90">{a.idpCancelRetained || "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums metric-good/90">{a.retained || "—"}</TableCell>
-                        <TableCell className="text-right font-semibold tabular-nums metric-good">{(a.retained + a.idpCancelRetained) || "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums metric-info/90">{a.fixed || "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums metric-warn/90">{a.idp || "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums metric-bad/90">{a.cancelled || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums text-emerald-300/90">{a.retained || "—"}</TableCell>
+                        <TableCell className="text-right font-semibold tabular-nums text-emerald-200">{(a.retained + a.idpCancelRetained) || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums text-sky-300/90">{a.fixed || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums text-amber-300/90">{a.idp || "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums text-rose-300/90">{a.cancelled || "—"}</TableCell>
                       </TableRow>
-                      );
-                    })}
+                    ))}
                   </TableBody>
                 </Table>
               </div>
@@ -12050,13 +12011,12 @@ function AttendancePanel() {
         <Skeleton className="h-56 w-full" />
       ) : (
         <div className="attendance-calendar-grid overflow-x-auto rounded-lg border border-white/10">
-          <table className="border-collapse text-sm" style={{ minWidth: `${260 + dateCols.length * 50}px` }}>
+          <table className="border-collapse text-sm" style={{ minWidth: `${220 + dateCols.length * 50}px` }}>
             <thead>
               <tr className="bg-zinc-950">
                 <th className="sticky left-0 z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-3 py-2 border-b border-white/10 min-w-[160px]">Agent Name</th>
-                <th className="sticky left-[160px] z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-3 py-2 border-b border-white/10 min-w-[140px]">Alias Name</th>
-                <th className="sticky left-[300px] z-20 bg-zinc-950 text-center text-xs text-muted-foreground font-medium px-1 py-2 border-b border-white/10 w-[90px]">Shift / Hrs</th>
-                <th className="sticky left-[390px] z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-2 py-2 border-b border-white/10 w-24">Dept</th>
+                <th className="sticky left-[160px] z-20 bg-zinc-950 text-center text-xs text-muted-foreground font-medium px-1 py-2 border-b border-white/10 w-[90px]">Shift / Hrs</th>
+                <th className="sticky left-[250px] z-20 bg-zinc-950 text-left text-xs text-muted-foreground font-medium px-2 py-2 border-b border-white/10 w-24">Dept</th>
                 {dateCols.map((d) => {
                   const dt = new Date(d + "T12:00:00");
                   const isToday = d === todayStr;
@@ -12101,16 +12061,13 @@ function AttendancePanel() {
                       <AvatarName name={parts.agentName} size="sm" textClassName={member.active ? "text-white" : "text-zinc-400 line-through"} />
                       {!member.active && <span className="ml-1.5 no-underline text-[10px] font-normal text-amber-500/70 bg-muted/50 px-1 rounded" style={{textDecoration:"none"}}>inactive</span>}
                     </td>
-                    <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-3 py-1.5 text-xs text-zinc-400 border-b border-white/5 whitespace-nowrap`}>
-                      {parts.aliasName || "—"}
-                    </td>
-                    <td className={`sticky left-[300px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`} title={`Shift ${member.shift} (LA time) · ${member.shiftHours || "8"}h shift`}>
+                    <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`} title={`Shift ${member.shift} (LA time) · ${member.shiftHours || "8"}h shift`}>
                       <div>{shiftLabel(member.shift)}</div>
                       {member.shiftHours && member.shiftHours !== "8" && (
                         <span className="text-[9px] font-semibold metric-warn bg-muted/60 rounded px-1">{member.shiftHours}h</span>
                       )}
                     </td>
-                    <td className={`sticky left-[390px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-2 border-b border-white/5`}>
+                    <td className={`sticky left-[250px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} px-2 border-b border-white/5`}>
                       {member.department && (
                         <Badge className="text-[10px] px-1.5 py-0 bg-muted-foreground/20 metric-info border-border">{member.department}</Badge>
                       )}
@@ -12306,7 +12263,6 @@ function AttendancePanel() {
 }
 
 function App() {
-  useBoldDigitDisplay();
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>

@@ -1,76 +1,58 @@
 import { Router } from "express";
-import { sign } from "jsonwebtoken";
-// Google Sheets integration (connector id: google-sheet). The SDK handles
-// identity + token refresh automatically; never cache the client.
-import { ReplitConnectors } from "@replit/connectors-sdk";
+import jwt from "jsonwebtoken";
 
 const router = Router();
-const connectors = new ReplitConnectors();
 
 type SheetData = { headers: string[]; rows: Record<string, string>[] };
-type GoogleServiceAccount = {
-  client_email: string;
-  private_key: string;
-  token_uri?: string;
-};
 
-const GOOGLE_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly";
-const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-let googleAccessToken: { token: string; expiresAt: number } | null = null;
+// ─── Google Sheets auth (service account) ────────────────────────────────────
+// Replaces Replit's connector proxy with a self-hosted service account so the
+// source spreadsheets can stay private off Replit.
+//
+// Setup:
+//   1. Create a Google Cloud service account, enable the Google Sheets API.
+//   2. Share each spreadsheet with the service account's email (Viewer).
+//   3. Set these env vars from the service account's JSON key:
+//        GOOGLE_SA_CLIENT_EMAIL  = <client_email>
+//        GOOGLE_SA_PRIVATE_KEY   = <private_key>  (newlines may be escaped as \n)
+const SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly";
+const TOKEN_URL = "https://oauth2.googleapis.com/token";
+const SHEETS_BASE = "https://sheets.googleapis.com/v4/spreadsheets";
 
-// gid (numeric sheetId) -> sheet title, cached per spreadsheet so we don't hit
-// the metadata endpoint on every fetch. Refreshed on a miss.
-const titleCache = new Map<string, Map<number, string>>();
+// Cache the OAuth token until shortly before it expires.
+let cachedToken: { token: string; exp: number } | null = null;
 
-function normalizePrivateKey(privateKey: string): string {
-  return privateKey.replace(/\\n/g, "\n");
-}
-
-function getGoogleServiceAccount(): GoogleServiceAccount | null {
-  const json = process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
-  if (json) {
-    const parsed = JSON.parse(json) as Partial<GoogleServiceAccount>;
-    if (parsed.client_email && parsed.private_key) {
-      return {
-        client_email: parsed.client_email,
-        private_key: normalizePrivateKey(parsed.private_key),
-        token_uri: parsed.token_uri,
-      };
-    }
-  }
-
-  const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL?.trim();
-  const privateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.trim();
-  if (clientEmail && privateKey) {
-    return {
-      client_email: clientEmail,
-      private_key: normalizePrivateKey(privateKey),
-    };
-  }
-
-  return null;
-}
-
-async function getGoogleAccessToken(account: GoogleServiceAccount): Promise<string> {
+async function getAccessToken(): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  if (googleAccessToken && googleAccessToken.expiresAt - 60 > now) {
-    return googleAccessToken.token;
+  if (cachedToken && cachedToken.exp - 60 > now) return cachedToken.token;
+
+  let clientEmail =
+    process.env["GOOGLE_SA_CLIENT_EMAIL"] ??
+    process.env["GOOGLE_SERVICE_ACCOUNT_EMAIL"];
+  let privateKey = (
+    process.env["GOOGLE_SA_PRIVATE_KEY"] ??
+    process.env["GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY"] ??
+    ""
+  ).replace(/\\n/g, "\n");
+  const serviceAccountJson = process.env["GOOGLE_SERVICE_ACCOUNT_JSON"]?.trim();
+  if ((!clientEmail || !privateKey) && serviceAccountJson) {
+    const parsed = JSON.parse(serviceAccountJson) as { client_email?: string; private_key?: string };
+    clientEmail = parsed.client_email;
+    privateKey = (parsed.private_key ?? "").replace(/\\n/g, "\n");
+  }
+  if (!clientEmail || !privateKey) {
+    throw new Error(
+      "GOOGLE_SA_CLIENT_EMAIL / GOOGLE_SA_PRIVATE_KEY must be set for Google Sheets access",
+    );
   }
 
-  const tokenUrl = account.token_uri || GOOGLE_TOKEN_URL;
-  const assertion = sign(
-    {
-      iss: account.client_email,
-      scope: GOOGLE_SHEETS_SCOPE,
-      aud: tokenUrl,
-      exp: now + 3600,
-      iat: now,
-    },
-    account.private_key,
+  const assertion = jwt.sign(
+    { iss: clientEmail, scope: SCOPE, aud: TOKEN_URL, iat: now, exp: now + 3600 },
+    privateKey,
     { algorithm: "RS256" },
   );
 
-  const resp = await fetch(tokenUrl, {
+  const resp = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -78,40 +60,32 @@ async function getGoogleAccessToken(account: GoogleServiceAccount): Promise<stri
       assertion,
     }),
   });
-
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
-    throw new Error(`google token HTTP ${resp.status} ${body.slice(0, 200)}`);
+    throw new Error(`token HTTP ${resp.status} ${body.slice(0, 200)}`);
   }
-
   const json = (await resp.json()) as { access_token?: string; expires_in?: number };
-  if (!json.access_token) {
-    throw new Error("google token response missing access_token");
-  }
-
-  googleAccessToken = {
-    token: json.access_token,
-    expiresAt: now + (json.expires_in ?? 3600),
-  };
-  return googleAccessToken.token;
+  if (!json.access_token) throw new Error("no access_token in token response");
+  cachedToken = { token: json.access_token, exp: now + (json.expires_in ?? 3600) };
+  return json.access_token;
 }
 
-async function sheetsApiFetch(path: string): Promise<Response> {
-  const account = getGoogleServiceAccount();
-  if (account) {
-    const token = await getGoogleAccessToken(account);
-    return fetch(`https://sheets.googleapis.com${path}`, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
-    });
-  }
-
-  return connectors.proxy("google-sheet", path, { method: "GET" });
+// Authenticated GET against the Sheets API. `path` starts with "/<spreadsheetId>".
+async function sheetsApi(path: string): Promise<Response> {
+  const token = await getAccessToken();
+  return fetch(`${SHEETS_BASE}${path}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  });
 }
+
+// gid (numeric sheetId) -> sheet title, cached per spreadsheet so we don't hit
+// the metadata endpoint on every fetch. Refreshed on a miss.
+const titleCache = new Map<string, Map<number, string>>();
 
 async function loadTitles(spreadsheetId: string): Promise<Map<number, string>> {
-  const resp = await sheetsApiFetch(
-    `/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties(sheetId,title)`,
+  const resp = await sheetsApi(
+    `/${spreadsheetId}?fields=sheets.properties(sheetId,title)`,
   );
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
@@ -162,9 +136,7 @@ router.get("/sheet", async (req, res) => {
       return;
     }
     const range = encodeURIComponent(title);
-    const resp = await sheetsApiFetch(
-      `/v4/spreadsheets/${spreadsheetId}/values/${range}`,
-    );
+    const resp = await sheetsApi(`/${spreadsheetId}/values/${range}`);
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
       req.log.warn({ status: resp.status, spreadsheetId, gid }, "sheets values error");

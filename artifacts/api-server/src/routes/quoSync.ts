@@ -119,9 +119,7 @@ export const AGENT_DISPLAY_ALIASES: Record<string, string> = {
 };
 
 export function canonicalAgentName(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const k = raw.toLowerCase().trim();
-  return AGENT_DISPLAY_ALIASES[k] ?? raw;
+  return raw ?? null;
 }
 
 // Former employees no longer in the workspace — map by user ID directly
@@ -429,7 +427,7 @@ export async function runSync(
              USER_ID_OVERRIDES[effectiveUserId] ??
              effectiveUserId)
           : null);
-      const agentName = canonicalAgentName(rawAgentName);
+      const agentName = rawAgentName;
 
       // Use the participant from the conversation query (the customer's number).
       // call.participants[0] is the line's own number, NOT the customer.

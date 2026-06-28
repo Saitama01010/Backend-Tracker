@@ -1,5 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import crypto from "node:crypto";
+import { sql } from "drizzle-orm";
 import { db, phoneCallsTable } from "@workspace/db";
 import { logger } from "../lib/logger.js";
 import { classifyLine, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES } from "./quoSync.js";
@@ -26,14 +27,10 @@ function webhookSecret(): string {
   return process.env["QUO_WEBHOOK_SECRET"] ?? "";
 }
 
-function isProduction(): boolean {
-  return process.env["NODE_ENV"] === "production" || process.env["VERCEL"] === "1";
-}
-
 // ─── Signature verification ───────────────────────────────────────────────────
 function verifySignature(body: unknown, header: string | undefined): boolean {
   const secret = webhookSecret();
-  if (!secret) return !isProduction();
+  if (!secret) return process.env.NODE_ENV !== "production";
   if (!header) return false;
   const parts = header.split(";");
   if (parts.length < 4) return false;
@@ -45,7 +42,10 @@ function verifySignature(body: unknown, header: string | undefined): boolean {
     .createHmac("sha256", keyBinary)
     .update(Buffer.from(signedData, "utf8"))
     .digest("base64");
-  return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(provided));
+  const computedBuffer = Buffer.from(computed);
+  const providedBuffer = Buffer.from(provided);
+  if (computedBuffer.length !== providedBuffer.length) return false;
+  return crypto.timingSafeEqual(computedBuffer, providedBuffer);
 }
 
 // ─── Line info cache (5-min TTL) ─────────────────────────────────────────────
@@ -119,6 +119,47 @@ interface WebhookCall {
   completedAt?: string | null;
   userId?: string | null;
   phoneNumberId?: string | null;
+  answeredBy?: string | null;
+  voicemail?: { duration?: number | null } | null;
+}
+
+function secondsBetween(start?: string | null, end?: string | null): number | null {
+  if (!start || !end) return null;
+  const ms = new Date(end).getTime() - new Date(start).getTime();
+  if (!Number.isFinite(ms)) return null;
+  return Math.max(0, Math.round(ms / 1000));
+}
+
+function classifyWebhookStatus(call: WebhookCall, postAnswerSeconds: number | null): string {
+  const rawStatus = call.status ?? "completed";
+
+  if (rawStatus === "completed") {
+    if (call.direction === "outgoing") {
+      if (postAnswerSeconds !== null) {
+        if (postAnswerSeconds >= 60) return "completed";
+        if (postAnswerSeconds >= 20) return "voicemail";
+        return "voicemail-brief";
+      }
+      return call.answeredAt ? "completed" : "voicemail-brief";
+    }
+
+    if (call.answeredBy || call.answeredAt) return "completed";
+    if (call.voicemail) return "voicemail";
+    if (postAnswerSeconds !== null && postAnswerSeconds >= 20) return "voicemail";
+    return "voicemail-brief";
+  }
+
+  if (
+    rawStatus === "no-answer" &&
+    call.direction === "incoming" &&
+    call.completedAt &&
+    call.createdAt
+  ) {
+    const ringSeconds = secondsBetween(call.createdAt, call.completedAt);
+    if (ringSeconds !== null && ringSeconds >= 20) return "voicemail";
+  }
+
+  return rawStatus;
 }
 
 async function handleCallCompleted(obj: Record<string, unknown>) {
@@ -134,13 +175,10 @@ async function handleCallCompleted(obj: Record<string, unknown>) {
 
   const participant = call.direction === "outgoing" ? (call.to ?? "") : (call.from ?? "");
 
-  let durationSeconds = 0;
-  let postAnswerSeconds: number | undefined;
-  if (call.answeredAt && call.completedAt) {
-    const ms = new Date(call.completedAt).getTime() - new Date(call.answeredAt).getTime();
-    durationSeconds  = Math.max(0, Math.round(ms / 1000));
-    postAnswerSeconds = durationSeconds;
-  }
+  const postAnswerSeconds = secondsBetween(call.answeredAt, call.completedAt);
+  const ringDurationSeconds = secondsBetween(call.createdAt, call.completedAt);
+  const durationSeconds = postAnswerSeconds ?? call.voicemail?.duration ?? 0;
+  const effectiveStatus = classifyWebhookStatus(call, postAnswerSeconds);
 
   const agentName = call.userId ? await getAgentName(call.userId) : null;
 
@@ -155,25 +193,33 @@ async function handleCallCompleted(obj: Record<string, unknown>) {
       agentName,
       participant,
       direction:       call.direction ?? "unknown",
-      status:          call.status    ?? "completed",
+      status:          effectiveStatus,
       durationSeconds,
       postAnswerSeconds,
+      ringDurationSeconds,
       createdAt: new Date(call.createdAt ?? Date.now()),
     })
     .onConflictDoUpdate({
       target: phoneCallsTable.id,
       set: {
-        status:           call.status ?? "completed",
-        durationSeconds,
-        postAnswerSeconds,
-        agentId:          call.userId ?? null,
-        agentName,
-        syncedAt:         new Date(),
+        lineId: sql`excluded.line_id`,
+        lineName: sql`excluded.line_name`,
+        lineTeam: sql`excluded.line_team`,
+        agentId: sql`excluded.agent_id`,
+        agentName: sql`excluded.agent_name`,
+        participant: sql`excluded.participant`,
+        direction: sql`excluded.direction`,
+        status: sql`excluded.status`,
+        durationSeconds: sql`excluded.duration_seconds`,
+        postAnswerSeconds: sql`excluded.post_answer_seconds`,
+        ringDurationSeconds: sql`excluded.ring_duration_seconds`,
+        createdAt: sql`excluded.created_at`,
+        syncedAt: sql`now()`,
       },
     });
 
   logger.info(
-    { callId: call.id, lineName, lineTeam, agentName, direction: call.direction, durationSeconds },
+    { callId: call.id, lineName, lineTeam, agentName, direction: call.direction, status: effectiveStatus, durationSeconds },
     "quoWebhook: upserted call.completed",
   );
 }
@@ -183,7 +229,7 @@ async function handleOpenPhoneWebhook(req: Request, res: Response) {
   const sig = req.headers["openphone-signature"] as string | undefined;
 
   if (!verifySignature(req.body, sig)) {
-    logger.warn({ sig }, "quoWebhook: signature verification failed");
+    logger.warn("quoWebhook: signature verification failed");
     return res.status(401).json({ error: "Unauthorized" });
   }
 
@@ -222,6 +268,7 @@ async function handleOpenPhoneWebhook(req: Request, res: Response) {
     });
   }
   // call.summary.completed, message.*, contact.* — acknowledged, not processed
+  return;
 }
 
 router.post("/quo/webhook", handleOpenPhoneWebhook);

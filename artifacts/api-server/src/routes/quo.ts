@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db, phoneCallsTable } from "@workspace/db";
 import { and, eq, gte, lte, desc, ne } from "drizzle-orm";
-import { runSync, getSyncState, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES, canonicalAgentName } from "./quoSync.js";
+import { runSync, startBackgroundSync, getSyncState, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES, canonicalAgentName } from "./quoSync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { logger } from "../lib/logger.js";
 import { liveWebhookCalls } from "./quoWebhook.js";
@@ -42,6 +42,37 @@ function parseDateRange(from: string, to: string): { fromDate: Date; toDate: Dat
   const fromDate = DATE_RE.test(from) ? caDateBounds(from).from : new Date(from);
   const toDate   = DATE_RE.test(to)   ? caDateBounds(to).to   : new Date(to);
   return { fromDate, toDate };
+}
+
+function effectiveCallStatus(row: {
+  status: string;
+  direction: string;
+  durationSeconds: number;
+  postAnswerSeconds?: number | null;
+}): string {
+  if (row.status !== "completed") return row.status;
+
+  if (row.direction === "outgoing") {
+    const pas = row.postAnswerSeconds;
+    if (pas !== null && pas !== undefined) {
+      if (pas >= 60) return "completed";
+      if (pas >= 20) return "voicemail";
+      return "voicemail-brief";
+    }
+
+    const dur = row.durationSeconds;
+    if (dur >= 75) return "completed";
+    if (dur >= 35) return "voicemail";
+    return "voicemail-brief";
+  }
+
+  // Old webhook rows for inbound voicemail were sometimes saved as
+  // completed with zero talk time. Do not count those as answered.
+  if (row.direction === "incoming" && row.durationSeconds === 0 && row.postAnswerSeconds == null) {
+    return "voicemail-brief";
+  }
+
+  return "completed";
 }
 
 const QUO_BASE = "https://api.openphone.com/v1";
@@ -210,14 +241,16 @@ router.get("/quo/line-stats", async (req, res) => {
     // so the total "CX Reached" is truly deduplicated.
     const agentUniqueContactsAll: Record<string, Set<string>> = {};
     const blocklist = await getBlockedNumbers();
-    const lineInbounds = { total: 0, answered: 0, missed: 0 };
+    const lineInbounds = { total: 0, answered: 0, missed: 0, voicemail: 0 };
 
     for (const row of rows) {
       if (row.participant && blocklist.has(row.participant)) continue;
+      const effectiveStatus = effectiveCallStatus(row);
       // Track ALL inbound calls at the line level regardless of attribution
       if (row.direction === "incoming") {
         lineInbounds.total++;
-        if (row.status === "completed") lineInbounds.answered++;
+        if (effectiveStatus === "completed") lineInbounds.answered++;
+        else if (effectiveStatus === "voicemail") lineInbounds.voicemail++;
         else lineInbounds.missed++;
       }
 
@@ -249,21 +282,6 @@ router.get("/quo/line-stats", async (req, res) => {
 
       if (row.direction === "outgoing") slot.outbound++;
       else slot.inbound++;
-
-      let effectiveStatus = row.status;
-      if (row.status === "completed" && row.direction === "outgoing") {
-        const pas = row.postAnswerSeconds;
-        if (pas !== null && pas !== undefined) {
-          if (pas >= 60) effectiveStatus = "completed";
-          else if (pas >= 20) effectiveStatus = "voicemail";
-          else effectiveStatus = "voicemail-brief";
-        } else {
-          const dur = row.durationSeconds;
-          if (dur >= 75) effectiveStatus = "completed";
-          else if (dur >= 35) effectiveStatus = "voicemail";
-          else effectiveStatus = "voicemail-brief";
-        }
-      }
 
       if (effectiveStatus === "completed") slot.answered++;
       else if (effectiveStatus === "voicemail") slot.voicemail++;
@@ -383,26 +401,7 @@ router.get("/quo/stats", async (req, res) => {
       if (row.direction === "outgoing") slot.outbound++;
       else slot.inbound++;
 
-      // For outbound "completed" calls, re-apply effectiveStatus logic at query time.
-      // Old records (synced before the fix) have post_answer_seconds=null and status="completed"
-      // even when the call only hit voicemail. Fall back to duration_seconds with adjusted
-      // thresholds (+15s to account for typical ring time) when post_answer_seconds is missing.
-      let effectiveStatus = row.status;
-      if (row.status === "completed" && row.direction === "outgoing") {
-        const pas = row.postAnswerSeconds;
-        if (pas !== null && pas !== undefined) {
-          // Precise: use actual post-answer seconds
-          if (pas >= 60) effectiveStatus = "completed";
-          else if (pas >= 20) effectiveStatus = "voicemail";
-          else effectiveStatus = "voicemail-brief";
-        } else {
-          // Approximate: duration includes ~15s ring time, so adjust thresholds up by 15s
-          const dur = row.durationSeconds;
-          if (dur >= 75) effectiveStatus = "completed";
-          else if (dur >= 35) effectiveStatus = "voicemail";
-          else effectiveStatus = "voicemail-brief";
-        }
-      }
+      const effectiveStatus = effectiveCallStatus(row);
 
       if (effectiveStatus === "completed") slot.answered++;
       else if (effectiveStatus === "voicemail") slot.voicemail++;
@@ -416,8 +415,8 @@ router.get("/quo/stats", async (req, res) => {
         }
         const lb = lineInbound[row.lineId][date];
         lb.received++;
-        if (row.status === "completed") lb.answered++;
-        else if (row.status === "voicemail") lb.voicemail++;
+        if (effectiveStatus === "completed") lb.answered++;
+        else if (effectiveStatus === "voicemail") lb.voicemail++;
         else lb.missed++;
       }
     }
@@ -653,6 +652,7 @@ const backgroundJobsEnabled =
 if (backgroundJobsEnabled) {
   runLivePoll().catch(() => {});
   setInterval(() => { runLivePoll().catch(() => {}); }, 60_000);
+  startBackgroundSync().catch(() => {});
 }
 
 

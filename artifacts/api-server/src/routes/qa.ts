@@ -12,18 +12,14 @@ const router: IRouter = Router();
 // QA scoring runs through OpenRouter on DeepSeek (much cheaper than GPT-4.1).
 // Override with QA_MODEL if a different model is ever needed.
 const QA_MODEL = process.env["QA_MODEL"] ?? "deepseek/deepseek-chat";
-let openai: OpenAI | null = null;
 
 function getQaClient(): OpenAI {
   const apiKey = process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"];
-  if (!apiKey) {
-    throw new Error("AI_INTEGRATIONS_OPENROUTER_API_KEY not set");
-  }
-  openai ??= new OpenAI({
+  if (!apiKey) throw new Error("AI_INTEGRATIONS_OPENROUTER_API_KEY is not set");
+  return new OpenAI({
     baseURL: process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"],
     apiKey,
   });
-  return openai;
 }
 
 // ── Departments ─────────────────────────────────────────────────────────────

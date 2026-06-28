@@ -90,6 +90,7 @@ interface VosCallRaw {
  * Keyed by lowercase agent name. Consumed by violations.ts for busy detection.
  */
 export const vosCallSpansCache = new Map<string, Array<{ start: number; end: number }>>();
+export const vosCallTimestampsCache = new Map<string, Array<{ at: string; source: "pbx"; id: string }>>();
 
 export interface VosCallHistoryStat {
   agentName: string;
@@ -202,6 +203,7 @@ async function fetchAgentCallsForDate(
   outboundCallbacks: Array<{ toNumber: string; createdAt: string }>;
   inboundAnsweredFrom: Array<{ fromNumber: string; createdAt: string }>;
   callSpans: Array<{ start: number; end: number }>;
+  callTimestamps: Array<{ at: string; source: "pbx"; id: string }>;
 }> {
   let answered = 0, missed = 0, voicemail = 0, durationSeconds = 0;
   const callSpans: Array<{ start: number; end: number }> = [];
@@ -210,6 +212,7 @@ async function fetchAgentCallsForDate(
   const inboundToNumbers: string[] = [];
   const outboundCallbacks: Array<{ toNumber: string; createdAt: string }> = [];
   const inboundAnsweredFrom: Array<{ fromNumber: string; createdAt: string }> = [];
+  const callTimestamps: Array<{ at: string; source: "pbx"; id: string }> = [];
   let totalSeen = 0;
   const cap = expectedCount;
   let page = 1;
@@ -232,6 +235,7 @@ async function fetchAgentCallsForDate(
       totalSeen++;
 
       if (call.status === "active" || call.status === "ringing") continue;
+      callTimestamps.push({ at: call.createdAt, source: "pbx", id: `pbx:${call.id}` });
 
       // Track call span for busy detection (used by violations.ts).
       // In-progress calls use a 3-hour fallback so they register as busy.
@@ -278,7 +282,7 @@ async function fetchAgentCallsForDate(
     page++;
   }
 
-  return { answered, missed, voicemail, durationSeconds, lastCallAt, firstCallAt, inboundToNumbers, outboundCallbacks, inboundAnsweredFrom, callSpans };
+  return { answered, missed, voicemail, durationSeconds, lastCallAt, firstCallAt, inboundToNumbers, outboundCallbacks, inboundAnsweredFrom, callSpans, callTimestamps };
 }
 
 /**
@@ -450,6 +454,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
   callHistoryFetching = true;
   // Clear the span cache before rebuilding so stale entries from previous day don't persist.
   vosCallSpansCache.clear();
+  vosCallTimestampsCache.clear();
   const t0 = Date.now();
   try {
     const today = new Date().toISOString().slice(0, 10);
@@ -509,6 +514,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
               outboundCallbacks: [] as Array<{ toNumber: string; createdAt: string }>,
               inboundAnsweredFrom: [] as Array<{ fromNumber: string; createdAt: string }>,
               callSpans: [] as Array<{ start: number; end: number }>,
+              callTimestamps: [] as Array<{ at: string; source: "pbx"; id: string }>,
             };
           }
           const detail = await fetchAgentCallsForDate(agentId, a.calls, today, yesterday);
@@ -535,11 +541,12 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
             outboundCallbacks: detail.outboundCallbacks,
             inboundAnsweredFrom: detail.inboundAnsweredFrom,
             callSpans: detail.callSpans,
+            callTimestamps: detail.callTimestamps,
           };
         })
       );
       for (const r of batchResults) {
-        const { inboundToNumbers: _, outboundCallbacks: __, inboundAnsweredFrom: _ia, callSpans: _cs, ...stat } = r;
+        const { inboundToNumbers: _, outboundCallbacks: __, inboundAnsweredFrom: _ia, callSpans: _cs, callTimestamps: _ct, ...stat } = r;
         results.push(stat satisfies VosCallHistoryStat);
         // Feed every per-agent outbound call into the callback map immediately
         // so it's available for cross-referencing after all agents are scanned.
@@ -552,6 +559,12 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
           const existing = vosCallSpansCache.get(key) ?? [];
           for (const sp of _cs) existing.push(sp);
           vosCallSpansCache.set(key, existing);
+        }
+        if (_ct && _ct.length > 0) {
+          const key = r.agentName.toLowerCase();
+          const existing = vosCallTimestampsCache.get(key) ?? [];
+          for (const t of _ct) existing.push(t);
+          vosCallTimestampsCache.set(key, existing);
         }
       }
     }
@@ -870,6 +883,11 @@ router.post("/vos/refresh", (_req, res) => {
 
 router.get("/vos/stats", async (req, res) => {
   try {
+    const cacheAgeMs = callHistoryFetchedAt ? Date.now() - callHistoryFetchedAt : Infinity;
+    if (!callHistoryCache.length || cacheAgeMs > 2 * 60 * 1000) {
+      void refreshCallHistory(req.log);
+    }
+
     const [agents, ringGroups, dashboard] = await Promise.all([
       vosFetch<VosAgent[]>("/api/agents"),
       vosFetch<VosRingGroup[]>("/api/ring-groups"),
@@ -884,7 +902,7 @@ router.get("/vos/stats", async (req, res) => {
             calls: a.calls,
             inbound: a.inbound,
             outbound: a.outbound,
-            answered: 0,
+            answered: a.calls,
             missed: 0,
             voicemail: 0,
             durationSeconds: Math.round((a.avgDuration ?? 0) * a.calls),

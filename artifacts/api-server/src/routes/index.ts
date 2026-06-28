@@ -1,7 +1,6 @@
 import { Router, type IRouter } from "express";
 import healthRouter from "./health";
 import quoRouter from "./quo";
-import { startBackgroundSync } from "./quoSync.js";
 import quoWebhookRouter from "./quoWebhook";
 import attendanceRouter from "./attendance";
 import authRouter from "./auth";
@@ -22,10 +21,6 @@ import obAnalyticsRouter from "./obAnalytics";
 import liveTransfersRouter, { startLiveTransfersBackground } from "./liveTransfers";
 
 const router: IRouter = Router();
-const isVercel = process.env["VERCEL"] === "1";
-const backgroundJobsEnabled =
-  process.env["ENABLE_BACKGROUND_JOBS"] === "true" ||
-  (process.env["ENABLE_BACKGROUND_JOBS"] !== "false" && !isVercel);
 
 router.use(healthRouter);
 router.use(authRouter);
@@ -47,14 +42,10 @@ router.use(obReportRouter);
 router.use(obAnalyticsRouter);
 router.use(liveTransfersRouter);
 
-if (backgroundJobsEnabled) {
-  // Kick off background QA processor (evaluates new retention calls every 5 min).
-  startQaBackgroundProcessor();
-  // Kick off background OpenPhone sync for always-on hosts.
-  startBackgroundSync();
-  // Kick off background live-transfer classifier (Aspire/Resync inbound transfers).
-  startLiveTransfersBackground();
-}
+// Kick off background QA processor (evaluates new retention calls every 5 min).
+startQaBackgroundProcessor();
+// Kick off background live-transfer classifier (Aspire/Resync inbound transfers).
+startLiveTransfersBackground();
 router.use(teamAgentsRouter);
 
 export default router;

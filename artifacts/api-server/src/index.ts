@@ -24,10 +24,9 @@ const isProduction = () => process.env["NODE_ENV"] === "production" || process.e
 function dashboardPassword(): string {
   const value = process.env["DASHBOARD_PASSWORD"];
   if (value) return value;
-  if (isProduction()) {
-    throw new Error("DASHBOARD_PASSWORD is required in production.");
-  }
-  return "tracker2026";
+  throw new Error(isProduction()
+    ? "DASHBOARD_PASSWORD is required in production."
+    : "DASHBOARD_PASSWORD is required before seeding or updating the admin user.");
 }
 
 async function seedAdminUser() {
