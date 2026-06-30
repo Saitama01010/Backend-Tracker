@@ -632,7 +632,7 @@ function AnimatedMetricsNav({
 
   return (
     <div className="w-full overflow-x-auto pb-1">
-      <div className="flex w-full min-w-[960px] items-stretch rounded-2xl border border-border bg-card/70 p-1 shadow-sm backdrop-blur">
+      <div className="ops-panel flex w-full min-w-[960px] items-stretch rounded-xl p-1 backdrop-blur">
         {tabs.map((tab) => {
           const emoji = TAB_EMOJIS[tab.value] ?? "📌";
           const active = tab.value === value;
@@ -644,14 +644,14 @@ function AnimatedMetricsNav({
               onClick={() => onChange(tab.value)}
               className={cn(
                 "relative flex min-h-12 flex-1 items-center justify-center gap-2 overflow-hidden rounded-xl px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-                active ? "text-primary-foreground" : "text-muted-foreground hover:bg-accent/70 hover:text-accent-foreground",
+                active ? "text-[#06130f]" : "text-muted-foreground hover:bg-white/[0.04] hover:text-[#edeae5]",
               )}
               aria-pressed={active}
             >
               {active && (
                 <motion.span
                   layoutId="metrics-tab-active"
-                  className="absolute inset-0 rounded-xl bg-primary shadow-md"
+                  className="absolute inset-0 rounded-lg bg-primary shadow-[0_0_24px_rgba(52,211,153,.18)]"
                   transition={shouldReduceMotion ? { duration: 0 } : { type: "spring", stiffness: 420, damping: 34 }}
                 />
               )}
@@ -2454,33 +2454,33 @@ type TileTone = "blue" | "emerald" | "amber" | "sky" | "rose" | "slate" | "zinc"
 
 const TONE_STYLES: Record<TileTone, { bg: string; ring: string; text: string; glow: string }> = {
   blue: {
-    bg: "bg-blue-950/45",
-    ring: "border-blue-500/25",
-    text: "text-blue-50",
-    glow: "shadow-sm shadow-blue-950/20",
+    bg: "bg-cyan-950/35",
+    ring: "border-cyan-400/25",
+    text: "text-cyan-100",
+    glow: "shadow-sm shadow-cyan-950/20",
   },
   emerald: {
     bg: "bg-emerald-950/45",
-    ring: "border-emerald-500/25",
-    text: "text-emerald-50",
+    ring: "border-emerald-400/30",
+    text: "text-emerald-100",
     glow: "shadow-sm shadow-emerald-950/20",
   },
   amber: {
     bg: "bg-amber-950/40",
     ring: "border-amber-500/25",
-    text: "text-amber-50",
+    text: "text-amber-100",
     glow: "shadow-sm shadow-amber-950/20",
   },
   sky: {
     bg: "bg-sky-950/45",
     ring: "border-sky-500/25",
-    text: "text-sky-50",
+    text: "text-sky-100",
     glow: "shadow-sm shadow-sky-950/20",
   },
   rose: {
     bg: "bg-rose-950/45",
     ring: "border-rose-500/25",
-    text: "text-rose-50",
+    text: "text-rose-100",
     glow: "shadow-sm shadow-rose-950/20",
   },
   slate: {
@@ -2511,14 +2511,26 @@ function StatTile({
   sub?: string;
 }) {
   const s = TONE_STYLES[tone];
+  const accent = {
+    blue: "bg-cyan-400/90",
+    emerald: "bg-emerald-400/90",
+    amber: "bg-amber-400/90",
+    sky: "bg-sky-400/90",
+    rose: "bg-rose-400/90",
+    slate: "bg-stone-400/70",
+    zinc: "bg-zinc-500/70",
+  }[tone];
   return (
-    <div className={`rounded-xl border p-4 ${s.bg} ${s.ring} ${s.glow}`}>
-      <div className={`flex items-center gap-2 text-xs uppercase tracking-wide ${tone === "slate" ? "text-muted-foreground" : "text-white/75"}`}>
-        {icon}
-        <span>{label}</span>
+    <div className={`ops-card group min-h-[126px] rounded-lg border p-4 ${s.bg} ${s.ring} ${s.glow}`}>
+      <div className={`absolute left-0 right-0 top-0 h-[3px] ${accent}`} />
+      <div className="flex items-center gap-2">
+        <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border ${s.ring} bg-black/20 ${s.text}`}>
+          {icon ?? label.slice(0, 1)}
+        </span>
+        <span className="min-w-0 truncate text-xs font-semibold text-[#b4aea4]">{label}</span>
       </div>
-      <div className={`mt-1 text-2xl font-bold tabular-nums font-mono ${tone === "slate" ? "" : s.text}`}>{value}</div>
-      {sub && <div className={`mt-0.5 text-xs ${tone === "slate" ? "text-muted-foreground" : "text-white/65"}`}>{sub}</div>}
+      <div className={`mt-3 text-[30px] leading-9 font-medium tabular-nums font-mono ${tone === "slate" ? "text-[#f5f1ea]" : s.text}`}>{value}</div>
+      {sub && <div className="mt-1 text-[11px] font-medium text-[#9c968c]">{sub}</div>}
     </div>
   );
 }
@@ -2767,10 +2779,10 @@ function ByDayView({ data }: { data: Aggregated }) {
           </button>
         )}
       </div>
-    <div className="rounded-lg border bg-card overflow-hidden">
+    <div className="ops-table-wrap overflow-hidden">
       <div className="overflow-x-auto max-h-[65vh]">
         <Table>
-          <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+          <TableHeader className="sticky top-0 backdrop-blur z-10">
             <TableRow>
               <TableHead className="whitespace-nowrap">Day</TableHead>
               <TableHead className="whitespace-nowrap">Date</TableHead>
@@ -2885,7 +2897,7 @@ function ByDayView({ data }: { data: Aggregated }) {
             })}
           </TableBody>
           {sourceDays.length > 0 && (
-            <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
+            <TableHeader className="sticky bottom-0 backdrop-blur z-10">
               <TableRow>
                 <TableCell className="font-bold">Total</TableCell>
                 <TableCell></TableCell>
@@ -3065,7 +3077,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
             placeholder="Search agents…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
+            className="ops-input pl-9"
             data-testid="input-search-agent"
           />
         </div>
@@ -3086,10 +3098,10 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
         </div>
       </div>
 
-      <div className="rounded-lg border bg-card overflow-hidden">
+      <div className="ops-table-wrap overflow-hidden">
         <div className="overflow-x-auto max-h-[65vh]">
           <Table>
-            <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+            <TableHeader className="sticky top-0 backdrop-blur z-10">
               <TableRow>
                 <TableHead className="whitespace-nowrap min-w-[180px]">
                   <SortHeader id="__agent__" label="Agent Name" sort={sort} onToggle={toggle} />
@@ -3150,7 +3162,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
               })}
             </TableBody>
             {visible.length > 0 && !hideTeamRow && (
-              <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
+              <TableHeader className="sticky bottom-0 backdrop-blur z-10">
                 <TableRow>
                   <TableCell className="font-bold whitespace-nowrap">Whole team</TableCell>
                   {data.statuses.map((s) => (
@@ -3619,7 +3631,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
               const norm = normalizeAgent(agent);
               const pbxCall = pbxLiveByName.get(norm);
               return (
-                <div key={agent} className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-muted/60 border border-border text-xs">
+                <div key={agent} className="ops-pill flex items-center gap-2 rounded-full px-3 py-1.5 text-xs">
                   <span className="relative flex h-2 w-2 shrink-0">
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-muted-foreground opacity-75" />
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-muted-foreground" />
@@ -3641,14 +3653,14 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
       <div className="flex items-center gap-3">
         <div className="relative w-full sm:max-w-xs">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="Search agents…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+          <Input placeholder="Search agents…" value={search} onChange={(e) => setSearch(e.target.value)} className="ops-input pl-9" />
         </div>
         <Badge variant="secondary" className="font-mono">{visible.length} agents</Badge>
       </div>
-      <div className="rounded-lg border bg-card overflow-hidden">
+      <div className="ops-table-wrap overflow-hidden">
         <div className="overflow-x-auto max-h-[65vh]">
           <Table>
-            <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+            <TableHeader className="sticky top-0 backdrop-blur z-10">
               <TableRow>
                 <Th id="__agent__" label="Agent" align="left" />
                 <TableHead className="whitespace-nowrap text-right metric-info">Available</TableHead>
@@ -3760,7 +3772,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
               })}
             </TableBody>
             {visible.length > 0 && !hideTeamRow && (
-              <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
+              <TableHeader className="sticky bottom-0 backdrop-blur z-10">
                 <TableRow>
                   <TableCell className="font-bold">Whole team</TableCell>
                   <TableCell />
@@ -4342,7 +4354,7 @@ function TeamPanel({
   }
 
   return (
-    <Card>
+    <Card className="ops-panel rounded-lg">
       <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-4">
         <div>
           <CardTitle className="text-xl">{label}</CardTitle>
@@ -4610,7 +4622,7 @@ function CSPanel() {
   function refresh() { statusQ.refetch(); phoneQ.refetch(); }
 
   return (
-    <Card>
+    <Card className="ops-panel rounded-lg">
       <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-4">
         <div>
           <CardTitle className="text-xl">Internal CS</CardTitle>
@@ -4807,7 +4819,7 @@ function RetentionPanel() {
   function refresh() { statusQ.refetch(); phoneQ.refetch(); }
 
   return (
-    <Card>
+    <Card className="ops-panel rounded-lg">
       <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-4">
         <div>
           <CardTitle className="text-xl">Retention</CardTitle>
@@ -4976,17 +4988,17 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative flex-1 min-w-[200px] max-w-xs">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="Search agent, number..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+          <Input placeholder="Search agent, number..." value={search} onChange={(e) => setSearch(e.target.value)} className="ops-input pl-9" />
         </div>
         <span className="text-sm text-muted-foreground">{calls.length.toLocaleString()} calls</span>
         <Button variant="ghost" size="sm" onClick={() => q.refetch()} disabled={q.isFetching}>
           <RefreshCw className={`h-4 w-4 mr-1 ${q.isFetching ? "animate-spin" : ""}`} /> Refresh
         </Button>
       </div>
-      <div className="rounded-lg border bg-card overflow-hidden">
+      <div className="ops-table-wrap overflow-hidden">
         <div className="overflow-x-auto max-h-[65vh]">
           <Table>
-            <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+            <TableHeader className="sticky top-0 backdrop-blur z-10">
               <TableRow>
                 <SortTh col="createdAt" label="Date / Time" />
                 <SortTh col="agentName" label="Agent" />
@@ -7166,7 +7178,7 @@ function VoSPanel() {
                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Live calls right now</p>
                 <div className="flex flex-wrap gap-2">
                   {(liveQ.data?.liveCalls ?? []).map((c) => (
-                    <div key={c.id} className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-muted/60 border border-border text-xs">
+                    <div key={c.id} className="ops-pill flex items-center gap-2 rounded-full px-3 py-1.5 text-xs">
                       <span className="relative flex h-2 w-2 shrink-0">
                         <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-muted-foreground opacity-75" />
                         <span className="relative inline-flex rounded-full h-2 w-2 bg-muted-foreground" />
@@ -7183,7 +7195,7 @@ function VoSPanel() {
             <div className="flex items-center gap-3 flex-wrap">
               <div className="relative w-full sm:max-w-xs">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input placeholder="Search agents…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+                <Input placeholder="Search agents…" value={search} onChange={(e) => setSearch(e.target.value)} className="ops-input pl-9" />
               </div>
               <div className="flex gap-1.5 flex-wrap">
                 {groups.map((g) => (
@@ -7196,10 +7208,10 @@ function VoSPanel() {
               <Badge variant="secondary" className="font-mono ml-auto">{visible.length} agents</Badge>
             </div>
 
-            <div className="rounded-lg border bg-card overflow-hidden">
+            <div className="ops-table-wrap overflow-hidden">
               <div className="overflow-x-auto max-h-[60vh]">
                 <Table>
-                  <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+                  <TableHeader className="sticky top-0 backdrop-blur z-10">
                     <TableRow>
                       <TableHead className="text-left text-muted-foreground">
                         <button type="button" onClick={() => toggle("name")}
@@ -7253,7 +7265,7 @@ function VoSPanel() {
                     })}
                   </TableBody>
                   {visible.length > 0 && (
-                    <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
+                    <TableHeader className="sticky bottom-0 backdrop-blur z-10">
                       <TableRow>
                         <TableCell className="font-bold">Whole team</TableCell>
                         <TableCell />
@@ -7612,10 +7624,10 @@ function ReadyModeKillersPanel() {
               <StatTile label="Submissions" value={totals.submissions.toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="emerald" />
             </div>
 
-            <div className="rounded-lg border bg-card overflow-hidden">
+            <div className="ops-table-wrap overflow-hidden">
               <div className="overflow-x-auto max-h-[60vh]">
                 <Table>
-                  <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+                  <TableHeader className="sticky top-0 backdrop-blur z-10">
                     <TableRow>
                       <TableHead className="text-left text-muted-foreground">Agent Name</TableHead>
                       <TableHead className="text-right metric-info">Dialed</TableHead>
@@ -7644,7 +7656,7 @@ function ReadyModeKillersPanel() {
                       );
                     })}
                   </TableBody>
-                  <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
+                  <TableHeader className="sticky bottom-0 backdrop-blur z-10">
                     <TableRow>
                       <TableCell className="font-bold">Whole team</TableCell>
                       <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totals.dialed || "—"}</TableCell>
@@ -7675,10 +7687,10 @@ function ReadyModeKillersPanel() {
               </Button>
             </div>
 
-            <div className="rounded-lg border bg-card overflow-hidden">
+            <div className="ops-table-wrap overflow-hidden">
               <div className="overflow-x-auto max-h-[60vh]">
                 <Table>
-                  <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+                  <TableHeader className="sticky top-0 backdrop-blur z-10">
                     <TableRow>
                       <TableHead className="text-left text-muted-foreground">Agent Name</TableHead>
                       {subsBreakdown.statuses.map((s) => (
@@ -7703,7 +7715,7 @@ function ReadyModeKillersPanel() {
                       );
                     })}
                   </TableBody>
-                  <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
+                  <TableHeader className="sticky bottom-0 backdrop-blur z-10">
                     <TableRow>
                       <TableCell className="font-bold">Whole team</TableCell>
                       {subsBreakdown.statuses.map((s) => (
@@ -7865,15 +7877,15 @@ function ReadyModePanel() {
             <div className="flex items-center gap-3 flex-wrap">
               <div className="relative w-full sm:max-w-xs">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input placeholder="Search agents…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+                <Input placeholder="Search agents…" value={search} onChange={(e) => setSearch(e.target.value)} className="ops-input pl-9" />
               </div>
               <Badge variant="secondary" className="font-mono ml-auto">{visible.length} agents</Badge>
             </div>
 
-            <div className="rounded-lg border bg-card overflow-hidden">
+            <div className="ops-table-wrap overflow-hidden">
               <div className="overflow-x-auto max-h-[60vh]">
                 <Table>
-                  <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur z-10">
+                  <TableHeader className="sticky top-0 backdrop-blur z-10">
                     <TableRow>
                       <TableHead className="text-left text-muted-foreground">
                         <button type="button" onClick={() => toggle("name")}
@@ -7910,7 +7922,7 @@ function ReadyModePanel() {
                     ))}
                   </TableBody>
                   {visible.length > 0 && (
-                    <TableHeader className="sticky bottom-0 bg-muted/80 backdrop-blur z-10">
+                    <TableHeader className="sticky bottom-0 backdrop-blur z-10">
                       <TableRow>
                         <TableCell className="font-bold">Whole team</TableCell>
                         <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totals?.dialed || "—"}</TableCell>
@@ -9833,17 +9845,28 @@ function ViolationsPanel() {
     tone: "amber" | "rose" | "emerald" | "sky";
   }) {
     const toneClass = {
-      amber: "border-amber-500/25 bg-amber-950/35 text-amber-50",
-      rose: "border-rose-500/25 bg-rose-950/40 text-rose-50",
-      emerald: "border-emerald-500/25 bg-emerald-950/35 text-emerald-50",
-      sky: "border-sky-500/25 bg-sky-950/35 text-sky-50",
+      amber: "border-amber-400/25 bg-amber-950/40 text-amber-100",
+      rose: "border-rose-400/25 bg-rose-950/45 text-rose-100",
+      emerald: "border-emerald-400/25 bg-emerald-950/40 text-emerald-100",
+      sky: "border-sky-400/25 bg-sky-950/40 text-sky-100",
+    }[tone];
+    const accentClass = {
+      amber: "bg-amber-400/90",
+      rose: "bg-rose-400/90",
+      emerald: "bg-emerald-400/90",
+      sky: "bg-sky-400/90",
     }[tone];
     return (
-      <div className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 ${toneClass}`}>
-        {icon}
+      <div className={`ops-card min-h-[92px] min-w-[170px] flex-1 rounded-lg border px-4 py-3 ${toneClass}`}>
+        <div className={`absolute left-0 right-0 top-0 h-[3px] ${accentClass}`} />
+        <div className="flex items-center gap-2">
+          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-black/20">
+            {icon}
+          </span>
         <div>
-          <p className="text-xs text-white/70">{label}</p>
-          <p className="text-xl font-bold text-white">{value}</p>
+            <p className="text-xs font-semibold text-[#b4aea4]">{label}</p>
+            <p className="font-mono text-2xl font-medium text-white">{value}</p>
+          </div>
         </div>
       </div>
     );
@@ -9984,13 +10007,13 @@ function ViolationsPanel() {
 
       {/* Sub-tab + dept filter */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex rounded-lg border border-white/10 overflow-hidden">
+        <div className="ops-panel flex overflow-hidden rounded-lg p-1">
           {SUB_TABS.map(t => (
             <button key={t.id} onClick={() => setSub(t.id)}
-              className={`px-3 py-1.5 text-xs font-medium transition-colors flex items-center gap-1.5 ${
+              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors flex items-center gap-1.5 ${
                 sub === t.id
-                  ? t.accent ? "bg-primary text-primary-foreground" : t.urgent ? "bg-destructive text-destructive-foreground" : "bg-primary text-primary-foreground"
-                  : "bg-zinc-900/60 text-zinc-400 hover:text-white"
+                  ? t.accent ? "bg-emerald-400 text-emerald-950" : t.urgent ? "bg-rose-400 text-rose-950" : "bg-primary text-primary-foreground"
+                  : "text-zinc-400 hover:bg-white/[0.04] hover:text-white"
               }`}>
               {t.label}
               {t.count !== undefined && (
@@ -10006,10 +10029,10 @@ function ViolationsPanel() {
           ))}
         </div>
         {sub !== "verified" && (
-          <div className="flex rounded-lg border border-white/10 overflow-hidden text-xs">
+          <div className="ops-panel flex overflow-hidden rounded-lg p-1 text-xs">
             {depts.map((d) => (
               <button key={d} onClick={() => setDeptFilter(d)}
-                className={`px-3 py-1.5 capitalize transition-colors ${deptFilter === d ? "bg-zinc-700 text-white" : "bg-zinc-900/60 text-zinc-400 hover:text-white"}`}>
+                className={`rounded-md px-3 py-1.5 capitalize transition-colors ${deptFilter === d ? "bg-cyan-400 text-cyan-950" : "text-zinc-400 hover:bg-white/[0.04] hover:text-white"}`}>
                 {d}
               </button>
             ))}
@@ -11013,7 +11036,7 @@ function Dashboard() {
   const RoleIcon = user.role === "admin" ? ShieldCheck : user.role === "edit" ? Pencil : Eye;
 
   return (
-    <div className="min-h-screen bg-background relative overflow-x-hidden overflow-y-visible">
+    <div className="ops-shell min-h-screen bg-background relative overflow-x-hidden overflow-y-visible">
       {showUsers && <UserManagementPanel onClose={() => setShowUsers(false)} />}
       {showBlocked && <BlockedNumbersPanel onClose={() => setShowBlocked(false)} />}
       {showAgents && <AgentRosterPanel onClose={() => setShowAgents(false)} />}
@@ -11024,9 +11047,9 @@ function Dashboard() {
         <div className="theme-ambient theme-ambient-muted absolute bottom-0 left-1/3 h-[400px] w-[400px]" />
       </div>
 
-      <header className="relative z-[100] overflow-visible border-b border-white/5 bg-card/60 backdrop-blur-xl">
+      <header className="relative z-[100] overflow-visible border-b border-white/10 bg-[rgba(15,14,13,0.82)] backdrop-blur-xl">
         <div className="max-w-[1400px] mx-auto px-3 py-3 sm:px-6 sm:py-4 flex items-center gap-3">
-          <div className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-lg overflow-hidden ring-1 ring-white/10 shadow-[0_0_24px_-6px_rgba(59,130,246,0.6)]">
+          <div className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-lg overflow-hidden ring-1 ring-emerald-300/20 shadow-[0_0_24px_-6px_rgba(52,211,153,0.45)]">
             <img src={companyLogo} alt="Company logo" className="h-full w-full object-cover" />
           </div>
           <div className="flex-1 min-w-0">
