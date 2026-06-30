@@ -7,6 +7,7 @@
     "dev": "pnpm run build && pnpm run start",
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
+    "setup-admin": "node ./scripts/setup-admin.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -21,6 +22,7 @@
     "express": "^5",
     "jsonwebtoken": "^9.0.3",
     "openai": "^6.36.0",
+    "pg": "^8.20.0",
     "pino": "^9",
     "pino-http": "^10"
   },

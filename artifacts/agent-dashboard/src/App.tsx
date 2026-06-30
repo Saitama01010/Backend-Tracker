@@ -5318,7 +5318,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
       const r = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: username.trim(), password }),
+        body: JSON.stringify({ username: username.trim(), password: password.trim() }),
       });
       if (r.ok) {
         const data = await r.json() as { token: string; user: AuthUser };
@@ -5326,7 +5326,15 @@ function LoginGate({ children }: { children: React.ReactNode }) {
         localStorage.setItem("tracker_user", JSON.stringify(data.user));
         setAuth(data);
       } else {
-        setError("Invalid username or password.");
+        let message = "Login failed. Try again.";
+        try {
+          const data = await r.json() as { error?: string };
+          if (r.status === 401) message = "Invalid username or password.";
+          else if (data.error) message = data.error;
+        } catch {
+          if (r.status === 401) message = "Invalid username or password.";
+        }
+        setError(message);
         setPassword("");
       }
     } catch {
