@@ -33,14 +33,24 @@ const configuredOrigins = (process.env["FRONTEND_ORIGIN"] ?? process.env["CORS_O
   .map((origin) => origin.trim())
   .filter(Boolean);
 
-app.use(cors({
-  origin(origin, cb) {
-    if (!origin) return cb(null, true);
-    if (configuredOrigins.length === 0 && process.env.NODE_ENV !== "production") return cb(null, true);
-    if (configuredOrigins.includes(origin)) return cb(null, true);
-    return cb(new Error("CORS origin not allowed"));
-  },
-}));
+app.use((req, res, next) => {
+  const requestHost = req.headers.host;
+  cors({
+    origin(origin, cb) {
+      if (!origin) return cb(null, true);
+      if (configuredOrigins.includes(origin)) return cb(null, true);
+      if (configuredOrigins.length === 0 && process.env.NODE_ENV !== "production") return cb(null, true);
+
+      try {
+        if (requestHost && new URL(origin).host === requestHost) return cb(null, true);
+      } catch {
+        // Fall through to the CORS rejection below.
+      }
+
+      return cb(new Error("CORS origin not allowed"));
+    },
+  })(req, res, next);
+});
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
