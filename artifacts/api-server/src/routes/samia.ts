@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import OpenAI from "openai";
 import { db, samiaMessagesTable, phoneCallsTable, pbxMissedCallsTable, portalUsersTable } from "@workspace/db";
 import { and, gte, desc, eq, isNull, or, sql } from "drizzle-orm";
@@ -6,8 +6,43 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
 
+function getInternalBaseUrl(req: Request): string {
+  const configured = process.env["INTERNAL_API_BASE_URL"]?.trim();
+  if (configured) return configured.replace(/\/+$/, "");
+
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  const forwardedHost = req.headers["x-forwarded-host"];
+  const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+  const host = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost;
+  const requestHost = host || req.get("host");
+  if (requestHost) return `${proto || req.protocol || "http"}://${requestHost}`;
+
+  const port = process.env["PORT"] || "5000";
+  return `http://127.0.0.1:${port}`;
+}
+
+function getInternalHeaders(req: Request, initHeaders?: RequestInit["headers"]): Headers {
+  const headers = new Headers(initHeaders);
+  const auth = req.get("authorization");
+  if (auth && !headers.has("authorization")) headers.set("authorization", auth);
+  return headers;
+}
+
+function internalFetch(req: Request, path: string, init: RequestInit = {}): Promise<Response> {
+  const url = new URL(path, `${getInternalBaseUrl(req)}/`);
+  return fetch(url, {
+    ...init,
+    headers: getInternalHeaders(req, init.headers),
+  });
+}
+
+async function internalJson<T = any>(req: Request, path: string, init?: RequestInit): Promise<T | null> {
+  const response = await internalFetch(req, path, init);
+  return response.ok ? (await response.json()) as T : null;
+}
+
 // ── GET /samia/history — last 200 messages for the calling user ───────────────
-router.get("/samia/history", requireAuth, async (req, res) => {
+router.get("/samia/history", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const userId = req.user!.userId;
     const rows = await db
@@ -41,7 +76,7 @@ router.get("/samia/users", requireAuth, requireRole("admin"), async (req, res) =
 // ── GET /samia/history/:userId — admin: view a specific user's chat ───────────
 router.get("/samia/history/:userId", requireAuth, requireRole("admin"), async (req, res) => {
   try {
-    const targetId = parseInt(req.params["userId"] ?? "", 10);
+    const targetId = parseInt(String(req.params["userId"] ?? ""), 10);
     if (isNaN(targetId)) return res.status(400).json({ error: "Invalid userId" });
     const rows = await db
       .select()
@@ -57,7 +92,7 @@ router.get("/samia/history/:userId", requireAuth, requireRole("admin"), async (r
 });
 
 // ── GET /api/samia/number-lookup — look up all call history for a phone number ──
-router.get("/samia/number-lookup", async (req, res) => {
+router.get("/samia/number-lookup", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const raw = ((req.query["number"] as string) ?? "").replace(/\s/g, "");
     if (!raw) return res.status(400).json({ error: "number param required" });
@@ -126,14 +161,14 @@ router.get("/samia/number-lookup", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "samia number-lookup error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Failed to look up number" });
   }
 });
 
 // ── GET /api/samia/call-analysis — fetch OpenPhone transcripts + summaries ────
 // Returns recent calls for an agent (or a specific callId) with the OpenPhone
 // AI summary + full transcript dialogue so Samia can do qualitative feedback.
-router.get("/samia/call-analysis", async (req, res) => {
+router.get("/samia/call-analysis", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const QUO_KEY = process.env["QUO_API_KEY"] ?? "";
     if (!QUO_KEY) return res.status(500).json({ error: "QUO_API_KEY not set" });
@@ -142,7 +177,8 @@ router.get("/samia/call-analysis", async (req, res) => {
     const agentName = (req.query["agent"] as string) || "";
     const participantRaw = (req.query["participant"] as string) || "";
     const dateStr = (req.query["date"] as string) || "";
-    const limit = Math.min(parseInt((req.query["limit"] as string) ?? "5", 10) || 5, 15);
+    const requestedLimit = parseInt((req.query["limit"] as string) ?? "3", 10) || 3;
+    const limit = Math.min(requestedLimit, 3);
     const minSeconds = parseInt((req.query["minSeconds"] as string) ?? "30", 10) || 30;
     // Extract digits-only for phone-number lookup (handles "703-887-8622", "(703) 887-8622", "+17038878622", etc.)
     const participantDigits = participantRaw.replace(/\D/g, "");
@@ -202,7 +238,15 @@ router.get("/samia/call-analysis", async (req, res) => {
     }
 
     if (callRows.length === 0) {
-      return res.json({ agentName, date: dateStr, calls: [], note: "No qualifying calls found." });
+      return res.json({
+        agentName,
+        date: dateStr,
+        count: 0,
+        capped: !callId && requestedLimit > 3,
+        maxCalls: 3,
+        calls: [],
+        note: "No qualifying calls found.",
+      });
     }
 
     // Fetch transcript + summary in parallel (capped concurrency)
@@ -247,24 +291,64 @@ router.get("/samia/call-analysis", async (req, res) => {
       };
     }));
 
-    return res.json({ agentName, date: dateStr, count: enriched.length, calls: enriched });
+    return res.json({
+      agentName,
+      date: dateStr,
+      count: enriched.length,
+      capped: !callId && requestedLimit > 3,
+      maxCalls: 3,
+      calls: enriched,
+    });
   } catch (err) {
     req.log.error(err, "samia call-analysis error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Failed to analyze calls" });
   }
 });
 
-// OpenRouter client — kept available for cheaper experiments (e.g. DeepSeek),
-// but Samia runs on the OpenAI client below by default. DeepSeek was unreliable
-// at tool-calling: in the full multi-tool context it fabricated call/transcript
-// data instead of actually invoking analyze_calls, which is dangerous for a
-// coaching tool. Override the model with SAMIA_MODEL if needed.
-const SAMIA_MODEL = process.env["SAMIA_MODEL"] ?? "gpt-4.1";
+// Samia defaults to OpenRouter on Vercel. Models with "/" are OpenRouter IDs.
+const SAMIA_MODEL = process.env["SAMIA_MODEL"] ?? "qwen/qwen3-coder:free";
 // 0.8 keeps personality while staying coherent and tool-reliable. Tunable via env.
 const SAMIA_TEMPERATURE = Number(process.env["SAMIA_TEMPERATURE"] ?? "0.8");
+const DEFAULT_SAMIA_FALLBACK_MODELS = [
+  "meta-llama/llama-3.1-8b-instruct:free",
+  "google/gemini-2.0-flash-exp:free",
+  "deepseek/deepseek-chat-v3-0324:free",
+  "qwen/qwen3.6-plus-preview:free",
+];
 
-function getSamiaClient(): OpenAI {
-  const useOpenRouter = SAMIA_MODEL.includes("/");
+function getSamiaModels(): string[] {
+  const fallbackModels = (process.env["SAMIA_FALLBACK_MODELS"] ?? DEFAULT_SAMIA_FALLBACK_MODELS.join(","))
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean)
+    .filter((model) => !model.includes("/") || model.endsWith(":free"));
+  return Array.from(new Set([SAMIA_MODEL, ...fallbackModels]));
+}
+
+function getOpenRouterBaseUrl(): string {
+  return (process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"] ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+}
+
+function getOpenRouterReferer(req?: Request): string {
+  return process.env["FRONTEND_ORIGIN"]?.split(",")[0]?.trim()
+    || process.env["CORS_ORIGIN"]?.split(",")[0]?.trim()
+    || (req ? getInternalBaseUrl(req) : "")
+    || "https://www.dialexpert-backend.com";
+}
+
+function getSamiaEnvStatus() {
+  return {
+    openRouterKeyExists: !!process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"],
+    openRouterBaseUrl: getOpenRouterBaseUrl(),
+    model: SAMIA_MODEL,
+    temperature: SAMIA_TEMPERATURE,
+    fallbackModels: getSamiaModels().filter((model) => model !== SAMIA_MODEL),
+    useOpenRouter: SAMIA_MODEL.includes("/"),
+  };
+}
+
+function getSamiaClient(model: string): OpenAI {
+  const useOpenRouter = model.includes("/");
   const apiKey = useOpenRouter
     ? process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"]
     : process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
@@ -277,10 +361,239 @@ function getSamiaClient(): OpenAI {
   }
   return new OpenAI({
     baseURL: useOpenRouter
-      ? process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"]
+      ? process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"] ?? "https://openrouter.ai/api/v1"
       : process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
     apiKey,
   });
+}
+
+class SamiaProviderError extends Error {
+  status: number;
+  code: number;
+  provider: "openrouter" | "openai";
+
+  constructor(message: string, status: number, provider: "openrouter" | "openai") {
+    super(message);
+    this.name = "SamiaProviderError";
+    this.status = status;
+    this.code = status;
+    this.provider = provider;
+  }
+}
+
+type SamiaCompletionResult = {
+  completion: OpenAI.Chat.ChatCompletion;
+  model: string;
+  fallbackUsed: boolean;
+};
+
+function isOpenRouterCapacityError(err: unknown): boolean {
+  const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : null;
+  const code = typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : status;
+  const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+  return (
+    code === 402 ||
+    code === 429 ||
+    (code === 404 && (message.includes("unavailable") || message.includes("no endpoints found"))) ||
+    message.includes("rate-limit") ||
+    message.includes("rate limited") ||
+    message.includes("provider returned error") ||
+    message.includes("capacity") ||
+    message.includes("timeout") ||
+    message.includes("aborted")
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function createOpenRouterCompletion(
+  req: Request,
+  args: {
+    model: string;
+    messages: OpenAI.Chat.ChatCompletionMessageParam[];
+    tools: OpenAI.Chat.ChatCompletionTool[];
+  },
+): Promise<OpenAI.Chat.ChatCompletion> {
+  const apiKey = process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"];
+  if (!apiKey) throw new Error("AI_INTEGRATIONS_OPENROUTER_API_KEY is not set");
+
+  const url = `${getOpenRouterBaseUrl()}/chat/completions`;
+  req.log.info({
+    model: args.model,
+    useOpenRouter: true,
+    baseUrl: getOpenRouterBaseUrl(),
+    hasApiKey: true,
+  }, "samia openrouter request starting");
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": getOpenRouterReferer(req),
+      "X-OpenRouter-Title": "Samia Dashboard",
+    },
+    body: JSON.stringify({
+      model: args.model,
+      messages: args.messages,
+      ...(args.tools.length ? { tools: args.tools } : {}),
+      temperature: SAMIA_TEMPERATURE,
+      max_tokens: 1600,
+      stream: false,
+    }),
+    signal: AbortSignal.timeout(18000),
+  });
+
+  req.log.info({
+    model: args.model,
+    status: response.status,
+    ok: response.ok,
+  }, "samia openrouter response received");
+
+  const text = await response.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    const errorData = data as { error?: { message?: string; code?: number | string; type?: string } } | null;
+    const errorType = errorData?.error?.type ?? errorData?.error?.code ?? response.status;
+    const errorMessage = errorData?.error?.message ?? `OpenRouter request failed with status ${response.status}`;
+    req.log.warn({ model: args.model, status: response.status, errorType }, "samia openrouter request failed");
+    throw new SamiaProviderError(errorMessage, response.status, "openrouter");
+  }
+
+  return data as OpenAI.Chat.ChatCompletion;
+}
+
+async function createModelCompletion(
+  req: Request,
+  args: {
+    model: string;
+    messages: OpenAI.Chat.ChatCompletionMessageParam[];
+    tools: OpenAI.Chat.ChatCompletionTool[];
+  },
+): Promise<OpenAI.Chat.ChatCompletion> {
+  if (args.model.includes("/")) {
+    return createOpenRouterCompletion(req, args);
+  }
+  req.log.info({ model: args.model, useOpenRouter: false }, "samia openai-compatible request starting");
+  return getSamiaClient(args.model).chat.completions.create({
+    model: args.model,
+    messages: args.messages,
+    ...(args.tools.length ? { tools: args.tools } : {}),
+    temperature: SAMIA_TEMPERATURE,
+    max_tokens: 1600,
+  }, {
+    timeout: 18000,
+    signal: AbortSignal.timeout(18000),
+  });
+}
+
+async function createSamiaCompletion(
+  req: Request,
+  args: {
+    messages: OpenAI.Chat.ChatCompletionMessageParam[];
+    tools: OpenAI.Chat.ChatCompletionTool[];
+  },
+): Promise<SamiaCompletionResult> {
+  const models = getSamiaModels();
+  let lastError: unknown;
+
+  for (const [index, model] of models.entries()) {
+    const attempts = index === 0 ? 2 : 1;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const completion = await createModelCompletion(req, {
+          model,
+          messages: args.messages,
+          tools: args.tools,
+        });
+        if (index > 0 || attempt > 1) {
+          req.log.info({ model, fallbackUsed: index > 0, attempt }, "samia model completed");
+        }
+        return { completion, model, fallbackUsed: index > 0 };
+      } catch (err) {
+        lastError = err;
+        if (!isOpenRouterCapacityError(err)) throw err;
+        req.log.warn({ model, attempt }, "samia model capacity limited");
+        if (attempt < attempts) await sleep(1200);
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("All Samia models failed");
+}
+
+router.get("/samia/openrouter-env", requireAuth, requireRole("admin"), async (req, res) => {
+  req.log.info(getSamiaEnvStatus(), "samia openrouter env status");
+  return res.json(getSamiaEnvStatus());
+});
+
+router.post("/samia/openrouter-test", requireAuth, requireRole("admin"), async (req, res) => {
+  const model = process.env["SAMIA_MODEL"] ?? "qwen/qwen3-coder:free";
+  try {
+    const envStatus = getSamiaEnvStatus();
+    req.log.info(envStatus, "samia direct openrouter test starting");
+    const completion = await createOpenRouterCompletion(req, {
+      model,
+      messages: [{ role: "user", content: "Reply with only: Samia test working" }],
+      tools: [],
+    });
+    const reply = completion.choices[0]?.message?.content ?? "";
+    return res.json({
+      ok: true,
+      model,
+      status: 200,
+      reply,
+      env: envStatus,
+    });
+  } catch (err) {
+    const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : 502;
+    const errorType = err instanceof Error ? err.name : "OpenRouterError";
+    req.log.warn({ model, status, errorType }, "samia direct openrouter test failed");
+    return res.status(status).json({
+      ok: false,
+      model,
+      status,
+      errorType,
+      env: getSamiaEnvStatus(),
+      error: status === 401 || status === 403
+        ? "OpenRouter rejected the server-side API key."
+        : status === 429
+          ? "OpenRouter returned a rate-limit response."
+          : "Samia could not reach the AI provider. Check server configuration.",
+    });
+  }
+});
+
+type SamiaMode = "lightweight" | "dashboard" | "call-analysis";
+
+function classifySamiaMode(message: string): SamiaMode {
+  const text = message.toLowerCase();
+  const hasPhoneNumber = /(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4})/.test(text);
+  const hasCallId = /\b(?:call\s*id|callid|openphone\s*id)\b|(?:\bAC[a-z0-9]{20,}\b)/i.test(message);
+  const callIntent = /\b(analy[sz]e|summari[sz]e|review|feedback|coach|critique|transcript|recorded|recording|what happened|what was said|check this call|specific call|last calls?|all .* calls?)\b/.test(text);
+  const agentCallIntent = /\b(analy[sz]e|summari[sz]e|review|feedback|coach|critique)\b.*\bcalls?\b|\bcalls?\b.*\b(analy[sz]e|summari[sz]e|review|feedback|coach|critique)\b/.test(text);
+  if (hasCallId || agentCallIntent || (hasPhoneNumber && callIntent)) return "call-analysis";
+
+  const dashboardIntent = /\b(dashboard|stats?|numbers?|missed|retains?|cancels?|attendance|late|absent|pbx|quo|vos|openphone|ring group|live calls?|callbacks?|no callback|performance|today|this month|team)\b/.test(text);
+  return dashboardIntent ? "dashboard" : "lightweight";
+}
+
+function modeInstructions(mode: SamiaMode): string {
+  if (mode === "call-analysis") {
+    return `\n\nREQUEST MODE: call-analysis\n- The admin explicitly asked for call review. Use call-analysis tools only for the specific call, phone number, or agent requested.\n- If a callId is provided, analyze only that call.\n- For agent-based analysis, review at most 3 calls. If the admin asks for all calls, cap it at 3 and say so.\n- Never fabricate call content. Base coaching only on returned summary/transcript data.\n- If summary or transcript is unavailable, say that clearly.`;
+  }
+  if (mode === "dashboard") {
+    return `\n\nREQUEST MODE: dashboard\n- Answer using dashboard stats and lightweight operational tools only.\n- Do not fetch transcripts or call summaries.\n- Do not analyze specific calls unless the admin explicitly asks for call analysis.`;
+  }
+  return `\n\nREQUEST MODE: lightweight\n- Keep this response short and conversational.\n- Do not fetch dashboard stats, transcripts, call summaries, Google Sheets, PBX, or QUO data.\n- Do not call tools unless the user explicitly asks for an operational action.`;
 }
 
 // ── One-swear-per-message post-processor ─────────────────────────────────────
@@ -610,7 +923,7 @@ async function fetchSheetSummary(
 
 // ─── Route ────────────────────────────────────────────────────────────────────
 
-router.post("/samia/chat", requireAuth, async (req, res) => {
+router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const { message, images = [], displayName } = req.body as { message: string; images?: string[]; displayName?: string };
     if (!message?.trim()) {
@@ -620,6 +933,8 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
     // Prefer the display name the user typed in the name-gate prompt over the
     // shared login username (e.g. "retention" or "cs").
     const username = (displayName?.trim()) || req.user!.username;
+    const mode = classifySamiaMode(message);
+    req.log.info({ mode, userId, username: req.user!.username }, "samia chat mode selected");
 
     // "Curse" users: Samia refuses to answer anything and replies with a fixed
     // insult. Short-circuit before any AI call or data fetch.
@@ -672,8 +987,6 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       images: images.length > 0 ? images : null,
     });
 
-    const port = process.env["PORT"];
-    const base = `http://localhost:${port}`;
     const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
     const monthStr = todayStr.slice(0, 7);
     const todayStart = `${todayStr}T00:00:00.000Z`;
@@ -685,7 +998,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
     const OLD_NSF_URL = "https://docs.google.com/spreadsheets/d/16qoZESE0gGQPdOXQUSh2JsadWDmUE7OyCajRwBy0E38/export?format=csv&gid=0";
     const NEW_NSF_URL = "https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=0";
 
-    // Fetch everything in parallel
+    // Fetch dashboard context only when the admin asks dashboard/stat questions.
     const [
       vosRes,
       quoTodayRes,
@@ -697,18 +1010,31 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       attendanceRes,
       retentionSheetRes,
       nsfSheetRes,
-    ] = await Promise.allSettled([
-      fetch(`${base}/api/vos/stats`).then((r) => r.ok ? r.json() : null),
-      fetch(`${base}/api/quo/stats?from=${encodeURIComponent(todayStart)}&to=${encodeURIComponent(nowStr)}`).then((r) => r.ok ? r.json() : null),
-      fetch(`${base}/api/quo/stats?from=${encodeURIComponent(monthStr + "T00:00:00.000Z")}&to=${encodeURIComponent(nowStr)}`).then((r) => r.ok ? r.json() : null),
-      fetch(`${base}/api/vos/missed-hourly`).then((r) => r.ok ? r.json() : null),
-      fetch(`${base}/api/vos/missed-daily`).then((r) => r.ok ? r.json() : null),
-      fetch(`${base}/api/vos/missed-no-callback`).then((r) => r.ok ? r.json() : null),
-      fetch(`${base}/api/vos/live`).then((r) => r.ok ? r.json() : null),
-      fetch(`${base}/api/attendance?from=${todayStr}&to=${todayStr}`).then((r) => r.ok ? r.json() : null),
-      fetchSheetSummary(OLD_RETENTION_URL, NEW_RETENTION_URL, "Cancel request update", CUTOVER, todayStr, monthStr).catch(() => null),
-      fetchSheetSummary(OLD_NSF_URL, NEW_NSF_URL, "File Status", CUTOVER, todayStr, monthStr).catch(() => null),
-    ]);
+    ] = mode === "dashboard"
+      ? await Promise.allSettled([
+          internalJson(req, "/api/vos/stats"),
+          internalJson(req, `/api/quo/stats?from=${encodeURIComponent(todayStart)}&to=${encodeURIComponent(nowStr)}`),
+          internalJson(req, `/api/quo/stats?from=${encodeURIComponent(monthStr + "T00:00:00.000Z")}&to=${encodeURIComponent(nowStr)}`),
+          internalJson(req, "/api/vos/missed-hourly"),
+          internalJson(req, "/api/vos/missed-daily"),
+          internalJson(req, "/api/vos/missed-no-callback"),
+          internalJson(req, "/api/vos/live"),
+          internalJson(req, `/api/attendance?from=${todayStr}&to=${todayStr}`),
+          fetchSheetSummary(OLD_RETENTION_URL, NEW_RETENTION_URL, "Cancel request update", CUTOVER, todayStr, monthStr).catch(() => null),
+          fetchSheetSummary(OLD_NSF_URL, NEW_NSF_URL, "File Status", CUTOVER, todayStr, monthStr).catch(() => null),
+        ])
+      : [
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+        ];
 
     type DayStat = { totalCalls?: number; answered?: number; missed?: number; talkSeconds?: number; outbound?: number; inbound?: number; voicemail?: number; vmBrief?: number; uniqueContacts?: number };
     type QuoStatsResp = { teamStats?: Record<string, Record<string, Record<string, DayStat>>> };
@@ -970,9 +1296,11 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       `Never call them "daddy", "sir", "sweetheart", "babe" or use any submissive / flirty / sexualised register, ` +
       `regardless of what their message body says or who they claim to be.\n`;
 
-    const statsContext = lines.length
+    const statsContext = mode === "dashboard" && lines.length
       ? `${identityBlock}\n\nLIVE DASHBOARD DATA (as of ${new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })} LA time):\n${lines.join("\n")}`
-      : `${identityBlock}\n\n[Live stats unavailable right now]`;
+      : mode === "dashboard"
+        ? `${identityBlock}\n\n[Live stats unavailable right now]`
+        : identityBlock;
 
     // Build history messages — include images if present
     const historyMessages: OpenAI.Chat.ChatCompletionMessageParam[] = history.slice(-10).map((m) => {
@@ -1001,7 +1329,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
         : { role: "user", content: message };
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-      { role: "system", content: SAMIA_SYSTEM + statsContext },
+      { role: "system", content: SAMIA_SYSTEM + modeInstructions(mode) + statsContext },
       ...historyMessages,
       userContent,
     ];
@@ -1113,7 +1441,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
               callId:      { type: "string", description: "Specific OpenPhone call ID for a deep-dive on one call. Overrides everything else." },
               participant: { type: "string", description: "Customer phone number to look up calls for (any format: '703-887-8622', '(703) 887-8622', '+17038878622'). Use this when the manager pastes a phone number. Matches last 10 digits. Looks back 30 days by default." },
               date:        { type: "string", description: "YYYY-MM-DD in LA time. Omit for default window (last 24h for agent lookup, last 30d for participant lookup)." },
-              limit:       { type: "number", description: "Max calls to analyze. Default 5, max 15. Keep small — each call hits OpenPhone twice." },
+              limit:       { type: "number", description: "Max calls to analyze. Default 3, hard max 3. Even if asked for all calls, review only the top 3." },
               minSeconds:  { type: "number", description: "Minimum call duration in seconds to include. Default 30 — filters out misses/quick hangups that have no useful content. Set to 0 if you need ALL calls including short ones." },
             },
             required: [],
@@ -1155,18 +1483,28 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
     ];
 
     // ── Multi-turn tool loop (up to 4 rounds) ─────────────────────────────────
+    const activeTools = tools.filter((tool) => {
+      if (tool.type !== "function") return false;
+      const name = tool.function.name;
+      if (mode === "lightweight") return false;
+      if (mode === "dashboard") return !["lookup_number", "analyze_calls"].includes(name);
+      return ["lookup_number", "analyze_calls", "get_agent_contacts"].includes(name);
+    });
+
     let currentMessages = [...messages];
     let finalReply: string | null = null;
     let attendanceMarked = false;
+    let modelUsed = SAMIA_MODEL;
+    let fallbackUsed = false;
 
     for (let round = 0; round < 4; round++) {
-      const completion = await getSamiaClient().chat.completions.create({
-        model: SAMIA_MODEL,
+      const completionResult = await createSamiaCompletion(req, {
         messages: currentMessages,
-        tools,
-        temperature: SAMIA_TEMPERATURE,
-        max_tokens: 1600,
+        tools: activeTools,
       });
+      const completion = completionResult.completion;
+      modelUsed = completionResult.model;
+      fallbackUsed = fallbackUsed || completionResult.fallbackUsed;
 
       const choice = completion.choices[0];
 
@@ -1189,7 +1527,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
           if (fnName === "auto_mark_attendance") {
             const args = JSON.parse(toolCall.function.arguments || "{}") as { date?: string };
             const body = args.date ? JSON.stringify({ date: args.date }) : "{}";
-            const markRes = await fetch(`${base}/api/attendance/auto-mark`, {
+            const markRes = await internalFetch(req, "/api/attendance/auto-mark", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body,
@@ -1219,8 +1557,10 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
 
           } else if (fnName === "get_call_logs") {
             const args = JSON.parse(toolCall.function.arguments || "{}") as { date?: string };
-            const url = args.date ? `${base}/api/attendance/call-logs?date=${args.date}` : `${base}/api/attendance/call-logs`;
-            const logsRes = await fetch(url);
+            const params = new URLSearchParams();
+            if (args.date) params.set("date", args.date);
+            const url = params.size ? `/api/attendance/call-logs?${params.toString()}` : "/api/attendance/call-logs";
+            const logsRes = await internalFetch(req, url);
             toolResult = JSON.stringify(await logsRes.json());
 
           } else if (fnName === "get_agent_contacts") {
@@ -1230,7 +1570,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
             // Sync covers last 3 hours (catches the most recent calls).
             const syncTo   = new Date();
             const syncFrom = new Date(syncTo.getTime() - 3 * 3600 * 1000);
-            fetch(`${base}/api/quo/sync`, {
+            internalFetch(req, "/api/quo/sync", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ from: syncFrom.toISOString(), to: syncTo.toISOString() }),
@@ -1241,14 +1581,14 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
 
             const params = new URLSearchParams({ agent: args.agentName });
             if (args.date) params.set("date", args.date);
-            const contactsRes = await fetch(`${base}/api/attendance/agent-contacts?${params.toString()}`);
+            const contactsRes = await internalFetch(req, `/api/attendance/agent-contacts?${params.toString()}`);
             toolResult = JSON.stringify(await contactsRes.json());
 
           } else if (fnName === "lookup_number") {
             const args = JSON.parse(toolCall.function.arguments || "{}") as { number: string; sinceDays?: number };
             const params = new URLSearchParams({ number: args.number });
             if (args.sinceDays) params.set("sinceDays", String(args.sinceDays));
-            const r = await fetch(`${base}/api/samia/number-lookup?${params.toString()}`);
+            const r = await internalFetch(req, `/api/samia/number-lookup?${params.toString()}`);
             const data = await r.json() as { number: string; openPhone: unknown[]; pbx: unknown[] };
             const total = data.openPhone.length + data.pbx.length;
             if (total === 0) {
@@ -1259,7 +1599,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
 
           } else if (fnName === "add_nsf_readymode_missed_calls") {
             const args = JSON.parse(toolCall.function.arguments || "{}") as { numbers: string[] };
-            const r = await fetch(`${base}/api/nsf/readymode-queue`, {
+            const r = await internalFetch(req, "/api/nsf/readymode-queue", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ numbers: args.numbers ?? [], addedBy: `samia:${username}` }),
@@ -1275,14 +1615,14 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
             if (args.callId)      params.set("callId", args.callId);
             if (args.participant) params.set("participant", args.participant);
             if (args.date)        params.set("date", args.date);
-            if (args.limit)       params.set("limit", String(args.limit));
+            if (args.limit)       params.set("limit", String(Math.min(args.limit, 3)));
             if (args.minSeconds !== undefined) params.set("minSeconds", String(args.minSeconds));
-            const r = await fetch(`${base}/api/samia/call-analysis?${params.toString()}`);
+            const r = await internalFetch(req, `/api/samia/call-analysis?${params.toString()}`);
             toolResult = JSON.stringify(await r.json());
 
           } else if (fnName === "set_attendance") {
             const args = JSON.parse(toolCall.function.arguments || "{}");
-            const setRes = await fetch(`${base}/api/attendance/set`, {
+            const setRes = await internalFetch(req, "/api/attendance/set", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(args),
@@ -1313,10 +1653,37 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       images: null,
     });
 
-    return res.json({ reply: finalReply, attendanceMarked });
+    return res.json({ reply: finalReply, attendanceMarked, mode, model: modelUsed, fallbackUsed });
   } catch (err) {
     req.log.error(err, "samia chat error");
-    return res.status(500).json({ error: "AI request failed" });
+    const message = err instanceof Error ? err.message : "";
+    if (
+      message.includes("AI_INTEGRATIONS_OPENROUTER_API_KEY") ||
+      message.includes("AI_INTEGRATIONS_OPENAI_API_KEY")
+    ) {
+      return res.status(500).json({ error: "Samia is missing server-side AI configuration." });
+    }
+    const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : null;
+    const code = typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : status;
+    if (code === 429) {
+      return res.status(429).json({ error: "Samia's OpenRouter model is temporarily rate-limited. Please retry shortly." });
+    }
+    if (code === 402) {
+      return res.status(402).json({ error: "Samia's OpenRouter account needs available credits or a free model with capacity." });
+    }
+    if (code === 404 && message.toLowerCase().includes("no endpoints found")) {
+      return res.status(502).json({
+        error: "Samia reached OpenRouter, but the configured free model endpoints are unavailable right now.",
+      });
+    }
+    if (message.toLowerCase().includes("aborted") || message.toLowerCase().includes("timeout")) {
+      return res.status(502).json({ error: "Samia could not reach the AI provider in time. Check server configuration or try again shortly." });
+    }
+    return res.status(502).json({
+      error: SAMIA_MODEL.includes("/")
+        ? "Samia AI request failed before receiving a usable provider response."
+        : "Samia AI request failed.",
+    });
   }
 });
 

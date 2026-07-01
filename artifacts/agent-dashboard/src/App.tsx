@@ -11097,7 +11097,7 @@ function Dashboard() {
           </div>
         )}
       </main>
-      <SamiaChat />
+      {user.role === "admin" && <SamiaChat />}
     </div>
   );
 }
@@ -11137,6 +11137,7 @@ function SamiaChat() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { token, user } = useUser();
   const isAdmin = user.role === "admin";
+  if (!isAdmin) return null;
 
   function submitName() {
     const n = nameInput.trim();
@@ -11267,8 +11268,9 @@ function SamiaChat() {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ message: text || "What do you see in this image?", images, displayName: chatName || undefined }),
       });
-      const data = (await res.json()) as { reply?: string; error?: string };
-      setMessages((prev) => [...prev, { role: "assistant", content: data.reply ?? "Sorry, something went wrong." }]);
+      const data = (await res.json()) as { reply?: string; error?: string; fallbackUsed?: boolean };
+      const note = data.fallbackUsed ? "\n\nUsed backup model." : "";
+      setMessages((prev) => [...prev, { role: "assistant", content: `${data.reply ?? data.error ?? "Sorry, something went wrong."}${note}` }]);
     } catch {
       setMessages((prev) => [...prev, { role: "assistant", content: "Network error — try again." }]);
     } finally {
