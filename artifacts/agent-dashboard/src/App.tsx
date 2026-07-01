@@ -644,7 +644,7 @@ function AnimatedMetricsNav({
               onClick={() => onChange(tab.value)}
               className={cn(
                 "relative flex min-h-12 flex-1 items-center justify-center gap-2 overflow-hidden rounded-xl px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-                active ? "text-[#06130f]" : "text-muted-foreground hover:bg-white/[0.04] hover:text-[#edeae5]",
+                active ? "text-primary-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
               )}
               aria-pressed={active}
             >
@@ -1617,7 +1617,7 @@ async function fetchNewSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
     const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
     const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
     const matches = teamNames.has(agentNorm) || teamNames.has(resolvedKey)
-      || segments.some(seg => teamNames.has(seg));
+      || segments.some(seg => teamNames.has(seg) || teamNames.has(NAME_ALIASES[seg] ?? seg));
     if (!matches) continue;
     // Keyword override (retain/cancel) across all text fields, including Notes.
     const kw = detectKeywordStatus(r);
@@ -1645,7 +1645,7 @@ async function fetchIDPSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
     // Also try each segment of compound names (e.g. "riham samir-rika hart-1234" → ["riham samir", "rika hart", "1234"])
     const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
     const matches = teamNames.has(agentNorm) || teamNames.has(resolvedKey)
-      || segments.some(seg => teamNames.has(seg));
+      || segments.some(seg => teamNames.has(seg) || teamNames.has(NAME_ALIASES[seg] ?? seg));
     if (!matches) continue;
     // IDP-Handled tab is its own classification; keyword override does NOT apply here
     // (every submission to this sheet is by definition an IDP-Handled action).
@@ -2122,6 +2122,7 @@ function AvailableSince({ isoStr }: { isoStr?: string }) {
 // ---------- Aggregation ----------
 
 type TeamMode = "retention" | "nsf" | "cs";
+type AggregationMode = TeamMode | "rmk";
 
 type DayBreakdown = {
   iso: string;
@@ -2141,7 +2142,7 @@ type AgentBreakdown = {
 };
 
 type Aggregated = {
-  mode: TeamMode;
+  mode: AggregationMode;
   statusColumn: string;
   agentColumn: string;
   dateColumn: string | null;
@@ -2205,7 +2206,7 @@ function retentionRate(retained: number, total: number): string {
 
 function aggregate(
   status: SheetData,
-  mode: TeamMode,
+  mode: AggregationMode,
   fromDate: Date | null,
   toDate: Date | null,
   roster?: RosterIndex,
@@ -2454,34 +2455,34 @@ type TileTone = "blue" | "emerald" | "amber" | "sky" | "rose" | "slate" | "zinc"
 
 const TONE_STYLES: Record<TileTone, { bg: string; ring: string; text: string; glow: string }> = {
   blue: {
-    bg: "bg-cyan-950/35",
-    ring: "border-cyan-400/25",
-    text: "text-cyan-100",
-    glow: "shadow-sm shadow-cyan-950/20",
+    bg: "bg-cyan-50/80 dark:bg-cyan-950/35",
+    ring: "border-cyan-500/25 dark:border-cyan-400/25",
+    text: "text-cyan-700 dark:text-cyan-100",
+    glow: "shadow-sm shadow-cyan-900/10 dark:shadow-cyan-950/20",
   },
   emerald: {
-    bg: "bg-emerald-950/45",
-    ring: "border-emerald-400/30",
-    text: "text-emerald-100",
-    glow: "shadow-sm shadow-emerald-950/20",
+    bg: "bg-emerald-50/80 dark:bg-emerald-950/45",
+    ring: "border-emerald-500/25 dark:border-emerald-400/30",
+    text: "text-emerald-700 dark:text-emerald-100",
+    glow: "shadow-sm shadow-emerald-900/10 dark:shadow-emerald-950/20",
   },
   amber: {
-    bg: "bg-amber-950/40",
-    ring: "border-amber-500/25",
-    text: "text-amber-100",
-    glow: "shadow-sm shadow-amber-950/20",
+    bg: "bg-amber-50/85 dark:bg-amber-950/40",
+    ring: "border-amber-500/30 dark:border-amber-500/25",
+    text: "text-amber-700 dark:text-amber-100",
+    glow: "shadow-sm shadow-amber-900/10 dark:shadow-amber-950/20",
   },
   sky: {
-    bg: "bg-sky-950/45",
-    ring: "border-sky-500/25",
-    text: "text-sky-100",
-    glow: "shadow-sm shadow-sky-950/20",
+    bg: "bg-sky-50/85 dark:bg-sky-950/45",
+    ring: "border-sky-500/25 dark:border-sky-500/25",
+    text: "text-sky-700 dark:text-sky-100",
+    glow: "shadow-sm shadow-sky-900/10 dark:shadow-sky-950/20",
   },
   rose: {
-    bg: "bg-rose-950/45",
-    ring: "border-rose-500/25",
-    text: "text-rose-100",
-    glow: "shadow-sm shadow-rose-950/20",
+    bg: "bg-rose-50/85 dark:bg-rose-950/45",
+    ring: "border-rose-500/25 dark:border-rose-500/25",
+    text: "text-rose-700 dark:text-rose-100",
+    glow: "shadow-sm shadow-rose-900/10 dark:shadow-rose-950/20",
   },
   slate: {
     bg: "bg-card",
@@ -2490,9 +2491,9 @@ const TONE_STYLES: Record<TileTone, { bg: string; ring: string; text: string; gl
     glow: "",
   },
   zinc: {
-    bg: "bg-zinc-900/40",
-    ring: "border-zinc-700/40",
-    text: "text-zinc-400",
+    bg: "bg-stone-100/85 dark:bg-zinc-900/40",
+    ring: "border-stone-300/80 dark:border-zinc-700/40",
+    text: "text-stone-600 dark:text-zinc-400",
     glow: "",
   },
 };
@@ -2524,13 +2525,13 @@ function StatTile({
     <div className={`ops-card group min-h-[126px] rounded-lg border p-4 ${s.bg} ${s.ring} ${s.glow}`}>
       <div className={`absolute left-0 right-0 top-0 h-[3px] ${accent}`} />
       <div className="flex items-center gap-2">
-        <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border ${s.ring} bg-black/20 ${s.text}`}>
+        <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border ${s.ring} bg-background/70 dark:bg-black/20 ${s.text}`}>
           {icon ?? label.slice(0, 1)}
         </span>
-        <span className="min-w-0 truncate text-xs font-semibold text-[#b4aea4]">{label}</span>
+        <span className="min-w-0 truncate text-xs font-semibold text-muted-foreground">{label}</span>
       </div>
-      <div className={`mt-3 text-[30px] leading-9 font-medium tabular-nums font-mono ${tone === "slate" ? "text-[#f5f1ea]" : s.text}`}>{value}</div>
-      {sub && <div className="mt-1 text-[11px] font-medium text-[#9c968c]">{sub}</div>}
+      <div className={`mt-3 text-[30px] leading-9 font-medium tabular-nums font-mono ${tone === "slate" ? "text-foreground" : s.text}`}>{value}</div>
+      {sub && <div className="mt-1 text-[11px] font-medium text-muted-foreground">{sub}</div>}
     </div>
   );
 }
@@ -7335,6 +7336,20 @@ function isKillerAgentKey(agentKey: string): boolean {
   return agentKey.split("-").map((s) => s.trim()).some((seg) => RMK_AGENT_NAMES.has(seg));
 }
 
+function resolveKillerAgentKey(agentRaw: string): string | null {
+  const norm = normalizeAgent(agentRaw);
+  if (!norm) return null;
+  const resolvedKey = NAME_ALIASES[norm] ?? norm;
+  if (RMK_AGENT_NAMES.has(norm)) return norm;
+  if (RMK_AGENT_NAMES.has(resolvedKey)) return resolvedKey;
+  for (const seg of norm.split("-").map((s) => s.trim()).filter(Boolean)) {
+    const segResolved = NAME_ALIASES[seg] ?? seg;
+    if (RMK_AGENT_NAMES.has(seg)) return seg;
+    if (RMK_AGENT_NAMES.has(segResolved)) return segResolved;
+  }
+  return null;
+}
+
 // Canonical submission-status column order for the breakdown view; any other
 // status the sheets produce is appended afterwards alphabetically.
 const RMK_STATUS_ORDER = ["Retained", "Cancelled", "Fixed", "IDP-Handled"];
@@ -7356,20 +7371,14 @@ function rmkStatusTone(status: string): string {
 async function fetchRMKSubmissions(): Promise<SheetData> {
   // Match a sheet's agent name against the fixed Killer roster, resolving
   // aliases and dash-separated compound names ("riham samir-leah tanner-1234").
-  const matchesRMK = (agentRaw: string): boolean => {
-    const norm = normalizeAgent(agentRaw);
-    const resolvedKey = NAME_ALIASES[norm] ?? norm;
-    const segments = norm.split("-").map((s) => s.trim()).filter(Boolean);
-    return RMK_AGENT_NAMES.has(norm) || RMK_AGENT_NAMES.has(resolvedKey)
-      || segments.some((seg) => RMK_AGENT_NAMES.has(seg));
-  };
+  const matchesRMK = (agentRaw: string): boolean => !!resolveKillerAgentKey(agentRaw);
 
   // Sources 1–3 share spreadsheet 11kOhk8x — fetch sequentially so Google does
   // not silently drop concurrent requests on the same workbook. Source 4 is a
   // different workbook and is fetched alongside.
   const newRetentionP = fetchHeaderCsv(NEW_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
-  const newRows = await fetchNewSheetForTeam(RMK_AGENT_NAMES);
-  const idpRows = await fetchIDPSheetForTeam(RMK_AGENT_NAMES);
+  const newRows = await fetchNewSheetForTeam(RMK_AGENT_NAMES).catch(() => [] as Row[]);
+  const idpRows = await fetchIDPSheetForTeam(RMK_AGENT_NAMES).catch(() => [] as Row[]);
   const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
   const newRetentionSheet = await newRetentionP;
 
@@ -7380,7 +7389,8 @@ async function fetchRMKSubmissions(): Promise<SheetData> {
     if (!d) continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw || !matchesRMK(agentRaw)) continue;
-    idpCancelRows.push({ Agent: agentRaw, Status: "Retained", Date: toCaliforniaDateStr(d), "File ID": (r["File ID"] ?? "").trim(), __sourceTab: "IDP-Cancel-Retained" });
+    const key = resolveKillerAgentKey(agentRaw);
+    idpCancelRows.push({ Agent: key ? (RMK_DISPLAY[key] ?? agentRaw) : agentRaw, Status: "Retained", Date: toCaliforniaDateStr(d), "File ID": (r["File ID"] ?? "").trim(), __sourceTab: "IDP-Cancel-Retained" });
   }
 
   // 4. Retention sheet → keep Retained and Cancelled rows (IDP-Handled rows are
@@ -7394,23 +7404,35 @@ async function fetchRMKSubmissions(): Promise<SheetData> {
     const kw = detectKeywordStatus(r);
     const derived = kw ?? deriveNewRetentionStatus(r["Cancel request update"] ?? "");
     if (derived !== "Retained" && derived !== "Cancelled") continue;
-    retentionRows.push({ Agent: agentRaw, Status: derived, Date: toCaliforniaDateStr(d), "File ID": (r["File ID"] ?? "").trim() });
+    const key = resolveKillerAgentKey(agentRaw);
+    retentionRows.push({ Agent: key ? (RMK_DISPLAY[key] ?? agentRaw) : agentRaw, Status: derived, Date: toCaliforniaDateStr(d), "File ID": (r["File ID"] ?? "").trim() });
   }
 
-  return { headers: ["Agent", "Status", "Date", "File ID"], rows: [...newRows, ...idpRows, ...idpCancelRows, ...retentionRows] };
+  const rows = [...newRows, ...idpRows, ...idpCancelRows, ...retentionRows].map((row) => {
+    const key = resolveKillerAgentKey(row.Agent ?? "");
+    return key ? { ...row, Agent: RMK_DISPLAY[key] ?? row.Agent } : row;
+  });
+
+  return { headers: ["Agent", "Status", "Date", "File ID"], rows };
 }
 
 function ReadyModeKillersPanel() {
   const todayIso = todayPDT();
   const [from, setFrom] = useState(todayIso);
   const [to, setTo] = useState(todayIso);
-  const [subView, setSubView] = useState<"calls" | "subs">("calls");
   const { user } = useUser();
   const roster = useRoster();
   const lockToToday = !!user.lockToToday;
+  const allowedSubTabs = user.allowedSubTabs ?? null;
+  const subTabAllowed = (t: string) => !allowedSubTabs || allowedSubTabs.includes(t);
+  const defaultSubTab = allowedSubTabs?.[0] ?? "call";
   useEffect(() => {
     if (lockToToday) { setFrom(todayPDT()); setTo(todayPDT()); }
   }, [lockToToday, todayIso]);
+
+  const fromDate = from ? parseDate(from) : null;
+  const toDate = to ? parseDate(to) : null;
+  if (toDate) toDate.setHours(23, 59, 59, 999);
 
   const rmQ = useQuery<RmStatsResponse | null>({
     queryKey: ["rmkReadymodeStats", from, to],
@@ -7433,158 +7455,90 @@ function ReadyModeKillersPanel() {
     refetchInterval: SHEET_REFETCH_MS,
   });
 
+  const aggregated = useMemo(() => {
+    if (!subsQ.data) return null;
+    return aggregate(subsQ.data, "rmk", fromDate, toDate, roster);
+  }, [subsQ.data, from, to, roster]);
+
+  const rmkKeys = useMemo(() => {
+    const keys = new Set<string>(RMK_AGENT_NAMES);
+    for (const a of roster.agentsForTeam("killers")) keys.add(normalizeAgent(a.name));
+    return keys;
+  }, [roster]);
+
   // ReadyMode dialer stats keyed by normalized name, restricted to the team.
   const rmByKey = useMemo(() => {
     const m = new Map<string, RmAgentStat>();
     for (const a of rmQ.data?.agents ?? []) {
-      const norm = normalizeAgent(a.agentName);
-      if (!RMK_AGENT_NAMES.has(norm)) continue;
-      const prev = m.get(norm);
+      const key = resolveKillerAgentKey(a.agentName) ?? normalizeAgent(a.agentName);
+      if (!rmkKeys.has(key)) continue;
+      const prev = m.get(key);
       if (prev) {
         const dialed = prev.dialed + a.dialed;
         const connected = prev.connected + a.connected;
         const talkTimeSecs = prev.talkTimeSecs + a.talkTimeSecs;
-        m.set(norm, {
+        m.set(key, {
           agentName: prev.agentName,
           dialed, connected, talkTimeSecs,
           avgTalkSecs: connected ? Math.round(talkTimeSecs / connected) : 0,
           connectRate: dialed ? Math.round((connected / dialed) * 100) : 0,
         });
       } else {
-        m.set(norm, { ...a });
+        m.set(key, { ...a, agentName: RMK_DISPLAY[key] ?? a.agentName });
       }
     }
     return m;
-  }, [rmQ.data]);
+  }, [rmQ.data, rmkKeys]);
 
-  // Submission counts keyed by normalized name, restricted to the team + date range.
-  const subsByKey = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const r of subsQ.data?.rows ?? []) {
-      const d = (r["Date"] ?? "").trim();
-      if (from && d && d < from) continue;
-      if (to && d && d > to) continue;
-      const norm = normalizeAgent((r["Agent"] ?? "").trim());
-      let key: string | null = null;
-      if (RMK_AGENT_NAMES.has(norm)) key = norm;
-      else {
-        const seg = norm.split("-").map((s) => s.trim()).find((s) => RMK_AGENT_NAMES.has(s));
-        if (seg) key = seg;
-      }
-      if (!key) continue;
-      m.set(key, (m.get(key) ?? 0) + 1);
+  const rmkPhoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
+    const map = new Map<string, PhoneAgentMetrics>();
+    for (const [key, rm] of rmByKey) {
+      map.set(key, {
+        calls: rm.dialed,
+        seconds: rm.talkTimeSecs,
+        answered: rm.connected,
+        missed: 0,
+        voicemail: 0,
+        vmBrief: 0,
+        inbound: 0,
+        outbound: rm.dialed,
+        uniqueContacts: rm.connected,
+      });
     }
-    return m;
-  }, [subsQ.data, from, to]);
+    return map;
+  }, [rmByKey]);
 
-  const rows = useMemo(() => {
-    return [...RMK_AGENT_NAMES]
-      .map((key) => {
-        const rm = rmByKey.get(key);
-        return {
-          key,
-          name: RMK_DISPLAY[key] ?? key.replace(/\b\w/g, (c) => c.toUpperCase()),
-          dialed: rm?.dialed ?? 0,
-          connected: rm?.connected ?? 0,
-          connectRate: rm?.connectRate ?? 0,
-          talkTimeSecs: rm?.talkTimeSecs ?? 0,
-          avgTalkSecs: rm?.avgTalkSecs ?? 0,
-          submissions: subsByKey.get(key) ?? 0,
-        };
-      })
-      .sort((a, b) => b.dialed - a.dialed || b.submissions - a.submissions);
-  }, [rmByKey, subsByKey]);
-
-  const totals = useMemo(() => {
-    let dialed = 0, connected = 0, talkTimeSecs = 0, submissions = 0;
-    for (const r of rows) { dialed += r.dialed; connected += r.connected; talkTimeSecs += r.talkTimeSecs; submissions += r.submissions; }
-    return { dialed, connected, talkTimeSecs, submissions, connectRate: dialed ? Math.round((connected / dialed) * 100) : 0 };
-  }, [rows]);
-
-  // Submission breakdown by status (Retained / Cancelled / Fixed / IDP-Handled / …),
-  // keyed by normalized agent name and restricted to the team + date range.
-  const subsBreakdown = useMemo(() => {
-    const perAgent = new Map<string, Map<string, number>>();
-    const statusSet = new Set<string>();
-    for (const r of subsQ.data?.rows ?? []) {
-      const d = (r["Date"] ?? "").trim();
-      if (from && d && d < from) continue;
-      if (to && d && d > to) continue;
-      const norm = normalizeAgent((r["Agent"] ?? "").trim());
-      let key: string | null = null;
-      if (RMK_AGENT_NAMES.has(norm)) key = norm;
-      else {
-        const seg = norm.split("-").map((s) => s.trim()).find((s) => RMK_AGENT_NAMES.has(s));
-        if (seg) key = seg;
-      }
-      if (!key) continue;
-      const status = normalizeStatus((r["Status"] ?? "").trim()) || "Other";
-      statusSet.add(status);
-      let m = perAgent.get(key);
-      if (!m) { m = new Map(); perAgent.set(key, m); }
-      m.set(status, (m.get(status) ?? 0) + 1);
+  const callAgentList = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const key of rmkKeys) names.set(key, RMK_DISPLAY[key] ?? key.replace(/\b\w/g, (c) => c.toUpperCase()));
+    for (const a of (aggregated && !("error" in aggregated) ? aggregated.byAgent : [])) {
+      const key = normalizeAgent(a.agent);
+      names.set(key, a.agent);
     }
-    const extras = [...statusSet].filter((s) => !RMK_STATUS_ORDER.includes(s)).sort();
-    const statuses = [...RMK_STATUS_ORDER.filter((s) => statusSet.has(s)), ...extras];
-    return { perAgent, statuses };
-  }, [subsQ.data, from, to]);
+    for (const [key, rm] of rmByKey) names.set(key, RMK_DISPLAY[key] ?? rm.agentName);
+    return [...names.entries()].map(([, name]) => name).sort((a, b) => a.localeCompare(b));
+  }, [aggregated, rmByKey, rmkKeys]);
 
-  const subRows = useMemo(() => {
-    return [...RMK_AGENT_NAMES]
-      .map((key) => {
-        const m = subsBreakdown.perAgent.get(key);
-        const counts: Record<string, number> = {};
-        let total = 0;
-        for (const s of subsBreakdown.statuses) { const n = m?.get(s) ?? 0; counts[s] = n; total += n; }
-        return { key, name: RMK_DISPLAY[key] ?? key.replace(/\b\w/g, (c) => c.toUpperCase()), counts, total };
-      })
-      .sort((a, b) => b.total - a.total);
-  }, [subsBreakdown]);
+  const phoneTotals = useMemo(() => {
+    let calls = 0, seconds = 0, answered = 0;
+    for (const v of rmkPhoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; }
+    return { calls, seconds, answered, connectRate: calls ? Math.round((answered / calls) * 100) : 0 };
+  }, [rmkPhoneData]);
 
-  const subTotals = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const s of subsBreakdown.statuses) counts[s] = 0;
-    let total = 0;
-    for (const r of subRows) { for (const s of subsBreakdown.statuses) counts[s] += r.counts[s] ?? 0; total += r.total; }
-    return { counts, total };
-  }, [subRows, subsBreakdown.statuses]);
+  const activeAgentCount = useMemo(() => {
+    const active = new Set<string>();
+    for (const [key, v] of rmkPhoneData) if (v.calls > 0 || v.seconds > 0) active.add(key);
+    if (aggregated && !("error" in aggregated)) {
+      for (const a of aggregated.byAgent) if (a.total > 0) active.add(normalizeAgent(a.agent));
+    }
+    return active.size;
+  }, [aggregated, rmkPhoneData]);
 
   function refresh() { rmQ.refetch(); subsQ.refetch(); }
   const isFetching = rmQ.isFetching || subsQ.isFetching;
 
-  // Export raw submission rows (Agent, Status, Date, File ID) for the current
-  // date range — mirrors the other teams' "Export Rows" CSV. IDP-Cancel-Retained
-  // rows are surfaced as "IDP-Cancel-Handled" so they can be audited separately.
-  function exportSubsRows() {
-    const data = subsQ.data;
-    if (!data) return;
-    const filtered = (data.rows ?? []).filter((r) => {
-      const d = (r["Date"] ?? "").trim();
-      if (from && d && d < from) return false;
-      if (to && d && d > to) return false;
-      return true;
-    });
-    const exportRows = filtered.map((r) => {
-      const isIdpCancel = r["__sourceTab"] === "IDP-Cancel-Retained";
-      return {
-        Agent: (r["Agent"] ?? "").trim(),
-        Status: isIdpCancel ? "IDP-Cancel-Handled" : (r["Status"] ?? "").trim(),
-        Date: (r["Date"] ?? "").trim(),
-        "File ID": (r["File ID"] ?? "").trim(),
-      };
-    });
-    const csv = Papa.unparse(exportRows);
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `rmk_submissions_${from}_to_${to}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
   return (
-    <Card>
+    <Card className="ops-panel rounded-lg">
       <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-4">
         <div>
           <CardTitle className="text-xl flex items-center gap-2">
@@ -7601,137 +7555,69 @@ function ReadyModeKillersPanel() {
       </CardHeader>
       <CardContent className="space-y-6">
         {(rmQ.isLoading || subsQ.isLoading) && <TableSkeleton />}
+        {aggregated && "error" in aggregated && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+            {aggregated.error}
+          </div>
+        )}
 
         {!lockToToday && <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />}
 
-        <div className="flex gap-2">
-          <Button variant={subView === "calls" ? "default" : "outline"} size="sm" onClick={() => setSubView("calls")}>
-            <PhoneCall className="h-3.5 w-3.5 mr-1.5" />Call activity
-          </Button>
-          <Button variant={subView === "subs" ? "default" : "outline"} size="sm" onClick={() => setSubView("subs")}>
-            <Receipt className="h-3.5 w-3.5 mr-1.5" />Submissions
-          </Button>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {subTabAllowed("call") && (
+            <>
+              <StatTile label="Agents" value={activeAgentCount.toLocaleString()} icon={<Users className="h-3.5 w-3.5" />} tone="blue" />
+              <StatTile label="Total dialed" value={phoneTotals.calls.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
+              <StatTile label="Connected" value={phoneTotals.answered.toLocaleString()} icon={<PhoneCall className="h-3.5 w-3.5" />} tone="emerald" />
+              <StatTile label="Connect rate" value={`${phoneTotals.connectRate}%`} icon={<Activity className="h-3.5 w-3.5" />} tone="blue" />
+              <StatTile label="Talk time" value={formatHours(phoneTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
+              <StatTile label="Avg talk" value={avgDuration(phoneTotals.seconds, phoneTotals.answered)} tone="amber" />
+            </>
+          )}
+          {aggregated && !("error" in aggregated) && subTabAllowed("files") && (
+            <>
+              <StatTile label="Submissions" value={aggregated.totals.grand.toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="emerald" />
+              <StatTile label="Retained" value={(aggregated.totals.byStatus.get("Retained") ?? 0).toLocaleString()} tone="emerald" />
+              <StatTile label="Cancelled" value={(aggregated.totals.byStatus.get("Cancelled") ?? 0).toLocaleString()} tone="rose" />
+              <StatTile label="Fixed" value={(aggregated.totals.byStatus.get("Fixed") ?? 0).toLocaleString()} tone="sky" />
+              <StatTile label="IDP-Handled" value={(aggregated.totals.byStatus.get("IDP-Handled") ?? 0).toLocaleString()} tone="blue" />
+            </>
+          )}
         </div>
 
-        {subView === "calls" ? (
-          <>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <StatTile label="Agents" value={RMK_AGENT_NAMES.size} icon={<Users className="h-3.5 w-3.5" />} tone="blue" />
-              <StatTile label="Total dialed" value={totals.dialed.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
-              <StatTile label="Connected" value={totals.connected.toLocaleString()} icon={<PhoneCall className="h-3.5 w-3.5" />} tone="emerald" />
-              <StatTile label="Connect rate" value={`${totals.connectRate}%`} icon={<Activity className="h-3.5 w-3.5" />} tone="blue" />
-              <StatTile label="Talk time" value={formatHours(totals.talkTimeSecs)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
-              <StatTile label="Submissions" value={totals.submissions.toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="emerald" />
-            </div>
-
-            <div className="ops-table-wrap overflow-hidden">
-              <div className="overflow-x-auto max-h-[60vh]">
-                <Table>
-                  <TableHeader className="sticky top-0 backdrop-blur z-10">
-                    <TableRow>
-                      <TableHead className="text-left text-muted-foreground">Agent Name</TableHead>
-                      <TableHead className="text-right metric-info">Dialed</TableHead>
-                      <TableHead className="text-right metric-good">Connected</TableHead>
-                      <TableHead className="text-right metric-info">Connect %</TableHead>
-                      <TableHead className="text-right">Talk time</TableHead>
-                      <TableHead className="text-right">Avg talk</TableHead>
-                      <TableHead className="text-right metric-good">Submissions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {rows.map((r) => {
-                      const parts = agentNameParts(r.name, roster);
-                      return (
-                      <TableRow key={r.key} className="hover-elevate">
-                        <TableCell className="font-medium whitespace-nowrap">
-                          <AvatarName name={parts.agentName} size="sm" textClassName="text-foreground" />
-                        </TableCell>
-                        <TableCell className={`text-right tabular-nums font-mono ${r.dialed ? "metric-info" : "text-muted-foreground/40"}`}>{r.dialed || "—"}</TableCell>
-                        <TableCell className={`text-right tabular-nums font-mono ${r.connected ? "metric-good" : "text-muted-foreground/40"}`}>{r.connected || "—"}</TableCell>
-                        <TableCell className={`text-right tabular-nums font-mono ${r.connectRate >= 20 ? "metric-info" : r.connectRate > 0 ? "text-zinc-300" : "text-muted-foreground/40"}`}>{r.connectRate > 0 ? `${r.connectRate}%` : "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{r.talkTimeSecs ? formatDuration(r.talkTimeSecs) : "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums font-mono text-muted-foreground">{r.avgTalkSecs ? formatDuration(r.avgTalkSecs) : "—"}</TableCell>
-                        <TableCell className={`text-right tabular-nums font-mono ${r.submissions ? "metric-good" : "text-muted-foreground/40"}`}>{r.submissions || "—"}</TableCell>
-                      </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                  <TableHeader className="sticky bottom-0 backdrop-blur z-10">
-                    <TableRow>
-                      <TableCell className="font-bold">Whole team</TableCell>
-                      <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totals.dialed || "—"}</TableCell>
-                      <TableCell className="text-right tabular-nums font-mono font-bold metric-good">{totals.connected || "—"}</TableCell>
-                      <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totals.connectRate ? `${totals.connectRate}%` : "—"}</TableCell>
-                      <TableCell className="text-right tabular-nums font-mono font-bold">{totals.talkTimeSecs ? formatDuration(totals.talkTimeSecs) : "—"}</TableCell>
-                      <TableCell />
-                      <TableCell className="text-right tabular-nums font-mono font-bold metric-good">{totals.submissions || "—"}</TableCell>
-                    </TableRow>
-                  </TableHeader>
-                </Table>
-              </div>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <StatTile label="Submissions" value={subTotals.total.toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="emerald" />
-              <StatTile label="Retained" value={(subTotals.counts["Retained"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="emerald" />
-              <StatTile label="Cancelled" value={(subTotals.counts["Cancelled"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="rose" />
-              <StatTile label="Fixed" value={(subTotals.counts["Fixed"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="sky" />
-              <StatTile label="IDP-Handled" value={(subTotals.counts["IDP-Handled"] ?? 0).toLocaleString()} icon={<Receipt className="h-3.5 w-3.5" />} tone="blue" />
-            </div>
-
-            <div className="flex justify-end">
-              <Button variant="outline" size="sm" onClick={exportSubsRows} disabled={!subsQ.data} data-testid="button-export-rmk-rows">
-                <Download className="h-3.5 w-3.5 mr-1.5" />Export Rows
-              </Button>
-            </div>
-
-            <div className="ops-table-wrap overflow-hidden">
-              <div className="overflow-x-auto max-h-[60vh]">
-                <Table>
-                  <TableHeader className="sticky top-0 backdrop-blur z-10">
-                    <TableRow>
-                      <TableHead className="text-left text-muted-foreground">Agent Name</TableHead>
-                      {subsBreakdown.statuses.map((s) => (
-                        <TableHead key={s} className={`text-right ${rmkStatusTone(s)}`}>{s}</TableHead>
-                      ))}
-                      <TableHead className="text-right">Total</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {subRows.map((r) => {
-                      const parts = agentNameParts(r.name, roster);
-                      return (
-                      <TableRow key={r.key} className="hover-elevate">
-                        <TableCell className="font-medium whitespace-nowrap">
-                          <AvatarName name={parts.agentName} size="sm" textClassName="text-foreground" />
-                        </TableCell>
-                        {subsBreakdown.statuses.map((s) => (
-                          <TableCell key={s} className={`text-right tabular-nums font-mono ${r.counts[s] ? rmkStatusTone(s) : "text-muted-foreground/40"}`}>{r.counts[s] || "—"}</TableCell>
-                        ))}
-                        <TableCell className="text-right tabular-nums font-mono font-semibold">{r.total || "—"}</TableCell>
-                      </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                  <TableHeader className="sticky bottom-0 backdrop-blur z-10">
-                    <TableRow>
-                      <TableCell className="font-bold">Whole team</TableCell>
-                      {subsBreakdown.statuses.map((s) => (
-                        <TableCell key={s} className={`text-right tabular-nums font-mono font-bold ${rmkStatusTone(s)}`}>{subTotals.counts[s] || "—"}</TableCell>
-                      ))}
-                      <TableCell className="text-right tabular-nums font-mono font-bold">{subTotals.total || "—"}</TableCell>
-                    </TableRow>
-                  </TableHeader>
-                </Table>
-              </div>
-            </div>
-
-            {subsBreakdown.statuses.length === 0 && !subsQ.isLoading && (
-              <p className="text-xs text-muted-foreground">No submissions in this date range.</p>
+        <Tabs defaultValue={defaultSubTab} className="space-y-4">
+          <TabsList>
+            {subTabAllowed("call") && <TabsTrigger value="call">By call</TabsTrigger>}
+            {aggregated && !("error" in aggregated) && (
+              <>
+                {subTabAllowed("files") && <TabsTrigger value="files">By files</TabsTrigger>}
+                {subTabAllowed("day") && <TabsTrigger value="day">By day</TabsTrigger>}
+              </>
             )}
-          </>
+          </TabsList>
+          {subTabAllowed("call") && (
+            <TabsContent value="call">
+              <ByCallStatsView agentList={callAgentList} phoneData={rmkPhoneData} directKeys />
+            </TabsContent>
+          )}
+          {aggregated && !("error" in aggregated) && (
+            <>
+              {subTabAllowed("files") && (
+                <TabsContent value="files">
+                  <ByFilesView data={aggregated} phoneData={rmkPhoneData} sheetData={subsQ.data} fromDate={fromDate} toDate={toDate} />
+                </TabsContent>
+              )}
+              {subTabAllowed("day") && (
+                <TabsContent value="day">
+                  <ByDayView data={aggregated} />
+                </TabsContent>
+              )}
+            </>
+          )}
+        </Tabs>
+
+        {aggregated && !("error" in aggregated) && aggregated.totals.grand === 0 && !subsQ.isLoading && (
+          <p className="text-xs text-muted-foreground">No submissions in this date range.</p>
         )}
 
         {rmQ.error && (
@@ -11047,7 +10933,7 @@ function Dashboard() {
         <div className="theme-ambient theme-ambient-muted absolute bottom-0 left-1/3 h-[400px] w-[400px]" />
       </div>
 
-      <header className="relative z-[100] overflow-visible border-b border-white/10 bg-[rgba(15,14,13,0.82)] backdrop-blur-xl">
+      <header className="relative z-[100] overflow-visible border-b border-border bg-card/85 backdrop-blur-xl">
         <div className="max-w-[1400px] mx-auto px-3 py-3 sm:px-6 sm:py-4 flex items-center gap-3">
           <div className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-lg overflow-hidden ring-1 ring-emerald-300/20 shadow-[0_0_24px_-6px_rgba(52,211,153,0.45)]">
             <img src={companyLogo} alt="Company logo" className="h-full w-full object-cover" />
@@ -11071,7 +10957,7 @@ function Dashboard() {
           )}
 
           {/* User info */}
-          <div className="flex items-center gap-2 pl-2 border-l border-white/10">
+          <div className="flex items-center gap-2 pl-2 border-l border-border">
             <ThemeToggle />
             <div className="text-right hidden sm:block">
               <div className="flex justify-end">

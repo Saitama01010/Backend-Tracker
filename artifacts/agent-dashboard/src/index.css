@@ -339,30 +339,30 @@
 
   .ops-shell {
     background:
-      radial-gradient(circle at 18% -12%, hsl(158 64% 20% / .22), transparent 34rem),
-      radial-gradient(circle at 84% 4%, hsl(38 92% 23% / .18), transparent 30rem),
-      linear-gradient(180deg, hsl(30 18% 6%), hsl(28 18% 4%));
+      radial-gradient(circle at 18% -12%, hsl(170 60% 62% / .20), transparent 34rem),
+      radial-gradient(circle at 84% 4%, hsl(38 84% 68% / .22), transparent 30rem),
+      linear-gradient(180deg, hsl(38 43% 93%), hsl(36 38% 88%));
   }
 
   .ops-panel {
-    border: 1px solid hsl(36 18% 92% / .08);
-    background: hsl(30 16% 6% / .98);
-    box-shadow: 0 24px 80px -48px hsl(0 0% 0% / .85), inset 0 1px 0 hsl(36 18% 92% / .04);
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--card) / .94);
+    box-shadow: 0 24px 80px -54px hsl(27 35% 18% / .35), inset 0 1px 0 hsl(0 0% 100% / .68);
   }
 
   .ops-card {
     position: relative;
     overflow: hidden;
     border-radius: .5rem;
-    border: 1px solid hsl(36 18% 92% / .08);
-    background: hsl(30 16% 6% / .98);
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--card) / .96);
   }
 
   .ops-table-wrap {
     border-radius: .65rem;
-    border: 1px solid hsl(36 18% 92% / .08);
-    background: hsl(30 16% 6% / .96);
-    box-shadow: inset 0 1px 0 hsl(36 18% 92% / .035);
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--card) / .98);
+    box-shadow: inset 0 1px 0 hsl(0 0% 100% / .68);
   }
 
   .ops-table-wrap table {
@@ -372,36 +372,104 @@
 
   .ops-table-wrap thead,
   .ops-table-wrap tfoot {
-    background: hsl(30 16% 10% / .94) !important;
+    background: hsl(38 34% 90% / .96) !important;
   }
 
   .ops-table-wrap th {
-    color: hsl(35 10% 65%);
+    color: hsl(var(--muted-foreground));
     font-size: .72rem;
     font-weight: 800;
     letter-spacing: 0;
   }
 
   .ops-table-wrap td {
-    border-color: hsl(36 18% 92% / .055) !important;
+    border-color: hsl(var(--border) / .72) !important;
   }
 
   .ops-table-wrap tbody tr:hover {
-    background: hsl(158 64% 52% / .045);
+    background: hsl(170 58% 42% / .08);
   }
 
   .ops-team-row {
+    background: linear-gradient(90deg, hsl(170 58% 42% / .14), hsl(var(--card) / .96));
+    box-shadow: inset 0 1px 0 hsl(170 58% 42% / .18);
+  }
+
+  .ops-input {
+    border-color: hsl(var(--border)) !important;
+    background: hsl(var(--card) / .94) !important;
+  }
+
+  .ops-pill {
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--card) / .92);
+  }
+
+  .dark .ops-shell,
+  :root[data-theme="dark"] .ops-shell {
+    background:
+      radial-gradient(circle at 18% -12%, hsl(158 64% 20% / .22), transparent 34rem),
+      radial-gradient(circle at 84% 4%, hsl(38 92% 23% / .18), transparent 30rem),
+      linear-gradient(180deg, hsl(30 18% 6%), hsl(28 18% 4%));
+  }
+
+  .dark .ops-panel,
+  :root[data-theme="dark"] .ops-panel {
+    border-color: hsl(36 18% 92% / .08);
+    background: hsl(30 16% 6% / .98);
+    box-shadow: 0 24px 80px -48px hsl(0 0% 0% / .85), inset 0 1px 0 hsl(36 18% 92% / .04);
+  }
+
+  .dark .ops-card,
+  :root[data-theme="dark"] .ops-card {
+    border-color: hsl(36 18% 92% / .08);
+    background: hsl(30 16% 6% / .98);
+  }
+
+  .dark .ops-table-wrap,
+  :root[data-theme="dark"] .ops-table-wrap {
+    border-color: hsl(36 18% 92% / .08);
+    background: hsl(30 16% 6% / .96);
+    box-shadow: inset 0 1px 0 hsl(36 18% 92% / .035);
+  }
+
+  .dark .ops-table-wrap thead,
+  .dark .ops-table-wrap tfoot,
+  :root[data-theme="dark"] .ops-table-wrap thead,
+  :root[data-theme="dark"] .ops-table-wrap tfoot {
+    background: hsl(30 16% 10% / .94) !important;
+  }
+
+  .dark .ops-table-wrap th,
+  :root[data-theme="dark"] .ops-table-wrap th {
+    color: hsl(35 10% 65%);
+  }
+
+  .dark .ops-table-wrap td,
+  :root[data-theme="dark"] .ops-table-wrap td {
+    border-color: hsl(36 18% 92% / .055) !important;
+  }
+
+  .dark .ops-table-wrap tbody tr:hover,
+  :root[data-theme="dark"] .ops-table-wrap tbody tr:hover {
+    background: hsl(158 64% 52% / .045);
+  }
+
+  .dark .ops-team-row,
+  :root[data-theme="dark"] .ops-team-row {
     background: linear-gradient(90deg, hsl(158 64% 16% / .34), hsl(30 16% 10% / .96));
     box-shadow: inset 0 1px 0 hsl(158 64% 52% / .18);
   }
 
-  .ops-input {
+  .dark .ops-input,
+  :root[data-theme="dark"] .ops-input {
     border-color: hsl(36 18% 92% / .1) !important;
     background: hsl(30 16% 9% / .86) !important;
   }
 
-  .ops-pill {
-    border: 1px solid hsl(36 18% 92% / .1);
+  .dark .ops-pill,
+  :root[data-theme="dark"] .ops-pill {
+    border-color: hsl(36 18% 92% / .1);
     background: hsl(30 16% 9% / .86);
   }
 
