@@ -1484,6 +1484,7 @@ router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) =
 
     // ── Multi-turn tool loop (up to 4 rounds) ─────────────────────────────────
     const activeTools = tools.filter((tool) => {
+      if (tool.type !== "function") return false;
       const name = tool.function.name;
       if (mode === "lightweight") return false;
       if (mode === "dashboard") return !["lookup_number", "analyze_calls"].includes(name);
