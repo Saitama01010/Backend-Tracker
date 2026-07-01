@@ -363,7 +363,8 @@ function isOpenRouterCapacityError(err: unknown): boolean {
     message.includes("rate limited") ||
     message.includes("provider returned error") ||
     message.includes("capacity") ||
-    message.includes("timeout")
+    message.includes("timeout") ||
+    message.includes("aborted")
   );
 }
 
@@ -1508,6 +1509,9 @@ router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) =
     }
     if (code === 402) {
       return res.status(402).json({ error: "Samia's OpenRouter account needs available credits or a free model with capacity." });
+    }
+    if (message.toLowerCase().includes("aborted") || message.toLowerCase().includes("timeout")) {
+      return res.status(429).json({ error: "Samia's free OpenRouter models are temporarily unavailable. Try again shortly or switch to an approved paid model." });
     }
     return res.status(502).json({
       error: SAMIA_MODEL.includes("/")
