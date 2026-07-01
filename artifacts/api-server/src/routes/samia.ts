@@ -394,7 +394,7 @@ function isOpenRouterCapacityError(err: unknown): boolean {
   return (
     code === 402 ||
     code === 429 ||
-    (code === 404 && message.includes("unavailable")) ||
+    (code === 404 && (message.includes("unavailable") || message.includes("no endpoints found"))) ||
     message.includes("rate-limit") ||
     message.includes("rate limited") ||
     message.includes("provider returned error") ||
