@@ -325,6 +325,28 @@ function getSamiaModels(): string[] {
   return Array.from(new Set([SAMIA_MODEL, ...fallbackModels]));
 }
 
+function getOpenRouterBaseUrl(): string {
+  return (process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"] ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+}
+
+function getOpenRouterReferer(req?: Request): string {
+  return process.env["FRONTEND_ORIGIN"]?.split(",")[0]?.trim()
+    || process.env["CORS_ORIGIN"]?.split(",")[0]?.trim()
+    || (req ? getInternalBaseUrl(req) : "")
+    || "https://www.dialexpert-backend.com";
+}
+
+function getSamiaEnvStatus() {
+  return {
+    openRouterKeyExists: !!process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"],
+    openRouterBaseUrl: getOpenRouterBaseUrl(),
+    model: SAMIA_MODEL,
+    temperature: SAMIA_TEMPERATURE,
+    fallbackModels: getSamiaModels().filter((model) => model !== SAMIA_MODEL),
+    useOpenRouter: SAMIA_MODEL.includes("/"),
+  };
+}
+
 function getSamiaClient(model: string): OpenAI {
   const useOpenRouter = model.includes("/");
   const apiKey = useOpenRouter
@@ -343,6 +365,20 @@ function getSamiaClient(model: string): OpenAI {
       : process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
     apiKey,
   });
+}
+
+class SamiaProviderError extends Error {
+  status: number;
+  code: number;
+  provider: "openrouter" | "openai";
+
+  constructor(message: string, status: number, provider: "openrouter" | "openai") {
+    super(message);
+    this.name = "SamiaProviderError";
+    this.status = status;
+    this.code = status;
+    this.provider = provider;
+  }
 }
 
 type SamiaCompletionResult = {
@@ -372,6 +408,93 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function createOpenRouterCompletion(
+  req: Request,
+  args: {
+    model: string;
+    messages: OpenAI.Chat.ChatCompletionMessageParam[];
+    tools: OpenAI.Chat.ChatCompletionTool[];
+  },
+): Promise<OpenAI.Chat.ChatCompletion> {
+  const apiKey = process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"];
+  if (!apiKey) throw new Error("AI_INTEGRATIONS_OPENROUTER_API_KEY is not set");
+
+  const url = `${getOpenRouterBaseUrl()}/chat/completions`;
+  req.log.info({
+    model: args.model,
+    useOpenRouter: true,
+    baseUrl: getOpenRouterBaseUrl(),
+    hasApiKey: true,
+  }, "samia openrouter request starting");
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": getOpenRouterReferer(req),
+      "X-OpenRouter-Title": "Samia Dashboard",
+    },
+    body: JSON.stringify({
+      model: args.model,
+      messages: args.messages,
+      ...(args.tools.length ? { tools: args.tools } : {}),
+      temperature: SAMIA_TEMPERATURE,
+      max_tokens: 1600,
+      stream: false,
+    }),
+    signal: AbortSignal.timeout(18000),
+  });
+
+  req.log.info({
+    model: args.model,
+    status: response.status,
+    ok: response.ok,
+  }, "samia openrouter response received");
+
+  const text = await response.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    const errorData = data as { error?: { message?: string; code?: number | string; type?: string } } | null;
+    const errorType = errorData?.error?.type ?? errorData?.error?.code ?? response.status;
+    const errorMessage = errorData?.error?.message ?? `OpenRouter request failed with status ${response.status}`;
+    req.log.warn({ model: args.model, status: response.status, errorType }, "samia openrouter request failed");
+    throw new SamiaProviderError(errorMessage, response.status, "openrouter");
+  }
+
+  return data as OpenAI.Chat.ChatCompletion;
+}
+
+async function createModelCompletion(
+  req: Request,
+  args: {
+    model: string;
+    messages: OpenAI.Chat.ChatCompletionMessageParam[];
+    tools: OpenAI.Chat.ChatCompletionTool[];
+  },
+): Promise<OpenAI.Chat.ChatCompletion> {
+  if (args.model.includes("/")) {
+    return createOpenRouterCompletion(req, args);
+  }
+  req.log.info({ model: args.model, useOpenRouter: false }, "samia openai-compatible request starting");
+  return getSamiaClient(args.model).chat.completions.create({
+    model: args.model,
+    messages: args.messages,
+    ...(args.tools.length ? { tools: args.tools } : {}),
+    temperature: SAMIA_TEMPERATURE,
+    max_tokens: 1600,
+  }, {
+    timeout: 18000,
+    signal: AbortSignal.timeout(18000),
+  });
+}
+
 async function createSamiaCompletion(
   req: Request,
   args: {
@@ -386,15 +509,10 @@ async function createSamiaCompletion(
     const attempts = index === 0 ? 2 : 1;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
-        const completion = await getSamiaClient(model).chat.completions.create({
+        const completion = await createModelCompletion(req, {
           model,
           messages: args.messages,
-          ...(args.tools.length ? { tools: args.tools } : {}),
-          temperature: SAMIA_TEMPERATURE,
-          max_tokens: 1600,
-        }, {
-          timeout: 18000,
-          signal: AbortSignal.timeout(18000),
+          tools: args.tools,
         });
         if (index > 0 || attempt > 1) {
           req.log.info({ model, fallbackUsed: index > 0, attempt }, "samia model completed");
@@ -411,6 +529,48 @@ async function createSamiaCompletion(
 
   throw lastError instanceof Error ? lastError : new Error("All Samia models failed");
 }
+
+router.get("/samia/openrouter-env", requireAuth, requireRole("admin"), async (req, res) => {
+  req.log.info(getSamiaEnvStatus(), "samia openrouter env status");
+  return res.json(getSamiaEnvStatus());
+});
+
+router.post("/samia/openrouter-test", requireAuth, requireRole("admin"), async (req, res) => {
+  const model = process.env["SAMIA_MODEL"] ?? "qwen/qwen3-coder:free";
+  try {
+    const envStatus = getSamiaEnvStatus();
+    req.log.info(envStatus, "samia direct openrouter test starting");
+    const completion = await createOpenRouterCompletion(req, {
+      model,
+      messages: [{ role: "user", content: "Reply with only: Samia test working" }],
+      tools: [],
+    });
+    const reply = completion.choices[0]?.message?.content ?? "";
+    return res.json({
+      ok: true,
+      model,
+      status: 200,
+      reply,
+      env: envStatus,
+    });
+  } catch (err) {
+    const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : 502;
+    const errorType = err instanceof Error ? err.name : "OpenRouterError";
+    req.log.warn({ model, status, errorType }, "samia direct openrouter test failed");
+    return res.status(status).json({
+      ok: false,
+      model,
+      status,
+      errorType,
+      env: getSamiaEnvStatus(),
+      error: status === 401 || status === 403
+        ? "OpenRouter rejected the server-side API key."
+        : status === 429
+          ? "OpenRouter returned a rate-limit response."
+          : "Samia could not reach the AI provider. Check server configuration.",
+    });
+  }
+});
 
 type SamiaMode = "lightweight" | "dashboard" | "call-analysis";
 
@@ -1511,11 +1671,11 @@ router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) =
       return res.status(402).json({ error: "Samia's OpenRouter account needs available credits or a free model with capacity." });
     }
     if (message.toLowerCase().includes("aborted") || message.toLowerCase().includes("timeout")) {
-      return res.status(429).json({ error: "Samia's free OpenRouter models are temporarily unavailable. Try again shortly or switch to an approved paid model." });
+      return res.status(502).json({ error: "Samia could not reach the AI provider in time. Check server configuration or try again shortly." });
     }
     return res.status(502).json({
       error: SAMIA_MODEL.includes("/")
-        ? "Samia AI request failed. The configured OpenRouter model may be unavailable or rate-limited."
+        ? "Samia AI request failed before receiving a usable provider response."
         : "Samia AI request failed.",
     });
   }
