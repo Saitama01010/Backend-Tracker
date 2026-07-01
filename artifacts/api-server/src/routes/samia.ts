@@ -1670,6 +1670,11 @@ router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) =
     if (code === 402) {
       return res.status(402).json({ error: "Samia's OpenRouter account needs available credits or a free model with capacity." });
     }
+    if (code === 404 && message.toLowerCase().includes("no endpoints found")) {
+      return res.status(502).json({
+        error: "Samia reached OpenRouter, but the configured free model endpoints are unavailable right now.",
+      });
+    }
     if (message.toLowerCase().includes("aborted") || message.toLowerCase().includes("timeout")) {
       return res.status(502).json({ error: "Samia could not reach the AI provider in time. Check server configuration or try again shortly." });
     }
