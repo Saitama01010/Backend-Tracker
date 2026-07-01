@@ -12,10 +12,11 @@ if (!databaseUrl) {
     "DATABASE_URL or OLD_DATABASE_URL must be set. Did you forget to provision a database?",
   );
 }
+const connectionString = databaseUrl;
 
 export function databaseConnectionInfo() {
   try {
-    const url = new URL(databaseUrl);
+    const url = new URL(connectionString);
     return {
       source: databaseUrlSource,
       host: url.host,
@@ -30,7 +31,7 @@ export function databaseConnectionInfo() {
   }
 }
 
-export const pool = new Pool({ connectionString: databaseUrl });
+export const pool = new Pool({ connectionString });
 export const db = drizzle(pool, { schema });
 
 export * from "./schema";
