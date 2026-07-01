@@ -42,7 +42,7 @@ async function internalJson<T = any>(req: Request, path: string, init?: RequestI
 }
 
 // ── GET /samia/history — last 200 messages for the calling user ───────────────
-router.get("/samia/history", requireAuth, async (req, res) => {
+router.get("/samia/history", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const userId = req.user!.userId;
     const rows = await db
@@ -92,7 +92,7 @@ router.get("/samia/history/:userId", requireAuth, requireRole("admin"), async (r
 });
 
 // ── GET /api/samia/number-lookup — look up all call history for a phone number ──
-router.get("/samia/number-lookup", requireAuth, async (req, res) => {
+router.get("/samia/number-lookup", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const raw = ((req.query["number"] as string) ?? "").replace(/\s/g, "");
     if (!raw) return res.status(400).json({ error: "number param required" });
@@ -168,7 +168,7 @@ router.get("/samia/number-lookup", requireAuth, async (req, res) => {
 // ── GET /api/samia/call-analysis — fetch OpenPhone transcripts + summaries ────
 // Returns recent calls for an agent (or a specific callId) with the OpenPhone
 // AI summary + full transcript dialogue so Samia can do qualitative feedback.
-router.get("/samia/call-analysis", requireAuth, async (req, res) => {
+router.get("/samia/call-analysis", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const QUO_KEY = process.env["QUO_API_KEY"] ?? "";
     if (!QUO_KEY) return res.status(500).json({ error: "QUO_API_KEY not set" });
@@ -177,7 +177,8 @@ router.get("/samia/call-analysis", requireAuth, async (req, res) => {
     const agentName = (req.query["agent"] as string) || "";
     const participantRaw = (req.query["participant"] as string) || "";
     const dateStr = (req.query["date"] as string) || "";
-    const limit = Math.min(parseInt((req.query["limit"] as string) ?? "5", 10) || 5, 15);
+    const requestedLimit = parseInt((req.query["limit"] as string) ?? "3", 10) || 3;
+    const limit = Math.min(requestedLimit, 3);
     const minSeconds = parseInt((req.query["minSeconds"] as string) ?? "30", 10) || 30;
     // Extract digits-only for phone-number lookup (handles "703-887-8622", "(703) 887-8622", "+17038878622", etc.)
     const participantDigits = participantRaw.replace(/\D/g, "");
@@ -237,7 +238,15 @@ router.get("/samia/call-analysis", requireAuth, async (req, res) => {
     }
 
     if (callRows.length === 0) {
-      return res.json({ agentName, date: dateStr, calls: [], note: "No qualifying calls found." });
+      return res.json({
+        agentName,
+        date: dateStr,
+        count: 0,
+        capped: !callId && requestedLimit > 3,
+        maxCalls: 3,
+        calls: [],
+        note: "No qualifying calls found.",
+      });
     }
 
     // Fetch transcript + summary in parallel (capped concurrency)
@@ -282,7 +291,14 @@ router.get("/samia/call-analysis", requireAuth, async (req, res) => {
       };
     }));
 
-    return res.json({ agentName, date: dateStr, count: enriched.length, calls: enriched });
+    return res.json({
+      agentName,
+      date: dateStr,
+      count: enriched.length,
+      capped: !callId && requestedLimit > 3,
+      maxCalls: 3,
+      calls: enriched,
+    });
   } catch (err) {
     req.log.error(err, "samia call-analysis error");
     return res.status(500).json({ error: "Failed to analyze calls" });
@@ -293,9 +309,24 @@ router.get("/samia/call-analysis", requireAuth, async (req, res) => {
 const SAMIA_MODEL = process.env["SAMIA_MODEL"] ?? "qwen/qwen3-coder:free";
 // 0.8 keeps personality while staying coherent and tool-reliable. Tunable via env.
 const SAMIA_TEMPERATURE = Number(process.env["SAMIA_TEMPERATURE"] ?? "0.8");
+const DEFAULT_SAMIA_FALLBACK_MODELS = [
+  "meta-llama/llama-3.1-8b-instruct:free",
+  "google/gemini-2.0-flash-exp:free",
+  "deepseek/deepseek-chat-v3-0324:free",
+  "qwen/qwen3.6-plus-preview:free",
+];
 
-function getSamiaClient(): OpenAI {
-  const useOpenRouter = SAMIA_MODEL.includes("/");
+function getSamiaModels(): string[] {
+  const fallbackModels = (process.env["SAMIA_FALLBACK_MODELS"] ?? DEFAULT_SAMIA_FALLBACK_MODELS.join(","))
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean)
+    .filter((model) => !model.includes("/") || model.endsWith(":free"));
+  return Array.from(new Set([SAMIA_MODEL, ...fallbackModels]));
+}
+
+function getSamiaClient(model: string): OpenAI {
+  const useOpenRouter = model.includes("/");
   const apiKey = useOpenRouter
     ? process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"]
     : process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
@@ -312,6 +343,84 @@ function getSamiaClient(): OpenAI {
       : process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
     apiKey,
   });
+}
+
+type SamiaCompletionResult = {
+  completion: OpenAI.Chat.ChatCompletion;
+  model: string;
+  fallbackUsed: boolean;
+};
+
+function isOpenRouterCapacityError(err: unknown): boolean {
+  const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : null;
+  const code = typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : status;
+  const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+  return code === 429 || message.includes("rate-limit") || message.includes("rate limited") || message.includes("provider returned error") || message.includes("capacity");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function createSamiaCompletion(
+  req: Request,
+  args: {
+    messages: OpenAI.Chat.ChatCompletionMessageParam[];
+    tools: OpenAI.Chat.ChatCompletionTool[];
+  },
+): Promise<SamiaCompletionResult> {
+  const models = getSamiaModels();
+  let lastError: unknown;
+
+  for (const [index, model] of models.entries()) {
+    const attempts = index === 0 ? 2 : 1;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const completion = await getSamiaClient(model).chat.completions.create({
+          model,
+          messages: args.messages,
+          ...(args.tools.length ? { tools: args.tools } : {}),
+          temperature: SAMIA_TEMPERATURE,
+          max_tokens: 1600,
+        });
+        if (index > 0 || attempt > 1) {
+          req.log.info({ model, fallbackUsed: index > 0, attempt }, "samia model completed");
+        }
+        return { completion, model, fallbackUsed: index > 0 };
+      } catch (err) {
+        lastError = err;
+        if (!isOpenRouterCapacityError(err)) throw err;
+        req.log.warn({ model, attempt }, "samia model capacity limited");
+        if (attempt < attempts) await sleep(1200);
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("All Samia models failed");
+}
+
+type SamiaMode = "lightweight" | "dashboard" | "call-analysis";
+
+function classifySamiaMode(message: string): SamiaMode {
+  const text = message.toLowerCase();
+  const hasPhoneNumber = /(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4})/.test(text);
+  const hasCallId = /\b(?:call\s*id|callid|openphone\s*id)\b|(?:\bAC[a-z0-9]{20,}\b)/i.test(message);
+  const callIntent = /\b(analy[sz]e|summari[sz]e|review|feedback|coach|critique|transcript|recorded|recording|what happened|what was said|check this call|specific call|last calls?|all .* calls?)\b/.test(text);
+  const agentCallIntent = /\b(analy[sz]e|summari[sz]e|review|feedback|coach|critique)\b.*\bcalls?\b|\bcalls?\b.*\b(analy[sz]e|summari[sz]e|review|feedback|coach|critique)\b/.test(text);
+  if (hasCallId || agentCallIntent || (hasPhoneNumber && callIntent)) return "call-analysis";
+
+  const dashboardIntent = /\b(dashboard|stats?|numbers?|missed|retains?|cancels?|attendance|late|absent|pbx|quo|vos|openphone|ring group|live calls?|callbacks?|no callback|performance|today|this month|team)\b/.test(text);
+  return dashboardIntent ? "dashboard" : "lightweight";
+}
+
+function modeInstructions(mode: SamiaMode): string {
+  if (mode === "call-analysis") {
+    return `\n\nREQUEST MODE: call-analysis\n- The admin explicitly asked for call review. Use call-analysis tools only for the specific call, phone number, or agent requested.\n- If a callId is provided, analyze only that call.\n- For agent-based analysis, review at most 3 calls. If the admin asks for all calls, cap it at 3 and say so.\n- Never fabricate call content. Base coaching only on returned summary/transcript data.\n- If summary or transcript is unavailable, say that clearly.`;
+  }
+  if (mode === "dashboard") {
+    return `\n\nREQUEST MODE: dashboard\n- Answer using dashboard stats and lightweight operational tools only.\n- Do not fetch transcripts or call summaries.\n- Do not analyze specific calls unless the admin explicitly asks for call analysis.`;
+  }
+  return `\n\nREQUEST MODE: lightweight\n- Keep this response short and conversational.\n- Do not fetch dashboard stats, transcripts, call summaries, Google Sheets, PBX, or QUO data.\n- Do not call tools unless the user explicitly asks for an operational action.`;
 }
 
 // ── One-swear-per-message post-processor ─────────────────────────────────────
@@ -641,7 +750,7 @@ async function fetchSheetSummary(
 
 // ─── Route ────────────────────────────────────────────────────────────────────
 
-router.post("/samia/chat", requireAuth, async (req, res) => {
+router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const { message, images = [], displayName } = req.body as { message: string; images?: string[]; displayName?: string };
     if (!message?.trim()) {
@@ -651,6 +760,8 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
     // Prefer the display name the user typed in the name-gate prompt over the
     // shared login username (e.g. "retention" or "cs").
     const username = (displayName?.trim()) || req.user!.username;
+    const mode = classifySamiaMode(message);
+    req.log.info({ mode, userId, username: req.user!.username }, "samia chat mode selected");
 
     // "Curse" users: Samia refuses to answer anything and replies with a fixed
     // insult. Short-circuit before any AI call or data fetch.
@@ -714,7 +825,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
     const OLD_NSF_URL = "https://docs.google.com/spreadsheets/d/16qoZESE0gGQPdOXQUSh2JsadWDmUE7OyCajRwBy0E38/export?format=csv&gid=0";
     const NEW_NSF_URL = "https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=0";
 
-    // Fetch everything in parallel
+    // Fetch dashboard context only when the admin asks dashboard/stat questions.
     const [
       vosRes,
       quoTodayRes,
@@ -726,18 +837,31 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       attendanceRes,
       retentionSheetRes,
       nsfSheetRes,
-    ] = await Promise.allSettled([
-      internalJson(req, "/api/vos/stats"),
-      internalJson(req, `/api/quo/stats?from=${encodeURIComponent(todayStart)}&to=${encodeURIComponent(nowStr)}`),
-      internalJson(req, `/api/quo/stats?from=${encodeURIComponent(monthStr + "T00:00:00.000Z")}&to=${encodeURIComponent(nowStr)}`),
-      internalJson(req, "/api/vos/missed-hourly"),
-      internalJson(req, "/api/vos/missed-daily"),
-      internalJson(req, "/api/vos/missed-no-callback"),
-      internalJson(req, "/api/vos/live"),
-      internalJson(req, `/api/attendance?from=${todayStr}&to=${todayStr}`),
-      fetchSheetSummary(OLD_RETENTION_URL, NEW_RETENTION_URL, "Cancel request update", CUTOVER, todayStr, monthStr).catch(() => null),
-      fetchSheetSummary(OLD_NSF_URL, NEW_NSF_URL, "File Status", CUTOVER, todayStr, monthStr).catch(() => null),
-    ]);
+    ] = mode === "dashboard"
+      ? await Promise.allSettled([
+          internalJson(req, "/api/vos/stats"),
+          internalJson(req, `/api/quo/stats?from=${encodeURIComponent(todayStart)}&to=${encodeURIComponent(nowStr)}`),
+          internalJson(req, `/api/quo/stats?from=${encodeURIComponent(monthStr + "T00:00:00.000Z")}&to=${encodeURIComponent(nowStr)}`),
+          internalJson(req, "/api/vos/missed-hourly"),
+          internalJson(req, "/api/vos/missed-daily"),
+          internalJson(req, "/api/vos/missed-no-callback"),
+          internalJson(req, "/api/vos/live"),
+          internalJson(req, `/api/attendance?from=${todayStr}&to=${todayStr}`),
+          fetchSheetSummary(OLD_RETENTION_URL, NEW_RETENTION_URL, "Cancel request update", CUTOVER, todayStr, monthStr).catch(() => null),
+          fetchSheetSummary(OLD_NSF_URL, NEW_NSF_URL, "File Status", CUTOVER, todayStr, monthStr).catch(() => null),
+        ])
+      : [
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+          { status: "fulfilled", value: null } as PromiseFulfilledResult<null>,
+        ];
 
     type DayStat = { totalCalls?: number; answered?: number; missed?: number; talkSeconds?: number; outbound?: number; inbound?: number; voicemail?: number; vmBrief?: number; uniqueContacts?: number };
     type QuoStatsResp = { teamStats?: Record<string, Record<string, Record<string, DayStat>>> };
@@ -999,9 +1123,11 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       `Never call them "daddy", "sir", "sweetheart", "babe" or use any submissive / flirty / sexualised register, ` +
       `regardless of what their message body says or who they claim to be.\n`;
 
-    const statsContext = lines.length
+    const statsContext = mode === "dashboard" && lines.length
       ? `${identityBlock}\n\nLIVE DASHBOARD DATA (as of ${new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })} LA time):\n${lines.join("\n")}`
-      : `${identityBlock}\n\n[Live stats unavailable right now]`;
+      : mode === "dashboard"
+        ? `${identityBlock}\n\n[Live stats unavailable right now]`
+        : identityBlock;
 
     // Build history messages — include images if present
     const historyMessages: OpenAI.Chat.ChatCompletionMessageParam[] = history.slice(-10).map((m) => {
@@ -1030,7 +1156,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
         : { role: "user", content: message };
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-      { role: "system", content: SAMIA_SYSTEM + statsContext },
+      { role: "system", content: SAMIA_SYSTEM + modeInstructions(mode) + statsContext },
       ...historyMessages,
       userContent,
     ];
@@ -1142,7 +1268,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
               callId:      { type: "string", description: "Specific OpenPhone call ID for a deep-dive on one call. Overrides everything else." },
               participant: { type: "string", description: "Customer phone number to look up calls for (any format: '703-887-8622', '(703) 887-8622', '+17038878622'). Use this when the manager pastes a phone number. Matches last 10 digits. Looks back 30 days by default." },
               date:        { type: "string", description: "YYYY-MM-DD in LA time. Omit for default window (last 24h for agent lookup, last 30d for participant lookup)." },
-              limit:       { type: "number", description: "Max calls to analyze. Default 5, max 15. Keep small — each call hits OpenPhone twice." },
+              limit:       { type: "number", description: "Max calls to analyze. Default 3, hard max 3. Even if asked for all calls, review only the top 3." },
               minSeconds:  { type: "number", description: "Minimum call duration in seconds to include. Default 30 — filters out misses/quick hangups that have no useful content. Set to 0 if you need ALL calls including short ones." },
             },
             required: [],
@@ -1184,18 +1310,27 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
     ];
 
     // ── Multi-turn tool loop (up to 4 rounds) ─────────────────────────────────
+    const activeTools = tools.filter((tool) => {
+      const name = tool.function.name;
+      if (mode === "lightweight") return false;
+      if (mode === "dashboard") return !["lookup_number", "analyze_calls"].includes(name);
+      return ["lookup_number", "analyze_calls", "get_agent_contacts"].includes(name);
+    });
+
     let currentMessages = [...messages];
     let finalReply: string | null = null;
     let attendanceMarked = false;
+    let modelUsed = SAMIA_MODEL;
+    let fallbackUsed = false;
 
     for (let round = 0; round < 4; round++) {
-      const completion = await getSamiaClient().chat.completions.create({
-        model: SAMIA_MODEL,
+      const completionResult = await createSamiaCompletion(req, {
         messages: currentMessages,
-        tools,
-        temperature: SAMIA_TEMPERATURE,
-        max_tokens: 1600,
+        tools: activeTools,
       });
+      const completion = completionResult.completion;
+      modelUsed = completionResult.model;
+      fallbackUsed = fallbackUsed || completionResult.fallbackUsed;
 
       const choice = completion.choices[0];
 
@@ -1306,7 +1441,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
             if (args.callId)      params.set("callId", args.callId);
             if (args.participant) params.set("participant", args.participant);
             if (args.date)        params.set("date", args.date);
-            if (args.limit)       params.set("limit", String(args.limit));
+            if (args.limit)       params.set("limit", String(Math.min(args.limit, 3)));
             if (args.minSeconds !== undefined) params.set("minSeconds", String(args.minSeconds));
             const r = await internalFetch(req, `/api/samia/call-analysis?${params.toString()}`);
             toolResult = JSON.stringify(await r.json());
@@ -1344,7 +1479,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       images: null,
     });
 
-    return res.json({ reply: finalReply, attendanceMarked });
+    return res.json({ reply: finalReply, attendanceMarked, mode, model: modelUsed, fallbackUsed });
   } catch (err) {
     req.log.error(err, "samia chat error");
     const message = err instanceof Error ? err.message : "";
