@@ -1354,6 +1354,14 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
     ) {
       return res.status(500).json({ error: "Samia is missing server-side AI configuration." });
     }
+    const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : null;
+    const code = typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : status;
+    if (code === 429) {
+      return res.status(429).json({ error: "Samia's OpenRouter model is temporarily rate-limited. Please retry shortly." });
+    }
+    if (code === 402) {
+      return res.status(402).json({ error: "Samia's OpenRouter account needs available credits or a free model with capacity." });
+    }
     return res.status(502).json({
       error: SAMIA_MODEL.includes("/")
         ? "Samia AI request failed. The configured OpenRouter model may be unavailable or rate-limited."
