@@ -355,7 +355,16 @@ function isOpenRouterCapacityError(err: unknown): boolean {
   const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : null;
   const code = typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : status;
   const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-  return code === 429 || message.includes("rate-limit") || message.includes("rate limited") || message.includes("provider returned error") || message.includes("capacity") || message.includes("timeout");
+  return (
+    code === 402 ||
+    code === 429 ||
+    (code === 404 && message.includes("unavailable")) ||
+    message.includes("rate-limit") ||
+    message.includes("rate limited") ||
+    message.includes("provider returned error") ||
+    message.includes("capacity") ||
+    message.includes("timeout")
+  );
 }
 
 function sleep(ms: number): Promise<void> {
@@ -384,6 +393,7 @@ async function createSamiaCompletion(
           max_tokens: 1600,
         }, {
           timeout: 18000,
+          signal: AbortSignal.timeout(18000),
         });
         if (index > 0 || attempt > 1) {
           req.log.info({ model, fallbackUsed: index > 0, attempt }, "samia model completed");
