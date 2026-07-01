@@ -1,10 +1,45 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import OpenAI from "openai";
 import { db, samiaMessagesTable, phoneCallsTable, pbxMissedCallsTable, portalUsersTable } from "@workspace/db";
 import { and, gte, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
+
+function getInternalBaseUrl(req: Request): string {
+  const configured = process.env["INTERNAL_API_BASE_URL"]?.trim();
+  if (configured) return configured.replace(/\/+$/, "");
+
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  const forwardedHost = req.headers["x-forwarded-host"];
+  const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+  const host = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost;
+  const requestHost = host || req.get("host");
+  if (requestHost) return `${proto || req.protocol || "http"}://${requestHost}`;
+
+  const port = process.env["PORT"] || "5000";
+  return `http://127.0.0.1:${port}`;
+}
+
+function getInternalHeaders(req: Request, initHeaders?: RequestInit["headers"]): Headers {
+  const headers = new Headers(initHeaders);
+  const auth = req.get("authorization");
+  if (auth && !headers.has("authorization")) headers.set("authorization", auth);
+  return headers;
+}
+
+function internalFetch(req: Request, path: string, init: RequestInit = {}): Promise<Response> {
+  const url = new URL(path, `${getInternalBaseUrl(req)}/`);
+  return fetch(url, {
+    ...init,
+    headers: getInternalHeaders(req, init.headers),
+  });
+}
+
+async function internalJson<T = any>(req: Request, path: string, init?: RequestInit): Promise<T | null> {
+  const response = await internalFetch(req, path, init);
+  return response.ok ? (await response.json()) as T : null;
+}
 
 // ── GET /samia/history — last 200 messages for the calling user ───────────────
 router.get("/samia/history", requireAuth, async (req, res) => {
@@ -41,7 +76,7 @@ router.get("/samia/users", requireAuth, requireRole("admin"), async (req, res) =
 // ── GET /samia/history/:userId — admin: view a specific user's chat ───────────
 router.get("/samia/history/:userId", requireAuth, requireRole("admin"), async (req, res) => {
   try {
-    const targetId = parseInt(req.params["userId"] ?? "", 10);
+    const targetId = parseInt(String(req.params["userId"] ?? ""), 10);
     if (isNaN(targetId)) return res.status(400).json({ error: "Invalid userId" });
     const rows = await db
       .select()
@@ -57,7 +92,7 @@ router.get("/samia/history/:userId", requireAuth, requireRole("admin"), async (r
 });
 
 // ── GET /api/samia/number-lookup — look up all call history for a phone number ──
-router.get("/samia/number-lookup", async (req, res) => {
+router.get("/samia/number-lookup", requireAuth, async (req, res) => {
   try {
     const raw = ((req.query["number"] as string) ?? "").replace(/\s/g, "");
     if (!raw) return res.status(400).json({ error: "number param required" });
@@ -126,14 +161,14 @@ router.get("/samia/number-lookup", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "samia number-lookup error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Failed to look up number" });
   }
 });
 
 // ── GET /api/samia/call-analysis — fetch OpenPhone transcripts + summaries ────
 // Returns recent calls for an agent (or a specific callId) with the OpenPhone
 // AI summary + full transcript dialogue so Samia can do qualitative feedback.
-router.get("/samia/call-analysis", async (req, res) => {
+router.get("/samia/call-analysis", requireAuth, async (req, res) => {
   try {
     const QUO_KEY = process.env["QUO_API_KEY"] ?? "";
     if (!QUO_KEY) return res.status(500).json({ error: "QUO_API_KEY not set" });
@@ -250,16 +285,12 @@ router.get("/samia/call-analysis", async (req, res) => {
     return res.json({ agentName, date: dateStr, count: enriched.length, calls: enriched });
   } catch (err) {
     req.log.error(err, "samia call-analysis error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Failed to analyze calls" });
   }
 });
 
-// OpenRouter client — kept available for cheaper experiments (e.g. DeepSeek),
-// but Samia runs on the OpenAI client below by default. DeepSeek was unreliable
-// at tool-calling: in the full multi-tool context it fabricated call/transcript
-// data instead of actually invoking analyze_calls, which is dangerous for a
-// coaching tool. Override the model with SAMIA_MODEL if needed.
-const SAMIA_MODEL = process.env["SAMIA_MODEL"] ?? "gpt-4.1";
+// Samia defaults to OpenRouter on Vercel. Models with "/" are OpenRouter IDs.
+const SAMIA_MODEL = process.env["SAMIA_MODEL"] ?? "qwen/qwen3-coder:free";
 // 0.8 keeps personality while staying coherent and tool-reliable. Tunable via env.
 const SAMIA_TEMPERATURE = Number(process.env["SAMIA_TEMPERATURE"] ?? "0.8");
 
@@ -277,7 +308,7 @@ function getSamiaClient(): OpenAI {
   }
   return new OpenAI({
     baseURL: useOpenRouter
-      ? process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"]
+      ? process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"] ?? "https://openrouter.ai/api/v1"
       : process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
     apiKey,
   });
@@ -672,8 +703,6 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       images: images.length > 0 ? images : null,
     });
 
-    const port = process.env["PORT"];
-    const base = `http://localhost:${port}`;
     const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
     const monthStr = todayStr.slice(0, 7);
     const todayStart = `${todayStr}T00:00:00.000Z`;
@@ -698,14 +727,14 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
       retentionSheetRes,
       nsfSheetRes,
     ] = await Promise.allSettled([
-      fetch(`${base}/api/vos/stats`).then((r) => r.ok ? r.json() : null),
-      fetch(`${base}/api/quo/stats?from=${encodeURIComponent(todayStart)}&to=${encodeURIComponent(nowStr)}`).then((r) => r.ok ? r.json() : null),
-      fetch(`${base}/api/quo/stats?from=${encodeURIComponent(monthStr + "T00:00:00.000Z")}&to=${encodeURIComponent(nowStr)}`).then((r) => r.ok ? r.json() : null),
-      fetch(`${base}/api/vos/missed-hourly`).then((r) => r.ok ? r.json() : null),
-      fetch(`${base}/api/vos/missed-daily`).then((r) => r.ok ? r.json() : null),
-      fetch(`${base}/api/vos/missed-no-callback`).then((r) => r.ok ? r.json() : null),
-      fetch(`${base}/api/vos/live`).then((r) => r.ok ? r.json() : null),
-      fetch(`${base}/api/attendance?from=${todayStr}&to=${todayStr}`).then((r) => r.ok ? r.json() : null),
+      internalJson(req, "/api/vos/stats"),
+      internalJson(req, `/api/quo/stats?from=${encodeURIComponent(todayStart)}&to=${encodeURIComponent(nowStr)}`),
+      internalJson(req, `/api/quo/stats?from=${encodeURIComponent(monthStr + "T00:00:00.000Z")}&to=${encodeURIComponent(nowStr)}`),
+      internalJson(req, "/api/vos/missed-hourly"),
+      internalJson(req, "/api/vos/missed-daily"),
+      internalJson(req, "/api/vos/missed-no-callback"),
+      internalJson(req, "/api/vos/live"),
+      internalJson(req, `/api/attendance?from=${todayStr}&to=${todayStr}`),
       fetchSheetSummary(OLD_RETENTION_URL, NEW_RETENTION_URL, "Cancel request update", CUTOVER, todayStr, monthStr).catch(() => null),
       fetchSheetSummary(OLD_NSF_URL, NEW_NSF_URL, "File Status", CUTOVER, todayStr, monthStr).catch(() => null),
     ]);
@@ -1189,7 +1218,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
           if (fnName === "auto_mark_attendance") {
             const args = JSON.parse(toolCall.function.arguments || "{}") as { date?: string };
             const body = args.date ? JSON.stringify({ date: args.date }) : "{}";
-            const markRes = await fetch(`${base}/api/attendance/auto-mark`, {
+            const markRes = await internalFetch(req, "/api/attendance/auto-mark", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body,
@@ -1219,8 +1248,10 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
 
           } else if (fnName === "get_call_logs") {
             const args = JSON.parse(toolCall.function.arguments || "{}") as { date?: string };
-            const url = args.date ? `${base}/api/attendance/call-logs?date=${args.date}` : `${base}/api/attendance/call-logs`;
-            const logsRes = await fetch(url);
+            const params = new URLSearchParams();
+            if (args.date) params.set("date", args.date);
+            const url = params.size ? `/api/attendance/call-logs?${params.toString()}` : "/api/attendance/call-logs";
+            const logsRes = await internalFetch(req, url);
             toolResult = JSON.stringify(await logsRes.json());
 
           } else if (fnName === "get_agent_contacts") {
@@ -1230,7 +1261,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
             // Sync covers last 3 hours (catches the most recent calls).
             const syncTo   = new Date();
             const syncFrom = new Date(syncTo.getTime() - 3 * 3600 * 1000);
-            fetch(`${base}/api/quo/sync`, {
+            internalFetch(req, "/api/quo/sync", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ from: syncFrom.toISOString(), to: syncTo.toISOString() }),
@@ -1241,14 +1272,14 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
 
             const params = new URLSearchParams({ agent: args.agentName });
             if (args.date) params.set("date", args.date);
-            const contactsRes = await fetch(`${base}/api/attendance/agent-contacts?${params.toString()}`);
+            const contactsRes = await internalFetch(req, `/api/attendance/agent-contacts?${params.toString()}`);
             toolResult = JSON.stringify(await contactsRes.json());
 
           } else if (fnName === "lookup_number") {
             const args = JSON.parse(toolCall.function.arguments || "{}") as { number: string; sinceDays?: number };
             const params = new URLSearchParams({ number: args.number });
             if (args.sinceDays) params.set("sinceDays", String(args.sinceDays));
-            const r = await fetch(`${base}/api/samia/number-lookup?${params.toString()}`);
+            const r = await internalFetch(req, `/api/samia/number-lookup?${params.toString()}`);
             const data = await r.json() as { number: string; openPhone: unknown[]; pbx: unknown[] };
             const total = data.openPhone.length + data.pbx.length;
             if (total === 0) {
@@ -1259,7 +1290,7 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
 
           } else if (fnName === "add_nsf_readymode_missed_calls") {
             const args = JSON.parse(toolCall.function.arguments || "{}") as { numbers: string[] };
-            const r = await fetch(`${base}/api/nsf/readymode-queue`, {
+            const r = await internalFetch(req, "/api/nsf/readymode-queue", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ numbers: args.numbers ?? [], addedBy: `samia:${username}` }),
@@ -1277,12 +1308,12 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
             if (args.date)        params.set("date", args.date);
             if (args.limit)       params.set("limit", String(args.limit));
             if (args.minSeconds !== undefined) params.set("minSeconds", String(args.minSeconds));
-            const r = await fetch(`${base}/api/samia/call-analysis?${params.toString()}`);
+            const r = await internalFetch(req, `/api/samia/call-analysis?${params.toString()}`);
             toolResult = JSON.stringify(await r.json());
 
           } else if (fnName === "set_attendance") {
             const args = JSON.parse(toolCall.function.arguments || "{}");
-            const setRes = await fetch(`${base}/api/attendance/set`, {
+            const setRes = await internalFetch(req, "/api/attendance/set", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(args),
@@ -1316,7 +1347,18 @@ router.post("/samia/chat", requireAuth, async (req, res) => {
     return res.json({ reply: finalReply, attendanceMarked });
   } catch (err) {
     req.log.error(err, "samia chat error");
-    return res.status(500).json({ error: "AI request failed" });
+    const message = err instanceof Error ? err.message : "";
+    if (
+      message.includes("AI_INTEGRATIONS_OPENROUTER_API_KEY") ||
+      message.includes("AI_INTEGRATIONS_OPENAI_API_KEY")
+    ) {
+      return res.status(500).json({ error: "Samia is missing server-side AI configuration." });
+    }
+    return res.status(502).json({
+      error: SAMIA_MODEL.includes("/")
+        ? "Samia AI request failed. The configured OpenRouter model may be unavailable or rate-limited."
+        : "Samia AI request failed.",
+    });
   }
 });
 

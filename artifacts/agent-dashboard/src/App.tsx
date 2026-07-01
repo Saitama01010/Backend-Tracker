@@ -11268,7 +11268,7 @@ function SamiaChat() {
         body: JSON.stringify({ message: text || "What do you see in this image?", images, displayName: chatName || undefined }),
       });
       const data = (await res.json()) as { reply?: string; error?: string };
-      setMessages((prev) => [...prev, { role: "assistant", content: data.reply ?? "Sorry, something went wrong." }]);
+      setMessages((prev) => [...prev, { role: "assistant", content: data.reply ?? data.error ?? "Sorry, something went wrong." }]);
     } catch {
       setMessages((prev) => [...prev, { role: "assistant", content: "Network error — try again." }]);
     } finally {
