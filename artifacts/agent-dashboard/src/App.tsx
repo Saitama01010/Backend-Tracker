@@ -3516,14 +3516,17 @@ function buildTeamPhoneData(teamMode: string, data: PhoneStatsResponse | null | 
   const allowlist = unionTeamSet(TEAM_ALLOWLIST[teamMode], rosterTeamAllow, rosterHasAny);
   const phoneAliases = roster?.phoneAliases ?? {};
   const map = new Map<string, PhoneAgentMetrics>();
-  const agentStats = data?.teamStats?.[teamMode] ?? {};
-  const lastCallMap = data?.agentLastCall?.[teamMode] ?? {};
+  const agentStats = data?.allAgentStats ?? data?.teamStats?.[teamMode] ?? {};
+  const lastCallMap = data?.allAgentLastCall ?? data?.agentLastCall?.[teamMode] ?? {};
   for (const [agentName, days] of Object.entries(agentStats)) {
     const rawKey = normalizeAgent(agentName);
     if (PHONE_BLOCKLIST.has(rawKey)) continue;
     // Roster is authoritative when populated; legacy PHONE_ALIASES is fallback only.
     const key = phoneAliases[rawKey] ?? PHONE_ALIASES[rawKey] ?? rawKey;
-    if (allowlist && !allowlist.has(key)) continue;
+    if (rosterHasAny) {
+      const hit = roster?.lookupByAnyName(key) ?? roster?.lookupByAnyName(agentName);
+      if (!hit || hit.team !== teamMode) continue;
+    } else if (allowlist && !allowlist.has(key)) continue;
     const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
     for (const day of Object.values(days)) {
       acc.calls += day.totalCalls ?? 0;
@@ -3544,6 +3547,31 @@ function buildTeamPhoneData(teamMode: string, data: PhoneStatsResponse | null | 
       } else {
         map.set(key, acc);
       }
+    }
+  }
+  return map;
+}
+
+function phoneKeyBelongsToTeam(key: string, team: RosterTeam, roster: RosterIndex): boolean {
+  if (rosterHasAnyForTeam(roster, team)) {
+    return roster.lookupByAnyName(key)?.team === team;
+  }
+  return (TEAM_ALLOWLIST[team]?.has(key) ?? false) || (roster.allowlist[team]?.has(key) ?? false);
+}
+
+function mergeReadyModeForTeam(
+  map: Map<string, PhoneAgentMetrics>,
+  readymodeByKey: Map<string, { calls: number; seconds: number }>,
+  roster: RosterIndex,
+  team: RosterTeam,
+): Map<string, PhoneAgentMetrics> {
+  for (const [rmKey, rm] of readymodeByKey.entries()) {
+    if (!phoneKeyBelongsToTeam(rmKey, team, roster)) continue;
+    const e = map.get(rmKey);
+    if (e) {
+      map.set(rmKey, { ...e, calls: e.calls + rm.calls, seconds: e.seconds + rm.seconds, outbound: e.outbound + rm.calls });
+    } else {
+      map.set(rmKey, { calls: rm.calls, seconds: rm.seconds, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: rm.calls, uniqueContacts: 0 });
     }
   }
   return map;
@@ -4146,7 +4174,9 @@ interface PhoneAgentDay {
 
 interface PhoneStatsResponse {
   teamStats: Record<string, Record<string, Record<string, PhoneAgentDay>>>;
+  allAgentStats?: Record<string, Record<string, PhoneAgentDay>>;
   agentLastCall?: Record<string, Record<string, string>>;
+  allAgentLastCall?: Record<string, string>;
 }
 
 async function fetchPhoneStats(pFrom: string, pTo: string): Promise<PhoneStatsResponse | null> {
@@ -4262,52 +4292,8 @@ function TeamPanel({
   const readymodeByKey = useReadymodeByKey(from, to, roster);
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
-    const allowlist = unionTeamSet(TEAM_ALLOWLIST[mode], roster.allowlist[mode as RosterTeam] ?? new Set(), rosterHasAnyForTeam(roster, mode as RosterTeam));
-    const map = new Map<string, PhoneAgentMetrics>();
-    const agentStats = phoneQ.data?.teamStats?.[mode] ?? {};
-    const lastCallMap = phoneQ.data?.agentLastCall?.[mode] ?? {};
-    for (const [agentName, days] of Object.entries(agentStats)) {
-      const rawKey = normalizeAgent(agentName);
-      if (PHONE_BLOCKLIST.has(rawKey)) continue;
-      // Roster is authoritative when populated; legacy PHONE_ALIASES is fallback only.
-      const aliased = roster.phoneAliases[rawKey] ?? PHONE_ALIASES[rawKey] ?? rawKey;
-      const key = aliased;
-      if (allowlist && !allowlist.has(key)) continue; // strict team allowlist
-      const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
-      for (const day of Object.values(days)) {
-        acc.calls += day.totalCalls ?? 0;
-        acc.seconds += day.talkSeconds ?? 0;
-        acc.answered += day.answered ?? 0;
-        acc.missed += day.missed ?? 0;
-        acc.voicemail += day.voicemail ?? 0;
-        acc.vmBrief += day.vmBrief ?? 0;
-        acc.inbound += day.inbound ?? 0;
-        acc.outbound += day.outbound ?? 0;
-        acc.uniqueContacts += day.uniqueContacts ?? 0;
-      }
-      if (acc.calls > 0 || acc.seconds > 0) {
-        const e = map.get(key);
-        if (e) {
-          const mergedLast = e.lastCallAt && acc.lastCallAt ? (e.lastCallAt > acc.lastCallAt ? e.lastCallAt : acc.lastCallAt) : (e.lastCallAt ?? acc.lastCallAt);
-          map.set(key, { calls: e.calls + acc.calls, seconds: e.seconds + acc.seconds, answered: e.answered + acc.answered, missed: e.missed + acc.missed, voicemail: e.voicemail + acc.voicemail, vmBrief: e.vmBrief + acc.vmBrief, inbound: e.inbound + acc.inbound, outbound: e.outbound + acc.outbound, uniqueContacts: e.uniqueContacts + acc.uniqueContacts, lastCallAt: mergedLast });
-        } else {
-          map.set(key, acc);
-        }
-      }
-    }
-    // Fold ReadyMode dialer calls (per agent) into the same map so the Calls
-    // column on NSF = OpenPhone + ReadyMode. ReadyMode rows become outbound
-    // for tallying purposes; ReadyMode doesn't expose answered/missed split.
-    for (const [rmKey, rm] of readymodeByKey.entries()) {
-      if (allowlist && !allowlist.has(rmKey)) continue;
-      const e = map.get(rmKey);
-      if (e) {
-        map.set(rmKey, { ...e, calls: e.calls + rm.calls, seconds: e.seconds + rm.seconds, outbound: e.outbound + rm.calls });
-      } else {
-        map.set(rmKey, { calls: rm.calls, seconds: rm.seconds, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: rm.calls, uniqueContacts: 0 });
-      }
-    }
-    return map;
+    const map = buildTeamPhoneData(mode, phoneQ.data, roster);
+    return mergeReadyModeForTeam(map, readymodeByKey, roster, mode as RosterTeam);
   }, [phoneQ.data, mode, readymodeByKey, roster]);
 
   const aggregated = useMemo(() => {
@@ -4572,48 +4558,8 @@ function CSPanel() {
   }, [statusQ.data, from, to, roster]);
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
-    const allowlist = unionTeamSet(TEAM_ALLOWLIST["cs"], roster.allowlist.cs, rosterHasAnyForTeam(roster, "cs"));
-    const map = new Map<string, PhoneAgentMetrics>();
-    const agentStats = phoneQ.data?.teamStats?.["cs"] ?? {};
-    const lastCallMap = phoneQ.data?.agentLastCall?.["cs"] ?? {};
-    for (const [agentName, days] of Object.entries(agentStats)) {
-      const rawKey = normalizeAgent(agentName);
-      if (PHONE_BLOCKLIST.has(rawKey)) continue;
-      // Roster is authoritative when populated; legacy PHONE_ALIASES is fallback only.
-      const key = roster.phoneAliases[rawKey] ?? PHONE_ALIASES[rawKey] ?? rawKey;
-      if (allowlist && !allowlist.has(key)) continue;
-      const acc: PhoneAgentMetrics = { calls: 0, seconds: 0, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: 0, uniqueContacts: 0, lastCallAt: lastCallMap[agentName] };
-      for (const day of Object.values(days)) {
-        acc.calls += day.totalCalls ?? 0;
-        acc.seconds += day.talkSeconds ?? 0;
-        acc.answered += day.answered ?? 0;
-        acc.missed += day.missed ?? 0;
-        acc.voicemail += day.voicemail ?? 0;
-        acc.vmBrief += day.vmBrief ?? 0;
-        acc.inbound += day.inbound ?? 0;
-        acc.outbound += day.outbound ?? 0;
-        acc.uniqueContacts += day.uniqueContacts ?? 0;
-      }
-      if (acc.calls > 0 || acc.seconds > 0) {
-        const e = map.get(key);
-        if (e) {
-          const mergedLast = e.lastCallAt && acc.lastCallAt ? (e.lastCallAt > acc.lastCallAt ? e.lastCallAt : acc.lastCallAt) : (e.lastCallAt ?? acc.lastCallAt);
-          map.set(key, { calls: e.calls + acc.calls, seconds: e.seconds + acc.seconds, answered: e.answered + acc.answered, missed: e.missed + acc.missed, voicemail: e.voicemail + acc.voicemail, vmBrief: e.vmBrief + acc.vmBrief, inbound: e.inbound + acc.inbound, outbound: e.outbound + acc.outbound, uniqueContacts: e.uniqueContacts + acc.uniqueContacts, lastCallAt: mergedLast });
-        } else {
-          map.set(key, acc);
-        }
-      }
-    }
-    for (const [rmKey, rm] of readymodeByKey.entries()) {
-      if (allowlist && !allowlist.has(rmKey)) continue;
-      const e = map.get(rmKey);
-      if (e) {
-        map.set(rmKey, { ...e, calls: e.calls + rm.calls, seconds: e.seconds + rm.seconds, outbound: e.outbound + rm.calls });
-      } else {
-        map.set(rmKey, { calls: rm.calls, seconds: rm.seconds, answered: 0, missed: 0, voicemail: 0, vmBrief: 0, inbound: 0, outbound: rm.calls, uniqueContacts: 0 });
-      }
-    }
-    return map;
+    const map = buildTeamPhoneData("cs", phoneQ.data, roster);
+    return mergeReadyModeForTeam(map, readymodeByKey, roster, "cs");
   }, [phoneQ.data, readymodeByKey, roster]);
 
   const { user: csUser } = useUser();
@@ -4631,6 +4577,12 @@ function CSPanel() {
     // CS_AGENTS and PBX "Customer Support" ring-group auto-adds are bypassed.
     const rosterDrives = rosterDrivesTeam(roster, "cs");
     const inRoster = (rawKey: string) => !rosterDrives || (roster.allowlist.cs?.has(rawKey) ?? false);
+    if (rosterDrives) {
+      for (const a of roster.agentsForTeam("cs")) {
+        const k = normalizeAgent(a.name);
+        if (!addedKeys.has(k)) { result.push(a.name); addedKeys.add(k); }
+      }
+    }
     if (!rosterDrives) {
       for (const a of CS_AGENTS) {
         const k = normalizeAgent(a);

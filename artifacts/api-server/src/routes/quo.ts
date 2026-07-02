@@ -177,6 +177,22 @@ function agentTeam(agentName: string): "retention" | "nsf" | "cs" | null {
   return AGENT_TEAM[key] ?? null;
 }
 
+function inferAgentFromLine(lineName: string): string | null {
+  const line = lineName.toLowerCase().replace(/\s+/g, " ").trim();
+  for (const name of Object.keys(AGENT_TEAM)) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`\\b${escaped}\\b`).test(line)) return name.replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+  const mappedTeamLine = Object.keys(LINE_TEAM_MAP).find((known) => line.includes(known));
+  if (mappedTeamLine) {
+    const parts = mappedTeamLine.split("-").map((s) => s.trim()).filter(Boolean);
+    for (const part of parts) {
+      if (AGENT_TEAM[part]) return part.replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+  }
+  return null;
+}
+
 router.get("/quo/lines", async (req, res) => {
   try {
     const result = await quoFetch<{ data: QuoPhoneNumber[] }>("/phone-numbers");
@@ -333,6 +349,7 @@ router.get("/quo/stats", async (req, res) => {
         direction: phoneCallsTable.direction,
         status: phoneCallsTable.status,
         durationSeconds: phoneCallsTable.durationSeconds,
+        postAnswerSeconds: phoneCallsTable.postAnswerSeconds,
         createdAt: phoneCallsTable.createdAt,
       })
       .from(phoneCallsTable)
@@ -360,6 +377,24 @@ router.get("/quo/stats", async (req, res) => {
     > = { retention: {}, nsf: {}, cs: {}, other: {} };
 
     const agentLastCall: Record<string, Record<string, Date>> = {};
+    const allAgentStats: Record<
+      string,
+      Record<
+        string,
+        {
+          outbound: number;
+          inbound: number;
+          answered: number;
+          missed: number;
+          voicemail: number;
+          vmBrief: number;
+          totalCalls: number;
+          talkSeconds: number;
+          uniqueContacts: Set<string>;
+        }
+      >
+    > = {};
+    const allAgentLastCall: Record<string, Date> = {};
 
     const lineInbound: Record<
       string,
@@ -369,7 +404,7 @@ router.get("/quo/stats", async (req, res) => {
     const blocklist = await getBlockedNumbers();
     for (const row of rows) {
       if (row.participant && blocklist.has(row.participant)) continue;
-      const agentName = canonicalAgentName(row.agentName) ?? "Unknown";
+      const agentName = canonicalAgentName(row.agentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
       // Agent-based team takes priority over line-based. Calls that don't map to a
       // tracked team (e.g. Onboarding / unclassified lines) fall into "other" so
       // they are still counted and visible to Samia, instead of being silently
@@ -379,6 +414,7 @@ router.get("/quo/stats", async (req, res) => {
       let team = agentTeam(agentName) ?? row.lineTeam ?? "other";
       if (!(team in teamStats)) team = "other";
       const date = toCaDate(row.createdAt);
+      const effectiveStatus = effectiveCallStatus(row);
 
       if (!teamStats[team]) teamStats[team] = {};
       if (!teamStats[team][agentName]) teamStats[team][agentName] = {};
@@ -398,10 +434,29 @@ router.get("/quo/stats", async (req, res) => {
       if (!agentLastCall[team][agentName] || endTimeTeam > agentLastCall[team][agentName]) {
         agentLastCall[team][agentName] = endTimeTeam;
       }
+      if (!allAgentStats[agentName]) allAgentStats[agentName] = {};
+      if (!allAgentStats[agentName][date]) {
+        allAgentStats[agentName][date] = {
+          outbound: 0, inbound: 0, answered: 0, missed: 0,
+          voicemail: 0, vmBrief: 0, totalCalls: 0, talkSeconds: 0, uniqueContacts: new Set(),
+        };
+      }
+      const allSlot = allAgentStats[agentName][date];
+      allSlot.totalCalls++;
+      allSlot.talkSeconds += row.durationSeconds;
+      if (row.participant) allSlot.uniqueContacts.add(row.participant);
+      if (!allAgentLastCall[agentName] || endTimeTeam > allAgentLastCall[agentName]) {
+        allAgentLastCall[agentName] = endTimeTeam;
+      }
+      if (row.direction === "outgoing") allSlot.outbound++;
+      else allSlot.inbound++;
+      if (effectiveStatus === "completed") allSlot.answered++;
+      else if (effectiveStatus === "voicemail") allSlot.voicemail++;
+      else if (effectiveStatus === "voicemail-brief") allSlot.vmBrief++;
+      else allSlot.missed++;
+
       if (row.direction === "outgoing") slot.outbound++;
       else slot.inbound++;
-
-      const effectiveStatus = effectiveCallStatus(row);
 
       if (effectiveStatus === "completed") slot.answered++;
       else if (effectiveStatus === "voicemail") slot.voicemail++;
@@ -435,6 +490,17 @@ router.get("/quo/stats", async (req, res) => {
       return out;
     };
 
+    const serializeAllAgentStats = () => {
+      const out: Record<string, Record<string, unknown>> = {};
+      for (const [agent, days] of Object.entries(allAgentStats)) {
+        out[agent] = {};
+        for (const [date, slot] of Object.entries(days)) {
+          out[agent][date] = { ...slot, uniqueContacts: slot.uniqueContacts.size };
+        }
+      }
+      return out;
+    };
+
     const syncState = await getSyncState();
 
     const agentLastCallSerialized: Record<string, Record<string, string>> = {};
@@ -444,11 +510,17 @@ router.get("/quo/stats", async (req, res) => {
         agentLastCallSerialized[team][agent] = ts.toISOString();
       }
     }
+    const allAgentLastCallSerialized: Record<string, string> = {};
+    for (const [agent, ts] of Object.entries(allAgentLastCall)) {
+      allAgentLastCallSerialized[agent] = ts.toISOString();
+    }
 
     res.json({
       teamStats: serializeStats(),
+      allAgentStats: serializeAllAgentStats(),
       lineInbound,
       agentLastCall: agentLastCallSerialized,
+      allAgentLastCall: allAgentLastCallSerialized,
       totalRows: rows.length,
       lastSyncedAt: syncState?.lastSyncedAt ?? null,
       isSyncing: syncState?.isSyncing ?? false,
