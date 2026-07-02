@@ -84,6 +84,9 @@ interface AgentAgg {
   onboarded: number;
   connection: number;
   taxMentions: number;
+  firstRingAttempts: number;
+  firstRingAnswered: number;
+  firstRingDetails: FirstRingDetail[];
   gaps: number[];
   calls: { createdAt: Date; dur: number }[];
 }
@@ -105,14 +108,30 @@ function newAgent(name: string): AgentAgg {
     onboarded: 0,
     connection: 0,
     taxMentions: 0,
+    firstRingAttempts: 0,
+    firstRingAnswered: 0,
+    firstRingDetails: [],
     gaps: [],
     calls: [],
   };
 }
 
+interface FirstRingDetail {
+  customerNumber: string;
+  normalizedNumber: string;
+  firstInboundAt: string;
+  answered: boolean;
+  status: string;
+  agent: string;
+  line: string;
+  source: "OpenPhone/QUO";
+}
+
 interface CallRow {
+  id: string;
   agentName: string | null;
   participant: string;
+  lineName: string;
   direction: string;
   status: string;
   durationSeconds: number;
@@ -160,6 +179,10 @@ interface Analytics {
     missedRatio: number; // 0-100
     avgTalkSec: number;
     avgGapMin: number;
+    firstRingAttempts: number;
+    firstRingAnswered: number;
+    firstRingMissed: number;
+    firstRingResponseRate: number;
   };
   agents: {
     name: string;
@@ -177,6 +200,13 @@ interface Analytics {
     onboarded: number;
     connection: number;
     onboardedRate: number;
+    taxMentions: number;
+    firstRingAttempts: number;
+    firstRingAnswered: number;
+    firstRingMissed: number;
+    firstRingResponseRate: number;
+    firstRingDetails: FirstRingDetail[];
+    vsTeam: { responseRate: number; onboardedRate: number; avgGapMin: number };
     ranked: boolean;
     overflow: boolean;
   }[];
@@ -208,14 +238,21 @@ function round1(n: number): number {
 function rate(num: number, den: number): number {
   return den > 0 ? round1((num / den) * 100) : 0;
 }
+function normalizePhoneForGrouping(value: string): string {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  if (!digits) return "";
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
 
 async function computeAnalytics(from?: string, to?: string): Promise<Analytics> {
   const { fromDate, toDate } = parseRange(from, to);
 
   const rows = (await db
     .select({
+      id: phoneCallsTable.id,
       agentName: phoneCallsTable.agentName,
       participant: phoneCallsTable.participant,
+      lineName: phoneCallsTable.lineName,
       direction: phoneCallsTable.direction,
       status: phoneCallsTable.status,
       durationSeconds: phoneCallsTable.durationSeconds,
@@ -250,6 +287,7 @@ async function computeAnalytics(from?: string, to?: string): Promise<Analytics> 
 
   let dataFirst: Date | null = null;
   let dataLast: Date | null = null;
+  const teamFirstRing = new Map<string, FirstRingDetail>();
 
   for (const row of rows) {
     if (row.participant && blocklist.has(row.participant)) continue;
@@ -280,6 +318,27 @@ async function computeAnalytics(from?: string, to?: string): Promise<Analytics> 
       a.inboundReceived++;
       if (row.status === "completed") a.inboundAnswered++;
       else a.inboundMissed++;
+
+      const normalizedNumber = normalizePhoneForGrouping(row.participant);
+      if (normalizedNumber) {
+        const answeredFirstAttempt = row.status === "completed";
+        const detail: FirstRingDetail = {
+          customerNumber: row.participant,
+          normalizedNumber,
+          firstInboundAt: row.createdAt.toISOString(),
+          answered: answeredFirstAttempt,
+          status: row.status,
+          agent: name,
+          line: row.lineName || LINE_LABEL,
+          source: "OpenPhone/QUO",
+        };
+        if (!teamFirstRing.has(normalizedNumber)) teamFirstRing.set(normalizedNumber, detail);
+        if (!a.firstRingDetails.some((d) => d.normalizedNumber === normalizedNumber)) {
+          a.firstRingAttempts++;
+          if (answeredFirstAttempt) a.firstRingAnswered++;
+          a.firstRingDetails.push(detail);
+        }
+      }
     }
 
     if (row.callType === "onboarded") a.onboarded++;
@@ -349,6 +408,19 @@ async function computeAnalytics(from?: string, to?: string): Promise<Analytics> 
   }
   const teamAvgGapMin = allGaps.length ? round1(allGaps.reduce((s, g) => s + g, 0) / allGaps.length / 60) : 0;
   const teamResponseRate = rate(inboundAnswered, inboundReceived);
+  const firstRingAttempts = teamFirstRing.size;
+  const firstRingAnswered = [...teamFirstRing.values()].filter((d) => d.answered).length;
+  const firstRingMissed = firstRingAttempts - firstRingAnswered;
+  const firstRingResponseRate = rate(firstRingAnswered, firstRingAttempts);
+
+  // Team onboarded-rate (for spotlight comparisons)
+  let teamOnboarded = 0,
+    teamClosed = 0;
+  for (const a of agents.values()) {
+    teamOnboarded += a.onboarded;
+    teamClosed += a.onboarded + a.connection;
+  }
+  const teamOnboardedRate = rate(teamOnboarded, teamClosed);
 
   const agentList = [...agents.values()]
     .map((a) => {
@@ -370,6 +442,17 @@ async function computeAnalytics(from?: string, to?: string): Promise<Analytics> 
         onboarded: a.onboarded,
         connection: a.connection,
         onboardedRate: rate(a.onboarded, closed),
+        taxMentions: a.taxMentions,
+        firstRingAttempts: a.firstRingAttempts,
+        firstRingAnswered: a.firstRingAnswered,
+        firstRingMissed: a.firstRingAttempts - a.firstRingAnswered,
+        firstRingResponseRate: rate(a.firstRingAnswered, a.firstRingAttempts),
+        firstRingDetails: a.firstRingDetails,
+        vsTeam: {
+          responseRate: round1(rate(a.inboundAnswered, a.inboundReceived) - teamResponseRate),
+          onboardedRate: round1(rate(a.onboarded, closed) - teamOnboardedRate),
+          avgGapMin: round1(avgGapMin - teamAvgGapMin),
+        },
         ranked: !isOverflow(a) && a.inboundReceived >= MIN_RANK_INBOUND,
         overflow: isOverflow(a),
       };
@@ -386,15 +469,6 @@ async function computeAnalytics(from?: string, to?: string): Promise<Analytics> 
       if (y.onboardedRate !== x.onboardedRate) return y.onboardedRate - x.onboardedRate;
       return y.responseRate - x.responseRate;
     });
-
-  // Team onboarded-rate (for Cassie comparison)
-  let teamOnboarded = 0,
-    teamClosed = 0;
-  for (const a of agents.values()) {
-    teamOnboarded += a.onboarded;
-    teamClosed += a.onboarded + a.connection;
-  }
-  const teamOnboardedRate = rate(teamOnboarded, teamClosed);
 
   // Peaks
   const argmax = (sel: (h: Hourly) => number): number | null => {
@@ -524,6 +598,10 @@ async function computeAnalytics(from?: string, to?: string): Promise<Analytics> 
       missedRatio: rate(inboundMissed, inboundReceived),
       avgTalkSec: answered > 0 ? Math.round(talkSeconds / answered) : 0,
       avgGapMin: teamAvgGapMin,
+      firstRingAttempts,
+      firstRingAnswered,
+      firstRingMissed,
+      firstRingResponseRate,
     },
     agents: agentList,
     hourly: hourly.map((h) => ({
@@ -647,6 +725,10 @@ async function buildAnalyticsWorkbook(d: Analytics): Promise<ExcelJS.Workbook> {
   kv("Inbound answered", d.kpis.inboundAnswered);
   kv("Inbound missed", d.kpis.inboundMissed);
   kv("Response rate", `${d.kpis.responseRate}%`, true);
+  kv("1st ring response rate", `${d.kpis.firstRingResponseRate}%`, true);
+  kv("1st ring answered", d.kpis.firstRingAnswered);
+  kv("1st ring missed", d.kpis.firstRingMissed);
+  kv("1st ring attempts", d.kpis.firstRingAttempts);
   kv("Missed-call ratio", `${d.kpis.missedRatio}%`, true);
   kv("Outbound calls", d.kpis.outbound);
   kv("Total talk time", fmtClock(d.kpis.talkSeconds));
@@ -683,6 +765,10 @@ async function buildAnalyticsWorkbook(d: Analytics): Promise<ExcelJS.Workbook> {
     "Answered",
     "Missed",
     "Response Rate %",
+    "1st Ring Response %",
+    "1st Ring Answered",
+    "1st Ring Missed",
+    "1st Ring Attempts",
     "Missed Ratio %",
     "Avg Gap (min)",
     "Talk Time",
@@ -691,7 +777,7 @@ async function buildAnalyticsWorkbook(d: Analytics): Promise<ExcelJS.Workbook> {
     "Connection",
     "Onboarded %",
   ];
-  const widths = [6, 22, 12, 10, 10, 10, 9, 16, 14, 13, 12, 11, 11, 11, 13];
+  const widths = [6, 22, 12, 10, 10, 10, 9, 16, 18, 16, 14, 16, 14, 13, 12, 11, 11, 11, 13];
   cols.forEach((c, i) => {
     ws.getColumn(i + 1).width = widths[i]!;
     const cell = ws.getCell(1, i + 1);
@@ -713,22 +799,60 @@ async function buildAnalyticsWorkbook(d: Analytics): Promise<ExcelJS.Workbook> {
     row.getCell(6).value = a.answered;
     row.getCell(7).value = a.missed;
     row.getCell(8).value = a.responseRate;
-    row.getCell(9).value = a.missedRatio;
-    row.getCell(10).value = a.avgGapMin;
-    row.getCell(11).value = fmtClock(a.talkSeconds);
-    row.getCell(12).value = a.uniqueContacts;
-    row.getCell(13).value = a.onboarded;
-    row.getCell(14).value = a.connection;
-    row.getCell(15).value = a.onboardedRate;
+    row.getCell(9).value = a.firstRingResponseRate;
+    row.getCell(10).value = a.firstRingAnswered;
+    row.getCell(11).value = a.firstRingMissed;
+    row.getCell(12).value = a.firstRingAttempts;
+    row.getCell(13).value = a.missedRatio;
+    row.getCell(14).value = a.avgGapMin;
+    row.getCell(15).value = fmtClock(a.talkSeconds);
+    row.getCell(16).value = a.uniqueContacts;
+    row.getCell(17).value = a.onboarded;
+    row.getCell(18).value = a.connection;
+    row.getCell(19).value = a.onboardedRate;
     const rc = row.getCell(8);
     rc.fill = a.responseRate >= 85 ? solid("FFDCFCE7") : a.responseRate >= 70 ? solid("FFFEF9C3") : solid("FFFEE2E2");
+    const frc = row.getCell(9);
+    frc.fill = a.firstRingResponseRate >= 85 ? solid("FFDCFCE7") : a.firstRingResponseRate >= 70 ? solid("FFFEF9C3") : solid("FFFEE2E2");
     for (let c = 1; c <= cols.length; c++) row.getCell(c).border = thinBorder();
     if (!a.ranked) row.getCell(2).font = { italic: true, color: { argb: "FF9CA3AF" } };
     rr++;
   }
   ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: Math.max(1, rr - 1), column: cols.length } };
 
-  // ── Sheet 3: By Hour ──
+  // ── Sheet 3: 1st Ring Details ──
+  const frs = wb.addWorksheet("1st Ring Details", { views: [{ state: "frozen", ySplit: 1 }] });
+  const frCols = ["Agent", "Customer Number", "Normalized Number", "First Inbound At", "Answered", "Status", "Line", "Source"];
+  const frWidths = [24, 18, 18, 24, 11, 16, 22, 16];
+  frCols.forEach((c, i) => {
+    frs.getColumn(i + 1).width = frWidths[i]!;
+    const cell = frs.getCell(1, i + 1);
+    cell.value = c;
+    cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    cell.fill = headerFill;
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    cell.border = thinBorder();
+  });
+  let frn = 2;
+  for (const a of d.agents) {
+    for (const detail of a.firstRingDetails) {
+      const row = frs.getRow(frn);
+      row.getCell(1).value = detail.agent;
+      row.getCell(2).value = detail.customerNumber;
+      row.getCell(3).value = detail.normalizedNumber;
+      row.getCell(4).value = new Date(detail.firstInboundAt).toLocaleString("en-US", { timeZone: TZ });
+      row.getCell(5).value = detail.answered ? "Answered" : "Missed";
+      row.getCell(6).value = detail.status;
+      row.getCell(7).value = detail.line;
+      row.getCell(8).value = detail.source;
+      row.getCell(5).fill = detail.answered ? solid("FFDCFCE7") : solid("FFFEE2E2");
+      for (let c = 1; c <= frCols.length; c++) row.getCell(c).border = thinBorder();
+      frn++;
+    }
+  }
+  frs.autoFilter = { from: { row: 1, column: 1 }, to: { row: Math.max(1, frn - 1), column: frCols.length } };
+
+  // ── Sheet 4: By Hour ──
   const hsheet = wb.addWorksheet("By Hour of Day");
   const hcols = ["Hour (LA)", "Total Calls", "Inbound", "Missed", "Missed %", "Avg Idle Min Between Calls"];
   const hw = [12, 12, 10, 9, 11, 14];
@@ -756,7 +880,7 @@ async function buildAnalyticsWorkbook(d: Analytics): Promise<ExcelJS.Workbook> {
     hrn++;
   }
 
-  // ── Sheet 4: Cassie Spotlight ──
+  // ── Sheet 5: Cassie Spotlight ──
   const cs = wb.addWorksheet("Cassie Spotlight");
   cs.getColumn(1).width = 36;
   cs.getColumn(2).width = 18;

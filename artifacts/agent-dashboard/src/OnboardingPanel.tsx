@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -8,6 +8,9 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, Cell,
 } from "recharts";
@@ -35,8 +38,25 @@ interface AnalyticsAgent {
   onboarded: number;
   connection: number;
   onboardedRate: number;
+  taxMentions: number;
+  firstRingAttempts: number;
+  firstRingAnswered: number;
+  firstRingMissed: number;
+  firstRingResponseRate: number;
+  firstRingDetails: FirstRingDetail[];
+  vsTeam: { responseRate: number; onboardedRate: number; avgGapMin: number };
   ranked: boolean;
   overflow: boolean;
+}
+interface FirstRingDetail {
+  customerNumber: string;
+  normalizedNumber: string;
+  firstInboundAt: string;
+  answered: boolean;
+  status: string;
+  agent: string;
+  line: string;
+  source: "OpenPhone/QUO";
 }
 interface Analytics {
   meta: {
@@ -63,6 +83,10 @@ interface Analytics {
     missedRatio: number;
     avgTalkSec: number;
     avgGapMin: number;
+    firstRingAttempts: number;
+    firstRingAnswered: number;
+    firstRingMissed: number;
+    firstRingResponseRate: number;
   };
   agents: AnalyticsAgent[];
   hourly: { hour: number; calls: number; inbound: number; missed: number; idleMinutes: number }[];
@@ -322,6 +346,10 @@ export function OnboardingPanel() {
   const [day, setDay] = useState(today);
   const [downloading, setDownloading] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<AnalyticsAgent | null>(null);
+  const [spotlightAgentName, setSpotlightAgentName] = useState<string>(() => {
+    if (typeof window === "undefined") return "";
+    return window.localStorage.getItem("onboarding_spotlight_agent") ?? "";
+  });
   const [detailName, setDetailName] = useState("");
   const [detailAlias, setDetailAlias] = useState("");
   const [detailNotes, setDetailNotes] = useState("");
@@ -367,6 +395,24 @@ export function OnboardingPanel() {
   const k = data?.kpis;
   const rangeLabel =
     gran === "all" ? "All time" : gran === "month" ? new Date(`${month}-01`).toLocaleDateString([], { month: "long", year: "numeric" }) : new Date(`${day}T00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+  const spotlightAgents = useMemo(() => data?.agents.filter((a) => !a.overflow) ?? [], [data]);
+  const manualSpotlight = spotlightAgentName ? spotlightAgents.find((a) => a.name === spotlightAgentName) ?? null : null;
+  const spotlightAgent = manualSpotlight ?? data?.cassie ?? spotlightAgents[0] ?? null;
+
+  useEffect(() => {
+    if (!spotlightAgentName) return;
+    if (spotlightAgents.length > 0 && !spotlightAgents.some((a) => a.name === spotlightAgentName)) {
+      setSpotlightAgentName("");
+      window.localStorage.removeItem("onboarding_spotlight_agent");
+    }
+  }, [spotlightAgentName, spotlightAgents]);
+
+  const chooseSpotlightAgent = (name: string) => {
+    const next = name === "__auto__" ? "" : name;
+    setSpotlightAgentName(next);
+    if (next) window.localStorage.setItem("onboarding_spotlight_agent", next);
+    else window.localStorage.removeItem("onboarding_spotlight_agent");
+  };
 
   return (
     <div className="space-y-6">
@@ -435,6 +481,23 @@ export function OnboardingPanel() {
               <StatPill label="Peak Avail." value={hr(data.peaks.mostAvailableHour)} sub="most free hour" icon={Users} tone="cyan" />
             </div>
 
+            <div className="rounded-xl border border-white/10 bg-black/20 p-4 space-y-3">
+              <div>
+                <h3 className="text-sm font-medium flex items-center gap-1.5">
+                  <PhoneIncoming className="h-4 w-4 metric-good" /> 1st Ring Response Rate
+                </h3>
+                <p className="text-xs text-muted-foreground mt-1">
+                  First inbound attempt per normalized customer number in the selected range.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <StatPill label="Team 1st Ring" value={`${k!.firstRingResponseRate}%`} sub={`${k!.firstRingAnswered}/${k!.firstRingAttempts} first attempts`} icon={PhoneIncoming} tone="emerald" />
+                <StatPill label="Answered First" value={k!.firstRingAnswered.toLocaleString()} icon={CheckCircle} tone="sky" />
+                <StatPill label="Missed First" value={k!.firstRingMissed.toLocaleString()} icon={PhoneMissed} tone="rose" />
+                <StatPill label="First Attempts" value={k!.firstRingAttempts.toLocaleString()} icon={Users} tone="blue" />
+              </div>
+            </div>
+
             {/* Charts */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div className="rounded-xl border border-white/10 bg-black/20 p-4">
@@ -495,9 +558,14 @@ export function OnboardingPanel() {
               </ul>
             </div>
 
-            {/* Cassie spotlight */}
-            {data.cassie && (
-              <CassieSpotlight c={data.cassie} />
+            {/* Spotlight */}
+            {spotlightAgent && (
+              <CassieSpotlight
+                c={spotlightAgent}
+                selectedName={spotlightAgentName || "__auto__"}
+                agents={spotlightAgents}
+                onSelect={chooseSpotlightAgent}
+              />
             )}
 
             {/* Agent ranking */}
@@ -516,6 +584,7 @@ export function OnboardingPanel() {
                       <TableHead className="text-right">Inbound</TableHead>
                       <TableHead className="text-right">Answered</TableHead>
                       <TableHead className="text-right">Response</TableHead>
+                      <TableHead className="text-right">1st Ring Response</TableHead>
                       <TableHead className="text-right">Missed %</TableHead>
                       <TableHead className="text-right">Avg Gap</TableHead>
                       <TableHead className="text-right">Talk</TableHead>
@@ -529,6 +598,7 @@ export function OnboardingPanel() {
                       return data.agents.map((a) => {
                         if (a.ranked) rank++;
                         const rrColor = a.responseRate >= 85 ? "metric-good" : a.responseRate >= 70 ? "metric-warn" : "metric-bad";
+                        const firstRingColor = a.firstRingResponseRate >= 85 ? "metric-good" : a.firstRingResponseRate >= 70 ? "metric-warn" : "metric-bad";
                         const parts = splitAgentAlias(a.name);
                         return (
                           <TableRow key={a.name} className={a.ranked ? "" : "opacity-50"}>
@@ -546,6 +616,9 @@ export function OnboardingPanel() {
                             <TableCell className="text-right tabular-nums">{a.inbound}</TableCell>
                             <TableCell className="text-right tabular-nums">{a.answered}</TableCell>
                             <TableCell className={`text-right tabular-nums font-semibold ${rrColor}`}>{a.responseRate}%</TableCell>
+                            <TableCell className={`text-right tabular-nums font-semibold ${firstRingColor}`}>
+                              {a.firstRingAttempts ? `${a.firstRingResponseRate}%` : "—"}
+                            </TableCell>
                             <TableCell className="text-right tabular-nums">{a.missedRatio}%</TableCell>
                             <TableCell className="text-right tabular-nums">{a.avgGapMin}m</TableCell>
                             <TableCell className="text-right tabular-nums">{fmtDur(a.talkSeconds)}</TableCell>
@@ -600,7 +673,45 @@ export function OnboardingPanel() {
                       <div>Missed: <span className="font-semibold tabular-nums metric-bad">{selectedAgent.missed}</span></div>
                       <div>Onboarded: <span className="font-semibold tabular-nums metric-info">{selectedAgent.onboarded}</span></div>
                       <div>Response: <span className="font-semibold tabular-nums">{selectedAgent.responseRate}%</span></div>
+                      <div>1st Ring: <span className="font-semibold tabular-nums">{selectedAgent.firstRingAttempts ? `${selectedAgent.firstRingResponseRate}%` : "—"}</span></div>
+                      <div>1st Missed: <span className="font-semibold tabular-nums metric-bad">{selectedAgent.firstRingMissed}</span></div>
                       <div>Talk: <span className="font-semibold tabular-nums">{fmtDur(selectedAgent.talkSeconds)}</span></div>
+                    </div>
+                    <div className="rounded-lg border border-white/10 bg-black/20 overflow-hidden">
+                      <div className="px-3 py-2 text-xs font-medium text-muted-foreground">First inbound attempts</div>
+                      <div className="max-h-64 overflow-auto">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Customer</TableHead>
+                              <TableHead>First inbound</TableHead>
+                              <TableHead>Status</TableHead>
+                              <TableHead>Source</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {selectedAgent.firstRingDetails.length === 0 ? (
+                              <TableRow>
+                                <TableCell colSpan={4} className="text-center text-muted-foreground py-4">No inbound first attempts in this range.</TableCell>
+                              </TableRow>
+                            ) : selectedAgent.firstRingDetails.slice(0, 25).map((d) => (
+                              <TableRow key={`${d.normalizedNumber}-${d.firstInboundAt}`}>
+                                <TableCell className="font-mono text-xs">{d.customerNumber}</TableCell>
+                                <TableCell className="text-xs whitespace-nowrap">
+                                  {new Date(d.firstInboundAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                                </TableCell>
+                                <TableCell className={d.answered ? "metric-good" : "metric-bad"}>{d.answered ? "Answered" : "Missed"} · {d.status}</TableCell>
+                                <TableCell className="text-xs text-muted-foreground">{d.source}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                      {selectedAgent.firstRingDetails.length > 25 && (
+                        <div className="px-3 py-2 text-xs text-muted-foreground">
+                          Showing first 25 of {selectedAgent.firstRingDetails.length.toLocaleString()} first attempts.
+                        </div>
+                      )}
                     </div>
                   </div>
                 </DialogContent>
@@ -613,7 +724,31 @@ export function OnboardingPanel() {
   );
 }
 
-function CassieSpotlight({ c }: { c: NonNullable<Analytics["cassie"]> }) {
+type SpotlightMetrics = {
+  name: string;
+  totalCalls: number;
+  responseRate: number;
+  talkSeconds: number;
+  avgGapMin: number;
+  uniqueContacts: number;
+  onboarded: number;
+  connection: number;
+  onboardedRate: number;
+  taxMentions: number;
+  vsTeam: { responseRate: number; onboardedRate: number; avgGapMin: number };
+};
+
+function CassieSpotlight({
+  c,
+  selectedName,
+  agents,
+  onSelect,
+}: {
+  c: SpotlightMetrics;
+  selectedName: string;
+  agents: AnalyticsAgent[];
+  onSelect: (name: string) => void;
+}) {
   const delta = (v: number, unit: string) => (
     <span className={v >= 0 ? "metric-good" : "metric-bad"}>
       {v >= 0 ? "+" : ""}{v}{unit} vs team
@@ -621,10 +756,23 @@ function CassieSpotlight({ c }: { c: NonNullable<Analytics["cassie"]> }) {
   );
   return (
     <div className="rounded-xl border border-border bg-card p-5 space-y-4">
-      <div className="flex items-center gap-2">
-        <Trophy className="h-5 w-5 metric-info" />
-        <h3 className="text-base font-semibold">Cassie Lynn — Spotlight</h3>
-        <span className="text-xs text-muted-foreground">Productivity & problem-solving</span>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Trophy className="h-5 w-5 metric-info" />
+          <h3 className="text-base font-semibold">{c.name} — Spotlight</h3>
+          <span className="text-xs text-muted-foreground">Productivity & problem-solving</span>
+        </div>
+        <Select value={selectedName} onValueChange={onSelect}>
+          <SelectTrigger className="w-full sm:w-[220px] border-white/10 bg-background/70">
+            <SelectValue placeholder="Choose agent" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__auto__">Auto spotlight</SelectItem>
+            {agents.map((agent) => (
+              <SelectItem key={agent.name} value={agent.name}>{splitAgentAlias(agent.name).agentName}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         <StatPill label="Calls Handled" value={c.totalCalls.toLocaleString()} sub={`${c.uniqueContacts} customers`} icon={Phone} tone="blue" />
