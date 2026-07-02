@@ -886,6 +886,61 @@ const SHEET_REFETCH_MS = 60_000;
 const PHONE_STALE_MS = 30_000;
 const PHONE_REFETCH_MS = 60_000;
 
+const TIMESTAMP_HEADERS = [
+  "Timestamp", "Time stamp", "Submitted at", "Created at", "Date",
+  "Date/Time", "Submission Time", "Submit Time",
+];
+const AGENT_HEADERS = [
+  "Agent Name", "Agent", "Representative", "Employee", "User",
+  "Submitted By", "Submitted by",
+];
+const CANCEL_UPDATE_HEADERS = [
+  "Cancel request update", "Cancel Request Update", "Cancel Update",
+  "Request Update", "Status", "Update", "Cancel Status",
+];
+const FILE_ID_HEADERS = ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"];
+
+function normalizeHeaderName(s: string): string {
+  return s
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function findColumnByHeader(headers: string[], candidates: string[]): string | null {
+  const normalizedCandidates = new Set(candidates.map(normalizeHeaderName));
+  const normalizedHeaders = headers.map((h) => normalizeHeaderName(h));
+  for (let i = 0; i < normalizedHeaders.length; i++) {
+    if (normalizedCandidates.has(normalizedHeaders[i]!)) return headers[i] ?? null;
+  }
+  for (let i = 0; i < normalizedHeaders.length; i++) {
+    const h = normalizedHeaders[i]!;
+    if (candidates.some((c) => h.includes(normalizeHeaderName(c)))) return headers[i] ?? null;
+  }
+  return null;
+}
+
+function fallbackColumn(index: number): string {
+  return `__col${index}`;
+}
+
+function resolveSheetColumn(sheet: SheetData, context: string, field: string, aliases: string[], fallbackIndex: number): string {
+  const found = findColumnByHeader(sheet.headers, aliases);
+  if (found) return found;
+  console.warn(`[backend-stats] ${context}: using column ${String.fromCharCode(65 + fallbackIndex)} fallback for ${field}; header was missing or unclear.`);
+  return fallbackColumn(fallbackIndex);
+}
+
+function cell(r: Row, col: string | null | undefined): string {
+  return col ? String(r[col] ?? "").trim() : "";
+}
+
+function isSubmittedRow(r: Row): boolean {
+  return Object.entries(r).some(([k, v]) => k.startsWith("__col") && String(v ?? "").trim() !== "");
+}
+
 // Reads a Google Sheet tab through the API server's authenticated Sheets
 // endpoint (/api/sheet), so the source spreadsheets can stay private. Accepts
 // any Google Sheets URL (or the legacy /api/csv-proxy?url=... wrapper) and
@@ -1739,12 +1794,7 @@ async function fetchCSCombinedSheet(
 }
 
 function findColumn(headers: string[], candidates: string[]): string | null {
-  const lower = headers.map((h) => h.toLowerCase().trim());
-  for (const c of candidates) {
-    const idx = lower.indexOf(c.toLowerCase().trim());
-    if (idx >= 0) return headers[idx];
-  }
-  return null;
+  return findColumnByHeader(headers, candidates);
 }
 
 const NAME_DISPLAY: Record<string, string> = {
@@ -3047,13 +3097,12 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
     });
 
     const exportRows = rows.map((r) => {
-      // IDP-Cancel-Retained rows are stored as "Retained" so the dashboard tiles
-      // count them, but the user wants the raw export to differentiate them as
-      // IDP-Cancel-Handled so they can audit which retains came via that path.
+      // IDP-Cancel-Retained rows are stored as "Retained" so dashboard tiles
+      // count them, but raw export keeps the exact source tab visible.
       const isIdpCancel = r["__sourceTab"] === "IDP-Cancel-Retained";
       return {
         Agent: (r[agentCol] ?? "").trim(),
-        Status: isIdpCancel ? "IDP-Cancel-Handled" : (r[statusCol] ?? "").trim(),
+        Status: isIdpCancel ? "idp-cancel-retained" : (r[statusCol] ?? "").trim(),
         Date: dateCol ? (r[dateCol] ?? "") : "",
         "File ID": fileIdCol ? (r[fileIdCol] ?? "").trim() : "",
       };
@@ -10393,7 +10442,7 @@ const bstatChartTooltip = {
   itemStyle: { color: "#e4e4e7" },
 } as const;
 
-type BStatRow = { agent: string; agentKey: string; team: RosterTeam; status: string; date: string; fileId: string; idpCancel: boolean };
+type BStatRow = { agent: string; agentKey: string; team: RosterTeam; status: string; date: string; fileId: string; source: string; idpCancel: boolean };
 
 // Resolve a raw submission name to a single canonical agent identity. Mirrors
 // aggregate()'s roster-aware resolution but ALSO applies NAME_ALIASES, so Arabic
@@ -10415,9 +10464,92 @@ function bstatResolveAgent(raw: string, roster: RosterIndex, fallbackTeam: TeamM
     const key = normalizeAgent(hit.name);
     return { key, display: hit.name, team: hit.team === "killers" || isKillerAgentKey(key) ? "killers" : hit.team };
   }
+  if (!raw.trim()) return { key: "unknown", display: "Unknown", team: fallbackTeam };
   const key = aliased;
+  if (!key) return { key: "unknown", display: "Unknown", team: fallbackTeam };
+  if (!isKillerAgentKey(key)) return { key: "unknown", display: "Unknown", team: fallbackTeam };
   const display = NAME_DISPLAY[key] ?? key.replace(/\b\w/g, (c) => c.toUpperCase());
   return { key, display, team: isKillerAgentKey(key) ? "killers" : fallbackTeam };
+}
+
+function bstatRetentionStatus(update: string, context: string): "Retained" | "Cancelled" | null {
+  const value = update.trim().toLowerCase();
+  if (!value) return null;
+  const hasRetain = /\bretain(?:ed)?\b/.test(value);
+  const hasCancel = /\bcancel(?:l?ed|ling)?\b/.test(value);
+  if (hasRetain && hasCancel) {
+    console.warn(`[backend-stats] ${context}: ambiguous retain/cancel value; row was kept but not double-counted.`);
+    return null;
+  }
+  if (hasRetain) return "Retained";
+  if (hasCancel) return "Cancelled";
+  return null;
+}
+
+async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<BStatRow[]> {
+  const [retainedCancels, fixes] = await Promise.all([
+    fetchHeaderCsv(NEW_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
+    fetchHeaderCsv(NEW_NSF_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
+  ]);
+  const idpHandled = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
+  const idpCancelRetained = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
+
+  const out: BStatRow[] = [];
+  const add = (rawAgent: string, status: string, date: string, fileId: string, source: string, fallbackTeam: TeamMode) => {
+    const resolved = bstatResolveAgent(rawAgent, roster, fallbackTeam);
+    out.push({
+      agent: resolved.display,
+      agentKey: resolved.key === "unknown" ? `${resolved.team}:unknown` : resolved.key,
+      team: resolved.team,
+      status,
+      date,
+      fileId,
+      source,
+      idpCancel: source === "idp-cancel-retained",
+    });
+  };
+
+  const retTs = resolveSheetColumn(retainedCancels, "Retained & Cancels", "Timestamp", TIMESTAMP_HEADERS, 0);
+  const retAgent = resolveSheetColumn(retainedCancels, "Retained & Cancels", "Agent Name", AGENT_HEADERS, 1);
+  const retUpdate = resolveSheetColumn(retainedCancels, "Retained & Cancels", "Cancel request update", CANCEL_UPDATE_HEADERS, 5);
+  const retFile = findColumnByHeader(retainedCancels.headers, FILE_ID_HEADERS);
+  for (const r of retainedCancels.rows) {
+    if (!isSubmittedRow(r)) continue;
+    const d = parseEgyptTimestamp(cell(r, retTs)) ?? parseDate(cell(r, retTs));
+    const date = d ? toCaliforniaDateStr(d) : cell(r, retTs);
+    const status = bstatRetentionStatus(cell(r, retUpdate), "Retained & Cancels");
+    if (!status) continue;
+    add(cell(r, retAgent), status, date, cell(r, retFile), "Retained & Cancels", "retention");
+  }
+
+  const fixesTs = resolveSheetColumn(fixes, "Fixes", "Timestamp", TIMESTAMP_HEADERS, 0);
+  const fixesAgent = resolveSheetColumn(fixes, "Fixes", "Agent Name", AGENT_HEADERS, 1);
+  const fixesFile = findColumnByHeader(fixes.headers, FILE_ID_HEADERS);
+  for (const r of fixes.rows) {
+    if (!isSubmittedRow(r)) continue;
+    const d = parseEgyptTimestamp(cell(r, fixesTs)) ?? parseDate(cell(r, fixesTs));
+    add(cell(r, fixesAgent), "Fixed", d ? toCaliforniaDateStr(d) : cell(r, fixesTs), cell(r, fixesFile), "Fixed", "nsf");
+  }
+
+  const idpTs = resolveSheetColumn(idpHandled, "idp-handled", "Timestamp", TIMESTAMP_HEADERS, 0);
+  const idpAgent = resolveSheetColumn(idpHandled, "idp-handled", "Agent Name", AGENT_HEADERS, 1);
+  const idpFile = findColumnByHeader(idpHandled.headers, FILE_ID_HEADERS);
+  for (const r of idpHandled.rows) {
+    if (!isSubmittedRow(r)) continue;
+    const d = parseEgyptTimestamp(cell(r, idpTs)) ?? parseDate(cell(r, idpTs));
+    add(cell(r, idpAgent), "IDP-Handled", d ? toCaliforniaDateStr(d) : cell(r, idpTs), cell(r, idpFile), "IDP Handled", "nsf");
+  }
+
+  const idpCancelTs = resolveSheetColumn(idpCancelRetained, "idp-cancel-retained", "Timestamp", TIMESTAMP_HEADERS, 0);
+  const idpCancelAgent = resolveSheetColumn(idpCancelRetained, "idp-cancel-retained", "Agent Name", AGENT_HEADERS, 1);
+  const idpCancelFile = findColumnByHeader(idpCancelRetained.headers, FILE_ID_HEADERS);
+  for (const r of idpCancelRetained.rows) {
+    if (!isSubmittedRow(r)) continue;
+    const d = parseEgyptTimestamp(cell(r, idpCancelTs)) ?? parseDate(cell(r, idpCancelTs));
+    add(cell(r, idpCancelAgent), "Retained", d ? toCaliforniaDateStr(d) : cell(r, idpCancelTs), cell(r, idpCancelFile), "idp-cancel-retained", "nsf");
+  }
+
+  return out;
 }
 
 function bstatMonthLabel(ym: string): string {
@@ -10447,59 +10579,7 @@ function BackendStatsPanel() {
   const roster = useRoster();
   const { data: rows, isLoading, isError, refetch, isFetching } = useQuery<BStatRow[]>({
     queryKey: ["backend-stats-all", roster.version],
-    queryFn: async () => {
-      const [ret, nsf, cs] = await Promise.all([
-        fetchRetentionCombinedSheet(roster, { includeInactive: true }),
-        fetchNSFCombinedSheet(roster, { includeInactive: true }),
-        fetchCSCombinedSheet(roster, { includeInactive: true }),
-      ]);
-      // Killers have their own submission source (4 sheets, fixed roster). Fetch
-      // it sequentially after the others — it shares the 11kOhk8x workbook, which
-      // silently drops concurrent requests.
-      const rmk = await fetchRMKSubmissions();
-      const out: BStatRow[] = [];
-      // Dedupe true duplicates that can bleed across overlapping loaders/shared
-      // tabs (crossover, IDP). A submission is uniquely identified by its File ID
-      // within a team+date; rows without a File ID are always kept (can't dedupe
-      // reliably, and dropping them would undercount). On collision we keep the
-      // first row, but if a later duplicate is an IDP-Cancel-Retained row we
-      // upgrade the kept row's flag — that tab is authoritative for the
-      // IDP-Cancel classification, so it must win the split column.
-      const seen = new Map<string, BStatRow>();
-      const add = (sd: SheetData, team: RosterTeam) => {
-        for (const r of sd.rows) {
-          const raw = String(r["Agent"] ?? "").trim();
-          if (!raw) continue;
-          const resolved = bstatResolveAgent(raw, roster, team);
-          const date = String(r["Date"] ?? "").trim();
-          const fileId = String(r["File ID"] ?? "").trim();
-          const row: BStatRow = {
-            agent: resolved.display,
-            agentKey: resolved.key,
-            team: resolved.team,
-            status: normalizeStatus(String(r["Status"] ?? "")),
-            date,
-            fileId,
-            idpCancel: r["__sourceTab"] === "IDP-Cancel-Retained",
-          };
-          if (fileId) {
-            const key = `${resolved.team}|${date}|${fileId}`;
-            const existing = seen.get(key);
-            if (existing) {
-              if (row.idpCancel && !existing.idpCancel) existing.idpCancel = true;
-              continue;
-            }
-            seen.set(key, row);
-          }
-          out.push(row);
-        }
-      };
-      add(ret, "retention");
-      add(nsf, "nsf");
-      add(cs, "cs");
-      add(rmk, "killers");
-      return out;
-    },
+    queryFn: () => fetchBackendStatsSubmissions(roster),
     staleTime: 60_000,
   });
 
@@ -10589,6 +10669,25 @@ function BackendStatsPanel() {
     [stats.agents, killersOnly],
   );
 
+  function exportBackendRows() {
+    const exportRows = filtered.map((r) => ({
+      Agent: r.agent,
+      Team: BSTAT_TEAM_META[r.team].label,
+      Status: r.status,
+      Source: r.source,
+      Date: r.date,
+      "File ID": r.fileId,
+    }));
+    const csv = Papa.unparse(exportRows);
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `backend_submissions_${new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" })}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -10648,6 +10747,10 @@ function BackendStatsPanel() {
           <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching} className="gap-2">
             <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
             Refresh
+          </Button>
+          <Button variant="outline" size="sm" onClick={exportBackendRows} disabled={!filtered.length} className="gap-2">
+            <Download className="h-3.5 w-3.5" />
+            Export Rows
           </Button>
         </div>
       </div>

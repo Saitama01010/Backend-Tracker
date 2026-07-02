@@ -19,6 +19,41 @@ const SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const SHEETS_BASE = "https://sheets.googleapis.com/v4/spreadsheets";
 
+function normalizeHeaderName(s: string): string {
+  return s
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+const KNOWN_HEADER_ALIASES = new Set([
+  "timestamp", "time stamp", "submitted at", "created at", "date", "date/time", "submission time", "submit time",
+  "agent name", "agent", "representative", "employee", "user", "submitted by",
+  "cancel request update", "cancel update", "request update", "status", "update", "cancel status",
+  "file id", "fileid", "file #", "account #", "account id", "loan #", "id",
+].map(normalizeHeaderName));
+
+function looksLikeHeaderRow(row: unknown[]): boolean {
+  let matches = 0;
+  let nonEmpty = 0;
+  for (const cell of row) {
+    const value = String(cell ?? "");
+    if (value.trim()) nonEmpty++;
+    if (KNOWN_HEADER_ALIASES.has(normalizeHeaderName(value))) matches++;
+  }
+  return matches >= 2;
+}
+
+function detectHeaderRow(values: unknown[][]): number {
+  const limit = Math.min(values.length, 10);
+  for (let i = 0; i < limit; i++) {
+    if (looksLikeHeaderRow(values[i] ?? [])) return i;
+  }
+  return 0;
+}
+
 // Cache the OAuth token until shortly before it expires.
 let cachedToken: { token: string; exp: number } | null = null;
 
@@ -145,19 +180,21 @@ router.get("/sheet", async (req, res) => {
     }
     const json = (await resp.json()) as { values?: unknown[][] };
     const values = json.values ?? [];
-    const rawHeaders = (values[0] ?? []).map((h) => String(h ?? "").trim());
+    const headerRowIndex = detectHeaderRow(values);
+    const rawHeaders = (values[headerRowIndex] ?? []).map((h) => String(h ?? "").trim());
     const headers = rawHeaders.filter((h) => h.length > 0);
     const rows: Record<string, string>[] = [];
-    for (let i = 1; i < values.length; i++) {
+    for (let i = headerRowIndex + 1; i < values.length; i++) {
       const row = values[i] ?? [];
       const obj: Record<string, string> = {};
       let hasData = false;
-      for (let c = 0; c < rawHeaders.length; c++) {
+      const width = Math.max(rawHeaders.length, row.length);
+      for (let c = 0; c < width; c++) {
         const key = rawHeaders[c];
-        if (!key) continue;
         const cell = row[c];
         const val = cell == null ? "" : String(cell);
-        obj[key] = val;
+        obj[`__col${c}`] = val;
+        if (key) obj[key] = val;
         if (val.trim() !== "") hasData = true;
       }
       if (hasData) rows.push(obj);
