@@ -2305,7 +2305,7 @@ function aggregate(
   // (zero-value columns still render) even when a status is absent in the
   // current date window.
   const allStatuses = new Set<string>();
-  if (mode === "retention" || mode === "cs") {
+  if (mode === "retention" || mode === "nsf" || mode === "cs") {
     allStatuses.add("Retained");
     allStatuses.add("Cancelled");
     allStatuses.add("IDP-Handled");
@@ -3082,6 +3082,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
     const statusCol = findColumn(sheetData.headers, ["Status", "Result", "Outcome", "Disposition"]);
     const dateCol = findColumn(sheetData.headers, ["Date", "Day", "Call Date"]);
     const fileIdCol = findColumn(sheetData.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
+    const sourceCol = findColumn(sheetData.headers, ["Source", "Source Tab", "Sheet", "Type"]);
     if (!agentCol || !statusCol) return;
 
     const rows = sheetData.rows.filter((r) => {
@@ -3103,6 +3104,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
       return {
         Agent: (r[agentCol] ?? "").trim(),
         Status: isIdpCancel ? "idp-cancel-retained" : (r[statusCol] ?? "").trim(),
+        Source: sourceCol ? (r[sourceCol] ?? "").trim() : isIdpCancel ? "idp-cancel-retained" : "",
         Date: dateCol ? (r[dateCol] ?? "") : "",
         "File ID": fileIdCol ? (r[fileIdCol] ?? "").trim() : "",
       };
@@ -4542,7 +4544,7 @@ function CSPanel() {
   const includeInactive = to < todayIso;
   const statusQ = useQuery({
     queryKey: ["status", "cs", roster.version, includeInactive],
-    queryFn: () => fetchCSCombinedSheet(roster, { includeInactive }),
+    queryFn: () => fetchCSBackendStatsSheet(roster),
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
     refetchInterval: 60 * 1000,
@@ -4773,7 +4775,7 @@ function RetentionPanel() {
   const includeInactive = to < todayIso;
   const statusQ = useQuery({
     queryKey: ["status", "retention", roster.version, includeInactive],
-    queryFn: () => fetchRetentionCombinedSheet(roster, { includeInactive }),
+    queryFn: () => fetchRetentionBackendStatsSheet(roster),
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
     refetchInterval: 60 * 1000,
@@ -10528,7 +10530,7 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<BStatR
   for (const r of fixes.rows) {
     if (!isSubmittedRow(r)) continue;
     const d = parseEgyptTimestamp(cell(r, fixesTs)) ?? parseDate(cell(r, fixesTs));
-    add(cell(r, fixesAgent), "Fixed", d ? toCaliforniaDateStr(d) : cell(r, fixesTs), cell(r, fixesFile), "Fixed", "nsf");
+    add(cell(r, fixesAgent), "Fixed", d ? toCaliforniaDateStr(d) : cell(r, fixesTs), cell(r, fixesFile), "Fixes", "nsf");
   }
 
   const idpTs = resolveSheetColumn(idpHandled, "idp-handled", "Timestamp", TIMESTAMP_HEADERS, 0);
@@ -10537,7 +10539,7 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<BStatR
   for (const r of idpHandled.rows) {
     if (!isSubmittedRow(r)) continue;
     const d = parseEgyptTimestamp(cell(r, idpTs)) ?? parseDate(cell(r, idpTs));
-    add(cell(r, idpAgent), "IDP-Handled", d ? toCaliforniaDateStr(d) : cell(r, idpTs), cell(r, idpFile), "IDP Handled", "nsf");
+    add(cell(r, idpAgent), "IDP-Handled", d ? toCaliforniaDateStr(d) : cell(r, idpTs), cell(r, idpFile), "idp-handled", "nsf");
   }
 
   const idpCancelTs = resolveSheetColumn(idpCancelRetained, "idp-cancel-retained", "Timestamp", TIMESTAMP_HEADERS, 0);
@@ -10550,6 +10552,32 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<BStatR
   }
 
   return out;
+}
+
+async function fetchBackendStatsSheetForTeam(roster: RosterIndex, team: TeamMode): Promise<SheetData> {
+  const rows = (await fetchBackendStatsSubmissions(roster))
+    .filter((r) => r.team === team)
+    .map((r) => ({
+      Agent: r.agent,
+      Status: r.status,
+      Date: r.date,
+      "File ID": r.fileId,
+      Source: r.source,
+      ...(r.idpCancel ? { __sourceTab: "IDP-Cancel-Retained" } : {}),
+    }));
+  return { headers: ["Agent", "Status", "Date", "File ID", "Source"], rows };
+}
+
+function fetchRetentionBackendStatsSheet(roster: RosterIndex): Promise<SheetData> {
+  return fetchBackendStatsSheetForTeam(roster, "retention");
+}
+
+function fetchNSFBackendStatsSheet(roster: RosterIndex): Promise<SheetData> {
+  return fetchBackendStatsSheetForTeam(roster, "nsf");
+}
+
+function fetchCSBackendStatsSheet(roster: RosterIndex): Promise<SheetData> {
+  return fetchBackendStatsSheetForTeam(roster, "cs");
 }
 
 function bstatMonthLabel(ym: string): string {
@@ -11157,7 +11185,7 @@ function Dashboard() {
             )}
             {canSeeTab("nsf") && (
               <TabsContent value="nsf">
-                <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" statusQueryFn={fetchNSFCombinedSheet} />
+                <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" statusQueryFn={fetchNSFBackendStatsSheet} />
               </TabsContent>
             )}
             {canSeeTab("rmk") && (
