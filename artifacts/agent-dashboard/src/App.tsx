@@ -3460,7 +3460,7 @@ function useMissedNoCB() {
       return r.json();
     },
     staleTime: 30_000,
-    refetchInterval: 90_000,
+    refetchInterval: 30_000,
     refetchOnWindowFocus: true,
   });
 }
@@ -3577,7 +3577,7 @@ function mergeReadyModeForTeam(
   return map;
 }
 
-function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMissed, agentDept, hideTeamRow, readymodeByKey, rosterPhoneAliases }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics>; directKeys?: boolean; pbxData?: PbxCalls; extraMissed?: number; agentDept?: Map<string, "Retention" | "CS">; hideTeamRow?: boolean; readymodeByKey?: Map<string, { calls: number; seconds: number }>; rosterPhoneAliases?: Record<string, string> }) {
+function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMissed, agentDept, hideTeamRow, readymodeByKey, rosterPhoneAliases, phoneSourceLabel }: { agentList: string[]; phoneData: Map<string, PhoneAgentMetrics>; directKeys?: boolean; pbxData?: PbxCalls; extraMissed?: number; agentDept?: Map<string, "Retention" | "CS">; hideTeamRow?: boolean; readymodeByKey?: Map<string, { calls: number; seconds: number }>; rosterPhoneAliases?: Record<string, string>; phoneSourceLabel?: string }) {
   // Mirror the canonicalization the panels use when merging ReadyMode into
   // phoneData (see useReadymodeByKey + merge loops in TeamPanel/CSPanel/
   // RetentionPanel). Without the roster + CSV alias passes, aliased agents
@@ -3641,16 +3641,17 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
       const phB = getPhone(b);
       let av: number = 0;
       let bv: number = 0;
-      if (sort.col === "__calls__") { av = (phA?.calls ?? 0) + (getPbx(a)?.calls ?? 0); bv = (phB?.calls ?? 0) + (getPbx(b)?.calls ?? 0); }
-      else if (sort.col === "__outbound__") { av = (phA?.outbound ?? 0) + (getPbx(a)?.outbound ?? 0); bv = (phB?.outbound ?? 0) + (getPbx(b)?.outbound ?? 0); }
+      if (sort.col === "__calls__") { av = (phA?.calls ?? 0) + (getPbx(a)?.calls ?? 0) + (getRm(a)?.calls ?? 0); bv = (phB?.calls ?? 0) + (getPbx(b)?.calls ?? 0) + (getRm(b)?.calls ?? 0); }
+      else if (sort.col === "__phone__") { av = phA?.calls ?? 0; bv = phB?.calls ?? 0; }
+      else if (sort.col === "__outbound__") { av = (phA?.outbound ?? 0) + (getPbx(a)?.outbound ?? 0) + (getRm(a)?.calls ?? 0); bv = (phB?.outbound ?? 0) + (getPbx(b)?.outbound ?? 0) + (getRm(b)?.calls ?? 0); }
       else if (sort.col === "__inbound__") { av = (phA?.inbound ?? 0) + (getPbx(a)?.inbound ?? 0); bv = (phB?.inbound ?? 0) + (getPbx(b)?.inbound ?? 0); }
       else if (sort.col === "__answered__") { av = phA?.answered ?? 0; bv = phB?.answered ?? 0; }
       else if (sort.col === "__missed__") { av = phA?.missed ?? 0; bv = phB?.missed ?? 0; }
       else if (sort.col === "__vm__") { av = phA?.voicemail ?? 0; bv = phB?.voicemail ?? 0; }
       else if (sort.col === "__vmbrief__") { av = phA?.vmBrief ?? 0; bv = phB?.vmBrief ?? 0; }
       else if (sort.col === "__unique__") { av = phA?.uniqueContacts ?? 0; bv = phB?.uniqueContacts ?? 0; }
-      else if (sort.col === "__time__") { av = phA?.seconds ?? 0; bv = phB?.seconds ?? 0; }
-      else if (sort.col === "__resp__") { av = phA?.calls ? (phA.answered / phA.calls) : -1; bv = phB?.calls ? (phB.answered / phB.calls) : -1; }
+      else if (sort.col === "__time__") { av = (phA?.seconds ?? 0) + (getPbx(a)?.durationSeconds ?? 0) + (getRm(a)?.seconds ?? 0); bv = (phB?.seconds ?? 0) + (getPbx(b)?.durationSeconds ?? 0) + (getRm(b)?.seconds ?? 0); }
+      else if (sort.col === "__resp__") { const ca = (phA?.calls ?? 0) + (getPbx(a)?.calls ?? 0) + (getRm(a)?.calls ?? 0); const cb = (phB?.calls ?? 0) + (getPbx(b)?.calls ?? 0) + (getRm(b)?.calls ?? 0); av = ca ? ((phA?.answered ?? 0) + (getPbx(a)?.answered ?? 0)) / ca : -1; bv = cb ? ((phB?.answered ?? 0) + (getPbx(b)?.answered ?? 0)) / cb : -1; }
       else if (sort.col === "__agent__") { return sort.dir === "asc" ? a.localeCompare(b) : b.localeCompare(a); }
       return sort.dir === "asc" ? av - bv : bv - av;
     });
@@ -3689,15 +3690,16 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
 
   const totQuoCalls = visible.reduce((s, a) => s + (getPhone(a)?.calls ?? 0), 0);
   const totPbxCalls = visible.reduce((s, a) => s + (getPbx(a)?.calls ?? 0), 0);
-  const totCalls = totQuoCalls + totPbxCalls;
-  const totOut = visible.reduce((s, a) => s + (getPhone(a)?.outbound ?? 0) + (getPbx(a)?.outbound ?? 0), 0);
+  const totRmCalls = visible.reduce((s, a) => s + (getRm(a)?.calls ?? 0), 0);
+  const totCalls = totQuoCalls + totPbxCalls + totRmCalls;
+  const totOut = visible.reduce((s, a) => s + (getPhone(a)?.outbound ?? 0) + (getPbx(a)?.outbound ?? 0) + (getRm(a)?.calls ?? 0), 0);
   const totIn = visible.reduce((s, a) => s + (getPhone(a)?.inbound ?? 0) + (getPbx(a)?.inbound ?? 0), 0);
   const totAns = visible.reduce((s, a) => s + (getPhone(a)?.answered ?? 0) + (getPbx(a)?.answered ?? 0), 0);
   const totMissed = visible.reduce((s, a) => s + (getPhone(a)?.missed ?? 0) + (getPbx(a)?.missed ?? 0), 0) + (extraMissed ?? 0);
   const totVm = visible.reduce((s, a) => s + (getPhone(a)?.voicemail ?? 0) + (getPbx(a)?.voicemail ?? 0), 0);
   const totVmBrief = visible.reduce((s, a) => s + (getPhone(a)?.vmBrief ?? 0), 0);
   const totUniq = visible.reduce((s, a) => s + (getPhone(a)?.uniqueContacts ?? 0), 0);
-  const totSecs = visible.reduce((s, a) => s + (getPhone(a)?.seconds ?? 0) + (getPbx(a)?.durationSeconds ?? 0), 0);
+  const totSecs = visible.reduce((s, a) => s + (getPhone(a)?.seconds ?? 0) + (getPbx(a)?.durationSeconds ?? 0) + (getRm(a)?.seconds ?? 0), 0);
 
   const liveInView = visible.filter((a) => liveAgents.any.has(normalizeAgent(a)));
 
@@ -3745,6 +3747,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                 <Th id="__agent__" label="Agent" align="left" />
                 <TableHead className="whitespace-nowrap text-right metric-info">Available</TableHead>
                 <Th id="__calls__" label="Calls" tip="Total calls across all phone systems (Quo + PBX + ReadyMode) in the selected period." />
+                {phoneSourceLabel && <Th id="__phone__" label={phoneSourceLabel} tone="metric-info" tip="Calls assigned to this agent from OpenPhone / QUO call history." />}
                 {pbxData && <Th id="__pbx__" label="PBX" tone="metric-info" tip="Calls via the PBX phone system only." />}
                 {readymodeByKey && <Th id="__readymode__" label="ReadyMode" tone="metric-secondary" tip="Outbound dialer calls from the ReadyMode CSV (operator-uploaded Google Sheet)." />}
                 <Th id="__outbound__" label="Outbound" tone="metric-info" tip="Calls the agent placed to customers (all systems)." />
@@ -3761,19 +3764,20 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
             <TableBody>
               {visible.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={12 + (pbxData ? 1 : 0) + (readymodeByKey ? 1 : 0)} className="text-center py-12 text-muted-foreground">No agents match the current filters.</TableCell>
+                  <TableCell colSpan={12 + (phoneSourceLabel ? 1 : 0) + (pbxData ? 1 : 0) + (readymodeByKey ? 1 : 0)} className="text-center py-12 text-muted-foreground">No agents match the current filters.</TableCell>
                 </TableRow>
               )}
               {visible.map((agent) => {
                 const ph = getPhone(agent);
                 const px = getPbx(agent);
-                const combinedCalls = (ph?.calls ?? 0) + (px?.calls ?? 0);
-                const combinedOut = (ph?.outbound ?? 0) + (px?.outbound ?? 0);
+                const rm = getRm(agent);
+                const combinedCalls = (ph?.calls ?? 0) + (px?.calls ?? 0) + (rm?.calls ?? 0);
+                const combinedOut = (ph?.outbound ?? 0) + (px?.outbound ?? 0) + (rm?.calls ?? 0);
                 const combinedIn = (ph?.inbound ?? 0) + (px?.inbound ?? 0);
                 const combinedAns = (ph?.answered ?? 0) + (px?.answered ?? 0);
                 const combinedMissed = (ph?.missed ?? 0) + (px?.missed ?? 0);
                 const combinedVm = (ph?.voicemail ?? 0) + (px?.voicemail ?? 0);
-                const combinedSecs = (ph?.seconds ?? 0) + (px?.durationSeconds ?? 0);
+                const combinedSecs = (ph?.seconds ?? 0) + (px?.durationSeconds ?? 0) + (rm?.seconds ?? 0);
                 const lastCall = ph?.lastCallAt && px?.lastCallAt
                   ? (ph.lastCallAt > px.lastCallAt ? ph.lastCallAt : px.lastCallAt)
                   : (ph?.lastCallAt ?? px?.lastCallAt ?? null);
@@ -3836,8 +3840,9 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                       )}
                     </TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${!combinedCalls ? "text-muted-foreground/40" : ""}`}>{combinedCalls || "—"}</TableCell>
+                    {phoneSourceLabel && <TableCell className={`text-right tabular-nums font-mono ${ph?.calls ? "metric-info" : "text-muted-foreground/40"}`}>{ph?.calls || "—"}</TableCell>}
                     {pbxData && <TableCell className={`text-right tabular-nums font-mono ${px?.calls ? "metric-info" : "text-muted-foreground/40"}`}>{px?.calls || "—"}</TableCell>}
-                    {readymodeByKey && (() => { const rm = getRm(agent); return <TableCell className={`text-right tabular-nums font-mono ${rm?.calls ? "metric-secondary" : "text-muted-foreground/40"}`}>{rm?.calls || "—"}</TableCell>; })()}
+                    {readymodeByKey && <TableCell className={`text-right tabular-nums font-mono ${rm?.calls ? "metric-secondary" : "text-muted-foreground/40"}`}>{rm?.calls || "—"}</TableCell>}
                     <TableCell className={`text-right tabular-nums font-mono ${combinedOut ? "metric-info" : "text-muted-foreground/40"}`}>{combinedOut || "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${combinedIn ? "metric-info" : "text-muted-foreground/40"}`}>{combinedIn || "—"}</TableCell>
                     <TableCell className={`text-right tabular-nums font-mono ${combinedAns ? "metric-good" : "text-muted-foreground/40"}`}>{combinedAns || "—"}</TableCell>
@@ -3857,6 +3862,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
                   <TableCell className="font-bold">Whole team</TableCell>
                   <TableCell />
                   <TableCell className="text-right tabular-nums font-mono font-bold">{totCalls || "—"}</TableCell>
+                  {phoneSourceLabel && <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totQuoCalls || "—"}</TableCell>}
                   {pbxData && <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totPbxCalls || "—"}</TableCell>}
                   {readymodeByKey && <TableCell className="text-right tabular-nums font-mono font-bold metric-secondary">{visible.reduce((s, a) => s + (getRm(a)?.calls ?? 0), 0) || "—"}</TableCell>}
                   <TableCell className="text-right tabular-nums font-mono font-bold metric-info">{totOut || "—"}</TableCell>
@@ -7450,6 +7456,18 @@ function ReadyModeKillersPanel() {
     refetchInterval: 60 * 1000,
   });
 
+  const phoneQ = useQuery<PhoneStatsResponse | null>({
+    queryKey: ["rmkPhoneStats", from, to],
+    queryFn: async () => {
+      const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
+      const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
+      return fetchPhoneStats(pFrom, pTo);
+    },
+    staleTime: PHONE_STALE_MS,
+    refetchOnWindowFocus: false,
+    refetchInterval: PHONE_REFETCH_MS,
+  });
+
   const subsQ = useQuery<SheetData>({
     queryKey: ["rmkSubmissions"],
     queryFn: fetchRMKSubmissions,
@@ -7493,7 +7511,50 @@ function ReadyModeKillersPanel() {
     return m;
   }, [rmQ.data, rmkKeys]);
 
+  const rmkCsvByKey = useMemo<Map<string, { calls: number; seconds: number }>>(() => {
+    const map = new Map<string, { calls: number; seconds: number }>();
+    for (const [key, rm] of rmByKey) {
+      map.set(key, { calls: rm.dialed, seconds: rm.talkTimeSecs });
+    }
+    return map;
+  }, [rmByKey]);
+
   const rmkPhoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
+    const map = new Map<string, PhoneAgentMetrics>();
+    const agentStats = phoneQ.data?.allAgentStats ?? {};
+    const lastCallMap = phoneQ.data?.allAgentLastCall ?? {};
+    for (const [agentName, days] of Object.entries(agentStats)) {
+      const key = resolveKillerAgentKey(agentName) ?? normalizeAgent(agentName);
+      if (!rmkKeys.has(key)) continue;
+      const acc: PhoneAgentMetrics = {
+        calls: 0,
+        seconds: 0,
+        answered: 0,
+        missed: 0,
+        voicemail: 0,
+        vmBrief: 0,
+        inbound: 0,
+        outbound: 0,
+        uniqueContacts: 0,
+        lastCallAt: lastCallMap[agentName],
+      };
+      for (const day of Object.values(days)) {
+        acc.calls += day.totalCalls ?? 0;
+        acc.seconds += day.talkSeconds ?? 0;
+        acc.answered += day.answered ?? 0;
+        acc.missed += day.missed ?? 0;
+        acc.voicemail += day.voicemail ?? 0;
+        acc.vmBrief += day.vmBrief ?? 0;
+        acc.inbound += day.inbound ?? 0;
+        acc.outbound += day.outbound ?? 0;
+        acc.uniqueContacts += day.uniqueContacts ?? 0;
+      }
+      if (acc.calls > 0 || acc.seconds > 0 || acc.lastCallAt) map.set(key, acc);
+    }
+    return map;
+  }, [phoneQ.data, rmkKeys]);
+
+  const rmkCsvPhoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
     const map = new Map<string, PhoneAgentMetrics>();
     for (const [key, rm] of rmByKey) {
       map.set(key, {
@@ -7519,26 +7580,29 @@ function ReadyModeKillersPanel() {
       names.set(key, a.agent);
     }
     for (const [key, rm] of rmByKey) names.set(key, RMK_DISPLAY[key] ?? rm.agentName);
+    for (const key of rmkPhoneData.keys()) names.set(key, RMK_DISPLAY[key] ?? key.replace(/\b\w/g, (c) => c.toUpperCase()));
     return [...names.entries()].map(([, name]) => name).sort((a, b) => a.localeCompare(b));
-  }, [aggregated, rmByKey, rmkKeys]);
+  }, [aggregated, rmByKey, rmkKeys, rmkPhoneData]);
 
   const phoneTotals = useMemo(() => {
     let calls = 0, seconds = 0, answered = 0;
     for (const v of rmkPhoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; }
+    for (const v of rmkCsvPhoneData.values()) { calls += v.calls; seconds += v.seconds; answered += v.answered; }
     return { calls, seconds, answered, connectRate: calls ? Math.round((answered / calls) * 100) : 0 };
-  }, [rmkPhoneData]);
+  }, [rmkPhoneData, rmkCsvPhoneData]);
 
   const activeAgentCount = useMemo(() => {
     const active = new Set<string>();
     for (const [key, v] of rmkPhoneData) if (v.calls > 0 || v.seconds > 0) active.add(key);
+    for (const [key, v] of rmkCsvPhoneData) if (v.calls > 0 || v.seconds > 0) active.add(key);
     if (aggregated && !("error" in aggregated)) {
       for (const a of aggregated.byAgent) if (a.total > 0) active.add(normalizeAgent(a.agent));
     }
     return active.size;
-  }, [aggregated, rmkPhoneData]);
+  }, [aggregated, rmkPhoneData, rmkCsvPhoneData]);
 
-  function refresh() { rmQ.refetch(); subsQ.refetch(); }
-  const isFetching = rmQ.isFetching || subsQ.isFetching;
+  function refresh() { rmQ.refetch(); phoneQ.refetch(); subsQ.refetch(); }
+  const isFetching = rmQ.isFetching || phoneQ.isFetching || subsQ.isFetching;
 
   return (
     <Card className="ops-panel rounded-lg">
@@ -7557,7 +7621,7 @@ function ReadyModeKillersPanel() {
         </Button>
       </CardHeader>
       <CardContent className="space-y-6">
-        {(rmQ.isLoading || subsQ.isLoading) && <TableSkeleton />}
+        {(rmQ.isLoading || phoneQ.isLoading || subsQ.isLoading) && <TableSkeleton />}
         {aggregated && "error" in aggregated && (
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
             {aggregated.error}
@@ -7570,7 +7634,7 @@ function ReadyModeKillersPanel() {
           {subTabAllowed("call") && (
             <>
               <StatTile label="Agents" value={activeAgentCount.toLocaleString()} icon={<Users className="h-3.5 w-3.5" />} tone="blue" />
-              <StatTile label="Total dialed" value={phoneTotals.calls.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
+              <StatTile label="Total calls" value={phoneTotals.calls.toLocaleString()} icon={<Phone className="h-3.5 w-3.5" />} tone="sky" />
               <StatTile label="Connected" value={phoneTotals.answered.toLocaleString()} icon={<PhoneCall className="h-3.5 w-3.5" />} tone="emerald" />
               <StatTile label="Connect rate" value={`${phoneTotals.connectRate}%`} icon={<Activity className="h-3.5 w-3.5" />} tone="blue" />
               <StatTile label="Talk time" value={formatHours(phoneTotals.seconds)} icon={<Clock className="h-3.5 w-3.5" />} tone="amber" />
@@ -7600,7 +7664,7 @@ function ReadyModeKillersPanel() {
           </TabsList>
           {subTabAllowed("call") && (
             <TabsContent value="call">
-              <ByCallStatsView agentList={callAgentList} phoneData={rmkPhoneData} directKeys />
+              <ByCallStatsView agentList={callAgentList} phoneData={rmkPhoneData} directKeys readymodeByKey={rmkCsvByKey} phoneSourceLabel="OpenPhone/QUO" />
             </TabsContent>
           )}
           {aggregated && !("error" in aggregated) && (

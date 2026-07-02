@@ -692,7 +692,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       const norm = normalizePhone(rec.fromNumber);
       const missedAt = new Date(rec.createdAt);
       const times = callbackTimes.get(norm);
-      const hasCallback = times?.some((t) => t >= missedAt) ?? false;
+      const hasCallback = times?.some((t) => t > missedAt) ?? false;
       if (!hasCallback) {
         missedNoCB.push({
           id: String(rec.id),
@@ -739,7 +739,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);
       const times = callbackTimes.get(norm);
-      const hasCallback = times?.some((t) => t >= missedAt) ?? false;
+      const hasCallback = times?.some((t) => t > missedAt) ?? false;
       if (!hasCallback) {
         const t = row.lineTeam;
         const team: MissedNoCallbackItem["team"] =
@@ -871,7 +871,7 @@ const backgroundJobsEnabled =
 
 if (backgroundJobsEnabled) {
   void refreshCallHistory(rootLogger);
-  setInterval(() => void refreshCallHistory(rootLogger), 2 * 60 * 1000);
+  setInterval(() => void refreshCallHistory(rootLogger), 30 * 1000);
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -933,6 +933,10 @@ router.get("/vos/stats", async (req, res) => {
  * When the PBX scan is still warming up, returns Quo-DB-only results immediately.
  */
 router.get("/vos/missed-no-callback", async (req, res) => {
+  const cacheAgeMs = callHistoryFetchedAt ? Date.now() - callHistoryFetchedAt : Infinity;
+  if (cacheAgeMs > 30 * 1000) {
+    await refreshCallHistory(req.log);
+  }
   // Fast path: full cache is ready. Merge Readymode queue live so newly added
   // items appear immediately (cache only refreshes every ~15 min).
   if (callHistoryFetchedAt > 0) {
@@ -997,7 +1001,7 @@ router.get("/vos/missed-no-callback", async (req, res) => {
       const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);
       const times = callbackTimes.get(norm);
-      const hasCallback = times?.some((t) => t >= missedAt) ?? false;
+      const hasCallback = times?.some((t) => t > missedAt) ?? false;
       if (!hasCallback) {
         const t = row.lineTeam;
         const team: MissedNoCallbackItem["team"] =
