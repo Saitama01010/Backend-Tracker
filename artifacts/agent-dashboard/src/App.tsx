@@ -697,6 +697,7 @@ interface RosterIndex {
   // Reverse lookup table: any normalized name (en or ar, full or compound segment) → roster agent.
   // Includes inactive agents so historical sheet rows still attribute correctly.
   byName: Map<string, RosterAgent>;
+  ambiguousNames: Set<string>;
   // Helpers (resolve undefined when the roster has no entry for that name).
   lookupByAnyName(rawName: string): RosterAgent | null;
   teamForAgent(rawName: string): RosterTeam | null;
@@ -712,11 +713,111 @@ function emptyRosterIndex(): RosterIndex {
     phoneAliases: {},
     allowlist: { retention: new Set(), nsf: new Set(), cs: new Set(), killers: new Set() },
     byName: new Map(),
+    ambiguousNames: new Set(),
     lookupByAnyName: () => null,
     teamForAgent: () => null,
     agentsForTeam: () => [],
   };
   return idx;
+}
+
+function normalizeIdentityText(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\u2010-\u2015\u2212]/g, "-")
+    .replace(/\s*-\s*\d{3,}\s*$/g, "")
+    .replace(/[\/|,()[\]{}]+/g, " ")
+    .replace(/-/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function pushUnique(out: string[], seen: Set<string>, value: string) {
+  const trimmed = value.trim();
+  if (!trimmed || seen.has(trimmed)) return;
+  seen.add(trimmed);
+  out.push(trimmed);
+}
+
+function rawAgentSegments(rawName: string): string[] {
+  return rawName
+    .normalize("NFKC")
+    .replace(/[\u2010-\u2015\u2212]/g, "-")
+    .split(/[\/|,()[\]{}-]+/g)
+    .map((s) => s.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .filter((s) => !/^\d{3,}$/.test(s));
+}
+
+function agentNameCandidates(rawName: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const full = normalizeIdentityText(rawName);
+  pushUnique(out, seen, full);
+  pushUnique(out, seen, normalizeAgent(rawName));
+
+  const segments = rawAgentSegments(rawName);
+  for (const segment of segments) {
+    pushUnique(out, seen, normalizeIdentityText(segment));
+    pushUnique(out, seen, normalizeAgent(segment));
+  }
+  if (segments.length > 1) {
+    const pair = normalizeIdentityText(segments.join(" "));
+    pushUnique(out, seen, pair);
+    pushUnique(out, seen, normalizeAgent(pair));
+  }
+  return out.filter((candidate) => !/^\d+$/.test(candidate));
+}
+
+function addRosterAlias(idx: RosterIndex, alias: string, agent: RosterAgent) {
+  for (const candidate of agentNameCandidates(alias)) {
+    const existing = idx.byName.get(candidate);
+    if (existing && existing.id !== agent.id) {
+      idx.ambiguousNames.add(candidate);
+      idx.byName.delete(candidate);
+      continue;
+    }
+    if (!idx.ambiguousNames.has(candidate)) idx.byName.set(candidate, agent);
+  }
+}
+
+function addAliasCandidates(set: Set<string>, alias: string) {
+  for (const candidate of agentNameCandidates(alias)) set.add(candidate);
+}
+
+function resolveRosterAgent(rawName: string, roster: RosterIndex): RosterAgent | null {
+  // Exact roster-backed examples:
+  // Anna Stone -> Anna Stone
+  // Anisa -> Anna Stone
+  // Anna Stone / Anisa -> Anna Stone
+  // Anisa - Anna Stone -> Anna Stone
+  // Anna Stone-Anisa-2382 -> Anna Stone
+  const hits = new Map<number, RosterAgent>();
+  for (const candidate of agentNameCandidates(rawName)) {
+    if (roster.ambiguousNames.has(candidate)) continue;
+    const hit = roster.byName.get(candidate);
+    if (hit) hits.set(hit.id, hit);
+  }
+  return hits.size === 1 ? [...hits.values()][0]! : null;
+}
+
+function candidateMatchesTeamNames(
+  rawName: string,
+  teamNames: Set<string>,
+  roster?: RosterIndex | null,
+  team?: RosterTeam,
+): boolean {
+  if (!rawName) return false;
+  if (team && roster?.teamForAgent(rawName) === team) return true;
+  for (const candidate of agentNameCandidates(rawName)) {
+    if (teamNames.has(candidate)) return true;
+    const aliased = NAME_ALIASES[candidate] ?? candidate;
+    if (teamNames.has(aliased)) return true;
+    if (team && roster?.teamForAgent(candidate) === team) return true;
+  }
+  return false;
 }
 
 function buildRosterIndex(agents: RosterAgent[]): RosterIndex {
@@ -731,28 +832,39 @@ function buildRosterIndex(agents: RosterAgent[]): RosterIndex {
     return (acc + h) | 0;
   }, agents.length);
   for (const a of agents) {
-    const enNorm = a.name.replace(/\s+/g, " ").trim().toLowerCase();
-    const arNorm = a.arabicName ? a.arabicName.replace(/\s+/g, " ").trim().toLowerCase() : "";
+    const enNorm = normalizeIdentityText(a.name);
+    const arNorm = a.arabicName ? normalizeIdentityText(a.arabicName) : "";
     // Identity mappings (used for historical attribution) include EVERY agent, active or not —
     // so a deactivated person's past sheet rows still attribute to them and their team.
     if (enNorm) {
-      idx.teamNamesAll[a.team].add(enNorm);
-      idx.byName.set(enNorm, a);
+      addAliasCandidates(idx.teamNamesAll[a.team], a.name);
+      addRosterAlias(idx, a.name, a);
     }
     if (arNorm) {
-      idx.teamNamesAll[a.team].add(arNorm);
-      idx.byName.set(arNorm, a);
-      if (enNorm) idx.phoneAliases[arNorm] = enNorm;
+      addAliasCandidates(idx.teamNamesAll[a.team], a.arabicName!);
+      if (enNorm) {
+        idx.phoneAliases[arNorm] = enNorm;
+        idx.phoneAliases[normalizeAgent(a.arabicName!)] = normalizeAgent(a.name);
+      }
+      addRosterAlias(idx, a.arabicName!, a);
+    }
+    if (enNorm && arNorm) {
+      addRosterAlias(idx, `${a.name} ${a.arabicName}`, a);
+      addRosterAlias(idx, `${a.arabicName} ${a.name}`, a);
+      addRosterAlias(idx, `${a.name} - ${a.arabicName}`, a);
+      addRosterAlias(idx, `${a.arabicName} - ${a.name}`, a);
+      addRosterAlias(idx, `${a.name} / ${a.arabicName}`, a);
+      addRosterAlias(idx, `${a.arabicName} / ${a.name}`, a);
     }
     // Active-only sets drive "current visibility" — which agents show up on tiles & phone allowlists.
     if (a.active) {
       if (enNorm) {
-        idx.teamNames[a.team].add(enNorm);
-        idx.allowlist[a.team].add(enNorm);
+        addAliasCandidates(idx.teamNames[a.team], a.name);
+        addAliasCandidates(idx.allowlist[a.team], a.name);
       }
       if (arNorm) {
-        idx.teamNames[a.team].add(arNorm);
-        idx.allowlist[a.team].add(arNorm);
+        addAliasCandidates(idx.teamNames[a.team], a.arabicName!);
+        addAliasCandidates(idx.allowlist[a.team], a.arabicName!);
       }
     }
   }
@@ -761,6 +873,8 @@ function buildRosterIndex(agents: RosterAgent[]): RosterIndex {
   function norm(s: string): string { return s.replace(/\s+/g, " ").trim().toLowerCase(); }
   idx.lookupByAnyName = (rawName: string): RosterAgent | null => {
     if (!rawName) return null;
+    const resolved = resolveRosterAgent(rawName, idx);
+    if (resolved) return resolved;
     const n = norm(rawName);
     const direct = idx.byName.get(n);
     if (direct) return direct;
@@ -1112,10 +1226,7 @@ async function fetchRetentionCombinedSheet(
     const agentRaw = (r["Agent Name"] ?? "").trim();
     // Roster-aware team gate: respects rosterDrives + inactive hide + segment lookup.
     if (!includeForRetention(agentRaw)) {
-      const agentNorm = normalizeAgent(agentRaw);
-      const segs = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
-      const segHit = segs.some(s => retentionNames.has(s));
-      if (!segHit) continue;
+      if (!candidateMatchesTeamNames(agentRaw, retentionNames, roster, "retention")) continue;
     }
     // Keyword wins, then fall back to the structured File Status mapping.
     const kw = detectKeywordStatus(r);
@@ -1126,9 +1237,7 @@ async function fetchRetentionCombinedSheet(
       const fileStatus = (r["File Status"] ?? "").toLowerCase();
       // NSF-origin retention agents (e.g. Kayla Navarro): their non-keyword
       // Discord-bot submissions are fixes, so default to "Fixed" not "Retained".
-      const agentNorm = normalizeAgent(agentRaw);
-      const isFixDefault = RETENTION_FIX_DEFAULT_AGENTS.has(agentNorm)
-        || agentNorm.split("-").map(s => s.trim()).some(s => RETENTION_FIX_DEFAULT_AGENTS.has(s));
+      const isFixDefault = agentNameCandidates(agentRaw).some((candidate) => RETENTION_FIX_DEFAULT_AGENTS.has(candidate));
       derivedStatus = /cancel|revok/.test(fileStatus)
         ? "Cancelled"
         : /\bfixed\b|\bidp\b/.test(fileStatus)
@@ -1157,9 +1266,7 @@ async function fetchRetentionCombinedSheet(
     if (!agentRaw) continue;
     // Roster-aware team gate (with segment fallback for compound names).
     if (!includeForRetention(agentRaw)) {
-      const agentNorm = normalizeAgent(agentRaw);
-      const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
-      if (!segments.some(seg => retentionNames.has(seg))) continue;
+      if (!candidateMatchesTeamNames(agentRaw, retentionNames, roster, "retention")) continue;
     }
     // IDP-Handled tab is its own classification; keyword override does NOT apply here
     // (every submission to this sheet is by definition an IDP-Handled action).
@@ -1190,9 +1297,7 @@ async function fetchRetentionCombinedSheet(
     // silently disappear because their compound forms live in
     // RETENTION_SHEET_CS_AGENTS.
     if (!includeForRetention(agentRaw)) {
-      const agentNorm = normalizeAgent(agentRaw);
-      const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
-      if (!segments.some(seg => retentionNames.has(seg))) continue;
+      if (!candidateMatchesTeamNames(agentRaw, retentionNames, roster, "retention")) continue;
     }
     rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim(), __sourceTab: "IDP-Cancel-Retained" });
   }
@@ -1206,12 +1311,7 @@ async function fetchRetentionCombinedSheet(
     for (const r of oldNsfSheet.rows) {
       const agentRaw = (r[nsfAgentCol] ?? "").trim();
       if (!agentRaw || /total$/i.test(agentRaw)) continue;
-      const agentNorm = normalizeAgent(agentRaw);
-      const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
-      const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
-      const matches = RETENTION_TEMP_NSF_AGENTS.has(agentNorm)
-        || RETENTION_TEMP_NSF_AGENTS.has(resolvedKey)
-        || segments.some(seg => RETENTION_TEMP_NSF_AGENTS.has(seg));
+      const matches = agentNameCandidates(agentRaw).some((candidate) => RETENTION_TEMP_NSF_AGENTS.has(candidate));
       if (!matches) continue;
       const dateStr = nsfDateCol ? (r[nsfDateCol] ?? "").trim() : "";
       const d = parseDate(dateStr);
@@ -1261,16 +1361,7 @@ async function fetchRetentionSheetNSFCrossoverRows(
   const rows: Row[] = [];
   // Roster-aware membership (segment-aware for compound names like "amr-katie miller-2900").
   const matchesTeam = (agentRaw: string): boolean => {
-    if (!agentRaw) return false;
-    // Prefer roster.teamForAgent when roster active for this team.
-    const rosterTeam = roster?.teamForAgent(agentRaw);
-    if (rosterTeam === "nsf") return true;
-    const n = normalizeAgent(agentRaw);
-    if (nsfNames.has(n)) return true;
-    // Per-segment alias resolution: catches Discord-bot compound names where
-    // the Egyptian-name segment is itself an alias (resolves via NAME_ALIASES).
-    const segs = n.split("-").map(s => normalizeAgent(s.trim())).filter(Boolean);
-    return segs.some(s => nsfNames.has(s)) || segs.some(s => roster?.teamForAgent(s) === "nsf");
+    return candidateMatchesTeamNames(agentRaw, nsfNames, roster, "nsf");
   };
 
   if (oldAgentCol && oldStatusCol) {
@@ -1343,15 +1434,7 @@ async function fetchRetentionSheetCSCrossoverRows(
   const rows: Row[] = [];
   // Roster-aware CS membership with segment fallback for compound names.
   const matchesTeam = (agentRaw: string): boolean => {
-    if (!agentRaw) return false;
-    const rosterTeam = roster?.teamForAgent(agentRaw);
-    if (rosterTeam === "cs") return true;
-    const n = normalizeAgent(agentRaw);
-    if (csNames.has(n)) return true;
-    // Per-segment alias resolution: catches Discord-bot compound names where
-    // the Egyptian-name segment is an alias (e.g. "abdulrhman" → jacob stephenson).
-    const segs = n.split("-").map(s => normalizeAgent(s.trim())).filter(Boolean);
-    return segs.some(s => csNames.has(s)) || segs.some(s => roster?.teamForAgent(s) === "cs");
+    return candidateMatchesTeamNames(agentRaw, csNames, roster, "cs");
   };
 
   if (oldAgentCol && oldStatusCol) {
@@ -1592,19 +1675,8 @@ async function fetchCancelViolations(
   // Roster-aware team classifier (uses roster.teamForAgent + segment-aware fallback
   // so compound names like "nour-ella monroe-2900" are correctly routed).
   const classifyTeam = (agentRaw: string): "CS" | "NSF" | null => {
-    if (!agentRaw) return null;
-    const rosterTeam = roster?.teamForAgent(agentRaw);
-    if (rosterTeam === "cs") return "CS";
-    if (rosterTeam === "nsf") return "NSF";
-    const n = normalizeAgent(agentRaw);
-    if (csNames.has(n)) return "CS";
-    if (nsfNames.has(n)) return "NSF";
-    const segs = n.split("-").map(s => s.trim()).filter(Boolean);
-    for (const s of segs) {
-      const t = roster?.teamForAgent(s);
-      if (t === "cs" || csNames.has(s)) return "CS";
-      if (t === "nsf" || nsfNames.has(s)) return "NSF";
-    }
+    if (candidateMatchesTeamNames(agentRaw, csNames, roster, "cs")) return "CS";
+    if (candidateMatchesTeamNames(agentRaw, nsfNames, roster, "nsf")) return "NSF";
     return null;
   };
 
@@ -1668,11 +1740,7 @@ async function fetchNewSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
-    const agentNorm = normalizeAgent(agentRaw);
-    const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
-    const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
-    const matches = teamNames.has(agentNorm) || teamNames.has(resolvedKey)
-      || segments.some(seg => teamNames.has(seg) || teamNames.has(NAME_ALIASES[seg] ?? seg));
+    const matches = candidateMatchesTeamNames(agentRaw, teamNames);
     if (!matches) continue;
     // Keyword override (retain/cancel) across all text fields, including Notes.
     const kw = detectKeywordStatus(r);
@@ -1695,12 +1763,7 @@ async function fetchIDPSheetForTeam(teamNames: Set<string>): Promise<Row[]> {
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
-    const agentNorm = normalizeAgent(agentRaw);
-    const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
-    // Also try each segment of compound names (e.g. "riham samir-rika hart-1234" → ["riham samir", "rika hart", "1234"])
-    const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
-    const matches = teamNames.has(agentNorm) || teamNames.has(resolvedKey)
-      || segments.some(seg => teamNames.has(seg) || teamNames.has(NAME_ALIASES[seg] ?? seg));
+    const matches = candidateMatchesTeamNames(agentRaw, teamNames);
     if (!matches) continue;
     // IDP-Handled tab is its own classification; keyword override does NOT apply here
     // (every submission to this sheet is by definition an IDP-Handled action).
@@ -1739,11 +1802,7 @@ async function fetchNSFCombinedSheet(
     for (const r of oldNsfSheet.rows) {
       const agentRaw = (r[oldAgentCol] ?? "").trim();
       if (!agentRaw || /total$/i.test(agentRaw)) continue;
-      const agentNorm = normalizeAgent(agentRaw);
-      const resolvedKey = NAME_ALIASES[agentNorm] ?? agentNorm;
-      const segments = agentNorm.split("-").map(s => s.trim()).filter(Boolean);
-      const matches = teamNames.has(agentNorm) || teamNames.has(resolvedKey)
-        || segments.some(seg => teamNames.has(seg));
+      const matches = candidateMatchesTeamNames(agentRaw, teamNames, roster, "nsf");
       if (!matches) continue;
       if (hideInactive && roster?.lookupByAnyName(agentRaw)?.active === false) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "").trim() : "";
@@ -5709,13 +5768,17 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   // Local drafts for inline-edited arabic/shift cells so typing is smooth.
   const [drafts, setDrafts] = useState<Record<number, { name?: string; arabicName?: string; shift?: string }>>({});
 
-  async function readTeamAgentError(response: Response, fallback: string): Promise<string> {
+  async function readTeamAgentError(
+    response: Response,
+    fallback: string,
+    nonJsonFallback = "Server error while saving agent. Check API logs.",
+  ): Promise<string> {
     const contentType = response.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
       const parsed = await response.json().catch(() => null) as { error?: string } | null;
       return parsed?.error || fallback;
     }
-    return "Server error while saving agent. Check API logs.";
+    return nonJsonFallback;
   }
 
   const load = useCallback(async () => {
@@ -5725,11 +5788,12 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
       if (r.ok) {
         setAgents(await r.json() as TeamAgent[]);
         setDrafts({});
+        setError("");
       } else {
-        setError(await readTeamAgentError(r, "Failed to load agents"));
+        setError(await readTeamAgentError(r, "Failed to load agents. Check API logs.", "Failed to load agents. Check API logs."));
       }
     } catch {
-      setError("Failed to load agents");
+      setError("Failed to load agents. Check API logs.");
     } finally { setLoading(false); }
     // Bust the dashboard-wide roster query so all panels rebuild aliases/allowlists.
     void qc.invalidateQueries({ queryKey: ["roster"] });
