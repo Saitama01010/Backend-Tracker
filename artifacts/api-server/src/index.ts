@@ -31,9 +31,8 @@ function dashboardPassword(): string {
 
 async function seedAdminUser() {
   const [{ value }] = await db.select({ value: count() }).from(portalUsersTable);
-  const defaultPass = dashboardPassword();
-  const hash = await bcrypt.hash(defaultPass, 10);
   if (value === 0) {
+    const hash = await bcrypt.hash(dashboardPassword(), 10);
     await db.insert(portalUsersTable).values({
       username: "admin",
       passwordHash: hash,
@@ -45,13 +44,14 @@ async function seedAdminUser() {
     return;
   }
 
-  if (process.env["DASHBOARD_PASSWORD"]) {
+  if (process.env["RESET_ADMIN_PASSWORD_ON_BOOT"] === "true") {
+    const hash = await bcrypt.hash(dashboardPassword(), 10);
     const [updated] = await db
       .update(portalUsersTable)
       .set({ passwordHash: hash })
       .where(eq(portalUsersTable.username, "admin"))
       .returning({ id: portalUsersTable.id });
-    if (updated) logger.info("Updated admin password from DASHBOARD_PASSWORD");
+    if (updated) logger.info("Updated admin password from DASHBOARD_PASSWORD because RESET_ADMIN_PASSWORD_ON_BOOT=true");
   }
 }
 
@@ -294,8 +294,10 @@ app.listen(port, async (err) => {
   }
   logger.info({ port }, "Server listening");
   await seedAdminUser();
-  await clearTeamAccessRestrictions();
-  await deactivateFormerUsers();
+  if (process.env["RUN_LEGACY_USER_BOOT_FIXUPS"] === "true") {
+    await clearTeamAccessRestrictions();
+    await deactivateFormerUsers();
+  }
   await seedAttendanceMembers();
   await seedAttendanceRecords();
 });

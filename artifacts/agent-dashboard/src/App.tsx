@@ -5709,6 +5709,17 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   // Local drafts for inline-edited arabic/shift cells so typing is smooth.
   const [drafts, setDrafts] = useState<Record<number, { name?: string; arabicName?: string; shift?: string }>>({});
 
+  async function readTeamAgentError(response: Response, fallback: string): Promise<string> {
+    const text = await response.text().catch(() => "");
+    if (!text) return fallback;
+    try {
+      const parsed = JSON.parse(text) as { error?: string };
+      return parsed.error || fallback;
+    } catch {
+      return text;
+    }
+  }
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -5716,7 +5727,11 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
       if (r.ok) {
         setAgents(await r.json() as TeamAgent[]);
         setDrafts({});
+      } else {
+        setError(await readTeamAgentError(r, "Failed to load agents"));
       }
+    } catch {
+      setError("Failed to load agents");
     } finally { setLoading(false); }
     // Bust the dashboard-wide roster query so all panels rebuild aliases/allowlists.
     void qc.invalidateQueries({ queryKey: ["roster"] });
@@ -5727,41 +5742,70 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   async function addAgent() {
     if (!newName.trim()) return;
     setSaving(true); setError("");
-    const r = await fetch("/api/team-agents", {
-      method: "POST",
-      headers: authHeaders(token),
-      body: JSON.stringify({
-        name: newName.trim(),
-        team: newTeam,
-        arabicName: newArabic.trim() || null,
-        shift: newShift.trim() || null,
-        notes: null,
-      }),
-    });
-    if (r.ok) {
-      setNewName(""); setNewArabic(""); setNewShift("");
-      await load();
-    } else {
-      const d = await r.json() as { error?: string };
-      setError(d.error ?? "Failed to add");
+    try {
+      const r = await fetch("/api/team-agents", {
+        method: "POST",
+        headers: authHeaders(token),
+        body: JSON.stringify({
+          name: newName.trim(),
+          team: newTeam,
+          arabicName: newArabic.trim() || null,
+          shift: newShift.trim() || null,
+          notes: null,
+        }),
+      });
+      if (r.ok) {
+        setNewName(""); setNewArabic(""); setNewShift("");
+        await load();
+        await qc.invalidateQueries({ queryKey: ["roster"] });
+      } else {
+        setError(await readTeamAgentError(r, "Failed to add"));
+      }
+    } catch {
+      setError("Failed to add");
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   }
 
   async function patchAgent(id: number, body: Record<string, unknown>) {
-    setBusyId(id);
-    await fetch(`/api/team-agents/${id}`, {
-      method: "PATCH",
-      headers: authHeaders(token),
-      body: JSON.stringify(body),
-    });
-    setBusyId(null);
-    await load();
+    setBusyId(id); setError("");
+    try {
+      const r = await fetch(`/api/team-agents/${id}`, {
+        method: "PATCH",
+        headers: authHeaders(token),
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        setError(await readTeamAgentError(r, "Failed to update"));
+        return false;
+      }
+      await load();
+      await qc.invalidateQueries({ queryKey: ["roster"] });
+      return true;
+    } catch {
+      setError("Failed to update");
+      return false;
+    } finally {
+      setBusyId(null);
+    }
   }
 
   async function removeAgent(id: number) {
-    await fetch(`/api/team-agents/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
-    await load();
+    setBusyId(id); setError("");
+    try {
+      const r = await fetch(`/api/team-agents/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) {
+        setError(await readTeamAgentError(r, "Failed to delete"));
+        return;
+      }
+      await load();
+      await qc.invalidateQueries({ queryKey: ["roster"] });
+    } catch {
+      setError("Failed to delete");
+    } finally {
+      setBusyId(null);
+    }
   }
 
   function openAgentDetail(agent: TeamAgent) {
@@ -5778,7 +5822,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
 
   async function saveAgentDetail() {
     if (!selectedAgent || !agentDetail.name.trim()) return;
-    await patchAgent(selectedAgent.id, {
+    const saved = await patchAgent(selectedAgent.id, {
       name: agentDetail.name.trim(),
       arabicName: agentDetail.arabicName.trim() || null,
       team: agentDetail.team,
@@ -5786,7 +5830,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
       notes: agentDetail.notes.trim() || null,
       active: agentDetail.active,
     });
-    setSelectedAgent(null);
+    if (saved) setSelectedAgent(null);
   }
 
   function getDraft(a: TeamAgent, field: "name" | "arabicName" | "shift"): string {
@@ -6057,6 +6101,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                     Active agent
                   </label>
                 </div>
+                {error && <p className="px-5 pb-3 text-xs metric-bad">{error}</p>}
                 <div className="flex justify-end gap-2 border-t border-border px-5 py-4">
                   <Button variant="ghost" onClick={() => setSelectedAgent(null)}>Cancel</Button>
                   <Button onClick={() => void saveAgentDetail()} disabled={!agentDetail.name.trim() || busyId === selectedAgent.id}>
