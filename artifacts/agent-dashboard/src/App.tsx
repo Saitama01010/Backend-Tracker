@@ -5710,14 +5710,12 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   const [drafts, setDrafts] = useState<Record<number, { name?: string; arabicName?: string; shift?: string }>>({});
 
   async function readTeamAgentError(response: Response, fallback: string): Promise<string> {
-    const text = await response.text().catch(() => "");
-    if (!text) return fallback;
-    try {
-      const parsed = JSON.parse(text) as { error?: string };
-      return parsed.error || fallback;
-    } catch {
-      return text;
+    const contentType = response.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      const parsed = await response.json().catch(() => null) as { error?: string } | null;
+      return parsed?.error || fallback;
     }
+    return "Server error while saving agent. Check API logs.";
   }
 
   const load = useCallback(async () => {
