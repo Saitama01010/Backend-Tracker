@@ -726,35 +726,38 @@ function emptyRosterIndex(): RosterIndex {
 }
 
 function normalizeSheetAgentName(value: string): string {
-  return normalizeAgent(
-    value
-      .replace(/[\\/|]+/g, " ")
-      .replace(/[-_]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim(),
-  );
+  const normalized = value
+    .normalize("NFKC")
+    .replace(/[‐‑‒–—―]/g, "-")
+    .replace(/[\\/|,()[\]]+/g, " ")
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\d{3,6}\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return normalizeAgent(normalized);
 }
 
 function sheetAgentCandidates(rawName: string): string[] {
   const seen = new Set<string>();
   const add = (value: string) => {
     const trimmed = value.replace(/\s+/g, " ").trim();
-    if (!trimmed) return;
+    if (!trimmed || /^\d+$/.test(trimmed)) return;
     for (const candidate of [
-      trimmed.toLowerCase(),
-      normalizeAgent(trimmed),
       normalizeSheetAgentName(trimmed),
+      normalizeAgent(trimmed),
+      trimmed.toLowerCase(),
     ]) {
-      if (candidate) seen.add(candidate);
+      if (candidate && !/^\d+$/.test(candidate)) seen.add(candidate);
     }
   };
 
-  add(rawName);
-  const noTrailingExtension = rawName.replace(/[-_\s]+\d{3,6}\s*$/g, "");
-  if (noTrailingExtension !== rawName) add(noTrailingExtension);
-  for (const seg of rawName.split(/[\\/|]/g)) add(seg);
-  for (const seg of rawName.split(/[-_]/g)) add(seg);
-  for (const seg of noTrailingExtension.split(/[-_]/g)) add(seg);
+  const dashNormalized = rawName.normalize("NFKC").replace(/[‐‑‒–—―]/g, "-");
+  add(dashNormalized);
+  const noTrailingExtension = dashNormalized.replace(/(?:[-_/|\s]+)\d{3,6}\s*$/g, "");
+  if (noTrailingExtension !== dashNormalized) add(noTrailingExtension);
+  for (const seg of noTrailingExtension.split(/[-\\/|,()[\]]+/g)) add(seg);
+  for (const seg of dashNormalized.split(/[-\\/|,()[\]]+/g)) add(seg);
   return Array.from(seen);
 }
 
@@ -784,24 +787,81 @@ function resolveSheetAgent(rawName: string, roster: RosterIndex): RosterAgent | 
   return matches.size === 1 ? Array.from(matches.values())[0] ?? null : null;
 }
 
+type SheetAgentDebug = {
+  agentColumn?: string | null;
+  resolvedTeam?: RosterTeam | null;
+  counted?: boolean;
+  row?: Row;
+};
+
 function sheetCandidateMatchesTeamNames(
   rawName: string,
   teamNames: Set<string>,
   roster?: RosterIndex | null,
   team?: RosterTeam,
+  debug?: { source: string; agentColumn?: string | null; row?: Row },
 ): boolean {
   if (!rawName) return false;
+  const candidates = sheetAgentCandidates(rawName);
   const hit = roster ? resolveSheetAgent(rawName, roster) : null;
-  if (hit && (!team || hit.team === team)) return true;
-  return sheetAgentCandidates(rawName).some((candidate) => teamNames.has(candidate));
+  if (hit) {
+    const counted = !team || hit.team === team;
+    if (debug) {
+      debugSheetAgentResolution(debug.source, rawName, candidates, hit, counted ? "matched-roster-team" : `resolved-team-${hit.team}-not-${team}`, {
+        agentColumn: debug.agentColumn,
+        row: debug.row,
+        counted,
+      });
+    }
+    return counted;
+  }
+  const counted = candidates.some((candidate) => teamNames.has(candidate));
+  if (debug) {
+    debugSheetAgentResolution(debug.source, rawName, candidates, null, counted ? "matched-legacy-team-set" : "not-in-roster-or-team-set", {
+      agentColumn: debug.agentColumn,
+      row: debug.row,
+      counted,
+    });
+  }
+  return counted;
+}
+
+function debugSheetAgentResolution(
+  source: string,
+  rawName: string,
+  candidates: string[],
+  resolved: RosterAgent | null,
+  reason: string,
+  details: SheetAgentDebug = {},
+) {
+  if (typeof window === "undefined") return;
+  if (window.localStorage.getItem("debug-sheet-agent-resolution") !== "1") return;
+  const isJeremy = /jeremy|romano/i.test(rawName);
+  const payload = {
+    source,
+    rawName,
+    agentColumn: details.agentColumn,
+    candidates,
+    resolved,
+    resolvedTeam: details.resolvedTeam ?? resolved?.team ?? null,
+    counted: details.counted,
+    reason,
+    rowAgentName: details.row?.["Agent Name"],
+    row: isJeremy ? details.row : undefined,
+  };
+  const log = resolved && details.counted !== false ? console.info : console.warn;
+  log("[sheet-agent-resolution]", payload);
 }
 
 function debugUnresolvedSheetAgent(source: string, rawName: string, candidates = sheetAgentCandidates(rawName)) {
-  if (typeof window === "undefined") return;
-  if (window.localStorage.getItem("debug-sheet-agent-resolution") !== "1") return;
-  console.warn("[sheet-agent-resolution] unresolved", { source, rawName, candidates });
+  debugSheetAgentResolution(source, rawName, candidates, null, "unresolved");
 }
 
+// Roster-backed sheet resolver examples:
+// Given roster name "Anna Stone" with arabicName "Anisa", these exact sheet
+// "Agent Name" values resolve to Anna Stone: "Anna Stone", "Anisa",
+// "Anna Stone / Anisa", "Anisa - Anna Stone", "Anna Stone-Anisa-2382".
+// Given roster name "Jeremy Romano", "Jeremy Romano" resolves to Jeremy Romano.
 function rosterSheetAliases(agent: RosterAgent): string[] {
   const aliases = [agent.name];
   if (agent.arabicName) {
@@ -1003,7 +1063,7 @@ const TIMESTAMP_HEADERS = [
   "Date/Time", "Submission Time", "Submit Time",
 ];
 const AGENT_HEADERS = [
-  "Agent Name", "Agent", "Representative", "Employee", "User",
+  "Agent Name", "Agent", "Rep", "Representative", "Employee", "User",
   "Submitted By", "Submitted by",
 ];
 const CANCEL_UPDATE_HEADERS = [
@@ -1034,11 +1094,27 @@ function findColumnByHeader(headers: string[], candidates: string[]): string | n
   return null;
 }
 
+function sheetAgentColumn(headers: string[]): string | null {
+  const exact = headers.find((h) => h.trim() === "Agent Name");
+  if (exact) return exact;
+  return findColumnByHeader(headers, AGENT_HEADERS);
+}
+
+function sheetAgentValue(row: Row, fallbackColumnName: string | null | undefined): string {
+  const exact = String(row["Agent Name"] ?? "").trim();
+  if (exact) return exact;
+  return cell(row, fallbackColumnName);
+}
+
 function fallbackColumn(index: number): string {
   return `__col${index}`;
 }
 
 function resolveSheetColumn(sheet: SheetData, context: string, field: string, aliases: string[], fallbackIndex: number): string {
+  if (field === "Agent Name") {
+    const agentColumn = sheetAgentColumn(sheet.headers);
+    if (agentColumn) return agentColumn;
+  }
   const found = findColumnByHeader(sheet.headers, aliases);
   if (found) return found;
   console.warn(`[backend-stats] ${context}: using column ${String.fromCharCode(65 + fallbackIndex)} fallback for ${field}; header was missing or unclear.`);
@@ -1146,14 +1222,34 @@ async function fetchRetentionCombinedSheet(
   // Inactive-agent rows are dropped from CURRENT views only (opts.includeInactive=true
   // preserves them for past-date views — identity in roster.byName is always intact).
   const hideInactive = !opts.includeInactive;
-  const includeForRetention = (agentRaw: string): boolean => {
+  const includeForRetention = (agentRaw: string, source = "retention", row?: Row, agentColumn?: string | null): boolean => {
     const hit = roster ? resolveSheetAgent(agentRaw, roster) : null;
-    if (hideInactive && hit && hit.active === false) return false;
-    if (rosterDrivesRetention) {
-      return hit?.team === "retention";
+    if (hideInactive && hit && hit.active === false) {
+      debugSheetAgentResolution(source, agentRaw, sheetAgentCandidates(agentRaw), hit, "inactive-hidden", {
+        agentColumn,
+        row,
+        counted: false,
+      });
+      return false;
     }
-    return !sheetCandidateMatchesTeamNames(agentRaw, nsfExcludeNames, roster, "nsf")
-      && !sheetCandidateMatchesTeamNames(agentRaw, csExcludeNames, roster, "cs");
+    if (rosterDrivesRetention) {
+      const counted = hit?.team === "retention";
+      debugSheetAgentResolution(source, agentRaw, sheetAgentCandidates(agentRaw), hit ?? null, counted ? "matched-retention-roster" : "not-retention-roster-agent", {
+        agentColumn,
+        row,
+        counted,
+      });
+      return counted;
+    }
+    const nsfExcluded = sheetCandidateMatchesTeamNames(agentRaw, nsfExcludeNames, roster, "nsf", { source: `${source}:nsf-exclude`, agentColumn, row });
+    const csExcluded = sheetCandidateMatchesTeamNames(agentRaw, csExcludeNames, roster, "cs", { source: `${source}:cs-exclude`, agentColumn, row });
+    const counted = !nsfExcluded && !csExcluded;
+    debugSheetAgentResolution(source, agentRaw, sheetAgentCandidates(agentRaw), hit ?? null, counted ? "legacy-retention-include" : "legacy-retention-excluded", {
+      agentColumn,
+      row,
+      counted,
+    });
+    return counted;
   };
   // Fetch the first four sheets in parallel (all from different spreadsheets).
   // IDP_RETENTION_URL shares the same spreadsheet as NEW_NSF_URL — fetching them
@@ -1167,7 +1263,7 @@ async function fetchRetentionCombinedSheet(
   const idpSheet = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
   const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
 
-  const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
+  const oldAgentCol = sheetAgentColumn(oldSheet.headers);
   const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
   const oldDateCol = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
   const oldFileIdCol = findColumn(oldSheet.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
@@ -1178,8 +1274,8 @@ async function fetchRetentionCombinedSheet(
   // — but skip agents who belong to NSF (they're counted there instead).
   if (oldAgentCol && oldStatusCol) {
     for (const r of oldSheet.rows) {
-      const agentRaw = (r[oldAgentCol] ?? "").trim();
-      if (!includeForRetention(agentRaw)) continue;
+      const agentRaw = sheetAgentValue(r, oldAgentCol);
+      if (!includeForRetention(agentRaw, "retention:old", r, oldAgentCol)) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "") : "";
       const d = oldDateCol ? parseDate(dateStr) : null;
       // Apply keyword override: Notes/other text fields containing retain/cancel
@@ -1203,7 +1299,7 @@ async function fetchRetentionCombinedSheet(
     const caDate = toCaliforniaDateStr(d);
     if (caDate < "2026-05-04") continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
-    if (!includeForRetention(agentRaw)) continue;
+    if (!includeForRetention(agentRaw, "retention:new", r, "Agent Name")) continue;
     const kw = detectKeywordStatus(r);
     rows.push({
       Agent: agentRaw,
@@ -1223,8 +1319,8 @@ async function fetchRetentionCombinedSheet(
     if (caDate < "2026-05-04") continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
     // Roster-aware team gate: respects rosterDrives + inactive hide + segment lookup.
-    if (!includeForRetention(agentRaw)) {
-      const segHit = sheetCandidateMatchesTeamNames(agentRaw, retentionNames, roster, "retention");
+    if (!includeForRetention(agentRaw, "retention:discord", r, "Agent Name")) {
+      const segHit = sheetCandidateMatchesTeamNames(agentRaw, retentionNames, roster, "retention", { source: "retention:discord:fallback", agentColumn: "Agent Name", row: r });
       if (!segHit) continue;
     }
     // Keyword wins, then fall back to the structured File Status mapping.
@@ -1264,8 +1360,8 @@ async function fetchRetentionCombinedSheet(
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
     // Roster-aware team gate (with segment fallback for compound names).
-    if (!includeForRetention(agentRaw)) {
-      if (!sheetCandidateMatchesTeamNames(agentRaw, retentionNames, roster, "retention")) continue;
+    if (!includeForRetention(agentRaw, "retention:idp", r, "Agent Name")) {
+      if (!sheetCandidateMatchesTeamNames(agentRaw, retentionNames, roster, "retention", { source: "retention:idp:fallback", agentColumn: "Agent Name", row: r })) continue;
     }
     // IDP-Handled tab is its own classification; keyword override does NOT apply here
     // (every submission to this sheet is by definition an IDP-Handled action).
@@ -1295,20 +1391,20 @@ async function fetchRetentionCombinedSheet(
     // for agents like Jacob Xander, Ella Monroe, Leo Carter, Carla Bennet
     // silently disappear because their compound forms live in
     // RETENTION_SHEET_CS_AGENTS.
-    if (!includeForRetention(agentRaw)) {
-      if (!sheetCandidateMatchesTeamNames(agentRaw, retentionNames, roster, "retention")) continue;
+    if (!includeForRetention(agentRaw, "retention:idp-cancel-retained", r, "Agent Name")) {
+      if (!sheetCandidateMatchesTeamNames(agentRaw, retentionNames, roster, "retention", { source: "retention:idp-cancel-retained:fallback", agentColumn: "Agent Name", row: r })) continue;
     }
     rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim(), __sourceTab: "IDP-Cancel-Retained" });
   }
 
   // Pull Talia Morgan / Tuqa Hossam rows from the old NSF sheet.
   // She was temporarily on NSF; all her NSF submissions count as "Fixed" in Retention.
-  const nsfAgentCol = findColumn(oldNsfSheet.headers, ["Agent", "Agent Name", "Rep"]);
+  const nsfAgentCol = sheetAgentColumn(oldNsfSheet.headers);
   const nsfDateCol = findColumn(oldNsfSheet.headers, ["Date", "Day", "Call Date"]);
   const nsfFileIdCol = findColumn(oldNsfSheet.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
   if (nsfAgentCol) {
     for (const r of oldNsfSheet.rows) {
-      const agentRaw = (r[nsfAgentCol] ?? "").trim();
+      const agentRaw = sheetAgentValue(r, nsfAgentCol);
       if (!agentRaw || /total$/i.test(agentRaw)) continue;
       const matches = sheetAgentCandidates(agentRaw).some(seg => RETENTION_TEMP_NSF_AGENTS.has(seg));
       if (!matches) continue;
@@ -1352,22 +1448,22 @@ async function fetchRetentionSheetNSFCrossoverRows(
   ]);
   const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
 
-  const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
+  const oldAgentCol = sheetAgentColumn(oldSheet.headers);
   const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
   const oldDateCol = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
   const oldFileCol = findColumn(oldSheet.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
 
   const rows: Row[] = [];
   // Roster-aware membership (segment-aware for compound names like "amr-katie miller-2900").
-  const matchesTeam = (agentRaw: string): boolean => {
+  const matchesTeam = (agentRaw: string, source: string, row?: Row, agentColumn?: string | null): boolean => {
     if (!agentRaw) return false;
-    return sheetCandidateMatchesTeamNames(agentRaw, nsfNames, roster, "nsf");
+    return sheetCandidateMatchesTeamNames(agentRaw, nsfNames, roster, "nsf", { source, agentColumn, row });
   };
 
   if (oldAgentCol && oldStatusCol) {
     for (const r of oldSheet.rows) {
-      const agentRaw = (r[oldAgentCol] ?? "").trim();
-      if (!matchesTeam(agentRaw)) continue;
+      const agentRaw = sheetAgentValue(r, oldAgentCol);
+      if (!matchesTeam(agentRaw, "nsf-crossover:old-retention", r, oldAgentCol)) continue;
       if (isInactive(agentRaw)) continue;
       const kw = detectKeywordStatus(r);
       const rawStatus = kw ?? (r[oldStatusCol] ?? "").trim();
@@ -1384,7 +1480,7 @@ async function fetchRetentionSheetNSFCrossoverRows(
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
-    if (!matchesTeam(agentRaw)) continue;
+    if (!matchesTeam(agentRaw, "nsf-crossover:new-retention", r, "Agent Name")) continue;
     if (isInactive(agentRaw)) continue;
     const kw = detectKeywordStatus(r);
     const derived = kw ?? deriveNewRetentionStatus(r["Cancel request update"] ?? "");
@@ -1400,7 +1496,7 @@ async function fetchRetentionSheetNSFCrossoverRows(
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
-    if (!matchesTeam(agentRaw)) continue;
+    if (!matchesTeam(agentRaw, "nsf-crossover:idp-cancel-retained", r, "Agent Name")) continue;
     if (isInactive(agentRaw)) continue;
     rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim(), __sourceTab: "IDP-Cancel-Retained" });
   }
@@ -1426,24 +1522,22 @@ async function fetchRetentionSheetCSCrossoverRows(
   ]);
   const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
 
-  const oldAgentCol = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
+  const oldAgentCol = sheetAgentColumn(oldSheet.headers);
   const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
   const oldDateCol = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
   const oldFileCol = findColumn(oldSheet.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
 
   const rows: Row[] = [];
   // Roster-aware CS membership with segment fallback for compound names.
-  const matchesTeam = (agentRaw: string): boolean => {
+  const matchesTeam = (agentRaw: string, source: string, row?: Row, agentColumn?: string | null): boolean => {
     if (!agentRaw) return false;
-    return sheetCandidateMatchesTeamNames(agentRaw, csNames, roster, "cs");
-    // Per-segment alias resolution: catches Discord-bot compound names where
-    // the Egyptian-name segment is an alias (e.g. "abdulrhman" → jacob stephenson).
+    return sheetCandidateMatchesTeamNames(agentRaw, csNames, roster, "cs", { source, agentColumn, row });
   };
 
   if (oldAgentCol && oldStatusCol) {
     for (const r of oldSheet.rows) {
-      const agentRaw = (r[oldAgentCol] ?? "").trim();
-      if (!matchesTeam(agentRaw)) continue;
+      const agentRaw = sheetAgentValue(r, oldAgentCol);
+      if (!matchesTeam(agentRaw, "cs-crossover:old-retention", r, oldAgentCol)) continue;
       if (isInactive(agentRaw)) continue;
       const kw = detectKeywordStatus(r);
       const rawStatus = kw ?? (r[oldStatusCol] ?? "").trim();
@@ -1460,7 +1554,7 @@ async function fetchRetentionSheetCSCrossoverRows(
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
-    if (!matchesTeam(agentRaw)) continue;
+    if (!matchesTeam(agentRaw, "cs-crossover:new-retention", r, "Agent Name")) continue;
     if (isInactive(agentRaw)) continue;
     const kw = detectKeywordStatus(r);
     const derived = kw ?? deriveNewRetentionStatus(r["Cancel request update"] ?? "");
@@ -1476,7 +1570,7 @@ async function fetchRetentionSheetCSCrossoverRows(
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
-    if (!matchesTeam(agentRaw)) continue;
+    if (!matchesTeam(agentRaw, "cs-crossover:idp-cancel-retained", r, "Agent Name")) continue;
     if (isInactive(agentRaw)) continue;
     rows.push({ Agent: agentRaw, Status: "Retained", Date: caDate, "File ID": (r["File ID"] ?? "").trim(), __sourceTab: "IDP-Cancel-Retained" });
   }
@@ -1671,27 +1765,34 @@ async function fetchCancelViolations(
   const violations: CancelViolation[] = [];
   const seen = new Set<string>();
 
-  const oldAgentCol  = findColumn(oldSheet.headers, ["Agent", "Agent Name", "Rep"]);
+  const oldAgentCol  = sheetAgentColumn(oldSheet.headers);
   const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
   const oldDateCol   = findColumn(oldSheet.headers, ["Date", "Day", "Call Date"]);
   const oldFileCol   = findColumn(oldSheet.headers, ["File ID", "File Id", "FileID", "file id"]);
   // Roster-aware team classifier (uses roster.teamForAgent + segment-aware fallback
   // so compound names like "nour-ella monroe-2900" are correctly routed).
-  const classifyTeam = (agentRaw: string): "CS" | "NSF" | null => {
+  const classifyTeam = (agentRaw: string, source: string, row?: Row, agentColumn?: string | null): "CS" | "NSF" | null => {
     if (!agentRaw) return null;
     const rosterTeam = roster ? resolveSheetAgent(agentRaw, roster)?.team : null;
-    if (rosterTeam === "cs") return "CS";
-    if (rosterTeam === "nsf") return "NSF";
-    if (sheetCandidateMatchesTeamNames(agentRaw, csNames, roster, "cs")) return "CS";
-    if (sheetCandidateMatchesTeamNames(agentRaw, nsfNames, roster, "nsf")) return "NSF";
+    if (rosterTeam === "cs") {
+      debugSheetAgentResolution(source, agentRaw, sheetAgentCandidates(agentRaw), roster ? resolveSheetAgent(agentRaw, roster) : null, "violation-classified-cs", { agentColumn, row, counted: true });
+      return "CS";
+    }
+    if (rosterTeam === "nsf") {
+      debugSheetAgentResolution(source, agentRaw, sheetAgentCandidates(agentRaw), roster ? resolveSheetAgent(agentRaw, roster) : null, "violation-classified-nsf", { agentColumn, row, counted: true });
+      return "NSF";
+    }
+    if (sheetCandidateMatchesTeamNames(agentRaw, csNames, roster, "cs", { source: `${source}:cs`, agentColumn, row })) return "CS";
+    if (sheetCandidateMatchesTeamNames(agentRaw, nsfNames, roster, "nsf", { source: `${source}:nsf`, agentColumn, row })) return "NSF";
+    debugSheetAgentResolution(source, agentRaw, sheetAgentCandidates(agentRaw), null, "violation-not-cs-or-nsf", { agentColumn, row, counted: false });
     return null;
   };
 
   if (oldAgentCol && oldStatusCol) {
     for (const r of oldSheet.rows) {
-      const agentRaw = (r[oldAgentCol] ?? "").trim();
+      const agentRaw = sheetAgentValue(r, oldAgentCol);
       const agentNorm = normalizeAgent(agentRaw);
-      const team = classifyTeam(agentRaw);
+      const team = classifyTeam(agentRaw, "violations:old-retention", r, oldAgentCol);
       if (!team) continue;
       const kw = detectKeywordStatus(r);
       if (kw === "Retained") continue; // keyword override says retained → not a violation
@@ -1715,7 +1816,7 @@ async function fetchCancelViolations(
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
     const agentNorm = normalizeAgent(agentRaw);
-    const team = classifyTeam(agentRaw);
+    const team = classifyTeam(agentRaw, "violations:new-retention", r, "Agent Name");
     if (!team) continue;
     const kw = detectKeywordStatus(r);
     if (kw === "Retained") continue;
@@ -1747,8 +1848,7 @@ async function fetchNewSheetForTeam(teamNames: Set<string>, roster?: RosterIndex
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
     const agentRaw = (r["Agent Name"] ?? "").trim();
-    if (!sheetCandidateMatchesTeamNames(agentRaw, teamNames, roster, team)) {
-      debugUnresolvedSheetAgent(`discord-bot:${team ?? "unknown"}`, agentRaw);
+    if (!sheetCandidateMatchesTeamNames(agentRaw, teamNames, roster, team, { source: `discord-bot:${team ?? "unknown"}`, agentColumn: "Agent Name", row: r })) {
       continue;
     }
     // Keyword override (retain/cancel) across all text fields, including Notes.
@@ -1773,8 +1873,7 @@ async function fetchIDPSheetForTeam(teamNames: Set<string>, roster?: RosterIndex
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!agentRaw) continue;
     // Also try each segment of compound names (e.g. "riham samir-rika hart-1234" → ["riham samir", "rika hart", "1234"])
-    if (!sheetCandidateMatchesTeamNames(agentRaw, teamNames, roster, team)) {
-      debugUnresolvedSheetAgent(`idp-handled:${team ?? "unknown"}`, agentRaw);
+    if (!sheetCandidateMatchesTeamNames(agentRaw, teamNames, roster, team, { source: `idp-handled:${team ?? "unknown"}`, agentColumn: "Agent Name", row: r })) {
       continue;
     }
     // IDP-Handled tab is its own classification; keyword override does NOT apply here
@@ -1807,14 +1906,14 @@ async function fetchNSFCombinedSheet(
   // Pull pre-cutover rows from the old NSF sheet (where agents tracked files before the Discord-bot sheet).
   // All rows map to "Fixed" since every row represents a file the agent submitted/handled.
   const oldNsfRows: Row[] = [];
-  const oldAgentCol = findColumn(oldNsfSheet.headers, ["Agent", "Agent Name", "Rep"]);
+  const oldAgentCol = sheetAgentColumn(oldNsfSheet.headers);
   const oldDateCol = findColumn(oldNsfSheet.headers, ["Date", "Day", "Call Date"]);
   const oldNsfFileCol = findColumn(oldNsfSheet.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
   if (oldAgentCol) {
     for (const r of oldNsfSheet.rows) {
-      const agentRaw = (r[oldAgentCol] ?? "").trim();
+      const agentRaw = sheetAgentValue(r, oldAgentCol);
       if (!agentRaw || /total$/i.test(agentRaw)) continue;
-      if (!sheetCandidateMatchesTeamNames(agentRaw, teamNames, roster, "nsf")) continue;
+      if (!sheetCandidateMatchesTeamNames(agentRaw, teamNames, roster, "nsf", { source: "nsf:old-sheet", agentColumn: oldAgentCol, row: r })) continue;
       if (hideInactive && !!roster && resolveSheetAgent(agentRaw, roster)?.active === false) continue;
       const dateStr = oldDateCol ? (r[oldDateCol] ?? "").trim() : "";
       const d = parseDate(dateStr);
@@ -2331,7 +2430,7 @@ function aggregate(
   toDate: Date | null,
   roster?: RosterIndex,
 ): Aggregated | { error: string } {
-  const agentColumn = findColumn(status.headers, ["Agent", "Agent Name", "Rep"]);
+  const agentColumn = sheetAgentColumn(status.headers);
   const statusColumn = findColumn(status.headers, ["Status", "Result", "Outcome", "Disposition"]);
   const dateColumn = findColumn(status.headers, ["Date", "Day", "Call Date"]);
   if (!agentColumn) return { error: `Couldn't find "Agent" column.` };
@@ -2359,7 +2458,7 @@ function aggregate(
 
   // Filter status rows
   const filteredStatus = status.rows.filter((r) => {
-    const agent = (r[agentColumn] ?? "").trim();
+    const agent = sheetAgentValue(r, agentColumn);
     if (!agent) return false;
     if (/total$/i.test(agent)) return false;
     if (dateColumn && (fromDate || toDate)) {
@@ -2400,11 +2499,23 @@ function aggregate(
     }
     return dayMap.get(iso)!;
   };
-  const ensureAgent = (a: string): AgentBreakdown => {
+  const ensureAgent = (a: string, sourceRow?: Row): AgentBreakdown => {
     // Sheet-specific identity: rows like "Anna Stone / Anisa" or
     // "Anisa-Anna Stone-2382" roll up under the canonical roster name.
     const rosterHit = roster ? resolveSheetAgent(a, roster) : null;
-    if (roster && !rosterHit) debugUnresolvedSheetAgent(`aggregate:${mode}`, a);
+    if (roster && !rosterHit) {
+      debugSheetAgentResolution(`aggregate:${mode}`, a, sheetAgentCandidates(a), null, "unresolved-before-count", {
+        agentColumn,
+        row: sourceRow,
+        counted: true,
+      });
+    } else if (rosterHit) {
+      debugSheetAgentResolution(`aggregate:${mode}`, a, sheetAgentCandidates(a), rosterHit, "counted-under-canonical-agent", {
+        agentColumn,
+        row: sourceRow,
+        counted: true,
+      });
+    }
     const key = rosterHit
       ? normalizeAgent(rosterHit.name)
       : normalizeAgent(a);
@@ -2431,11 +2542,11 @@ function aggregate(
   }
 
   for (const r of filteredStatus) {
-    const agent = (r[agentColumn] ?? "").trim();
+    const agent = sheetAgentValue(r, agentColumn);
     const rawStatus = normalizeStatus((r[statusColumn] ?? "").trim() || "(blank)");
     const status = rawStatus;
     allStatuses.add(status);
-    const ag = ensureAgent(agent);
+    const ag = ensureAgent(agent, r);
     ag.byStatus.set(status, (ag.byStatus.get(status) ?? 0) + 1);
     ag.total += 1;
     totalsByStatus.set(status, (totalsByStatus.get(status) ?? 0) + 1);
@@ -3144,7 +3255,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
 
   function exportRawRows() {
     if (!sheetData) return;
-    const agentCol = findColumn(sheetData.headers, ["Agent", "Agent Name", "Rep"]);
+    const agentCol = sheetAgentColumn(sheetData.headers);
     const statusCol = findColumn(sheetData.headers, ["Status", "Result", "Outcome", "Disposition"]);
     const dateCol = findColumn(sheetData.headers, ["Date", "Day", "Call Date"]);
     const fileIdCol = findColumn(sheetData.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
@@ -3152,7 +3263,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
     if (!agentCol || !statusCol) return;
 
     const rows = sheetData.rows.filter((r) => {
-      const agent = (r[agentCol] ?? "").trim();
+      const agent = sheetAgentValue(r, agentCol);
       if (!agent || /total$/i.test(agent)) return false;
       if (dateCol && (fromDate || toDate)) {
         const d = parseDate(r[dateCol] ?? "");
@@ -3168,7 +3279,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
       // count them, but raw export keeps the exact source tab visible.
       const isIdpCancel = r["__sourceTab"] === "IDP-Cancel-Retained";
       return {
-        Agent: (r[agentCol] ?? "").trim(),
+        Agent: sheetAgentValue(r, agentCol),
         Status: isIdpCancel ? "idp-cancel-retained" : (r[statusCol] ?? "").trim(),
         Source: sourceCol ? (r[sourceCol] ?? "").trim() : isIdpCancel ? "idp-cancel-retained" : "",
         Date: dateCol ? (r[dateCol] ?? "") : "",
@@ -10583,6 +10694,10 @@ function bstatResolveAgent(raw: string, roster: RosterIndex, fallbackTeam: TeamM
   // Killer roster (isKillerAgentKey). Otherwise fall back to the loader's team.
   if (hit) {
     const key = normalizeAgent(hit.name);
+    debugSheetAgentResolution("backend-stats", raw, sheetAgentCandidates(raw), hit, "backend-stats-roster-resolved", {
+      agentColumn: "Agent Name",
+      counted: true,
+    });
     return { key, display: hit.name, team: hit.team === "killers" || isKillerAgentKey(key) ? "killers" : hit.team };
   }
   if (!raw.trim()) return { key: "unknown", display: "Unknown", team: fallbackTeam };
