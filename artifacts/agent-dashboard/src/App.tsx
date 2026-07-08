@@ -1052,7 +1052,30 @@ const NSF = {
 };
 
 type Row = Record<string, string>;
-type SheetData = { headers: string[]; rows: Row[] };
+type LoadedSheetDebugRow = {
+  sourceName: string;
+  spreadsheetId: string;
+  gid: string;
+  tabName: string;
+  rawRowIndex: number;
+  rawAgentName: string;
+  selectedAgentColumn: string;
+  rawTimestamp: string;
+  selectedDateColumn: string;
+  parsedDate: string;
+  fileId: string;
+  rawStatusUpdateValue: string;
+  selectedStatusUpdateColumn: string;
+  resolvedCanonicalAgent: string;
+  resolvedTeam: string;
+  panelTeam: string;
+  passedStatusFilter: boolean;
+  passedTeamFilter: boolean;
+  counted: boolean;
+  skipReason: string;
+  row: Row;
+};
+type SheetData = { headers: string[]; rows: Row[]; debugRows?: LoadedSheetDebugRow[] };
 const SHEET_STALE_MS = 30_000;
 const SHEET_REFETCH_MS = 60_000;
 const PHONE_STALE_MS = 30_000;
@@ -1106,6 +1129,41 @@ function sheetAgentValue(row: Row, fallbackColumnName: string | null | undefined
   return cell(row, fallbackColumnName);
 }
 
+const DATE_HEADERS = [
+  "Timestamp", "Date", "Day", "Call Date", "Submitted at", "Created at",
+  "Submission Time", "Submit Time",
+];
+const STATUS_UPDATE_HEADERS = [
+  "Cancel request update", "Cancel Request Update", "Cancel Update", "Request Update",
+  "File Status", "Status", "Update", "Cancel Status", "Result", "Outcome", "Disposition",
+];
+
+function sheetDateColumn(headers: string[]): string | null {
+  const exact = headers.find((h) => h.trim() === "Timestamp");
+  if (exact) return exact;
+  return findColumnByHeader(headers, DATE_HEADERS);
+}
+
+function sheetDateValue(row: Row, fallbackColumnName: string | null | undefined): string {
+  const exact = String(row["Timestamp"] ?? "").trim();
+  if (exact) return exact;
+  return cell(row, fallbackColumnName);
+}
+
+function parseSheetDate(raw: string, selectedColumn?: string | null): Date | null {
+  if (!raw.trim()) return null;
+  if (selectedColumn?.trim() === "Timestamp") return parseEgyptTimestamp(raw) ?? parseDate(raw);
+  return parseDate(raw) ?? parseEgyptTimestamp(raw);
+}
+
+function sheetStatusColumn(headers: string[]): string | null {
+  return findColumnByHeader(headers, STATUS_UPDATE_HEADERS);
+}
+
+function sheetFileIdColumn(headers: string[]): string | null {
+  return findColumnByHeader(headers, FILE_ID_HEADERS);
+}
+
 function fallbackColumn(index: number): string {
   return `__col${index}`;
 }
@@ -1127,6 +1185,167 @@ function cell(r: Row, col: string | null | undefined): string {
 
 function isSubmittedRow(r: Row): boolean {
   return Object.entries(r).some(([k, v]) => k.startsWith("__col") && String(v ?? "").trim() !== "");
+}
+
+type SheetSourceMeta = {
+  sourceName: string;
+  spreadsheetId: string;
+  gid: string;
+  tabName: string;
+};
+
+const SHEET_SOURCES = {
+  retentionSubmission: {
+    sourceName: "Cancelation Requests Updates",
+    spreadsheetId: "1Eje6BABFbmRGHa6D1ET2sMvlE8o61iJ71yOvydD-R3o",
+    gid: "837339339",
+    tabName: "Retention Submission",
+  },
+  backend: {
+    sourceName: "Back-end submissions",
+    spreadsheetId: "11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc",
+    gid: "0",
+    tabName: "backend",
+  },
+  idpHandled: {
+    sourceName: "Back-end submissions",
+    spreadsheetId: "11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc",
+    gid: "871007220",
+    tabName: "idp-handled",
+  },
+  idpCancelRetained: {
+    sourceName: "Back-end submissions",
+    spreadsheetId: "11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc",
+    gid: "1018337469",
+    tabName: "idp-cancel-retained",
+  },
+} as const satisfies Record<string, SheetSourceMeta>;
+
+function makeLoadedSheetDebugRow(
+  sheet: SheetData,
+  row: Row,
+  rawRowIndex: number,
+  meta: SheetSourceMeta,
+  panelTeam: RosterTeam | "backend-stats" | "rmk",
+  roster: RosterIndex | null | undefined,
+  statusOverride?: string,
+): LoadedSheetDebugRow {
+  const agentCol = sheetAgentColumn(sheet.headers);
+  const dateCol = sheetDateColumn(sheet.headers);
+  const statusCol = sheetStatusColumn(sheet.headers);
+  const fileCol = sheetFileIdColumn(sheet.headers);
+  const rawAgentName = sheetAgentValue(row, agentCol);
+  const rawTimestamp = sheetDateValue(row, dateCol);
+  const parsedDate = parseSheetDate(rawTimestamp, dateCol);
+  const rawStatus = statusOverride ?? cell(row, statusCol);
+  const resolved = roster && rawAgentName ? resolveSheetAgent(rawAgentName, roster) : null;
+  return {
+    ...meta,
+    rawRowIndex,
+    rawAgentName,
+    selectedAgentColumn: agentCol ?? "",
+    rawTimestamp,
+    selectedDateColumn: dateCol ?? "",
+    parsedDate: parsedDate ? toIsoDate(parsedDate) : "",
+    fileId: cell(row, fileCol),
+    rawStatusUpdateValue: rawStatus,
+    selectedStatusUpdateColumn: statusCol ?? "",
+    resolvedCanonicalAgent: resolved?.name ?? "",
+    resolvedTeam: resolved?.team ?? "",
+    panelTeam,
+    passedStatusFilter: false,
+    passedTeamFilter: false,
+    counted: false,
+    skipReason: "unclassified",
+    row,
+  };
+}
+
+function hasJeremyCell(row: Row, rawAgentName: string): boolean {
+  if (/jeremy|romano/i.test(rawAgentName)) return true;
+  return Object.values(row).some((value) => /jeremy|romano/i.test(String(value ?? "")));
+}
+
+function finishLoadedSheetDebugRow(
+  debugRow: LoadedSheetDebugRow,
+  patch: Partial<Pick<LoadedSheetDebugRow, "passedStatusFilter" | "passedTeamFilter" | "counted" | "skipReason">>,
+): LoadedSheetDebugRow {
+  const next = { ...debugRow, ...patch };
+  if (
+    typeof window !== "undefined" &&
+    window.localStorage.getItem("debug-sheet-agent-resolution") === "1" &&
+    hasJeremyCell(next.row, next.rawAgentName)
+  ) {
+    console.warn("[sheet-agent-resolution:loaded-row]", {
+      sourceName: next.sourceName,
+      spreadsheetId: next.spreadsheetId,
+      gid: next.gid,
+      tabName: next.tabName,
+      rawAgentName: next.rawAgentName,
+      rawTimestamp: next.rawTimestamp,
+      parsedDate: next.parsedDate,
+      resolvedCanonicalAgent: next.resolvedCanonicalAgent,
+      resolvedTeam: next.resolvedTeam,
+      counted: next.counted,
+      skipReason: next.skipReason,
+      row: next.row,
+    });
+  }
+  return next;
+}
+
+type DebugStatusMode = "retention-update" | "retained-only" | "fixed" | "idp-handled" | "idp-cancel-retained";
+
+function debugRowsForRequiredSheet({
+  sheet,
+  meta,
+  panelTeam,
+  roster,
+  teamNames,
+  statusMode,
+}: {
+  sheet: SheetData;
+  meta: SheetSourceMeta;
+  panelTeam: RosterTeam;
+  roster: RosterIndex | null | undefined;
+  teamNames: Set<string>;
+  statusMode: DebugStatusMode;
+}): LoadedSheetDebugRow[] {
+  const out: LoadedSheetDebugRow[] = [];
+  for (let i = 0; i < sheet.rows.length; i++) {
+    const row = sheet.rows[i]!;
+    const kw = detectKeywordStatus(row);
+    const derivedStatus =
+      statusMode === "fixed" ? (kw ?? "Fixed") :
+      statusMode === "idp-handled" ? "IDP-Handled" :
+      statusMode === "idp-cancel-retained" ? "Retained" :
+      statusMode === "retention-update" ? (kw ?? deriveNewRetentionStatus(row["Cancel request update"] ?? "")) :
+      kw ?? cell(row, sheetStatusColumn(sheet.headers));
+    const base = makeLoadedSheetDebugRow(sheet, row, i + 2, meta, panelTeam, roster, derivedStatus);
+    const parsed = base.parsedDate ? parseDate(base.parsedDate) : null;
+    const resolvedTeam = base.resolvedTeam as RosterTeam | "";
+    const passedTeamFilter = resolvedTeam
+      ? resolvedTeam === panelTeam
+      : sheetCandidateMatchesTeamNames(base.rawAgentName, teamNames, roster, panelTeam);
+    const passedStatusFilter =
+      statusMode === "retained-only" ? isRetainedStatus(derivedStatus) :
+      statusMode === "retention-update" ? !!derivedStatus :
+      true;
+    let skipReason = "counted";
+    if (!base.rawAgentName) skipReason = "missing-agent-name";
+    else if (!base.rawTimestamp) skipReason = "missing-timestamp";
+    else if (!parsed) skipReason = "invalid-timestamp";
+    else if (!derivedStatus) skipReason = "missing-status";
+    else if (!passedStatusFilter) skipReason = statusMode === "retained-only" ? "unrecognized-status" : "missing-status";
+    else if (!passedTeamFilter) skipReason = base.resolvedTeam ? "resolved-team-mismatch" : "unresolved-agent";
+    out.push(finishLoadedSheetDebugRow(base, {
+      passedStatusFilter,
+      passedTeamFilter,
+      counted: skipReason === "counted",
+      skipReason,
+    }));
+  }
+  return out;
 }
 
 // Reads a Google Sheet tab through the API server's authenticated Sheets
@@ -1262,6 +1481,12 @@ async function fetchRetentionCombinedSheet(
   ]);
   const idpSheet = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
   const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
+  const debugRows: LoadedSheetDebugRow[] = [
+    ...debugRowsForRequiredSheet({ sheet: newSheet, meta: SHEET_SOURCES.retentionSubmission, panelTeam: "retention", roster, teamNames: retentionNames, statusMode: "retention-update" }),
+    ...debugRowsForRequiredSheet({ sheet: discordSheet, meta: SHEET_SOURCES.backend, panelTeam: "retention", roster, teamNames: retentionNames, statusMode: "fixed" }),
+    ...debugRowsForRequiredSheet({ sheet: idpSheet, meta: SHEET_SOURCES.idpHandled, panelTeam: "retention", roster, teamNames: retentionNames, statusMode: "idp-handled" }),
+    ...debugRowsForRequiredSheet({ sheet: idpCancelSheet, meta: SHEET_SOURCES.idpCancelRetained, panelTeam: "retention", roster, teamNames: retentionNames, statusMode: "idp-cancel-retained" }),
+  ];
 
   const oldAgentCol = sheetAgentColumn(oldSheet.headers);
   const oldStatusCol = findColumn(oldSheet.headers, ["Status", "Result", "Outcome", "Disposition"]);
@@ -1426,7 +1651,7 @@ async function fetchRetentionCombinedSheet(
   ];
   rows.push(...MANUAL_RETAINED);
 
-  return { headers: ["Agent", "Status", "Date", "File ID"], rows };
+  return { headers: ["Agent", "Status", "Date", "File ID"], rows, debugRows };
 }
 
 // Pulls Retention-sheet rows for NSF cross-over agents (e.g. Katie Miller) and maps
@@ -1839,8 +2064,8 @@ async function fetchCancelViolations(
 // EXCEPTION: if the "Cancel request update" or "File Status" or "Notes" field
 // contains "retain" / "retention", the file was ultimately retained and should
 // count as "Retained" instead so it appears in the retention metrics.
-async function fetchNewSheetForTeam(teamNames: Set<string>, roster?: RosterIndex | null, team?: RosterTeam): Promise<Row[]> {
-  const newSheet = await fetchHeaderCsv(NEW_NSF_URL);
+async function fetchNewSheetForTeam(teamNames: Set<string>, roster?: RosterIndex | null, team?: RosterTeam, preloadedSheet?: SheetData): Promise<Row[]> {
+  const newSheet = preloadedSheet ?? await fetchHeaderCsv(NEW_NSF_URL);
   const rows: Row[] = [];
   for (const r of newSheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
@@ -1862,8 +2087,8 @@ async function fetchNewSheetForTeam(teamNames: Set<string>, roster?: RosterIndex
 // Every submission to this sheet counts as "IDP-Handled".
 // Compound agent names like "riham samir-rika hart-1234" are matched by checking each
 // dash-separated segment against teamNames so new formats are handled automatically.
-async function fetchIDPSheetForTeam(teamNames: Set<string>, roster?: RosterIndex | null, team?: RosterTeam): Promise<Row[]> {
-  const sheet = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
+async function fetchIDPSheetForTeam(teamNames: Set<string>, roster?: RosterIndex | null, team?: RosterTeam, preloadedSheet?: SheetData): Promise<Row[]> {
+  const sheet = preloadedSheet ?? await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
   const rows: Row[] = [];
   for (const r of sheet.rows) {
     const tsRaw = (r["Timestamp"] ?? "").trim();
@@ -1896,12 +2121,22 @@ async function fetchNSFCombinedSheet(
   const hideInactive = !opts.includeInactive;
   // fetchNewSheetForTeam (gid=0) and fetchIDPSheetForTeam (gid=871007220) use the same
   // spreadsheet — serialize to avoid Google dropping the concurrent second request.
-  const [newRows, crossoverRows, oldNsfSheet] = await Promise.all([
-    fetchNewSheetForTeam(teamNames, roster, "nsf"),
+  const [backendSheet, crossoverRows, oldNsfSheet, retentionSubmissionSheet] = await Promise.all([
+    fetchHeaderCsv(NEW_NSF_URL),
     fetchRetentionSheetNSFCrossoverRows(roster, { includeInactive: opts.includeInactive }),
     fetchHeaderCsv(NSF.status).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
+    fetchHeaderCsv(NEW_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
   ]);
-  const idpRows = await fetchIDPSheetForTeam(teamNames, roster, "nsf");
+  const newRows = await fetchNewSheetForTeam(teamNames, roster, "nsf", backendSheet);
+  const idpSheet = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
+  const idpRows = await fetchIDPSheetForTeam(teamNames, roster, "nsf", idpSheet);
+  const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
+  const debugRows: LoadedSheetDebugRow[] = [
+    ...debugRowsForRequiredSheet({ sheet: backendSheet, meta: SHEET_SOURCES.backend, panelTeam: "nsf", roster, teamNames, statusMode: "fixed" }),
+    ...debugRowsForRequiredSheet({ sheet: idpSheet, meta: SHEET_SOURCES.idpHandled, panelTeam: "nsf", roster, teamNames, statusMode: "idp-handled" }),
+    ...debugRowsForRequiredSheet({ sheet: idpCancelSheet, meta: SHEET_SOURCES.idpCancelRetained, panelTeam: "nsf", roster, teamNames, statusMode: "idp-cancel-retained" }),
+    ...debugRowsForRequiredSheet({ sheet: retentionSubmissionSheet, meta: SHEET_SOURCES.retentionSubmission, panelTeam: "nsf", roster, teamNames, statusMode: "retained-only" }),
+  ];
 
   // Pull pre-cutover rows from the old NSF sheet (where agents tracked files before the Discord-bot sheet).
   // All rows map to "Fixed" since every row represents a file the agent submitted/handled.
@@ -1931,7 +2166,7 @@ async function fetchNSFCombinedSheet(
   // from the per-agent stats so non-Retention agents never get a "Cancelled" tally.
   const notCancelled = (r: Row) => !/cancel/i.test(String(r["Status"] ?? ""));
   const merged = [...newRows, ...crossoverRows, ...idpRows, ...oldNsfRows].filter(keep).filter(notCancelled);
-  return { headers: ["Agent", "Status", "Date", "File ID"], rows: merged };
+  return { headers: ["Agent", "Status", "Date", "File ID"], rows: merged, debugRows };
 }
 
 // Fetches CS submissions from all 3 sources:
@@ -1947,11 +2182,21 @@ async function fetchCSCombinedSheet(
   const hideInactive = !opts.includeInactive;
   // fetchNewSheetForTeam (gid=0) and fetchIDPSheetForTeam (gid=871007220) use the same
   // spreadsheet — serialize to avoid Google dropping the concurrent second request.
-  const [newRows, crossoverRows] = await Promise.all([
-    fetchNewSheetForTeam(teamNames, roster, "cs"),
+  const [backendSheet, crossoverRows, retentionSubmissionSheet] = await Promise.all([
+    fetchHeaderCsv(NEW_NSF_URL),
     fetchRetentionSheetCSCrossoverRows(roster, { includeInactive: opts.includeInactive }),
+    fetchHeaderCsv(NEW_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
   ]);
-  const idpRows = await fetchIDPSheetForTeam(teamNames, roster, "cs");
+  const newRows = await fetchNewSheetForTeam(teamNames, roster, "cs", backendSheet);
+  const idpSheet = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
+  const idpRows = await fetchIDPSheetForTeam(teamNames, roster, "cs", idpSheet);
+  const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
+  const debugRows: LoadedSheetDebugRow[] = [
+    ...debugRowsForRequiredSheet({ sheet: backendSheet, meta: SHEET_SOURCES.backend, panelTeam: "cs", roster, teamNames, statusMode: "fixed" }),
+    ...debugRowsForRequiredSheet({ sheet: idpSheet, meta: SHEET_SOURCES.idpHandled, panelTeam: "cs", roster, teamNames, statusMode: "idp-handled" }),
+    ...debugRowsForRequiredSheet({ sheet: idpCancelSheet, meta: SHEET_SOURCES.idpCancelRetained, panelTeam: "cs", roster, teamNames, statusMode: "idp-cancel-retained" }),
+    ...debugRowsForRequiredSheet({ sheet: retentionSubmissionSheet, meta: SHEET_SOURCES.retentionSubmission, panelTeam: "cs", roster, teamNames, statusMode: "retained-only" }),
+  ];
   // Current-view hide is gated by hideInactive. Past-date views (includeInactive=true)
   // keep deactivated agents' rows so historical totals stay intact.
   const keep = (r: Row) => !hideInactive || !roster || resolveSheetAgent((r["Agent"] ?? "") as string, roster)?.active !== false;
@@ -1959,7 +2204,7 @@ async function fetchCSCombinedSheet(
   // surfaced via fetchCancelViolations instead of counted in per-agent stats.
   const notCancelled = (r: Row) => !/cancel/i.test(String(r["Status"] ?? ""));
   const merged = [...newRows, ...crossoverRows, ...idpRows].filter(keep).filter(notCancelled);
-  return { headers: ["Agent", "Status", "Date", "File ID"], rows: merged };
+  return { headers: ["Agent", "Status", "Date", "File ID"], rows: merged, debugRows };
 }
 
 function findColumn(headers: string[], candidates: string[]): string | null {
@@ -2432,7 +2677,7 @@ function aggregate(
 ): Aggregated | { error: string } {
   const agentColumn = sheetAgentColumn(status.headers);
   const statusColumn = findColumn(status.headers, ["Status", "Result", "Outcome", "Disposition"]);
-  const dateColumn = findColumn(status.headers, ["Date", "Day", "Call Date"]);
+  const dateColumn = sheetDateColumn(status.headers);
   if (!agentColumn) return { error: `Couldn't find "Agent" column.` };
   if (!statusColumn) return { error: `Couldn't find "Status" column.` };
 
@@ -2445,7 +2690,7 @@ function aggregate(
   };
   if (dateColumn) {
     for (const r of status.rows) {
-      const d = parseDate(r[dateColumn] ?? "");
+      const d = parseSheetDate(sheetDateValue(r, dateColumn), dateColumn);
       if (d) consider(d);
     }
   }
@@ -2462,7 +2707,7 @@ function aggregate(
     if (!agent) return false;
     if (/total$/i.test(agent)) return false;
     if (dateColumn && (fromDate || toDate)) {
-      const d = parseDate(r[dateColumn] ?? "");
+      const d = parseSheetDate(sheetDateValue(r, dateColumn), dateColumn);
       if (!d) return false;
       if (!inRange(d)) return false;
     }
@@ -2551,7 +2796,7 @@ function aggregate(
     ag.total += 1;
     totalsByStatus.set(status, (totalsByStatus.get(status) ?? 0) + 1);
     if (dateColumn) {
-      const d = parseDate(r[dateColumn] ?? "");
+      const d = parseSheetDate(sheetDateValue(r, dateColumn), dateColumn);
       if (d) {
         const iso = toIsoDate(d);
         const day = ensureDay(iso, d);
@@ -2624,7 +2869,7 @@ function aggregate(
     }).format(new Date()); // "YYYY-MM-DD"
     const thisMonthStr = todayIso.slice(0, 7); // "YYYY-MM"
     for (const r of status.rows) {
-      const d = parseDate(r[dateColumn] ?? "");
+      const d = parseSheetDate(sheetDateValue(r, dateColumn), dateColumn);
       if (!d) continue;
       const rawStatus = normalizeStatus((r[statusColumn] ?? "").trim());
       const dateStr = toIsoDate(d); // date-only, same in all TZs
@@ -3174,6 +3419,7 @@ function avgDuration(seconds: number, calls: number): string {
 function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate }: { data: Aggregated; hideTeamRow?: boolean; phoneData?: Map<string, PhoneAgentMetrics>; sheetData?: SheetData; fromDate?: Date | null; toDate?: Date | null }) {
   const showRate = data.mode === "retention";
   const roster = useRoster();
+  const { user } = useUser();
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>({ column: "__total__", dir: "desc" });
   const [selectedAgent, setSelectedAgent] = useState<AgentBreakdown | null>(null);
@@ -3257,7 +3503,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
     if (!sheetData) return;
     const agentCol = sheetAgentColumn(sheetData.headers);
     const statusCol = findColumn(sheetData.headers, ["Status", "Result", "Outcome", "Disposition"]);
-    const dateCol = findColumn(sheetData.headers, ["Date", "Day", "Call Date"]);
+    const dateCol = sheetDateColumn(sheetData.headers);
     const fileIdCol = findColumn(sheetData.headers, ["File ID", "File Id", "FileID", "File #", "Account #", "Account ID", "Loan #", "ID"]);
     const sourceCol = findColumn(sheetData.headers, ["Source", "Source Tab", "Sheet", "Type"]);
     if (!agentCol || !statusCol) return;
@@ -3266,7 +3512,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
       const agent = sheetAgentValue(r, agentCol);
       if (!agent || /total$/i.test(agent)) return false;
       if (dateCol && (fromDate || toDate)) {
-        const d = parseDate(r[dateCol] ?? "");
+        const d = parseSheetDate(sheetDateValue(r, dateCol), dateCol);
         if (!d) return false;
         if (fromDate && d < fromDate) return false;
         if (toDate && d > toDate) return false;
@@ -3282,7 +3528,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
         Agent: sheetAgentValue(r, agentCol),
         Status: isIdpCancel ? "idp-cancel-retained" : (r[statusCol] ?? "").trim(),
         Source: sourceCol ? (r[sourceCol] ?? "").trim() : isIdpCancel ? "idp-cancel-retained" : "",
-        Date: dateCol ? (r[dateCol] ?? "") : "",
+        Date: dateCol ? sheetDateValue(r, dateCol) : "",
         "File ID": fileIdCol ? (r[fileIdCol] ?? "").trim() : "",
       };
     });
@@ -3293,6 +3539,46 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
     const a = document.createElement("a");
     a.href = url;
     a.download = `submissions_${new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" })}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportLoadedSheetDebug() {
+    const rows = (sheetData?.debugRows ?? []).map((r) => {
+      const d = r.parsedDate ? parseDate(r.parsedDate) : null;
+      const insideDateRange = !!d && (!fromDate || d >= fromDate) && (!toDate || d <= toDate);
+      const counted = r.counted && insideDateRange;
+      const skipReason = !insideDateRange && r.counted ? "outside-date-range" : r.skipReason;
+      return {
+        "source name": r.sourceName,
+        "spreadsheet ID": r.spreadsheetId,
+        gid: r.gid,
+        "tab name": r.tabName,
+        "raw row index": r.rawRowIndex,
+        "raw Agent Name": r.rawAgentName,
+        "selected agent column": r.selectedAgentColumn,
+        "raw Timestamp": r.rawTimestamp,
+        "selected date column": r.selectedDateColumn,
+        "parsed date": r.parsedDate,
+        "File ID": r.fileId,
+        "raw status/update value": r.rawStatusUpdateValue,
+        "selected status/update column": r.selectedStatusUpdateColumn,
+        "resolved canonical agent": r.resolvedCanonicalAgent,
+        "resolved team": r.resolvedTeam,
+        "panel/team": r.panelTeam,
+        "inside selected date range yes/no": insideDateRange ? "yes" : "no",
+        "passed status filter yes/no": r.passedStatusFilter ? "yes" : "no",
+        "passed team filter yes/no": r.passedTeamFilter ? "yes" : "no",
+        "counted yes/no": counted ? "yes" : "no",
+        "skip reason": counted ? "counted" : skipReason,
+      };
+    });
+    const csv = Papa.unparse(rows);
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `loaded_sheet_debug_${data.mode}_${new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" })}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -3318,6 +3604,12 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
             <Button variant="outline" size="sm" onClick={exportRawRows} data-testid="button-export-rows">
               <Download className="h-3.5 w-3.5 mr-1.5" />
               Export Rows
+            </Button>
+          )}
+          {user.role === "admin" && sheetData?.debugRows && (
+            <Button variant="outline" size="sm" onClick={exportLoadedSheetDebug} data-testid="button-export-loaded-sheet-debug">
+              <Download className="h-3.5 w-3.5 mr-1.5" />
+              Export Loaded Sheet Debug
             </Button>
           )}
           <Button variant="outline" size="sm" onClick={exportCsv} data-testid="button-export-csv">
