@@ -179,6 +179,69 @@ function findLaterCallback(
   return matches[0] ?? null;
 }
 
+type PbxMissedRecord = {
+  id: number;
+  fromNumber: string;
+  toNumber: string;
+  createdAt: string | Date;
+  ringGroupId: number;
+  ringGroupName: string;
+  team?: string | null;
+};
+
+function pbxTeamFromMissedRecord(rec: PbxMissedRecord): MissedNoCallbackItem["team"] {
+  const team = rec.team;
+  if (team === "retention" || team === "nsf" || team === "cs") return team;
+  return teamFromRingGroupName(rec.ringGroupName);
+}
+
+function buildPbxMissedNoCallbackItems(
+  rows: PbxMissedRecord[],
+  callbacks: Map<string, CallbackEntry[]>,
+  blocklist: Set<string>,
+  internalNumbers: Set<string>,
+): MissedNoCallbackItem[] {
+  const out: MissedNoCallbackItem[] = [];
+  const seen = new Set<string>();
+
+  for (const rec of rows) {
+    const normalizedCustomerNumber = normalizeCustomerPhone(rec.fromNumber);
+    const last10 = normalizePhone(rec.fromNumber);
+    if (!normalizedCustomerNumber || !last10) continue;
+    if (blocklist.has(rec.fromNumber) || blocklist.has(last10) || blocklist.has(normalizedCustomerNumber)) continue;
+    if (internalNumbers.has(last10) || internalNumbers.has(normalizedCustomerNumber)) continue;
+
+    const missedAt = new Date(rec.createdAt);
+    if (Number.isNaN(missedAt.getTime())) continue;
+    const dedupeKey = Number.isFinite(rec.id)
+      ? `pbx:${rec.id}`
+      : `pbx:${normalizedCustomerNumber}:${rec.ringGroupId}:${missedAt.toISOString()}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    const callback = findLaterCallback(callbacks, rec.fromNumber, missedAt);
+    if (callback) continue;
+
+    out.push({
+      id: String(rec.id),
+      fromNumber: rec.fromNumber,
+      toNumber: rec.toNumber,
+      createdAt: missedAt.toISOString(),
+      ringGroupId: rec.ringGroupId,
+      ringGroupName: rec.ringGroupName,
+      team: pbxTeamFromMissedRecord(rec),
+      source: "pbx",
+      missedCallId: rec.id,
+      normalizedCustomerNumber,
+      callbackFound: false,
+      callbackId: null,
+      debugReason: "PBX missed call with no later PBX, Quo/OpenPhone, or available outbound callback found for this normalized customer number.",
+    });
+  }
+
+  return out;
+}
+
 // Ring groups whose missed calls should never appear in the missed-no-callback panel.
 const EXCLUDED_RING_GROUPS = new Set(["MX Retention"]);
 
@@ -714,7 +777,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     // Quo DB outbound calls — use a 36-hour window to cover any timezone offset between
     // the server (UTC) and the business's local time, ensuring no callbacks are missed.
     const window36h = new Date(Date.now() - 36 * 60 * 60 * 1000);
-    const [quoOutbound, quoInboundAnswered] = await Promise.all([
+    const [quoOutbound, quoInboundAnswered, persistedPbxMissed] = await Promise.all([
       db
         .select({ id: phoneCallsTable.id, participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
         .from(phoneCallsTable)
@@ -724,6 +787,18 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
         .select({ id: phoneCallsTable.id, participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
         .from(phoneCallsTable)
         .where(and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed"), gte(phoneCallsTable.createdAt, window36h))),
+      db
+        .select({
+          id: pbxMissedCallsTable.id,
+          fromNumber: pbxMissedCallsTable.fromNumber,
+          toNumber: pbxMissedCallsTable.toNumber,
+          createdAt: pbxMissedCallsTable.createdAt,
+          ringGroupId: pbxMissedCallsTable.ringGroupId,
+          ringGroupName: pbxMissedCallsTable.ringGroupName,
+          team: pbxMissedCallsTable.team,
+        })
+        .from(pbxMissedCallsTable)
+        .where(gte(pbxMissedCallsTable.createdAt, window36h)),
     ]);
 
     for (const row of quoOutbound) {
@@ -733,29 +808,20 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       addCallback(callbackTimes, row.participant, new Date(row.createdAt), row.id, "quo-inbound");
     }
 
-    // Determine which missed calls had no callback after the missed call time
+    const blocklist = await getBlockedNumbers();
+
+    // Determine which PBX missed calls had no callback after the missed call time.
+    // Use both the current scan and persisted PBX missed rows so the page does not
+    // drop older same-day PBX misses once they fall out of VoSLogic's recent pages.
     const missedNoCB: MissedNoCallbackItem[] = [];
-    for (const rec of scanResult.missedRecords) {
-      const missedAt = new Date(rec.createdAt);
-      const callback = findLaterCallback(callbackTimes, rec.fromNumber, missedAt);
-      if (!callback) {
-        missedNoCB.push({
-          id: String(rec.id),
-          fromNumber: rec.fromNumber,
-          toNumber: rec.toNumber,
-          createdAt: rec.createdAt,
-          ringGroupId: rec.ringGroupId,
-          ringGroupName: rec.ringGroupName,
-          team: teamFromRingGroupName(rec.ringGroupName),
-          source: "pbx",
-          missedCallId: rec.id,
-          normalizedCustomerNumber: normalizeCustomerPhone(rec.fromNumber),
-          callbackFound: false,
-          callbackId: null,
-          debugReason: "PBX missed call with no later callback found for this normalized customer number.",
-        });
-      }
-    }
+    missedNoCB.push(
+      ...buildPbxMissedNoCallbackItems(
+        [...scanResult.missedRecords, ...persistedPbxMissed],
+        callbackTimes,
+        blocklist,
+        internalNumbers,
+      ),
+    );
 
     // Quo (OpenPhone) missed calls — reuse the same callbackTimes map already built above
     const quoMissed = await db
@@ -780,7 +846,6 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
         )
       );
 
-    const blocklist = await getBlockedNumbers();
     const seenQuoMissed = new Set<string>();
     for (const row of quoMissed) {
       const normalizedCustomerNumber = normalizeCustomerPhone(row.participant);
@@ -1017,7 +1082,7 @@ router.get("/vos/missed-no-callback", async (req, res) => {
   // PBX scan still in progress — serve Quo DB-only results so the page isn't empty
   try {
     const window36h = new Date(Date.now() - 36 * 60 * 60 * 1000);
-    const [quoMissed, quoOutbound, quoInboundAnswered] = await Promise.all([
+    const [quoMissed, quoOutbound, quoInboundAnswered, persistedPbxMissed] = await Promise.all([
       db
         .select({
           id: phoneCallsTable.id,
@@ -1047,6 +1112,18 @@ router.get("/vos/missed-no-callback", async (req, res) => {
         .select({ id: phoneCallsTable.id, participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
         .from(phoneCallsTable)
         .where(and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed"), gte(phoneCallsTable.createdAt, window36h))),
+      db
+        .select({
+          id: pbxMissedCallsTable.id,
+          fromNumber: pbxMissedCallsTable.fromNumber,
+          toNumber: pbxMissedCallsTable.toNumber,
+          createdAt: pbxMissedCallsTable.createdAt,
+          ringGroupId: pbxMissedCallsTable.ringGroupId,
+          ringGroupName: pbxMissedCallsTable.ringGroupName,
+          team: pbxMissedCallsTable.team,
+        })
+        .from(pbxMissedCallsTable)
+        .where(gte(pbxMissedCallsTable.createdAt, window36h)),
     ]);
 
     const callbackTimes = new Map<string, CallbackEntry[]>();
@@ -1060,6 +1137,7 @@ router.get("/vos/missed-no-callback", async (req, res) => {
     const blocklist = await getBlockedNumbers();
     const items: MissedNoCallbackItem[] = [];
     const internalSet = new Set(cachedInternalNumbers);
+    items.push(...buildPbxMissedNoCallbackItems(persistedPbxMissed, callbackTimes, blocklist, internalSet));
     const seenQuoMissed = new Set<string>();
     for (const row of quoMissed) {
       const normalizedCustomerNumber = normalizeCustomerPhone(row.participant);
