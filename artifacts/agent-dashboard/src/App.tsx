@@ -3523,10 +3523,32 @@ function avgDuration(seconds: number, calls: number): string {
   return formatDuration(Math.round(seconds / calls));
 }
 
+const FILE_STATUS_COLUMNS = ["Fixed", "Retained", "IDP-Handled", "Cancelled"] as const;
+type FileStatusColumn = typeof FILE_STATUS_COLUMNS[number];
+
+function isFileStatusColumn(value: string): value is FileStatusColumn {
+  return (FILE_STATUS_COLUMNS as readonly string[]).includes(value);
+}
+
+function fileStatusBucket(status: string): FileStatusColumn {
+  const normalized = normalizeStatus(status);
+  if (normalized === "IDP-Handled") return "IDP-Handled";
+  if (/cancel/i.test(normalized)) return "Cancelled";
+  if (isRetainedStatus(normalized)) return "Retained";
+  return "Fixed";
+}
+
+function fileStatusCount(byStatus: Map<string, number>, column: FileStatusColumn): number {
+  let total = 0;
+  for (const [status, count] of byStatus) {
+    if (fileStatusBucket(status) === column) total += count;
+  }
+  return total;
+}
+
 function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate }: { data: Aggregated; hideTeamRow?: boolean; phoneData?: Map<string, PhoneAgentMetrics>; sheetData?: SheetData; fromDate?: Date | null; toDate?: Date | null }) {
   const showRate = data.mode === "retention";
   const roster = useRoster();
-  const { user } = useUser();
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>({ column: "__total__", dir: "desc" });
   const [selectedAgent, setSelectedAgent] = useState<AgentBreakdown | null>(null);
@@ -3544,6 +3566,9 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
         else if (sort.column === "__rate__") {
           av = a.total ? sumRetained(a.byStatus, data.retainedStatuses) / a.total : -1;
           bv = b.total ? sumRetained(b.byStatus, data.retainedStatuses) / b.total : -1;
+        } else if (isFileStatusColumn(sort.column)) {
+          av = fileStatusCount(a.byStatus, sort.column);
+          bv = fileStatusCount(b.byStatus, sort.column);
         } else { av = a.byStatus.get(sort.column) ?? 0; bv = b.byStatus.get(sort.column) ?? 0; }
         if (typeof av === "number" && typeof bv === "number") return sort.dir === "asc" ? av - bv : bv - av;
         const cmp = String(av).localeCompare(String(bv));
@@ -3579,7 +3604,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
       const sheetEntry = visible.find((a) => a.agent === agent);
       const record: Record<string, string | number> = { Agent: agent };
       // Sheet columns
-      for (const s of data.statuses) record[s] = sheetEntry?.byStatus.get(s) ?? 0;
+      for (const s of FILE_STATUS_COLUMNS) record[s] = sheetEntry ? fileStatusCount(sheetEntry.byStatus, s) : 0;
       record["Total Files"] = sheetEntry?.total ?? 0;
       if (showRate) {
         const retained = sheetEntry ? sumRetained(sheetEntry.byStatus, data.retainedStatuses) : 0;
@@ -3828,18 +3853,6 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
               Export Rows
             </Button>
           )}
-          {user.role === "admin" && sheetData?.debugRows && (
-            <Button variant="outline" size="sm" onClick={exportLoadedSheetDebug} data-testid="button-export-loaded-sheet-debug">
-              <Download className="h-3.5 w-3.5 mr-1.5" />
-              Export Loaded Sheet Debug
-            </Button>
-          )}
-          {user.role === "admin" && (
-            <Button variant="outline" size="sm" onClick={() => void exportJeremyTrace()} data-testid="button-export-jeremy-trace">
-              <Download className="h-3.5 w-3.5 mr-1.5" />
-              Export Jeremy Trace
-            </Button>
-          )}
           <Button variant="outline" size="sm" onClick={exportCsv} data-testid="button-export-csv">
             <Download className="h-3.5 w-3.5 mr-1.5" />
             Export Summary
@@ -3855,7 +3868,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
                 <TableHead className="whitespace-nowrap min-w-[180px]">
                   <SortHeader id="__agent__" label="Agent Name" sort={sort} onToggle={toggle} />
                 </TableHead>
-                {data.statuses.map((s) => (
+                {FILE_STATUS_COLUMNS.map((s) => (
                   <TableHead key={s} className={`whitespace-nowrap text-right ${statusTone(s)}`}>
                     <SortHeader id={s} label={s} align="right" sort={sort} onToggle={toggle} />
                   </TableHead>
@@ -3874,7 +3887,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
             <TableBody>
               {visible.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={data.statuses.length + 3 + (showRate ? 1 : 0)} className="text-center py-12 text-muted-foreground">
+                  <TableCell colSpan={FILE_STATUS_COLUMNS.length + 3 + (showRate ? 1 : 0)} className="text-center py-12 text-muted-foreground">
                     No agents match the current filters.
                   </TableCell>
                 </TableRow>
@@ -3886,8 +3899,8 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
                   <TableCell className="font-medium whitespace-nowrap">
                     <AvatarName name={parts.agentName} size="sm" textClassName="text-foreground" />
                   </TableCell>
-                  {data.statuses.map((s) => {
-                    const v = a.byStatus.get(s) ?? 0;
+                  {FILE_STATUS_COLUMNS.map((s) => {
+                    const v = fileStatusCount(a.byStatus, s);
                     return (
                       <TableCell key={s} className={`text-right tabular-nums font-mono ${v === 0 ? "text-muted-foreground/40" : statusTone(s)}`}>
                         {v}
@@ -3914,9 +3927,9 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
               <TableHeader className="sticky bottom-0 backdrop-blur z-10">
                 <TableRow>
                   <TableCell className="font-bold whitespace-nowrap">Whole team</TableCell>
-                  {data.statuses.map((s) => (
+                  {FILE_STATUS_COLUMNS.map((s) => (
                     <TableCell key={s} className="text-right tabular-nums font-mono font-bold">
-                      {data.totals.byStatus.get(s) ?? 0}
+                      {fileStatusCount(data.totals.byStatus, s)}
                     </TableCell>
                   ))}
                   <TableCell className="text-right tabular-nums font-mono font-bold bg-primary/10">{data.totals.grand}</TableCell>
@@ -3945,10 +3958,10 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
             </div>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
-            {data.statuses.map((s) => (
+            {FILE_STATUS_COLUMNS.map((s) => (
               <div key={s} className="flex items-center justify-between rounded-md border border-border bg-muted/30 px-3 py-2">
                 <span className={statusTone(s)}>{s}</span>
-                <span className="font-semibold tabular-nums">{selectedAgent.byStatus.get(s) ?? 0}</span>
+                <span className="font-semibold tabular-nums">{fileStatusCount(selectedAgent.byStatus, s)}</span>
               </div>
             ))}
           </div>
