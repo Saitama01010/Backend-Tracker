@@ -24,7 +24,7 @@ import Papa from "papaparse";
 import companyLogo from "./assets/company-logo.jpeg";
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence, motion, MotionConfig, useReducedMotion } from "framer-motion";
+import { AnimatePresence, motion, MotionConfig, useReducedMotion, type Variants } from "framer-motion";
 import { createContext, useContext, Fragment, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
   ArrowDown,
@@ -414,18 +414,21 @@ function AnimatedValueSelect<T extends string>({
   const updateMenuRect = useCallback(() => {
     const trigger = ref.current?.getBoundingClientRect();
     if (!trigger) return;
-    const minWidth = Math.max(trigger.width, 120);
+    const width = Math.max(trigger.width, 120);
+    const estimatedHeight = Math.min(288, Math.max(44, options.length * 42 + 8));
+    const openAbove = trigger.bottom + estimatedHeight + 12 > window.innerHeight && trigger.top > estimatedHeight + 12;
     const left = align === "right"
-      ? Math.max(12, Math.min(window.innerWidth - minWidth - 12, trigger.right - minWidth))
-      : Math.max(12, Math.min(window.innerWidth - minWidth - 12, trigger.left));
+      ? Math.max(12, Math.min(window.innerWidth - width - 12, trigger.right - width))
+      : Math.max(12, Math.min(window.innerWidth - width - 12, trigger.left));
     setMenuRect({
       position: "fixed",
-      top: trigger.bottom + 8,
+      top: openAbove ? undefined : trigger.bottom + 8,
+      bottom: openAbove ? window.innerHeight - trigger.top + 8 : undefined,
       left,
-      minWidth,
+      width,
       zIndex: 9999,
     });
-  }, [align]);
+  }, [align, options.length]);
 
   useEffect(() => {
     if (!open) return;
@@ -2808,11 +2811,19 @@ function aggregate(
     return true;
   };
 
+  const rosterTeamForMode: RosterTeam | null =
+    mode === "retention" || mode === "nsf" || mode === "cs" ? mode : mode === "rmk" ? "killers" : null;
+
   // Filter status rows
   const filteredStatus = status.rows.filter((r) => {
     const agent = sheetAgentValue(r, agentColumn);
     if (!agent) return false;
     if (/total$/i.test(agent)) return false;
+    if (roster && rosterTeamForMode) {
+      const resolved = resolveSheetAgent(agent, roster);
+      const belongsToTeam = resolved?.team === rosterTeamForMode && resolved.active !== false;
+      if (!belongsToTeam) return false;
+    }
     if (dateColumn && (fromDate || toDate)) {
       const d = parseSheetDate(sheetDateValue(r, dateColumn), dateColumn);
       if (!d) return false;
@@ -2887,8 +2898,6 @@ function aggregate(
     return agentMap.get(key)!;
   };
 
-  const rosterTeamForMode: RosterTeam | null =
-    mode === "retention" || mode === "nsf" || mode === "cs" ? mode : mode === "rmk" ? "killers" : null;
   if (roster && rosterTeamForMode) {
     for (const agent of roster.agentsForTeam(rosterTeamForMode)) ensureAgent(agent.name);
   }
@@ -4077,7 +4086,7 @@ type PbxAgentEntry = {
 };
 type PbxCalls = Map<string, PbxAgentEntry>;
 
-interface VosStatsResponse {
+interface LegacyVosStatsResponse {
   dashboard: { callsByAgent: { agentName: string; calls: number; inbound: number; outbound: number }[] };
   agents: { id: number; name: string }[];
   ringGroups: { id: number; name: string; agentIds: number[] }[];
@@ -4086,7 +4095,7 @@ interface VosStatsResponse {
 }
 
 function useVosStats() {
-  return useQuery<VosStatsResponse>({
+  return useQuery<LegacyVosStatsResponse>({
     queryKey: ["vosStats"],
     queryFn: async () => {
       const r = await fetch("/api/vos/stats");
@@ -4159,6 +4168,12 @@ interface MissedNoCallbackItem {
   ringGroupName: string;
   team: "retention" | "nsf" | "cs" | "other";
   source?: "pbx" | "quo" | "readymode";
+  missedCallId?: string | number | null;
+  normalizedCustomerNumber?: string;
+  lineId?: string | null;
+  callbackFound?: boolean;
+  callbackId?: string | null;
+  debugReason?: string;
 }
 
 function useMissedNoCB() {
@@ -6786,6 +6801,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                       value={agentDetail.team}
                       onChange={(value) => setAgentDetail((prev) => ({ ...prev, team: value as RosterTeam }))}
                       ariaLabel="Choose agent detail team"
+                      className="w-full"
                       triggerClassName="h-9 w-full"
                       menuClassName="w-full"
                       options={TEAMS.map((t) => ({ value: t.key, label: t.label }))}
@@ -7219,7 +7235,7 @@ function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
   const latestBlocked = items[0]?.createdAt
     ? new Date(items[0].createdAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
     : "None";
-  const rowVariants = shouldReduceMotion
+  const rowVariants: Variants = shouldReduceMotion
     ? {
         hidden: { opacity: 0 },
         visible: { opacity: 1 },
@@ -9004,6 +9020,23 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                       }`}>
                         {it.source === "quo" ? "Quo" : it.source === "readymode" ? "Readymode" : "PBX"}
                       </Badge>
+                      {user.role === "admin" && it.debugReason && (
+                        <div
+                          className="mt-1 max-w-40 truncate text-[10px] text-muted-foreground"
+                          title={[
+                            `source: ${it.source ?? "pbx"}`,
+                            `missed call: ${it.missedCallId ?? it.id}`,
+                            `customer: ${it.normalizedCustomerNumber ?? it.fromNumber}`,
+                            `line: ${it.lineId ?? it.toNumber ?? "unknown"}`,
+                            `team: ${it.team}`,
+                            `missed: ${it.createdAt}`,
+                            `callback: ${it.callbackFound ? it.callbackId ?? "yes" : "no"}`,
+                            it.debugReason,
+                          ].join(" | ")}
+                        >
+                          no later callback
+                        </div>
+                      )}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {it.ringGroupName}
@@ -11924,7 +11957,7 @@ function Dashboard() {
             <AnimatedDashboardSelect
               value={view}
               options={viewOptions}
-              onChange={setView}
+              onChange={(next) => setView(next)}
               label="Choose dashboard view"
               className="shrink-0"
             />

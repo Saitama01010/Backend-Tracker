@@ -116,6 +116,12 @@ export interface MissedNoCallbackItem {
   ringGroupName: string;
   team: "retention" | "nsf" | "cs" | "other";
   source: "pbx" | "quo" | "readymode";
+  missedCallId?: string | number | null;
+  normalizedCustomerNumber?: string;
+  lineId?: string | null;
+  callbackFound?: boolean;
+  callbackId?: string | null;
+  debugReason?: string;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -123,6 +129,54 @@ export interface MissedNoCallbackItem {
 function normalizePhone(num: string): string {
   const digits = (num ?? "").replace(/\D/g, "");
   return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+
+function normalizeCustomerPhone(num: string): string {
+  const raw = String(num ?? "").trim();
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  if (raw.startsWith("+")) return `+${digits}`;
+  if (digits.length === 10) return `+1${digits}`;
+  return `+${digits}`;
+}
+
+function phoneComparisonKeys(num: string): string[] {
+  const keys = new Set<string>();
+  const last10 = normalizePhone(num);
+  const e164 = normalizeCustomerPhone(num);
+  if (last10) keys.add(last10);
+  if (e164) keys.add(e164);
+  return [...keys];
+}
+
+type CallbackEntry = { at: Date; id: string | null; source: "pbx" | "quo-outbound" | "quo-inbound" };
+
+function addCallback(
+  map: Map<string, CallbackEntry[]>,
+  rawPhone: string,
+  at: Date,
+  id: string | null,
+  source: CallbackEntry["source"],
+) {
+  for (const key of phoneComparisonKeys(rawPhone)) {
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push({ at, id, source });
+  }
+}
+
+function findLaterCallback(
+  map: Map<string, CallbackEntry[]>,
+  rawPhone: string,
+  missedAt: Date,
+): CallbackEntry | null {
+  const matches: CallbackEntry[] = [];
+  for (const key of phoneComparisonKeys(rawPhone)) {
+    for (const entry of map.get(key) ?? []) {
+      if (entry.at > missedAt) matches.push(entry);
+    }
+  }
+  matches.sort((a, b) => a.at.getTime() - b.at.getTime());
+  return matches[0] ?? null;
 }
 
 // Ring groups whose missed calls should never appear in the missed-no-callback panel.
@@ -639,29 +693,22 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
 
     // ── Cross-reference missed records against callbacks ──────────────────────
     // Build callback lookup: normalized phone → all times an outbound call was made today
-    const callbackTimes = new Map<string, Date[]>();
-
-    const addCallback = (rawPhone: string, at: Date) => {
-      const norm = normalizePhone(rawPhone);
-      if (!norm) return;
-      if (!callbackTimes.has(norm)) callbackTimes.set(norm, []);
-      callbackTimes.get(norm)!.push(at);
-    };
+    const callbackTimes = new Map<string, CallbackEntry[]>();
 
     // Per-agent outbound calls — most complete PBX source (full per-agent history scanned above)
     for (const c of agentOutboundCallbacks) {
-      addCallback(c.toNumber, new Date(c.createdAt));
+      addCallback(callbackTimes, c.toNumber, new Date(c.createdAt), null, "pbx");
     }
 
     // Per-agent inbound answered calls — customer called back in and was handled.
     // fromNumber is the customer's number, so it resolves the missed call for that number.
     for (const c of agentInboundAnswered) {
-      addCallback(c.fromNumber, new Date(c.createdAt));
+      addCallback(callbackTimes, c.fromNumber, new Date(c.createdAt), null, "pbx");
     }
 
     // Global scan outbound calls — supplementary, catches any agents not in dashboard.callsByAgent
     for (const c of scanResult.pbxOutboundCalls) {
-      addCallback(c.toNumber, new Date(c.createdAt));
+      addCallback(callbackTimes, c.toNumber, new Date(c.createdAt), null, "pbx");
     }
 
     // Quo DB outbound calls — use a 36-hour window to cover any timezone offset between
@@ -669,31 +716,29 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     const window36h = new Date(Date.now() - 36 * 60 * 60 * 1000);
     const [quoOutbound, quoInboundAnswered] = await Promise.all([
       db
-        .select({ participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
+        .select({ id: phoneCallsTable.id, participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
         .from(phoneCallsTable)
         .where(and(eq(phoneCallsTable.direction, "outgoing"), gte(phoneCallsTable.createdAt, window36h))),
       // Inbound answered Quo calls: customer called us on OpenPhone and was handled.
       db
-        .select({ participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
+        .select({ id: phoneCallsTable.id, participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
         .from(phoneCallsTable)
         .where(and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed"), gte(phoneCallsTable.createdAt, window36h))),
     ]);
 
     for (const row of quoOutbound) {
-      addCallback(row.participant, new Date(row.createdAt));
+      addCallback(callbackTimes, row.participant, new Date(row.createdAt), row.id, "quo-outbound");
     }
     for (const row of quoInboundAnswered) {
-      addCallback(row.participant, new Date(row.createdAt));
+      addCallback(callbackTimes, row.participant, new Date(row.createdAt), row.id, "quo-inbound");
     }
 
     // Determine which missed calls had no callback after the missed call time
     const missedNoCB: MissedNoCallbackItem[] = [];
     for (const rec of scanResult.missedRecords) {
-      const norm = normalizePhone(rec.fromNumber);
       const missedAt = new Date(rec.createdAt);
-      const times = callbackTimes.get(norm);
-      const hasCallback = times?.some((t) => t > missedAt) ?? false;
-      if (!hasCallback) {
+      const callback = findLaterCallback(callbackTimes, rec.fromNumber, missedAt);
+      if (!callback) {
         missedNoCB.push({
           id: String(rec.id),
           fromNumber: rec.fromNumber,
@@ -703,6 +748,11 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
           ringGroupName: rec.ringGroupName,
           team: teamFromRingGroupName(rec.ringGroupName),
           source: "pbx",
+          missedCallId: rec.id,
+          normalizedCustomerNumber: normalizeCustomerPhone(rec.fromNumber),
+          callbackFound: false,
+          callbackId: null,
+          debugReason: "PBX missed call with no later callback found for this normalized customer number.",
         });
       }
     }
@@ -710,7 +760,9 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     // Quo (OpenPhone) missed calls — reuse the same callbackTimes map already built above
     const quoMissed = await db
       .select({
+        id: phoneCallsTable.id,
         participant: phoneCallsTable.participant,
+        lineId: phoneCallsTable.lineId,
         lineTeam: phoneCallsTable.lineTeam,
         lineName: phoneCallsTable.lineName,
         status: phoneCallsTable.status,
@@ -729,23 +781,29 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       );
 
     const blocklist = await getBlockedNumbers();
+    const seenQuoMissed = new Set<string>();
     for (const row of quoMissed) {
-      if (blocklist.has(row.participant)) continue;
+      const normalizedCustomerNumber = normalizeCustomerPhone(row.participant);
+      const last10 = normalizePhone(row.participant);
+      if (!normalizedCustomerNumber || !last10) continue;
+      if (blocklist.has(row.participant) || blocklist.has(last10) || blocklist.has(normalizedCustomerNumber)) continue;
       if (/[a-zA-Z]/.test(row.participant)) continue; // skip internal line-name participants
-      if (internalNumbers.has(normalizePhone(row.participant))) continue; // skip our own line numbers
+      if (internalNumbers.has(last10) || internalNumbers.has(normalizedCustomerNumber)) continue; // skip our own line numbers
       // Ghost call: rang for ≤2 seconds. Use ring_duration_seconds when available, fall back to duration_seconds=0.
       const ringDur = row.ringDurationSeconds ?? ((row.durationSeconds ?? 0) === 0 ? 0 : 999);
       if (ringDur <= 2) continue;
-      const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);
-      const times = callbackTimes.get(norm);
-      const hasCallback = times?.some((t) => t > missedAt) ?? false;
-      if (!hasCallback) {
+      const callback = findLaterCallback(callbackTimes, row.participant, missedAt);
+      if (!callback) {
+        const dedupeKey = `${normalizedCustomerNumber}:${row.lineId}:${Math.floor(missedAt.getTime() / 60000)}`;
+        if (seenQuoMissed.has(dedupeKey)) continue;
+        seenQuoMissed.add(dedupeKey);
         const t = row.lineTeam;
         const team: MissedNoCallbackItem["team"] =
           t === "retention" || t === "nsf" || t === "cs" ? t : "other";
         missedNoCB.push({
-          id: `quo-${norm}-${row.createdAt.toISOString()}`,
+          id: `quo-${row.id}`,
+          missedCallId: row.id,
           fromNumber: row.participant,
           toNumber: row.lineName,
           createdAt: row.createdAt.toISOString(),
@@ -753,6 +811,11 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
           ringGroupName: "OpenPhone",
           team,
           source: "quo",
+          normalizedCustomerNumber,
+          lineId: row.lineId,
+          callbackFound: false,
+          callbackId: null,
+          debugReason: "Inbound Quo call was not answered and no later callback/outbound attempt was found for this normalized customer number.",
         });
       }
     }
@@ -954,10 +1017,12 @@ router.get("/vos/missed-no-callback", async (req, res) => {
   // PBX scan still in progress — serve Quo DB-only results so the page isn't empty
   try {
     const window36h = new Date(Date.now() - 36 * 60 * 60 * 1000);
-    const [quoMissed, quoOutbound] = await Promise.all([
+    const [quoMissed, quoOutbound, quoInboundAnswered] = await Promise.all([
       db
         .select({
+          id: phoneCallsTable.id,
           participant: phoneCallsTable.participant,
+          lineId: phoneCallsTable.lineId,
           lineTeam: phoneCallsTable.lineTeam,
           lineName: phoneCallsTable.lineName,
           status: phoneCallsTable.status,
@@ -975,39 +1040,49 @@ router.get("/vos/missed-no-callback", async (req, res) => {
           )
         ),
       db
-        .select({ participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
+        .select({ id: phoneCallsTable.id, participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
         .from(phoneCallsTable)
         .where(and(eq(phoneCallsTable.direction, "outgoing"), gte(phoneCallsTable.createdAt, window36h))),
+      db
+        .select({ id: phoneCallsTable.id, participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
+        .from(phoneCallsTable)
+        .where(and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed"), gte(phoneCallsTable.createdAt, window36h))),
     ]);
 
-    const callbackTimes = new Map<string, Date[]>();
+    const callbackTimes = new Map<string, CallbackEntry[]>();
     for (const row of quoOutbound) {
-      const norm = normalizePhone(row.participant);
-      if (!norm) continue;
-      if (!callbackTimes.has(norm)) callbackTimes.set(norm, []);
-      callbackTimes.get(norm)!.push(new Date(row.createdAt));
+      addCallback(callbackTimes, row.participant, new Date(row.createdAt), row.id, "quo-outbound");
+    }
+    for (const row of quoInboundAnswered) {
+      addCallback(callbackTimes, row.participant, new Date(row.createdAt), row.id, "quo-inbound");
     }
 
     const blocklist = await getBlockedNumbers();
     const items: MissedNoCallbackItem[] = [];
     const internalSet = new Set(cachedInternalNumbers);
+    const seenQuoMissed = new Set<string>();
     for (const row of quoMissed) {
-      if (blocklist.has(row.participant)) continue;
+      const normalizedCustomerNumber = normalizeCustomerPhone(row.participant);
+      const last10 = normalizePhone(row.participant);
+      if (!normalizedCustomerNumber || !last10) continue;
+      if (blocklist.has(row.participant) || blocklist.has(last10) || blocklist.has(normalizedCustomerNumber)) continue;
       if (/[a-zA-Z]/.test(row.participant)) continue; // skip internal line-name participants
-      if (internalSet.has(normalizePhone(row.participant))) continue; // skip internal numbers
+      if (internalSet.has(last10) || internalSet.has(normalizedCustomerNumber)) continue; // skip internal numbers
       // Ghost call: rang for ≤2 seconds. Use ring_duration_seconds when available, fall back to duration_seconds=0.
       const ringDur = row.ringDurationSeconds ?? ((row.durationSeconds ?? 0) === 0 ? 0 : 999);
       if (ringDur <= 2) continue;
-      const norm = normalizePhone(row.participant);
       const missedAt = new Date(row.createdAt);
-      const times = callbackTimes.get(norm);
-      const hasCallback = times?.some((t) => t > missedAt) ?? false;
-      if (!hasCallback) {
+      const callback = findLaterCallback(callbackTimes, row.participant, missedAt);
+      if (!callback) {
+        const dedupeKey = `${normalizedCustomerNumber}:${row.lineId}:${Math.floor(missedAt.getTime() / 60000)}`;
+        if (seenQuoMissed.has(dedupeKey)) continue;
+        seenQuoMissed.add(dedupeKey);
         const t = row.lineTeam;
         const team: MissedNoCallbackItem["team"] =
           t === "retention" || t === "nsf" || t === "cs" ? t : "other";
         items.push({
-          id: `quo-${norm}-${row.createdAt.toISOString()}`,
+          id: `quo-${row.id}`,
+          missedCallId: row.id,
           fromNumber: row.participant,
           toNumber: row.lineName,
           createdAt: row.createdAt.toISOString(),
@@ -1015,6 +1090,11 @@ router.get("/vos/missed-no-callback", async (req, res) => {
           ringGroupName: "OpenPhone",
           team,
           source: "quo",
+          normalizedCustomerNumber,
+          lineId: row.lineId,
+          callbackFound: false,
+          callbackId: null,
+          debugReason: "Inbound Quo call was not answered and no later callback/outbound attempt was found for this normalized customer number.",
         });
       }
     }
@@ -1294,7 +1374,10 @@ router.get("/vos/missed-daily", async (req, res) => {
 router.get("/vos/missed-breakdown", async (req, res) => {
   try {
     const dateParam = typeof req.query["date"] === "string" ? req.query["date"] : null;
-    if (!dateParam) return res.status(400).json({ error: "date required (YYYY-MM-DD)" });
+    if (!dateParam) {
+      res.status(400).json({ error: "date required (YYYY-MM-DD)" });
+      return;
+    }
 
     const blocklist = await getBlockedNumbers();
     const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
@@ -1353,14 +1436,17 @@ router.get("/vos/missed-breakdown", async (req, res) => {
       if (blocklist.has(r.from_number)) continue;
       const norm = normalizePhone(r.from_number);
       if (!norm) continue;
-      if (!numMap.has(norm)) numMap.set(norm, { fromNumber: r.from_number, team: r.team, sources: new Set(), missedTimes: [], rawParticipants: new Set() });
+      if (!numMap.has(norm)) numMap.set(norm, { fromNumber: r.from_number, team: r.team, sources: new Set(), missedTimes: [], rawParticipants: new Set(), quoCalls: 0, ghostCalls: 0 });
       const e = numMap.get(norm)!;
       e.sources.add("pbx");
       e.missedTimes.push(new Date(r.created_at));
       e.rawParticipants.add(r.from_number);
     }
 
-    if (numMap.size === 0) return res.json({ date: dateParam, numbers: [], stats: { total: 0, withCallback: 0, rate: 0 } });
+    if (numMap.size === 0) {
+      res.json({ date: dateParam, numbers: [], stats: { total: 0, withCallback: 0, rate: 0 } });
+      return;
+    }
 
     // Use raw participant values (as stored in phone_calls) for the IN clause
     const allRaw = new Set<string>();

@@ -735,7 +735,8 @@ router.get("/qa/reviews", requireAuth, async (req, res) => {
 
 router.get("/qa/reviews/:id", requireAuth, async (req, res) => {
   try {
-    const [row] = await db.select().from(qaReviewsTable).where(eq(qaReviewsTable.id, req.params.id)).limit(1);
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const [row] = await db.select().from(qaReviewsTable).where(eq(qaReviewsTable.id, id ?? "")).limit(1);
     if (!row) return res.status(404).json({ error: "not found" });
     return res.json(row);
   } catch (err) {
@@ -769,6 +770,7 @@ router.get("/qa/tasks", requireAuth, async (req, res) => {
 // Resolve a task with optional manager score override + comments + coaching flag
 router.post("/qa/tasks/:id/resolve", requireAuth, requireRole("admin"), async (req, res) => {
   try {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const resolvedBy = String(req.body?.resolvedBy ?? "").trim() || "manager";
     const notes = String(req.body?.notes ?? "").trim() || null;
     const comments = String(req.body?.comments ?? "").trim() || null;
@@ -783,7 +785,7 @@ router.post("/qa/tasks/:id/resolve", requireAuth, requireRole("admin"), async (r
     const [existing] = await db
       .select()
       .from(managerQaTasksTable)
-      .where(eq(managerQaTasksTable.id, req.params.id))
+      .where(eq(managerQaTasksTable.id, id ?? ""))
       .limit(1);
     if (!existing) return res.status(404).json({ error: "not found" });
 
@@ -803,7 +805,7 @@ router.post("/qa/tasks/:id/resolve", requireAuth, requireRole("admin"), async (r
         finalScore,
         coachingComplete,
       })
-      .where(eq(managerQaTasksTable.id, req.params.id))
+      .where(eq(managerQaTasksTable.id, id ?? ""))
       .returning();
     return res.json(updated);
   } catch (err) {

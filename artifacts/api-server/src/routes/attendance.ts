@@ -109,7 +109,10 @@ router.get("/attendance", async (req, res) => {
 router.post("/attendance/members", async (req, res) => {
   try {
     const { name, shift, shiftHours, department } = req.body as { name: string; shift?: string; shiftHours?: string; department?: string };
-    if (!name?.trim()) return res.status(400).json({ error: "name required" });
+    if (!name?.trim()) {
+      res.status(400).json({ error: "name required" });
+      return;
+    }
     const [member] = await db
       .insert(attendanceMembersTable)
       .values({ name: name.trim(), shift: shift?.trim() ?? "", shiftHours: shiftHours?.trim() ?? "8", department: department?.trim() ?? "" })
@@ -144,7 +147,10 @@ router.put("/attendance/record", async (req, res) => {
     const { memberId, date, status, note, coaching } = req.body as {
       memberId: number; date: string; status: string; note?: string; coaching?: boolean;
     };
-    if (!memberId || !date) return res.status(400).json({ error: "memberId and date required" });
+    if (!memberId || !date) {
+      res.status(400).json({ error: "memberId and date required" });
+      return;
+    }
     const [record] = await db
       .insert(attendanceRecordsTable)
       .values({ memberId, date, status: status ?? "", note: note ?? null, coaching: coaching ?? false })
@@ -427,7 +433,8 @@ router.post("/attendance/set", async (req, res) => {
       force?: boolean;
     };
     if (!Array.isArray(records) || records.length === 0) {
-      return res.status(400).json({ error: "records array required" });
+      res.status(400).json({ error: "records array required" });
+      return;
     }
 
     const members = await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true));

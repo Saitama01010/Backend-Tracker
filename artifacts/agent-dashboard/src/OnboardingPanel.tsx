@@ -16,7 +16,7 @@ import {
 } from "recharts";
 import {
   RefreshCw, Phone, PhoneIncoming, PhoneMissed, Clock, Users, CheckCircle, Loader2,
-  FileSpreadsheet, Download, Sparkles, Receipt, TrendingUp, Award, Lightbulb, Trophy, Timer,
+  FileSpreadsheet, Download, Sparkles, Receipt, TrendingUp, Award, Lightbulb, Trophy, Timer, CalendarDays,
 } from "lucide-react";
 
 const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
@@ -121,6 +121,15 @@ interface ObStatus {
   taxYes?: number;
 }
 
+type MissedFirstRingRow = {
+  agent: string;
+  missed: number;
+  attempts: number;
+  answered: number;
+  responseRate: number;
+  latestMissedAt: string | null;
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function fmtDur(secs: number): string {
   if (!secs) return "—";
@@ -144,6 +153,17 @@ function lastDayOfMonth(ym: string): string {
   const [y, m] = ym.split("-").map(Number);
   const d = new Date(y!, m!, 0).getDate();
   return `${ym}-${String(d).padStart(2, "0")}`;
+}
+
+function orderedRange(from: string, to: string): { from: string; to: string } {
+  if (from && to && from > to) return { from: to, to: from };
+  return { from, to };
+}
+
+function formatDateRange(from: string, to: string): string {
+  const start = new Date(`${from}T00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+  const end = new Date(`${to}T00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+  return from === to ? start : `${start} - ${end}`;
 }
 
 type ToneKey = "blue" | "emerald" | "sky" | "amber" | "rose" | "cyan";
@@ -180,13 +200,16 @@ function OnboardingReportCard() {
   const [gran, setGran] = useState<Granularity>("all");
   const [month, setMonth] = useState(thisMonth);
   const [day, setDay] = useState(today);
+  const [rangeFrom, setRangeFrom] = useState(`${thisMonth}-01`);
+  const [rangeTo, setRangeTo] = useState(today);
   const [downloading, setDownloading] = useState(false);
 
   const { from, to } = useMemo(() => {
     if (gran === "month") return { from: `${month}-01`, to: lastDayOfMonth(month) };
     if (gran === "day") return { from: day, to: day };
+    if (gran === "range") return rangeFrom && rangeTo ? orderedRange(rangeFrom, rangeTo) : { from: "", to: "" };
     return { from: "", to: "" };
-  }, [gran, month, day]);
+  }, [gran, month, day, rangeFrom, rangeTo]);
   const qs = from && to ? `?from=${from}&to=${to}` : "";
 
   const { data: status, refetch } = useQuery<ObStatus>({
@@ -216,7 +239,7 @@ function OnboardingReportCard() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
-      const tag = gran === "all" ? "AllTime" : gran === "month" ? month : day;
+      const tag = gran === "all" ? "AllTime" : gran === "month" ? month : gran === "day" ? day : `${from || rangeFrom}_to_${to || rangeTo}`;
       const a = document.createElement("a");
       a.href = url;
       a.download = `Onboarding_Line_Report_${tag}.xlsx`;
@@ -244,7 +267,9 @@ function OnboardingReportCard() {
       ? "All time"
       : gran === "month"
         ? new Date(`${month}-01`).toLocaleDateString([], { month: "long", year: "numeric" })
-        : new Date(`${day}T00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+        : gran === "day"
+          ? new Date(`${day}T00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })
+          : from && to ? formatDateRange(from, to) : "Custom range";
 
   return (
     <div className="rounded-xl border border-border bg-card backdrop-blur p-5 space-y-4">
@@ -264,13 +289,13 @@ function OnboardingReportCard() {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <div className="inline-flex rounded-lg border border-white/10 overflow-hidden">
-            {(["all", "month", "day"] as Granularity[]).map((g) => (
+            {(["all", "month", "day", "range"] as Granularity[]).map((g) => (
               <button
                 key={g}
                 onClick={() => setGran(g)}
                 className={`px-3 py-1.5 text-xs font-medium transition-colors ${gran === g ? "bg-primary text-primary-foreground" : "bg-transparent text-muted-foreground hover:bg-white/5"}`}
               >
-                {g === "all" ? "All Time" : g === "month" ? "Monthly" : "Per Day"}
+                {g === "all" ? "All Time" : g === "month" ? "Monthly" : g === "day" ? "Per Day" : "Range"}
               </button>
             ))}
           </div>
@@ -281,6 +306,16 @@ function OnboardingReportCard() {
           {gran === "day" && (
             <input type="date" value={day} max={today} onChange={(e) => setDay(e.target.value)}
               className="rounded-md border border-white/10 bg-background px-2 py-1.5 text-xs" />
+          )}
+          {gran === "range" && (
+            <div className="flex items-center gap-1 rounded-md border border-white/10 bg-background px-2 py-1">
+              <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
+              <input type="date" value={rangeFrom} max={today} onChange={(e) => setRangeFrom(e.target.value)}
+                className="bg-transparent text-xs outline-none" />
+              <span className="text-xs text-muted-foreground">to</span>
+              <input type="date" value={rangeTo} max={today} onChange={(e) => setRangeTo(e.target.value)}
+                className="bg-transparent text-xs outline-none" />
+            </div>
           )}
           <Button size="sm" variant="outline" onClick={() => refreshMutation.mutate()} disabled={running}>
             {running
@@ -324,7 +359,7 @@ function OnboardingReportCard() {
 }
 
 // ─── Analytics ────────────────────────────────────────────────────────────────
-type Granularity = "all" | "month" | "day";
+type Granularity = "all" | "month" | "day" | "range";
 
 // Today's calendar date in America/Los_Angeles (the timezone the backend uses to
 // bucket calls). Using UTC here would push the default day/month forward near
@@ -344,8 +379,11 @@ export function OnboardingPanel() {
   const [gran, setGran] = useState<Granularity>("all");
   const [month, setMonth] = useState(thisMonth);
   const [day, setDay] = useState(today);
+  const [rangeFrom, setRangeFrom] = useState(`${thisMonth}-01`);
+  const [rangeTo, setRangeTo] = useState(today);
   const [downloading, setDownloading] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<AnalyticsAgent | null>(null);
+  const [showMissedFirstRing, setShowMissedFirstRing] = useState(false);
   const [spotlightAgentName, setSpotlightAgentName] = useState<string>(() => {
     if (typeof window === "undefined") return "";
     return window.localStorage.getItem("onboarding_spotlight_agent") ?? "";
@@ -357,8 +395,9 @@ export function OnboardingPanel() {
   const { from, to } = useMemo(() => {
     if (gran === "month") return { from: `${month}-01`, to: lastDayOfMonth(month) };
     if (gran === "day") return { from: day, to: day };
+    if (gran === "range") return rangeFrom && rangeTo ? orderedRange(rangeFrom, rangeTo) : { from: "", to: "" };
     return { from: "", to: "" };
-  }, [gran, month, day]);
+  }, [gran, month, day, rangeFrom, rangeTo]);
 
   const qs = from && to ? `?from=${from}&to=${to}` : "";
 
@@ -380,7 +419,7 @@ export function OnboardingPanel() {
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
-      const tag = gran === "all" ? "AllTime" : gran === "month" ? month : day;
+      const tag = gran === "all" ? "AllTime" : gran === "month" ? month : gran === "day" ? day : `${from || rangeFrom}_to_${to || rangeTo}`;
       a.href = url;
       a.download = `Onboarding_Team_Analysis_${tag}.xlsx`;
       document.body.appendChild(a);
@@ -394,10 +433,50 @@ export function OnboardingPanel() {
 
   const k = data?.kpis;
   const rangeLabel =
-    gran === "all" ? "All time" : gran === "month" ? new Date(`${month}-01`).toLocaleDateString([], { month: "long", year: "numeric" }) : new Date(`${day}T00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+    gran === "all" ? "All time" : gran === "month" ? new Date(`${month}-01`).toLocaleDateString([], { month: "long", year: "numeric" }) : gran === "day" ? new Date(`${day}T00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }) : from && to ? formatDateRange(from, to) : "Custom range";
   const spotlightAgents = useMemo(() => data?.agents.filter((a) => !a.overflow) ?? [], [data]);
   const manualSpotlight = spotlightAgentName ? spotlightAgents.find((a) => a.name === spotlightAgentName) ?? null : null;
   const spotlightAgent = manualSpotlight ?? data?.cassie ?? spotlightAgents[0] ?? null;
+  const missedFirstRingAgents = useMemo<MissedFirstRingRow[]>(() => {
+    const earliestByNumber = new Map<string, FirstRingDetail>();
+    for (const agent of data?.agents ?? []) {
+      for (const detail of agent.firstRingDetails ?? []) {
+        const prev = earliestByNumber.get(detail.normalizedNumber);
+        if (!prev || new Date(detail.firstInboundAt).getTime() < new Date(prev.firstInboundAt).getTime()) {
+          earliestByNumber.set(detail.normalizedNumber, detail);
+        }
+      }
+    }
+
+    const byAgent = new Map<string, Omit<MissedFirstRingRow, "responseRate">>();
+    for (const detail of earliestByNumber.values()) {
+      const current = byAgent.get(detail.agent) ?? {
+        agent: detail.agent,
+        missed: 0,
+        attempts: 0,
+        answered: 0,
+        latestMissedAt: null,
+      };
+      current.attempts++;
+      if (detail.answered) {
+        current.answered++;
+      } else {
+        current.missed++;
+        if (!current.latestMissedAt || new Date(detail.firstInboundAt).getTime() > new Date(current.latestMissedAt).getTime()) {
+          current.latestMissedAt = detail.firstInboundAt;
+        }
+      }
+      byAgent.set(detail.agent, current);
+    }
+
+    return [...byAgent.values()]
+      .filter((row) => row.missed > 0)
+      .map((row) => ({
+        ...row,
+        responseRate: row.attempts ? Math.round((row.answered / row.attempts) * 1000) / 10 : 0,
+      }))
+      .sort((a, b) => b.missed - a.missed || b.attempts - a.attempts || a.agent.localeCompare(b.agent));
+  }, [data]);
 
   useEffect(() => {
     if (!spotlightAgentName) return;
@@ -432,13 +511,13 @@ export function OnboardingPanel() {
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <div className="inline-flex rounded-lg border border-white/10 overflow-hidden">
-              {(["all", "month", "day"] as Granularity[]).map((g) => (
+              {(["all", "month", "day", "range"] as Granularity[]).map((g) => (
                 <button
                   key={g}
                   onClick={() => setGran(g)}
                   className={`px-3 py-1.5 text-xs font-medium transition-colors ${gran === g ? "bg-primary text-primary-foreground" : "bg-transparent text-muted-foreground hover:bg-white/5"}`}
                 >
-                  {g === "all" ? "All Time" : g === "month" ? "Monthly" : "Per Day"}
+                  {g === "all" ? "All Time" : g === "month" ? "Monthly" : g === "day" ? "Per Day" : "Range"}
                 </button>
               ))}
             </div>
@@ -449,6 +528,16 @@ export function OnboardingPanel() {
             {gran === "day" && (
               <input type="date" value={day} max={today} onChange={(e) => setDay(e.target.value)}
                 className="rounded-md border border-white/10 bg-background px-2 py-1.5 text-xs" />
+            )}
+            {gran === "range" && (
+              <div className="flex items-center gap-1 rounded-md border border-white/10 bg-background px-2 py-1">
+                <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
+                <input type="date" value={rangeFrom} max={today} onChange={(e) => setRangeFrom(e.target.value)}
+                  className="bg-transparent text-xs outline-none" />
+                <span className="text-xs text-muted-foreground">to</span>
+                <input type="date" value={rangeTo} max={today} onChange={(e) => setRangeTo(e.target.value)}
+                  className="bg-transparent text-xs outline-none" />
+              </div>
             )}
             <Button size="sm" variant="outline" onClick={() => refetch()} disabled={isFetching}>
               <RefreshCw className={`h-4 w-4 mr-1 ${isFetching ? "animate-spin" : ""}`} />Refresh
@@ -482,13 +571,24 @@ export function OnboardingPanel() {
             </div>
 
             <div className="rounded-xl border border-white/10 bg-black/20 p-4 space-y-3">
-              <div>
-                <h3 className="text-sm font-medium flex items-center gap-1.5">
-                  <PhoneIncoming className="h-4 w-4 metric-good" /> 1st Ring Response Rate
-                </h3>
-                <p className="text-xs text-muted-foreground mt-1">
-                  First inbound attempt per normalized customer number in the selected range.
-                </p>
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <h3 className="text-sm font-medium flex items-center gap-1.5">
+                    <PhoneIncoming className="h-4 w-4 metric-good" /> 1st Ring Response Rate
+                  </h3>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    First inbound attempt per normalized customer number in the selected range.
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8"
+                  onClick={() => setShowMissedFirstRing(true)}
+                >
+                  <PhoneMissed className="h-3.5 w-3.5 mr-1.5" />
+                  View Missed 1st Ring Agents
+                </Button>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <StatPill label="Team 1st Ring" value={`${k!.firstRingResponseRate}%`} sub={`${k!.firstRingAnswered}/${k!.firstRingAttempts} first attempts`} icon={PhoneIncoming} tone="emerald" />
@@ -717,6 +817,56 @@ export function OnboardingPanel() {
                 </DialogContent>
               </Dialog>
             )}
+            <Dialog open={showMissedFirstRing} onOpenChange={setShowMissedFirstRing}>
+              <DialogContent className="max-w-3xl">
+                <DialogHeader>
+                  <DialogTitle>Missed 1st Ring Agents</DialogTitle>
+                </DialogHeader>
+                <div className="text-xs text-muted-foreground">{rangeLabel}</div>
+                <div className="max-h-[60vh] overflow-auto rounded-lg border border-white/10">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Agent</TableHead>
+                        <TableHead className="text-right">Missed first ring</TableHead>
+                        <TableHead className="text-right">First attempts</TableHead>
+                        <TableHead className="text-right">Answered first</TableHead>
+                        <TableHead className="text-right">Response rate</TableHead>
+                        <TableHead>Latest missed</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {missedFirstRingAgents.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
+                            No missed first-ring attempts in this range.
+                          </TableCell>
+                        </TableRow>
+                      ) : missedFirstRingAgents.map((row) => {
+                        const parts = splitAgentAlias(row.agent);
+                        return (
+                          <TableRow key={row.agent}>
+                            <TableCell className="font-medium">
+                              {parts.agentName}
+                              {parts.aliasName && <span className="ml-2 text-xs text-muted-foreground">{parts.aliasName}</span>}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums font-semibold metric-bad">{row.missed}</TableCell>
+                            <TableCell className="text-right tabular-nums">{row.attempts}</TableCell>
+                            <TableCell className="text-right tabular-nums metric-good">{row.answered}</TableCell>
+                            <TableCell className="text-right tabular-nums">{row.responseRate}%</TableCell>
+                            <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                              {row.latestMissedAt
+                                ? new Date(row.latestMissedAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+                                : "-"}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              </DialogContent>
+            </Dialog>
           </>
         )}
       </div>

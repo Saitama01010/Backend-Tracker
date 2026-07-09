@@ -589,8 +589,8 @@ async function runLivePoll(): Promise<void> {
       let page = 0;
       do {
         const sep = basePath.includes("?") ? "&" : "?";
-        const url = `${basePath}${sep}maxResults=50${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`;
-        const res = await quoFetch<{ data: T[]; nextPageToken?: string | null }>(url).catch(
+        const url: string = `${basePath}${sep}maxResults=50${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`;
+        const res: { data: T[]; nextPageToken?: string | null } = await quoFetch<{ data: T[]; nextPageToken?: string | null }>(url).catch(
           () => ({ data: [] as T[], nextPageToken: null }),
         );
         out.push(...(res.data ?? []));

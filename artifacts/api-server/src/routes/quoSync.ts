@@ -431,7 +431,7 @@ export async function runSync(
 
       // Use the participant from the conversation query (the customer's number).
       // call.participants[0] is the line's own number, NOT the customer.
-      const participant = taskParticipant || null;
+      const participant = taskParticipant;
 
       // Compute post-answer seconds: time spent in the VM system after it picks up.
       // Used to distinguish "left a voicemail message" vs "hung up on voicemail greeting".
