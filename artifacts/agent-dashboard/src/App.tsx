@@ -1076,6 +1076,31 @@ type LoadedSheetDebugRow = {
   row: Row;
 };
 type SheetData = { headers: string[]; rows: Row[]; debugRows?: LoadedSheetDebugRow[] };
+type JeremyTraceRow = {
+  "source name": string;
+  "spreadsheet ID": string;
+  gid: string;
+  "tab name": string;
+  "raw row index": string | number;
+  "full raw row JSON": string;
+  "raw Agent Name": string;
+  "normalized Agent Name": string;
+  "raw Timestamp": string;
+  "parsed date": string;
+  "raw File ID": string;
+  "raw status/update": string;
+  "matched search term yes/no": "yes" | "no";
+  "resolved canonical agent": string;
+  "resolved team": string;
+  "roster active yes/no": "yes" | "no" | "";
+  "current panel/team": string;
+  "would pass team filter yes/no": "yes" | "no";
+  "would pass date filter yes/no": "yes" | "no";
+  "would pass status filter yes/no": "yes" | "no";
+  "counted by current loader yes/no": "yes" | "no";
+  "exact skip reason": string;
+  "exact function where skipped": string;
+};
 const SHEET_STALE_MS = 30_000;
 const SHEET_REFETCH_MS = 60_000;
 const PHONE_STALE_MS = 30_000;
@@ -1346,6 +1371,88 @@ function debugRowsForRequiredSheet({
     }));
   }
   return out;
+}
+
+function teamNamesForPanel(panelTeam: AggregationMode, roster: RosterIndex): Set<string> {
+  if (panelTeam === "retention") return rosterTeamMembers(RETENTION_AGENTS_NORM_EARLY, roster, "retention");
+  if (panelTeam === "nsf") return rosterTeamMembers(NSF_AGENT_NAMES, roster, "nsf");
+  if (panelTeam === "cs") return rosterTeamMembers(CS_AGENT_NAMES, roster, "cs");
+  return new Set(RMK_AGENT_NAMES);
+}
+
+function classifyTraceRowForPanel(
+  sheet: SheetData,
+  row: Row,
+  rawRowIndex: number,
+  meta: SheetSourceMeta,
+  panelTeam: AggregationMode,
+  roster: RosterIndex,
+  fromDate: Date | null,
+  toDate: Date | null,
+): JeremyTraceRow {
+  const agentCol = sheetAgentColumn(sheet.headers);
+  const dateCol = sheetDateColumn(sheet.headers);
+  const statusCol = sheetStatusColumn(sheet.headers);
+  const fileCol = sheetFileIdColumn(sheet.headers);
+  const rawAgentName = sheetAgentValue(row, agentCol);
+  const normalizedAgentName = normalizeSheetAgentName(rawAgentName);
+  const rawTimestamp = sheetDateValue(row, dateCol);
+  const parsed = parseSheetDate(rawTimestamp, dateCol);
+  const parsedDate = parsed ? toIsoDate(parsed) : "";
+  const rawStatus = cell(row, statusCol);
+  const resolved = rawAgentName ? resolveSheetAgent(rawAgentName, roster) : null;
+  const candidates = sheetAgentCandidates(rawAgentName);
+  const matchedSearchTerm = /jeremy|romano/i.test(rawAgentName)
+    || candidates.includes("jeremy romano")
+    || Object.values(row).some((value) => /jeremy|romano/i.test(String(value ?? "")))
+    || resolved?.name === "Jeremy Romano";
+  const rosterTeam = panelTeam === "rmk" ? "killers" : panelTeam;
+  const teamNames = teamNamesForPanel(panelTeam, roster);
+  const wouldPassTeam = !!rawAgentName && (
+    resolved ? resolved.team === rosterTeam : sheetCandidateMatchesTeamNames(rawAgentName, teamNames, roster, rosterTeam)
+  );
+  const wouldPassDate = !!parsed && (!fromDate || parsed >= fromDate) && (!toDate || parsed <= toDate);
+  const derivedStatus =
+    meta.gid === SHEET_SOURCES.idpHandled.gid ? "IDP-Handled" :
+    meta.gid === SHEET_SOURCES.idpCancelRetained.gid ? "Retained" :
+    meta.gid === SHEET_SOURCES.backend.gid ? (detectKeywordStatus(row) ?? "Fixed") :
+    detectKeywordStatus(row) ?? deriveNewRetentionStatus(row["Cancel request update"] ?? rawStatus);
+  const wouldPassStatus = !!derivedStatus;
+  let functionWhereSkipped = "not-skipped";
+  let skipReason = "counted";
+  if (!rawAgentName) { skipReason = "missing-agent-name"; functionWhereSkipped = "sheetAgentValue"; }
+  else if (!rawTimestamp) { skipReason = "missing-timestamp"; functionWhereSkipped = "sheetDateValue"; }
+  else if (!parsed) { skipReason = "invalid-timestamp"; functionWhereSkipped = "parseSheetDate"; }
+  else if (!resolved) { skipReason = "unresolved-agent"; functionWhereSkipped = "resolveSheetAgent"; }
+  else if (!wouldPassTeam) { skipReason = "resolved-team-mismatch"; functionWhereSkipped = "sheetCandidateMatchesTeamNames"; }
+  else if (!wouldPassDate) { skipReason = "outside-date-range"; functionWhereSkipped = "aggregate"; }
+  else if (!wouldPassStatus) { skipReason = "missing-status"; functionWhereSkipped = "source-loader"; }
+  const counted = skipReason === "counted";
+  return {
+    "source name": meta.sourceName,
+    "spreadsheet ID": meta.spreadsheetId,
+    gid: meta.gid,
+    "tab name": meta.tabName,
+    "raw row index": rawRowIndex,
+    "full raw row JSON": JSON.stringify(row),
+    "raw Agent Name": rawAgentName,
+    "normalized Agent Name": normalizedAgentName,
+    "raw Timestamp": rawTimestamp,
+    "parsed date": parsedDate,
+    "raw File ID": cell(row, fileCol),
+    "raw status/update": rawStatus || derivedStatus,
+    "matched search term yes/no": matchedSearchTerm ? "yes" : "no",
+    "resolved canonical agent": resolved?.name ?? "",
+    "resolved team": resolved?.team ?? "",
+    "roster active yes/no": resolved ? (resolved.active ? "yes" : "no") : "",
+    "current panel/team": panelTeam,
+    "would pass team filter yes/no": wouldPassTeam ? "yes" : "no",
+    "would pass date filter yes/no": wouldPassDate ? "yes" : "no",
+    "would pass status filter yes/no": wouldPassStatus ? "yes" : "no",
+    "counted by current loader yes/no": counted ? "yes" : "no",
+    "exact skip reason": skipReason,
+    "exact function where skipped": functionWhereSkipped,
+  };
 }
 
 // Reads a Google Sheet tab through the API server's authenticated Sheets
@@ -3583,6 +3690,121 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
     URL.revokeObjectURL(url);
   }
 
+  async function fetchSheetSourceDirect(meta: SheetSourceMeta): Promise<SheetData> {
+    const params = new URLSearchParams({ id: meta.spreadsheetId, gid: meta.gid, _: String(Date.now()) });
+    const res = await fetch(`/api/sheet?${params.toString()}`, {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const loaded = (await res.json()) as SheetData;
+    return { headers: loaded.headers ?? [], rows: loaded.rows ?? [] };
+  }
+
+  async function exportJeremyTrace() {
+    const metas = [
+      SHEET_SOURCES.retentionSubmission,
+      SHEET_SOURCES.backend,
+      SHEET_SOURCES.idpHandled,
+      SHEET_SOURCES.idpCancelRetained,
+    ];
+    const traceRows: JeremyTraceRow[] = [];
+    const summaries: JeremyTraceRow[] = [];
+
+    for (const meta of metas) {
+      try {
+        const sheet = await fetchSheetSourceDirect(meta);
+        const agentCol = sheetAgentColumn(sheet.headers);
+        const rowTraces = sheet.rows.map((row, index) =>
+          classifyTraceRowForPanel(sheet, row, index + 2, meta, data.mode, roster, fromDate ?? null, toDate ?? null),
+        );
+        const matches = rowTraces.filter((row) =>
+          row["matched search term yes/no"] === "yes" ||
+          row["resolved canonical agent"] === "Jeremy Romano" ||
+          sheetAgentCandidates(row["raw Agent Name"]).includes("jeremy romano"),
+        );
+        traceRows.push(...matches);
+        summaries.push({
+          "source name": meta.sourceName,
+          "spreadsheet ID": meta.spreadsheetId,
+          gid: meta.gid,
+          "tab name": meta.tabName,
+          "raw row index": "summary",
+          "full raw row JSON": JSON.stringify({
+            totalRowsLoaded: sheet.rows.length,
+            headers: sheet.headers,
+            first3AgentNames: sheet.rows.slice(0, 3).map((row) => sheetAgentValue(row, agentCol)),
+            last3AgentNames: sheet.rows.slice(-3).map((row) => sheetAgentValue(row, agentCol)),
+            fetchedSuccessfully: true,
+            rowsEmpty: sheet.rows.length === 0,
+          }),
+          "raw Agent Name": "",
+          "normalized Agent Name": "",
+          "raw Timestamp": "",
+          "parsed date": "",
+          "raw File ID": "",
+          "raw status/update": "",
+          "matched search term yes/no": "no",
+          "resolved canonical agent": "",
+          "resolved team": "",
+          "roster active yes/no": "",
+          "current panel/team": data.mode,
+          "would pass team filter yes/no": "no",
+          "would pass date filter yes/no": "no",
+          "would pass status filter yes/no": "no",
+          "counted by current loader yes/no": "no",
+          "exact skip reason": "source-summary",
+          "exact function where skipped": "exportJeremyTrace",
+        });
+      } catch (err) {
+        summaries.push({
+          "source name": meta.sourceName,
+          "spreadsheet ID": meta.spreadsheetId,
+          gid: meta.gid,
+          "tab name": meta.tabName,
+          "raw row index": "summary",
+          "full raw row JSON": JSON.stringify({
+            totalRowsLoaded: 0,
+            headers: [],
+            first3AgentNames: [],
+            last3AgentNames: [],
+            fetchedSuccessfully: false,
+            rowsEmpty: true,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+          "raw Agent Name": "",
+          "normalized Agent Name": "",
+          "raw Timestamp": "",
+          "parsed date": "",
+          "raw File ID": "",
+          "raw status/update": "",
+          "matched search term yes/no": "no",
+          "resolved canonical agent": "",
+          "resolved team": "",
+          "roster active yes/no": "",
+          "current panel/team": data.mode,
+          "would pass team filter yes/no": "no",
+          "would pass date filter yes/no": "no",
+          "would pass status filter yes/no": "no",
+          "counted by current loader yes/no": "no",
+          "exact skip reason": "source-fetch-failed",
+          "exact function where skipped": "fetchSheetSourceDirect",
+        });
+      }
+    }
+
+    const rows = traceRows.length > 0 ? traceRows : summaries;
+    console.warn("[sheet-agent-resolution:jeremy-trace]", rows);
+    const csv = Papa.unparse(rows);
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `jeremy_trace_${data.mode}_${new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" })}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -3610,6 +3832,12 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
             <Button variant="outline" size="sm" onClick={exportLoadedSheetDebug} data-testid="button-export-loaded-sheet-debug">
               <Download className="h-3.5 w-3.5 mr-1.5" />
               Export Loaded Sheet Debug
+            </Button>
+          )}
+          {user.role === "admin" && (
+            <Button variant="outline" size="sm" onClick={() => void exportJeremyTrace()} data-testid="button-export-jeremy-trace">
+              <Download className="h-3.5 w-3.5 mr-1.5" />
+              Export Jeremy Trace
             </Button>
           )}
           <Button variant="outline" size="sm" onClick={exportCsv} data-testid="button-export-csv">
