@@ -5,7 +5,20 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import { extractQuoCallId, getQuoCallArtifacts } from "./quoCall.js";
-import { assistantBlocks, mapSamiaError, toolResultMessage, validateSamiaPayload } from "./samiaPolicy.js";
+import {
+  assistantBlocks,
+  claudeModelDisplayName,
+  deterministicIdentityReply,
+  extractUsPhoneNumber,
+  hasVisibleInternalToolSyntax,
+  isModelIdentityQuestion,
+  isStaleModelIdentityMessage,
+  mapSamiaError,
+  safeVisibleSamiaReply,
+  shouldRoutePhoneNumberToCallData,
+  toolResultMessage,
+  validateSamiaPayload,
+} from "./samiaPolicy.js";
 import {
   hasRecentAutomaticReview,
   shouldReuseStoredReview,
@@ -23,6 +36,101 @@ test("Samia accepts a valid request only after payload validation", () => {
   assert.deepEqual(invalid, { ok: false, status: 400, error: "message is required" });
   const invalidImage = validateSamiaPayload({ message: "hello", images: ["data:text/plain;base64,AA=="] });
   assert.equal(invalidImage.ok, false);
+});
+
+test("Samia identity questions are deterministic and use the configured Claude model", () => {
+  const questions = [
+    "what model are you",
+    "what's your model?",
+    "which model do you use",
+    "which AI are you",
+    "are you GPT-4",
+    "are you ChatGPT",
+    "are you Claude",
+    "are you OpenAI",
+    "who powers you",
+    "what are you powered by",
+    "who made you",
+    "what provider do you use",
+    "tell me your model",
+    "which provider powers you",
+    "do you use OpenRouter",
+    "what LLM are you using",
+  ];
+  for (const question of questions) assert.equal(isModelIdentityQuestion(question), true, question);
+  assert.equal(isModelIdentityQuestion("Tell me about OpenAI as a company"), false);
+  assert.equal(claudeModelDisplayName("claude-sonnet-5"), "Claude Sonnet 5");
+  assert.equal(claudeModelDisplayName("claude-haiku-4-5"), "Claude Haiku 4.5");
+  assert.equal(claudeModelDisplayName("claude-unknown-preview"), "claude-unknown-preview");
+  assert.equal(
+    deterministicIdentityReply("claude-sonnet-5"),
+    "I'm Samia, powered by Anthropic Claude using Claude Sonnet 5.",
+  );
+});
+
+test("only stale false assistant identity claims are removed from Claude context", () => {
+  for (const claim of [
+    "I am GPT-4.",
+    "I'm powered by OpenAI.",
+    "I use ChatGPT.",
+    "My model is GPT-4 Turbo.",
+    "I run on Qwen.",
+    "I was created by OpenAI.",
+    "As a Gemini model, I can help.",
+  ]) {
+    assert.equal(isStaleModelIdentityMessage("assistant", claim), true, claim);
+  }
+  assert.equal(isStaleModelIdentityMessage("user", "Are you GPT-4?"), false);
+  assert.equal(isStaleModelIdentityMessage("assistant", "OpenAI is an AI company."), false);
+  assert.equal(isStaleModelIdentityMessage("assistant", 'The customer said, "I use ChatGPT for work."'), false);
+  assert.equal(isStaleModelIdentityMessage("assistant", "I'm powered by Anthropic Claude."), false);
+});
+
+test("US phone extraction normalizes supported formats and masks logs", () => {
+  for (const input of [
+    "850-812-0151",
+    "(850) 812-0151",
+    "+1 850 812 0151",
+    "8508120151",
+    "1-850-812-0151",
+  ]) {
+    const result = extractUsPhoneNumber(input);
+    assert.equal(result.found, true, input);
+    if (!result.found) continue;
+    assert.equal(result.digits, "8508120151");
+    assert.equal(result.e164, "+18508120151");
+    assert.equal(result.masked, "******0151");
+    assert.ok(result.original.length >= 10);
+  }
+  assert.deepEqual(extractUsPhoneNumber("order 123456"), { found: false });
+});
+
+test("casual phone messages route to verified call data without intent keywords", () => {
+  for (const message of [
+    "850-812-0151 spell the tea",
+    "850-812-0151 spill the tea",
+    "850-812-0151 give me the tea",
+    "tell me about 850-812-0151",
+    "what's the story with 850-812-0151",
+    "check 8508120151",
+    "look up 8508120151",
+    "investigate 8508120151",
+    "what happened with 8508120151",
+    "who spoke with 8508120151",
+    "8508120151",
+  ]) {
+    assert.equal(shouldRoutePhoneNumberToCallData(message), true, message);
+  }
+  assert.equal(shouldRoutePhoneNumberToCallData("My phone number is 8508120151"), false);
+  assert.equal(shouldRoutePhoneNumberToCallData("Format this phone number 8508120151"), false);
+});
+
+test("internal Samia operation syntax can never reach a visible reply", () => {
+  const fakeCall = '**analyze_calls**\n```json\n{"participant":"8508120151"}\n```';
+  assert.equal(hasVisibleInternalToolSyntax(fakeCall), true);
+  assert.equal(hasVisibleInternalToolSyntax('analyze_calls({ participant: "8508120151" })'), true);
+  assert.equal(safeVisibleSamiaReply(fakeCall), "I couldn't complete that dashboard lookup safely. Please try again.");
+  assert.equal(safeVisibleSamiaReply("I found two verified calls."), "I found two verified calls.");
 });
 
 test("application/module startup performs zero Anthropic requests", async () => {
@@ -97,8 +205,17 @@ test("Samia route invokes Claude only inside the authenticated chat handler", as
   const source = await readFile(path.join(routesDir, "samia.ts"), "utf8");
   const routeStart = source.indexOf('router.post("/samia/chat", requireAuth, requireRole("admin")');
   assert.ok(routeStart > 0);
-  assert.ok(source.indexOf("withDurableAiLimit", routeStart) > routeStart);
+  const identityStart = source.indexOf("if (isModelIdentityQuestion(message))", routeStart);
+  const limiterStart = source.indexOf("withDurableAiLimit", routeStart);
+  assert.ok(identityStart > routeStart);
+  assert.ok(limiterStart > identityStart);
   assert.ok(source.indexOf("createSamiaMessage", routeStart) > routeStart);
+  assert.ok(source.indexOf("/api/samia/call-analysis?", routeStart) < source.indexOf("createSamiaMessage", routeStart));
+  assert.match(source.slice(routeStart), /if \(directCallId \|\| directPhone\) return false/);
+  assert.match(source.slice(routeStart), /isStaleModelIdentityMessage\(item\.role, item\.content\)/);
+  assert.match(source, /safeStoredMessages\(rows\.reverse\(\)\)/);
+  const systemPrompt = source.slice(source.indexOf("const SAMIA_SYSTEM"), source.indexOf("interface ChatMessage"));
+  assert.doesNotMatch(systemPrompt, /analyze_calls|lookup_number/);
   assert.equal(source.includes("claude-test"), false);
   assert.equal(source.includes("openrouter-test"), false);
 });
@@ -335,7 +452,11 @@ test("runtime sources contain no OpenAI or OpenRouter implementation", async () 
   for (const root of roots) {
     for (const file of await runtimeSourceFiles(root)) {
       const source = await readFile(file, "utf8");
-      assert.doesNotMatch(source, /openai|openrouter|AI_INTEGRATIONS_OPENAI|AI_INTEGRATIONS_OPENROUTER/i, file);
+      assert.doesNotMatch(
+        source,
+        /@openai\/|from\s+["']openai|require\(["']openai|OPENAI_API_KEY|OPENROUTER_API_KEY|AI_INTEGRATIONS_OPENAI|AI_INTEGRATIONS_OPENROUTER|api\.openai\.com|openrouter\.ai/i,
+        file,
+      );
     }
   }
 });

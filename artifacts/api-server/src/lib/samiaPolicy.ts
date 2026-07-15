@@ -46,6 +46,106 @@ export function validateSamiaPayload(body: unknown): SamiaPayloadValidation {
   return { ok: true, message, displayName, images: rawImages as string[] };
 }
 
+const MODEL_IDENTITY_PATTERNS = [
+  /\bwhat(?:'s| is)\s+(?:your|the)\s+(?:ai\s+)?model\b/i,
+  /\bwhat\s+(?:ai\s+)?model\s+are\s+you\b/i,
+  /\bwhich\s+(?:ai\s+)?model\s+(?:do|are)\s+you\s+(?:use|using)\b/i,
+  /\bwhich\s+ai\s+are\s+you\b/i,
+  /\bwhat\s+(?:ai|llm)\s+are\s+you\b/i,
+  /\bwhat\s+(?:ai|llm|model)\s+(?:do|are)\s+you\s+(?:use|using)\b/i,
+  /\bare\s+you\s+(?:gpt(?:[-\s]?\d+(?:\.\d+)?)?|chatgpt|claude|openai|openrouter|gemini|qwen|llama)\b/i,
+  /\bare\s+you\s+(?:powered|hosted|made)\s+by\s+(?:gpt|chatgpt|claude|anthropic|openai|openrouter|gemini|qwen|llama)\b/i,
+  /\bwho\s+powers\s+you\b/i,
+  /\bwhat\s+are\s+you\s+powered\s+by\b/i,
+  /\bwho\s+(?:made|built|hosts?)\s+you\b/i,
+  /\bwhat\s+provider\s+do\s+you\s+use\b/i,
+  /\bwhich\s+provider\s+(?:are\s+you|powers|hosts)\b/i,
+  /\b(?:tell|show)\s+me\s+(?:your|the)\s+(?:model|provider)\b/i,
+  /\bdo\s+you\s+use\s+(?:gpt|chatgpt|claude|anthropic|openai|openrouter|gemini|qwen|llama)\b/i,
+];
+
+export function isModelIdentityQuestion(message: string): boolean {
+  const normalized = message.replace(/[\u2018\u2019]/g, "'").trim();
+  return MODEL_IDENTITY_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+export function claudeModelDisplayName(model: string): string {
+  const match = /^claude-(sonnet|haiku|opus)-(\d+)(?:-(\d+))?$/i.exec(model.trim());
+  if (!match?.[1] || !match[2]) return model;
+  const family = match[1][0]!.toUpperCase() + match[1].slice(1).toLowerCase();
+  const version = match[3] ? `${match[2]}.${match[3]}` : match[2];
+  return `Claude ${family} ${version}`;
+}
+
+export function deterministicIdentityReply(model: string): string {
+  return `I'm Samia, powered by Anthropic Claude using ${claudeModelDisplayName(model)}.`;
+}
+
+const FALSE_MODEL_PROVIDER = String.raw`(?:gpt(?:[-\s]?\d[\w.-]*)?|chatgpt|openai|openrouter|gemini|qwen|llama)`;
+const FALSE_ASSISTANT_IDENTITY_PATTERNS = [
+  new RegExp(String.raw`(?:^|[\n.!?]\s*)(?:i\s+am|i['\u2019]m|i\s+use|i\s+run\s+on|my\s+(?:model|provider|underlying\s+model)\s+is)\b.{0,100}\b${FALSE_MODEL_PROVIDER}\b`, "i"),
+  new RegExp(String.raw`(?:^|[\n.!?]\s*)(?:i\s+am|i['\u2019]m|i\s+was|samia\s+is|this\s+assistant\s+is)\b.{0,100}\b(?:powered|hosted|made|created)\s+by\s+${FALSE_MODEL_PROVIDER}\b`, "i"),
+  new RegExp(String.raw`^\s*as\s+(?:an?\s+)?${FALSE_MODEL_PROVIDER}\b`, "i"),
+];
+
+export function isStaleModelIdentityMessage(role: string, content: string): boolean {
+  if (role !== "assistant") return false;
+  return FALSE_ASSISTANT_IDENTITY_PATTERNS.some((pattern) => pattern.test(content));
+}
+
+export type UsPhoneNumberExtraction =
+  | { found: false }
+  | {
+      found: true;
+      original: string;
+      digits: string;
+      e164: string;
+      masked: string;
+    };
+
+const US_PHONE_PATTERN = /(?<![\dA-Za-z])(?:\+?1[\s.-]*)?(?:\([2-9]\d{2}\)|[2-9]\d{2})[\s.-]*[2-9]\d{2}[\s.-]*\d{4}(?![\dA-Za-z])/;
+
+export function extractUsPhoneNumber(message: string): UsPhoneNumberExtraction {
+  const match = US_PHONE_PATTERN.exec(message);
+  if (!match?.[0]) return { found: false };
+  const rawDigits = match[0].replace(/\D/g, "");
+  const digits = rawDigits.length === 11 && rawDigits.startsWith("1")
+    ? rawDigits.slice(1)
+    : rawDigits;
+  if (digits.length !== 10) return { found: false };
+  return {
+    found: true,
+    original: match[0],
+    digits,
+    e164: `+1${digits}`,
+    masked: `******${digits.slice(-4)}`,
+  };
+}
+
+const CLEARLY_NON_CALL_PHONE_CONTEXT = [
+  /\b(?:format|reformat|validate)\s+(?:this|the|my|our)?\s*(?:phone\s+)?number\b/i,
+  /\b(?:my|our)\s+phone\s+number\s+is\b/i,
+  /\b(?:save|remember|store)\s+(?:this|the|my|our)?\s*(?:phone\s+)?number\b/i,
+  /\bhow\s+(?:do|should|can)\s+i\s+(?:write|format)\s+(?:this|the|a)?\s*(?:phone\s+)?number\b/i,
+  /^\s*(?:please\s+)?(?:dial|text|message)\s+(?:this\s+)?(?:number\s+)?/i,
+];
+
+export function shouldRoutePhoneNumberToCallData(message: string): boolean {
+  if (!extractUsPhoneNumber(message).found) return false;
+  return !CLEARLY_NON_CALL_PHONE_CONTEXT.some((pattern) => pattern.test(message));
+}
+
+const INTERNAL_TOOL_NAME_PATTERN = /\b(?:analyze_calls|lookup_number|get_agent_contacts|auto_mark_attendance|get_call_logs|set_attendance|add_nsf_readymode_missed_calls)\b/i;
+
+export function hasVisibleInternalToolSyntax(reply: string): boolean {
+  return INTERNAL_TOOL_NAME_PATTERN.test(reply) || /\btool_(?:use|result)\b/i.test(reply);
+}
+
+export function safeVisibleSamiaReply(reply: string): string {
+  if (!hasVisibleInternalToolSyntax(reply)) return reply;
+  return "I couldn't complete that dashboard lookup safely. Please try again.";
+}
+
 export interface SamiaErrorMapping {
   status: number;
   error: string;
