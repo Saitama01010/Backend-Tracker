@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Calendar as CalendarPicker } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { API_UNAUTHORIZED_EVENT, apiFetch } from "@/lib/api";
 import {
   Table,
   TableBody,
@@ -6036,7 +6037,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const token = localStorage.getItem("tracker_token");
     if (!token) return;
-    fetch("/api/auth/me", { headers: { Authorization: `Bearer ${token}` } })
+    apiFetch("/api/auth/me")
       .then((r) => {
         if (!r.ok) { logout(); return; }
         return r.json() as Promise<{ token: string; user: AuthUser }>;
@@ -6057,13 +6058,19 @@ function LoginGate({ children }: { children: React.ReactNode }) {
     setAuth(null);
   }, []);
 
+  useEffect(() => {
+    window.addEventListener(API_UNAUTHORIZED_EVENT, logout);
+    return () => window.removeEventListener(API_UNAUTHORIZED_EVENT, logout);
+  }, [logout]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError("");
     try {
-      const r = await fetch("/api/auth/login", {
+      const r = await apiFetch("/api/auth/login", {
         method: "POST",
+        auth: "none",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: username.trim(), password: password.trim() }),
       });
