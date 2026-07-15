@@ -56,4 +56,3 @@ test("unscopable sheets fail closed instead of returning empty success data", ()
   const result = scopeSheetData(retentionUser, { headers: ["Status"], rows: [{ Status: "Fixed" }] }, directory);
   assert.deepEqual(result, { ok: false, reason: "The requested sheet has no resolvable agent column." });
 });
-

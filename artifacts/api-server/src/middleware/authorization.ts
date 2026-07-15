@@ -55,4 +55,3 @@ export function requireDateRangeAccess(resolveValues: (req: Request) => Array<st
     next();
   };
 }
-

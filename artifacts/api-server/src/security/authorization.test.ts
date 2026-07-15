@@ -84,17 +84,37 @@ test("missing authentication is denied before route authorization and unknown ro
   assert.equal(authorizeApiRoute("GET", "/future-private-route", admin).allowed, true);
 });
 
-test("representative private route inventory is explicitly matched", () => {
+test("all 85 declared private route/method pairs have an explicit authorization policy", () => {
   const routes: Array<[string, string]> = [
-    ["GET", "/auth/me"], ["GET", "/quo/stats"], ["GET", "/quo/calls"], ["POST", "/quo/sync"],
-    ["POST", "/vos/refresh"], ["GET", "/vos/stats"], ["GET", "/vos/missed-daily"], ["GET", "/vos/callback-review"],
+    ["GET", "/auth/me"],
+    ["GET", "/users"], ["POST", "/users"], ["PATCH", "/users/1"], ["DELETE", "/users/1"],
+    ["GET", "/sheet"],
+    ["GET", "/readymode/stats"], ["GET", "/readymode/probe"], ["POST", "/readymode/upload"], ["POST", "/readymode/session/reset"],
+    ["POST", "/breaks/start"], ["POST", "/breaks/end"], ["POST", "/breaks/log"], ["DELETE", "/breaks/1"], ["GET", "/breaks"],
+    ["GET", "/ob-analytics"], ["GET", "/ob-analytics/download"],
+    ["GET", "/team-agents"], ["POST", "/team-agents"], ["PATCH", "/team-agents/1"], ["DELETE", "/team-agents/1"],
+    ["GET", "/samia/history"], ["GET", "/samia/users"], ["GET", "/samia/history/1"],
+    ["GET", "/samia/number-lookup"], ["GET", "/samia/call-analysis"], ["GET", "/samia/diagnostics"], ["POST", "/samia/chat"],
+    ["GET", "/violations"], ["POST", "/violations/verify"], ["DELETE", "/violations/verify"], ["GET", "/violations/verified"],
+    ["POST", "/vos/refresh"], ["GET", "/vos/stats"], ["GET", "/vos/missed-no-callback"],
+    ["GET", "/vos/missed-hourly"], ["GET", "/vos/missed-daily"], ["GET", "/vos/missed-breakdown"],
+    ["GET", "/vos/callback-review"], ["GET", "/vos/live"], ["GET", "/vos/debug/calls"], ["GET", "/vos/debug/proxy"],
+    ["GET", "/blocked-numbers"], ["POST", "/blocked-numbers"], ["DELETE", "/blocked-numbers/fixture-number"],
     ["GET", "/attendance"], ["POST", "/attendance/members"], ["PATCH", "/attendance/members/1"], ["PUT", "/attendance/record"],
-    ["GET", "/sheet"], ["GET", "/csv-proxy"], ["GET", "/readymode/stats"], ["POST", "/readymode/upload"],
-    ["GET", "/nsf/readymode-queue"], ["POST", "/nsf/readymode-queue/1/done"], ["GET", "/violations"],
-    ["POST", "/violations/verify"], ["GET", "/qa/stats"], ["GET", "/qa/reviews/review-fixture"],
-    ["GET", "/ob-report/status"], ["GET", "/ob-analytics/download"], ["GET", "/live-transfers/status"],
-    ["GET", "/team-agents"], ["POST", "/team-agents"], ["GET", "/blocked-numbers"], ["GET", "/breaks"],
+    ["POST", "/attendance/import"], ["GET", "/attendance/call-logs"], ["POST", "/attendance/set"],
+    ["POST", "/attendance/auto-mark"], ["GET", "/attendance/agent-contacts"],
+    ["GET", "/csv-proxy"],
+    ["POST", "/nsf/readymode-queue"], ["GET", "/nsf/readymode-queue"],
+    ["POST", "/nsf/readymode-queue/1/done"], ["POST", "/nsf/readymode-queue/done-by-number"],
+    ["GET", "/live-transfers/status"], ["POST", "/live-transfers/refresh"], ["GET", "/live-transfers/download"],
+    ["GET", "/quo/lines"], ["GET", "/quo/all-lines"], ["GET", "/quo/line-stats"], ["GET", "/quo/stats"],
+    ["POST", "/quo/sync"], ["GET", "/quo/sync-state"], ["GET", "/quo/live"], ["GET", "/quo/calls"],
+    ["POST", "/ob-report/refresh"], ["GET", "/ob-report/status"], ["GET", "/ob-report/download"],
+    ["POST", "/qa/evaluate"], ["POST", "/qa/biweekly-run"], ["POST", "/qa/process"], ["GET", "/qa/runs/latest"],
+    ["POST", "/qa/assign-weekly"], ["GET", "/qa/stats"], ["GET", "/qa/download"], ["GET", "/qa/reviews"],
+    ["GET", "/qa/reviews/review-fixture"], ["GET", "/qa/tasks"], ["POST", "/qa/tasks/task-fixture/resolve"], ["GET", "/qa/agents"],
   ];
+  assert.equal(routes.length, 85);
   for (const [method, path] of routes) {
     assert.equal(authorizeApiRoute(method, path, admin).matched, true, `${method} ${path}`);
   }
