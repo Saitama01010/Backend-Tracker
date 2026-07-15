@@ -28,6 +28,7 @@ export * from "./agentBreaks";
 export * from "./teamAgents";
 export * from "./nsfReadymodeQueue";
 export * from "./qaReviews";
+export * from "./aiControls";
 export * from "./readymodeUploads";
 export * from "./onboardingReport";
 export * from "./liveTransfers";

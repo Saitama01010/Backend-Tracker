@@ -8,6 +8,7 @@
     "build": "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/agent-dashboard run build",
     "build:full": "pnpm run typecheck && pnpm -r --if-present run build",
     "vercel-build": "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/agent-dashboard run build",
+    "test": "pnpm --filter @workspace/api-server run test",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
   },

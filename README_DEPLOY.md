@@ -32,6 +32,22 @@ PORT=8080
 
 Optional integration variables can stay unset unless you use those features.
 
+To enable the admin-only Samia chatbot with Claude, add:
+
+```env
+ANTHROPIC_API_KEY=<your Anthropic API key>
+ANTHROPIC_SAMIA_MODEL=claude-sonnet-5
+ANTHROPIC_QA_MODEL=claude-haiku-4-5
+SAMIA_REQUESTS_PER_MINUTE=6
+SAMIA_REQUESTS_PER_DAY=50
+QA_REVIEW_INTERVAL_DAYS=14
+QA_MIN_CALL_SECONDS=90
+CRON_SECRET=<generate a separate long random value>
+```
+
+`ANTHROPIC_API_KEY` is read only by the API server. Never prefix it with `VITE_`
+or expose it in frontend code.
+
 ## 3. Install dependencies
 
 ```bash
@@ -45,10 +61,13 @@ The Drizzle schema is exported from `lib/db/src/schema/index.ts`, and the Drizzl
 Run:
 
 ```bash
-pnpm --filter @workspace/db run push
+pnpm --filter @workspace/db run migrate
 ```
 
-This uses `drizzle-kit push`. Do not use `push-force` unless you intentionally accept the risk of forced schema changes.
+This applies the checked-in Drizzle migrations, including the Anthropic request
+limits, QA source field, and biweekly run audit table. Use `push` only for local
+schema prototyping; do not use `push-force` unless you intentionally accept the
+risk of forced schema changes.
 
 ## 5. Run locally
 
@@ -105,6 +124,11 @@ PORT=8080
 ```
 
 Add the optional integration variables from `.env.example` only when the matching feature needs them.
+
+For Samia and QA, add `ANTHROPIC_API_KEY` and `CRON_SECRET` as Vercel secrets,
+plus the Anthropic model and limit variables shown above. The daily Vercel cron
+calls `/api/qa/biweekly-run`; PostgreSQL eligibility checks still limit each
+agent to one automatic review in any rolling 14-day period.
 
 For private Google Sheet submissions, add one of these setups in Vercel:
 

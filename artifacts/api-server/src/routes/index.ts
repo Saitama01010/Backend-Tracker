@@ -15,7 +15,7 @@ import csvProxyRouter from "./csvProxy";
 import sheetsRouter from "./sheets";
 import breaksRouter from "./breaks";
 import teamAgentsRouter from "./teamAgents";
-import qaRouter, { startQaBackgroundProcessor } from "./qa";
+import qaRouter from "./qa";
 import obReportRouter from "./obReport";
 import obAnalyticsRouter from "./obAnalytics";
 import liveTransfersRouter, { startLiveTransfersBackground } from "./liveTransfers";
@@ -42,8 +42,6 @@ router.use(obReportRouter);
 router.use(obAnalyticsRouter);
 router.use(liveTransfersRouter);
 
-// Kick off background QA processor (evaluates new retention calls every 5 min).
-startQaBackgroundProcessor();
 // Kick off background live-transfer classifier (Aspire/Resync inbound transfers).
 startLiveTransfersBackground();
 router.use(teamAgentsRouter);

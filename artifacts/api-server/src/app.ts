@@ -51,6 +51,9 @@ app.use((req, res, next) => {
     },
   })(req, res, next);
 });
+// Samia accepts at most two screenshots; give that authenticated route enough
+// room for base64 payloads while preserving the smaller default limit elsewhere.
+app.use("/api/samia/chat", express.json({ limit: "8mb" }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

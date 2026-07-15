@@ -1,26 +1,21 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Response } from "express";
+import Anthropic from "@anthropic-ai/sdk";
 import ExcelJS from "exceljs";
-import { db, phoneCallsTable, qaReviewsTable, managerQaTasksTable } from "@workspace/db";
-import { and, desc, eq, gte, lte, sql, isNull, inArray } from "drizzle-orm";
-import OpenAI from "openai";
+import { db, phoneCallsTable, qaReviewsTable, managerQaTasksTable, teamAgentsTable, qaBiweeklyRunsTable } from "@workspace/db";
+import { and, desc, eq, gte, lte, sql, inArray } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { canonicalAgentName } from "./quoSync.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { anthropicErrorStatus, createAnthropicClient, usageFields } from "../lib/anthropic.js";
+import { AiRateLimitError, withDatabaseLease, withDurableAiLimit } from "../lib/aiRateLimit.js";
+import { getQuoCallArtifacts, isSafeQuoCallId, type QuoCallArtifacts } from "../lib/quoCall.js";
+import { shouldReuseStoredReview, stableEligibleCalls, validateQaResult } from "../lib/qaPolicy.js";
 
 const router: IRouter = Router();
 
-// QA scoring runs through OpenRouter on DeepSeek (much cheaper than GPT-4.1).
-// Override with QA_MODEL if a different model is ever needed.
-const QA_MODEL = process.env["QA_MODEL"] ?? "deepseek/deepseek-chat";
-
-function getQaClient(): OpenAI {
-  const apiKey = process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"];
-  if (!apiKey) throw new Error("AI_INTEGRATIONS_OPENROUTER_API_KEY is not set");
-  return new OpenAI({
-    baseURL: process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"],
-    apiKey,
-  });
-}
+const QA_MODEL = process.env["ANTHROPIC_QA_MODEL"]?.trim() || "claude-haiku-4-5";
+const QA_REVIEW_INTERVAL_DAYS = Math.max(1, Number(process.env["QA_REVIEW_INTERVAL_DAYS"] ?? 14) || 14);
+const QA_MIN_CALL_SECONDS = Math.max(30, Number(process.env["QA_MIN_CALL_SECONDS"] ?? 90) || 90);
 
 // ── Departments ─────────────────────────────────────────────────────────────
 export type Department = "Retention" | "CS" | "NSF";
@@ -140,87 +135,112 @@ function buildSystemPrompt(dept: Department): string {
   return `${UNIVERSAL_PREAMBLE}\n\n${DEPT_RUBRICS[dept]}`;
 }
 
-interface QaResult {
-  department?: string;
-  categoryScores: Record<string, number>;
-  score: number;
-  softSkillsScore?: number;
-  protocolScore?: number;
-  pass: boolean;
-  criticalFail: boolean;
-  strengths: string[];
-  missedItems: string[];
-  criticalIssues?: string[];
-  reason: string;
-  managerReviewRequired: boolean;
-}
 
 // ── OpenPhone fetch helpers ─────────────────────────────────────────────────
-async function fetchOpenPhoneJson(url: string): Promise<unknown | null> {
-  const QUO_KEY = process.env["QUO_API_KEY"] ?? "";
-  if (!QUO_KEY) return null;
-  try {
-    const r = await fetch(url, { headers: { Authorization: QUO_KEY } });
-    if (!r.ok) return null;
-    return await r.json();
-  } catch {
-    return null;
-  }
-}
-
-async function getTranscriptAndSummary(callId: string): Promise<{ transcript: string; summary: string } | null> {
-  type SumResp = { data?: { summary?: string[]; nextSteps?: string[]; status?: string } };
-  type TxResp  = { data?: { dialogue?: Array<{ identifier?: string; content?: string }>; status?: string } };
-  const [sum, tx] = await Promise.all([
-    fetchOpenPhoneJson(`https://api.openphone.com/v1/call-summaries/${callId}`) as Promise<SumResp | null>,
-    fetchOpenPhoneJson(`https://api.openphone.com/v1/call-transcripts/${callId}`) as Promise<TxResp | null>,
-  ]);
-  const dialogue = (tx?.data?.dialogue ?? [])
-    .map((d) => `${d.identifier ?? "?"}: ${d.content ?? ""}`)
-    .join("\n");
-  const summary = (sum?.data?.summary ?? []).join(" ");
-  if (!dialogue) return null;
-  return { transcript: dialogue, summary };
+async function getTranscriptAndSummary(callId: string): Promise<{
+  transcript: string;
+  summary: string;
+  nextSteps: string;
+  artifacts: QuoCallArtifacts;
+} | null> {
+  const artifacts = await getQuoCallArtifacts(callId);
+  if (artifacts.status !== "ready") return null;
+  return {
+    transcript: artifacts.transcriptText,
+    summary: artifacts.summary.join(" "),
+    nextSteps: artifacts.nextSteps.join("; "),
+    artifacts,
+  };
 }
 
 // ── Core evaluation ─────────────────────────────────────────────────────────
-async function evaluateCall(callId: string, opts?: { source?: string }): Promise<typeof qaReviewsTable.$inferSelect | null> {
+async function evaluateCall(callId: string, opts?: {
+  source?: "auto_biweekly" | "manual_call_id";
+  userId?: number;
+  artifacts?: QuoCallArtifacts;
+  preserveEvaluatedAt?: boolean;
+}): Promise<typeof qaReviewsTable.$inferSelect | null> {
   const [call] = await db.select().from(phoneCallsTable).where(eq(phoneCallsTable.id, callId)).limit(1);
   if (!call) return null;
   if (call.status !== "completed") return null;
-  if ((call.durationSeconds ?? 0) < 30) return null;
+  if ((opts?.source ?? "auto_biweekly") === "auto_biweekly" && (call.durationSeconds ?? 0) < QA_MIN_CALL_SECONDS) return null;
 
   // Department detection: start from line classification (already retention/cs/nsf/other)
   const initialDept = lineTeamToDepartment(call.lineTeam);
   if (!initialDept) return null; // skip "other" lines — not a tracked department
 
-  const td = await getTranscriptAndSummary(callId);
+  const td = opts?.artifacts?.status === "ready"
+    ? {
+        transcript: opts.artifacts.transcriptText,
+        summary: opts.artifacts.summary.join(" "),
+        nextSteps: opts.artifacts.nextSteps.join("; "),
+        artifacts: opts.artifacts,
+      }
+    : await getTranscriptAndSummary(callId);
   if (!td) return null;
+
+  if ((opts?.source ?? "auto_biweekly") === "auto_biweekly") {
+    const [existingReview] = await db.select({ id: qaReviewsTable.id })
+      .from(qaReviewsTable).where(eq(qaReviewsTable.id, callId)).limit(1);
+    if (existingReview) return null;
+  }
 
   // Truncate very long transcripts
   const transcript = td.transcript.length > 16000 ? td.transcript.slice(0, 16000) + "\n[...truncated]" : td.transcript;
 
   const agentName = canonicalAgentName(call.agentName) ?? "Unknown";
 
-  const completion = await getQaClient().chat.completions.create({
-    model: QA_MODEL,
-    response_format: { type: "json_object" },
-    temperature: 0.2,
-    messages: [
-      { role: "system", content: buildSystemPrompt(initialDept) },
-      {
-        role: "user",
-        content: `Agent: ${agentName}\nCustomer line: ${call.lineName}\nLine-classified department: ${initialDept}\nDirection: ${call.direction}\nDuration: ${call.durationSeconds}s\nAI summary: ${td.summary || "(none)"}\n\nTRANSCRIPT:\n${transcript}`,
-      },
-    ],
-  });
-
-  const raw = completion.choices[0]?.message?.content ?? "{}";
-  let parsed: QaResult;
+  let completion;
   try {
-    parsed = JSON.parse(raw) as QaResult;
+    completion = await createAnthropicClient().messages.create({
+      model: QA_MODEL,
+      max_tokens: 700,
+      system: [{
+        type: "text",
+        text: buildSystemPrompt(initialDept),
+        cache_control: { type: "ephemeral" },
+      }],
+      messages: [{
+        role: "user",
+        content: `Agent: ${agentName}\nCustomer line: ${call.lineName}\nLine-classified department: ${initialDept}\nDirection: ${call.direction}\nDuration: ${call.durationSeconds}s\nAI summary: ${td.summary || "(none)"}\nNext steps: ${td.nextSteps || "(none)"}\n\nTRANSCRIPT:\n${transcript}`,
+      }],
+    }, { signal: AbortSignal.timeout(30_000) });
+    logger.info({
+      feature: "qa",
+      userId: opts?.userId ?? 0,
+      model: completion.model,
+      requestId: completion._request_id,
+      success: true,
+      ...usageFields(completion.usage),
+    }, "anthropic request complete");
+  } catch (error) {
+    logger.warn({
+      feature: "qa",
+      userId: opts?.userId ?? 0,
+      model: QA_MODEL,
+      requestId: (error as { request_id?: unknown })?.request_id ?? null,
+      success: false,
+    }, "anthropic request failed");
+    throw error;
+  }
+
+  const raw = completion.content
+    .filter((block): block is Anthropic.TextBlock => block.type === "text")
+    .map((block) => block.text)
+    .join("\n")
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "");
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw);
   } catch {
-    logger.warn({ callId, raw: raw.slice(0, 200) }, "qa: failed to parse model JSON");
+    logger.warn({ feature: "qa", userId: opts?.userId ?? 0, model: QA_MODEL, success: false }, "qa result validation failed");
+    return null;
+  }
+  const parsed = validateQaResult(decoded, initialDept);
+  if (!parsed) {
+    logger.warn({ feature: "qa", userId: opts?.userId ?? 0, model: QA_MODEL, success: false }, "qa result validation failed");
     return null;
   }
 
@@ -254,13 +274,14 @@ async function evaluateCall(callId: string, opts?: { source?: string }): Promise
     protocolScore,
     pass,
     criticalFail,
-    strengths: Array.isArray(parsed.strengths) ? parsed.strengths.slice(0, 6) : [],
-    missedItems: Array.isArray(parsed.missedItems) ? parsed.missedItems.slice(0, 6) : [],
-    criticalIssues: Array.isArray(parsed.criticalIssues) ? parsed.criticalIssues.slice(0, 6) : [],
+    strengths: parsed.strengths,
+    missedItems: parsed.missedItems,
+    criticalIssues: parsed.criticalIssues,
     categoryScores,
     reason: parsed.reason ?? null,
     managerReviewRequired,
     model: QA_MODEL,
+    source: opts?.source ?? "auto_biweekly",
   } satisfies typeof qaReviewsTable.$inferInsert;
 
   await db.insert(qaReviewsTable).values(reviewRow).onConflictDoUpdate({
@@ -278,7 +299,9 @@ async function evaluateCall(callId: string, opts?: { source?: string }): Promise
       categoryScores: reviewRow.categoryScores,
       reason: reviewRow.reason,
       managerReviewRequired: reviewRow.managerReviewRequired,
-      evaluatedAt: new Date(),
+      model: reviewRow.model,
+      source: reviewRow.source,
+      ...(!opts?.preserveEvaluatedAt ? { evaluatedAt: new Date() } : {}),
     },
   });
 
@@ -294,7 +317,7 @@ async function evaluateCall(callId: string, opts?: { source?: string }): Promise
       score,
       reason: taskReason,
       criticalFail,
-      source: opts?.source ?? "auto_flag",
+      source: opts?.source ?? "auto_biweekly",
       status: "open",
     }).onConflictDoNothing();
   }
@@ -304,43 +327,109 @@ async function evaluateCall(callId: string, opts?: { source?: string }): Promise
 }
 
 // ── Background processor (all 3 departments) ────────────────────────────────
-let processorRunning = false;
-async function runProcessor(batchSize = 5): Promise<{ evaluated: number; skipped: number; errors: number }> {
-  if (processorRunning) return { evaluated: 0, skipped: 0, errors: 0 };
-  processorRunning = true;
-  let evaluated = 0, skipped = 0, errors = 0;
-  try {
-    const cutoff = new Date(Date.now() - 7 * 24 * 3600 * 1000);
-    const candidates = await db
-      .select({
-        id: phoneCallsTable.id,
-        lineTeam: phoneCallsTable.lineTeam,
-      })
-      .from(phoneCallsTable)
-      .leftJoin(qaReviewsTable, eq(qaReviewsTable.id, phoneCallsTable.id))
-      .where(and(
-        gte(phoneCallsTable.createdAt, cutoff),
-        eq(phoneCallsTable.status, "completed"),
-        gte(phoneCallsTable.durationSeconds, 30),
-        isNull(qaReviewsTable.id),
-        inArray(phoneCallsTable.lineTeam, ["retention", "cs", "nsf"]),
-      ))
-      .orderBy(desc(phoneCallsTable.createdAt))
-      .limit(batchSize);
+export interface QaBiweeklyResult {
+  evaluated: Array<{ agent: string; callId: string }>;
+  skipped: Array<{ agent: string; reason: string }>;
+  errors: Array<{ agent: string; reason: string }>;
+}
 
-    for (const c of candidates) {
-      try {
-        const r = await evaluateCall(c.id);
-        if (r) evaluated++; else skipped++;
-      } catch (err) {
-        errors++;
-        logger.error({ err, callId: c.id }, "qa: evaluate failed");
+function agentKey(value: string | null | undefined): string {
+  return (canonicalAgentName(value) ?? value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+export async function runBiweeklyQa(trigger: "cron" | "admin"): Promise<QaBiweeklyResult> {
+  return withDatabaseLease("qa_auto_biweekly", async () => {
+    const [run] = await db.insert(qaBiweeklyRunsTable).values({ trigger }).returning({ id: qaBiweeklyRunsTable.id });
+    const result: QaBiweeklyResult = { evaluated: [], skipped: [], errors: [] };
+    try {
+      const cutoff = new Date(Date.now() - QA_REVIEW_INTERVAL_DAYS * 24 * 60 * 60 * 1000);
+      const [roster, recentAutomatic, candidates, reviewed] = await Promise.all([
+        db.select().from(teamAgentsTable).where(and(
+          eq(teamAgentsTable.active, true),
+          inArray(teamAgentsTable.team, ["retention", "cs", "nsf"]),
+        )),
+        db.select({ agentName: qaReviewsTable.agentName }).from(qaReviewsTable).where(and(
+          eq(qaReviewsTable.source, "auto_biweekly"),
+          gte(qaReviewsTable.evaluatedAt, cutoff),
+        )),
+        db.select().from(phoneCallsTable).where(and(
+          gte(phoneCallsTable.createdAt, cutoff),
+          eq(phoneCallsTable.status, "completed"),
+          gte(phoneCallsTable.durationSeconds, QA_MIN_CALL_SECONDS),
+          inArray(phoneCallsTable.lineTeam, ["retention", "cs", "nsf"]),
+        )),
+        db.select({ id: qaReviewsTable.id }).from(qaReviewsTable).where(gte(qaReviewsTable.callDate, cutoff)),
+      ]);
+
+      const automaticallyReviewed = new Set(recentAutomatic.map((row) => agentKey(row.agentName)));
+      const reviewedCalls = new Set(reviewed.map((row) => row.id));
+      const sortedCandidates = stableEligibleCalls(candidates, reviewedCalls, QA_MIN_CALL_SECONDS);
+
+      for (const rosterAgent of [...roster].sort((a, b) => a.name.localeCompare(b.name))) {
+        const key = agentKey(rosterAgent.name);
+        if (automaticallyReviewed.has(key)) {
+          result.skipped.push({ agent: rosterAgent.name, reason: `automatic review already exists within ${QA_REVIEW_INTERVAL_DAYS} days` });
+          continue;
+        }
+
+        const agentCandidates = sortedCandidates.filter((call) => agentKey(call.agentName) === key);
+        if (agentCandidates.length === 0) {
+          result.skipped.push({ agent: rosterAgent.name, reason: `no unreviewed completed call of at least ${QA_MIN_CALL_SECONDS} seconds` });
+          continue;
+        }
+
+        let selected: (typeof agentCandidates)[number] | null = null;
+        let artifacts: QuoCallArtifacts | null = null;
+        for (const candidate of agentCandidates) {
+          const candidateArtifacts = await getQuoCallArtifacts(candidate.id);
+          if (candidateArtifacts.status === "ready") {
+            selected = candidate;
+            artifacts = candidateArtifacts;
+            break;
+          }
+        }
+        if (!selected || !artifacts) {
+          result.skipped.push({ agent: rosterAgent.name, reason: "no eligible call has a real QUO transcript" });
+          continue;
+        }
+
+        try {
+          const review = await evaluateCall(selected.id, {
+            source: "auto_biweekly",
+            userId: 0,
+            artifacts,
+          });
+          if (review) {
+            result.evaluated.push({ agent: rosterAgent.name, callId: selected.id });
+            automaticallyReviewed.add(key);
+          } else {
+            result.skipped.push({ agent: rosterAgent.name, reason: "Claude result failed server-side validation" });
+          }
+        } catch (error) {
+          result.errors.push({ agent: rosterAgent.name, reason: `evaluation failed (${anthropicErrorStatus(error) ?? "internal"})` });
+        }
       }
+
+      if (run) {
+        await db.update(qaBiweeklyRunsTable).set({
+          status: "completed",
+          result: { evaluated: result.evaluated, skipped: result.skipped, errors: result.errors },
+          finishedAt: new Date(),
+        })
+          .where(eq(qaBiweeklyRunsTable.id, run.id));
+      }
+      return result;
+    } catch (error) {
+      if (run) {
+        await db.update(qaBiweeklyRunsTable).set({
+          status: "failed",
+          result: { evaluated: result.evaluated, skipped: result.skipped, errors: result.errors },
+          finishedAt: new Date(),
+        }).where(eq(qaBiweeklyRunsTable.id, run.id)).catch(() => undefined);
+      }
+      throw error;
     }
-  } finally {
-    processorRunning = false;
-  }
-  return { evaluated, skipped, errors };
+  });
 }
 
 // ── Weekly auto-assignment: 1 lowest + 1 random per agent ───────────────────
@@ -428,34 +517,6 @@ async function runWeeklyAssignment(): Promise<{ created: number; agents: number 
   return { created, agents: byAgent.size };
 }
 
-export function startQaBackgroundProcessor() {
-  const intervalMs = 60 * 1000; // every minute
-  const tick = async () => {
-    try {
-      const r = await runProcessor(25); // 25 calls/minute → ~1500/hour
-      if (r.evaluated > 0 || r.errors > 0) logger.info(r, "qa: processor tick");
-    } catch (err) {
-      logger.error({ err }, "qa: processor tick failed");
-    }
-  };
-  setTimeout(tick, 10_000);
-  setInterval(tick, intervalMs);
-
-  // Weekly assignment: every 6h check if we should run (Monday in LA)
-  const weeklyTick = async () => {
-    try {
-      const nowLA = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
-      if (nowLA.getDay() !== 1) return; // Monday only
-      const r = await runWeeklyAssignment();
-      if (r.created > 0) logger.info(r, "qa: weekly assignment");
-    } catch (err) {
-      logger.error({ err }, "qa: weekly assignment failed");
-    }
-  };
-  setTimeout(weeklyTick, 60_000);
-  setInterval(weeklyTick, 6 * 60 * 60 * 1000);
-}
-
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function deptFilterArr(req: { query: Record<string, unknown> }): Department[] | null {
   const d = String(req.query["department"] ?? "").trim().toLowerCase();
@@ -473,25 +534,77 @@ const TAX_REGEX = String.raw`\ytax(es)?\y`;
 router.post("/qa/evaluate", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const callId = String(req.body?.callId ?? "").trim();
-    if (!callId) return res.status(400).json({ error: "callId required" });
-    const r = await evaluateCall(callId, { source: "manual" });
-    if (!r) return res.status(404).json({ error: "Call not eligible or transcript unavailable" });
-    return res.json(r);
+    const force = req.body?.force === true;
+    if (!isSafeQuoCallId(callId)) return res.status(400).json({ error: "A valid QUO callId is required" });
+
+    const [existing] = await db.select().from(qaReviewsTable).where(eq(qaReviewsTable.id, callId)).limit(1);
+    if (shouldReuseStoredReview(existing, force)) return res.json(existing);
+
+    const [[call], artifacts] = await Promise.all([
+      db.select().from(phoneCallsTable).where(eq(phoneCallsTable.id, callId)).limit(1),
+      getQuoCallArtifacts(callId),
+    ]);
+    if (!call && artifacts.status === "not_found") return res.status(404).json({ error: "Call not found" });
+    if (!call) return res.status(404).json({ error: "Call metadata was not found in the synchronized QUO calls table" });
+    if (artifacts.status !== "ready") {
+      return res.status(409).json({ error: "QUO transcript is unavailable or still processing" });
+    }
+
+    const existingWasAutomatic = existing?.source === "auto_biweekly";
+    const review = await withDurableAiLimit({
+      feature: "qa_manual",
+      userId: req.user!.userId,
+      perMinute: 3,
+      perDay: 20,
+    }, () => evaluateCall(callId, {
+      source: existingWasAutomatic ? "auto_biweekly" : "manual_call_id",
+      userId: req.user!.userId,
+      artifacts,
+      preserveEvaluatedAt: existingWasAutomatic,
+    }));
+    if (!review) return res.status(422).json({ error: "Call is not QA-eligible or Claude returned an invalid evaluation" });
+    return res.json(review);
   } catch (err) {
-    req.log.error(err, "qa evaluate error");
-    return res.status(500).json({ error: String(err) });
+    if (err instanceof AiRateLimitError) {
+      res.setHeader("Retry-After", String(err.retryAfter));
+      return res.status(429).json({ error: "Manual QA evaluation limit reached" });
+    }
+    if ((err as Error)?.message?.includes("ANTHROPIC_API_KEY")) {
+      return res.status(500).json({ error: "QA is missing server-side Anthropic configuration" });
+    }
+    return res.status(502).json({ error: "QA evaluation failed" });
   }
 });
 
-router.post("/qa/process", requireAuth, requireRole("admin"), async (req, res) => {
+async function runBiweeklyResponse(res: Response, trigger: "cron" | "admin") {
   try {
-    const batch = Math.min(parseInt(String(req.body?.batchSize ?? "25"), 10) || 25, 100);
-    const r = await runProcessor(batch);
-    return res.json(r);
+    return res.json(await runBiweeklyQa(trigger));
   } catch (err) {
-    req.log.error(err, "qa process error");
-    return res.status(500).json({ error: String(err) });
+    if (err instanceof AiRateLimitError) {
+      res.setHeader("Retry-After", String(err.retryAfter));
+      return res.status(429).json({ error: "A biweekly QA run is already active" });
+    }
+    return res.status(500).json({ error: "Biweekly QA run failed" });
   }
+}
+
+router.post("/qa/biweekly-run", requireAuth, requireRole("admin"), async (_req, res) => {
+  return runBiweeklyResponse(res, "admin");
+});
+
+// Backward-compatible admin button endpoint; it now runs the same idempotent
+// biweekly check and ignores the former batchSize option.
+router.post("/qa/process", requireAuth, requireRole("admin"), async (_req, res) => {
+  return runBiweeklyResponse(res, "admin");
+});
+
+router.get("/qa/biweekly-run", async (req, res) => {
+  const secret = process.env["CRON_SECRET"]?.trim();
+  if (!secret) return res.status(503).json({ error: "CRON_SECRET is not configured" });
+  if (req.get("authorization") !== `Bearer ${secret}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  return runBiweeklyResponse(res, "cron");
 });
 
 router.post("/qa/assign-weekly", requireAuth, requireRole("admin"), async (req, res) => {

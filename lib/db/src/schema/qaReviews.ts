@@ -26,12 +26,15 @@ export const qaReviewsTable = pgTable(
     reason: text("reason"),
     managerReviewRequired: boolean("manager_review_required").notNull().default(false),
     model: text("model"),
+    // auto_biweekly | manual_call_id | legacy
+    source: text("source").notNull().default("legacy"),
     evaluatedAt: timestamp("evaluated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [
     index("qa_reviews_agent_evaluated").on(t.agentName, t.evaluatedAt),
     index("qa_reviews_call_date").on(t.callDate),
     index("qa_reviews_department").on(t.department),
+    index("qa_reviews_source_agent_evaluated").on(t.source, t.agentName, t.evaluatedAt),
   ],
 );
 

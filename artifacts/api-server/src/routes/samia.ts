@@ -1,8 +1,12 @@
 import { Router, type Request } from "express";
-import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import { db, samiaMessagesTable, phoneCallsTable, pbxMissedCallsTable, portalUsersTable } from "@workspace/db";
 import { and, gte, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { createAnthropicClient, usageFields } from "../lib/anthropic.js";
+import { AiRateLimitError, withDurableAiLimit } from "../lib/aiRateLimit.js";
+import { extractQuoCallId, getQuoCallArtifacts } from "../lib/quoCall.js";
+import { assistantBlocks, toolResultMessage, validateSamiaPayload } from "../lib/samiaPolicy.js";
 
 const router = Router();
 
@@ -305,272 +309,112 @@ router.get("/samia/call-analysis", requireAuth, requireRole("admin"), async (req
   }
 });
 
-// Samia defaults to OpenRouter on Vercel. Models with "/" are OpenRouter IDs.
-const SAMIA_MODEL = process.env["SAMIA_MODEL"] ?? "qwen/qwen3-coder:free";
-// 0.8 keeps personality while staying coherent and tool-reliable. Tunable via env.
-const SAMIA_TEMPERATURE = Number(process.env["SAMIA_TEMPERATURE"] ?? "0.8");
-const DEFAULT_SAMIA_FALLBACK_MODELS = [
-  "meta-llama/llama-3.1-8b-instruct:free",
-  "google/gemini-2.0-flash-exp:free",
-  "deepseek/deepseek-chat-v3-0324:free",
-  "qwen/qwen3.6-plus-preview:free",
-];
+const SAMIA_MODEL = process.env["ANTHROPIC_SAMIA_MODEL"]?.trim() || "claude-sonnet-5";
+const SAMIA_REQUESTS_PER_MINUTE = Math.max(1, Number(process.env["SAMIA_REQUESTS_PER_MINUTE"] ?? 6) || 6);
+const SAMIA_REQUESTS_PER_DAY = Math.max(1, Number(process.env["SAMIA_REQUESTS_PER_DAY"] ?? 50) || 50);
 
-function getSamiaModels(): string[] {
-  const fallbackModels = (process.env["SAMIA_FALLBACK_MODELS"] ?? DEFAULT_SAMIA_FALLBACK_MODELS.join(","))
-    .split(",")
-    .map((model) => model.trim())
-    .filter(Boolean)
-    .filter((model) => !model.includes("/") || model.endsWith(":free"));
-  return Array.from(new Set([SAMIA_MODEL, ...fallbackModels]));
-}
+function toAnthropicContent(content: unknown): string | Anthropic.ContentBlockParam[] {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
 
-function getOpenRouterBaseUrl(): string {
-  return (process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"] ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
-}
+  const blocks: Anthropic.ContentBlockParam[] = [];
+  for (const rawPart of content) {
+    if (!rawPart || typeof rawPart !== "object") continue;
+    const part = rawPart as { type?: unknown; text?: unknown; image_url?: unknown };
+    if (part.type === "text" && typeof part.text === "string") {
+      blocks.push({ type: "text", text: part.text });
+      continue;
+    }
+    if (part.type !== "image_url") continue;
 
-function getOpenRouterReferer(req?: Request): string {
-  return process.env["FRONTEND_ORIGIN"]?.split(",")[0]?.trim()
-    || process.env["CORS_ORIGIN"]?.split(",")[0]?.trim()
-    || (req ? getInternalBaseUrl(req) : "")
-    || "https://www.dialexpert-backend.com";
-}
+    const imageUrl = typeof part.image_url === "string"
+      ? part.image_url
+      : (part.image_url as { url?: unknown } | null)?.url;
+    if (typeof imageUrl !== "string" || !imageUrl) continue;
 
-function getSamiaEnvStatus() {
-  return {
-    openRouterKeyExists: !!process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"],
-    openRouterBaseUrl: getOpenRouterBaseUrl(),
-    model: SAMIA_MODEL,
-    temperature: SAMIA_TEMPERATURE,
-    fallbackModels: getSamiaModels().filter((model) => model !== SAMIA_MODEL),
-    useOpenRouter: SAMIA_MODEL.includes("/"),
-  };
-}
-
-function getSamiaClient(model: string): OpenAI {
-  const useOpenRouter = model.includes("/");
-  const apiKey = useOpenRouter
-    ? process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"]
-    : process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
-  if (!apiKey) {
-    throw new Error(
-      useOpenRouter
-        ? "AI_INTEGRATIONS_OPENROUTER_API_KEY is not set"
-        : "AI_INTEGRATIONS_OPENAI_API_KEY is not set",
-    );
-  }
-  return new OpenAI({
-    baseURL: useOpenRouter
-      ? process.env["AI_INTEGRATIONS_OPENROUTER_BASE_URL"] ?? "https://openrouter.ai/api/v1"
-      : process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
-    apiKey,
-  });
-}
-
-class SamiaProviderError extends Error {
-  status: number;
-  code: number;
-  provider: "openrouter" | "openai";
-
-  constructor(message: string, status: number, provider: "openrouter" | "openai") {
-    super(message);
-    this.name = "SamiaProviderError";
-    this.status = status;
-    this.code = status;
-    this.provider = provider;
-  }
-}
-
-type SamiaCompletionResult = {
-  completion: OpenAI.Chat.ChatCompletion;
-  model: string;
-  fallbackUsed: boolean;
-};
-
-function isOpenRouterCapacityError(err: unknown): boolean {
-  const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : null;
-  const code = typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : status;
-  const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-  return (
-    code === 402 ||
-    code === 429 ||
-    (code === 404 && (message.includes("unavailable") || message.includes("no endpoints found"))) ||
-    message.includes("rate-limit") ||
-    message.includes("rate limited") ||
-    message.includes("provider returned error") ||
-    message.includes("capacity") ||
-    message.includes("timeout") ||
-    message.includes("aborted")
-  );
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function createOpenRouterCompletion(
-  req: Request,
-  args: {
-    model: string;
-    messages: OpenAI.Chat.ChatCompletionMessageParam[];
-    tools: OpenAI.Chat.ChatCompletionTool[];
-  },
-): Promise<OpenAI.Chat.ChatCompletion> {
-  const apiKey = process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"];
-  if (!apiKey) throw new Error("AI_INTEGRATIONS_OPENROUTER_API_KEY is not set");
-
-  const url = `${getOpenRouterBaseUrl()}/chat/completions`;
-  req.log.info({
-    model: args.model,
-    useOpenRouter: true,
-    baseUrl: getOpenRouterBaseUrl(),
-    hasApiKey: true,
-  }, "samia openrouter request starting");
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": getOpenRouterReferer(req),
-      "X-OpenRouter-Title": "Samia Dashboard",
-    },
-    body: JSON.stringify({
-      model: args.model,
-      messages: args.messages,
-      ...(args.tools.length ? { tools: args.tools } : {}),
-      temperature: SAMIA_TEMPERATURE,
-      max_tokens: 1600,
-      stream: false,
-    }),
-    signal: AbortSignal.timeout(18000),
-  });
-
-  req.log.info({
-    model: args.model,
-    status: response.status,
-    ok: response.ok,
-  }, "samia openrouter response received");
-
-  const text = await response.text();
-  let data: unknown = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = null;
-  }
-
-  if (!response.ok) {
-    const errorData = data as { error?: { message?: string; code?: number | string; type?: string } } | null;
-    const errorType = errorData?.error?.type ?? errorData?.error?.code ?? response.status;
-    const errorMessage = errorData?.error?.message ?? `OpenRouter request failed with status ${response.status}`;
-    req.log.warn({ model: args.model, status: response.status, errorType }, "samia openrouter request failed");
-    throw new SamiaProviderError(errorMessage, response.status, "openrouter");
-  }
-
-  return data as OpenAI.Chat.ChatCompletion;
-}
-
-async function createModelCompletion(
-  req: Request,
-  args: {
-    model: string;
-    messages: OpenAI.Chat.ChatCompletionMessageParam[];
-    tools: OpenAI.Chat.ChatCompletionTool[];
-  },
-): Promise<OpenAI.Chat.ChatCompletion> {
-  if (args.model.includes("/")) {
-    return createOpenRouterCompletion(req, args);
-  }
-  req.log.info({ model: args.model, useOpenRouter: false }, "samia openai-compatible request starting");
-  return getSamiaClient(args.model).chat.completions.create({
-    model: args.model,
-    messages: args.messages,
-    ...(args.tools.length ? { tools: args.tools } : {}),
-    temperature: SAMIA_TEMPERATURE,
-    max_tokens: 1600,
-  }, {
-    timeout: 18000,
-    signal: AbortSignal.timeout(18000),
-  });
-}
-
-async function createSamiaCompletion(
-  req: Request,
-  args: {
-    messages: OpenAI.Chat.ChatCompletionMessageParam[];
-    tools: OpenAI.Chat.ChatCompletionTool[];
-  },
-): Promise<SamiaCompletionResult> {
-  const models = getSamiaModels();
-  let lastError: unknown;
-
-  for (const [index, model] of models.entries()) {
-    const attempts = index === 0 ? 2 : 1;
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-      try {
-        const completion = await createModelCompletion(req, {
-          model,
-          messages: args.messages,
-          tools: args.tools,
-        });
-        if (index > 0 || attempt > 1) {
-          req.log.info({ model, fallbackUsed: index > 0, attempt }, "samia model completed");
-        }
-        return { completion, model, fallbackUsed: index > 0 };
-      } catch (err) {
-        lastError = err;
-        if (!isOpenRouterCapacityError(err)) throw err;
-        req.log.warn({ model, attempt }, "samia model capacity limited");
-        if (attempt < attempts) await sleep(1200);
-      }
+    const dataMatch = /^data:(image\/(?:jpeg|png|gif|webp));base64,(.+)$/s.exec(imageUrl);
+    if (dataMatch?.[1] && dataMatch[2]) {
+      blocks.push({
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: dataMatch[1] as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+          data: dataMatch[2],
+        },
+      });
+    } else if (/^https:\/\//i.test(imageUrl)) {
+      blocks.push({ type: "image", source: { type: "url", url: imageUrl } });
     }
   }
-
-  throw lastError instanceof Error ? lastError : new Error("All Samia models failed");
+  return blocks;
 }
 
-router.get("/samia/openrouter-env", requireAuth, requireRole("admin"), async (req, res) => {
-  req.log.info(getSamiaEnvStatus(), "samia openrouter env status");
-  return res.json(getSamiaEnvStatus());
-});
+function cacheTools(tools: Anthropic.Tool[]): Anthropic.Tool[] {
+  return tools.map((tool, index) => index === tools.length - 1
+    ? { ...tool, cache_control: { type: "ephemeral" as const } }
+    : tool);
+}
 
-router.post("/samia/openrouter-test", requireAuth, requireRole("admin"), async (req, res) => {
-  const model = process.env["SAMIA_MODEL"] ?? "qwen/qwen3-coder:free";
+async function createSamiaMessage(
+  req: Request,
+  args: {
+    userId: number;
+    stableSystem: string;
+    requestContext: string;
+    messages: Anthropic.MessageParam[];
+    tools: Anthropic.Tool[];
+  },
+): Promise<Anthropic.Message> {
   try {
-    const envStatus = getSamiaEnvStatus();
-    req.log.info(envStatus, "samia direct openrouter test starting");
-    const completion = await createOpenRouterCompletion(req, {
-      model,
-      messages: [{ role: "user", content: "Reply with only: Samia test working" }],
-      tools: [],
+    const response = await createAnthropicClient().messages.create({
+      model: SAMIA_MODEL,
+      max_tokens: 800,
+      system: [
+        { type: "text", text: args.stableSystem, cache_control: { type: "ephemeral" } },
+        { type: "text", text: args.requestContext },
+      ],
+      messages: args.messages,
+      ...(args.tools.length ? { tools: cacheTools(args.tools) } : {}),
+    }, {
+      signal: AbortSignal.timeout(30_000),
     });
-    const reply = completion.choices[0]?.message?.content ?? "";
-    return res.json({
-      ok: true,
-      model,
-      status: 200,
-      reply,
-      env: envStatus,
-    });
-  } catch (err) {
-    const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : 502;
-    const errorType = err instanceof Error ? err.name : "OpenRouterError";
-    req.log.warn({ model, status, errorType }, "samia direct openrouter test failed");
-    return res.status(status).json({
-      ok: false,
-      model,
-      status,
-      errorType,
-      env: getSamiaEnvStatus(),
-      error: status === 401 || status === 403
-        ? "OpenRouter rejected the server-side API key."
-        : status === 429
-          ? "OpenRouter returned a rate-limit response."
-          : "Samia could not reach the AI provider. Check server configuration.",
-    });
+    req.log.info({
+      feature: "samia",
+      userId: args.userId,
+      model: response.model,
+      requestId: response._request_id,
+      success: true,
+      ...usageFields(response.usage),
+    }, "anthropic request complete");
+    return response;
+  } catch (error) {
+    req.log.warn({
+      feature: "samia",
+      userId: args.userId,
+      model: SAMIA_MODEL,
+      requestId: (error as { request_id?: unknown })?.request_id ?? null,
+      success: false,
+    }, "anthropic request failed");
+    throw error;
   }
-});
+}
+
+function responseText(response: Anthropic.Message): string {
+  return response.content
+    .filter((block): block is Anthropic.TextBlock => block.type === "text")
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
+}
+
+interface SamiaToolDefinition {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Anthropic.Tool.InputSchema;
+  };
+}
 
 type SamiaMode = "lightweight" | "dashboard" | "call-analysis";
 
@@ -925,16 +769,64 @@ async function fetchSheetSummary(
 
 router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) => {
   try {
-    const { message, images = [], displayName } = req.body as { message: string; images?: string[]; displayName?: string };
-    if (!message?.trim()) {
-      return res.status(400).json({ error: "message is required" });
-    }
+    const payload = validateSamiaPayload(req.body);
+    if (!payload.ok) return res.status(payload.status).json({ error: payload.error });
+    const { message, displayName, images } = payload;
     const userId = req.user!.userId;
+    return await withDurableAiLimit({
+      feature: "samia_chat",
+      userId,
+      perMinute: SAMIA_REQUESTS_PER_MINUTE,
+      perDay: SAMIA_REQUESTS_PER_DAY,
+    }, async () => {
     // Prefer the display name the user typed in the name-gate prompt over the
     // shared login username (e.g. "retention" or "cs").
     const username = (displayName?.trim()) || req.user!.username;
-    const mode = classifySamiaMode(message);
-    req.log.info({ mode, userId, username: req.user!.username }, "samia chat mode selected");
+    const directCallId = extractQuoCallId(message);
+    const mode: SamiaMode = directCallId ? "call-analysis" : classifySamiaMode(message);
+    let directCallContext = "";
+
+    if (directCallId) {
+      const [[callMetadata], artifacts] = await Promise.all([
+        db.select().from(phoneCallsTable).where(eq(phoneCallsTable.id, directCallId)).limit(1),
+        getQuoCallArtifacts(directCallId),
+      ]);
+      if (artifacts.status === "not_found" && !callMetadata) {
+        const reply = `Call ${directCallId} was not found in the dashboard database or QUO.`;
+        await db.insert(samiaMessagesTable).values([
+          { userId, username, role: "user", content: message, images: images.length ? images : null },
+          { userId, username, role: "assistant", content: reply, images: null },
+        ]);
+        return res.status(404).json({ reply, attendanceMarked: false, mode, model: SAMIA_MODEL, fallbackUsed: false });
+      }
+      if (artifacts.status !== "ready") {
+        const reply = `Call ${directCallId} exists, but its QUO transcript is unavailable or still processing. I won't invent an analysis without the transcript.`;
+        await db.insert(samiaMessagesTable).values([
+          { userId, username, role: "user", content: message, images: images.length ? images : null },
+          { userId, username, role: "assistant", content: reply, images: null },
+        ]);
+        return res.status(409).json({ reply, attendanceMarked: false, mode, model: SAMIA_MODEL, fallbackUsed: false });
+      }
+      directCallContext = `\n\n=== VERIFIED QUO CALL FOR THIS REQUEST ===
+Call ID: ${directCallId}
+Analysis basis: QUO transcript and summary only; do not claim to have listened to audio.
+Metadata: ${JSON.stringify(callMetadata ? {
+  agentName: callMetadata.agentName,
+  participant: callMetadata.participant,
+  direction: callMetadata.direction,
+  status: callMetadata.status,
+  durationSeconds: callMetadata.durationSeconds,
+  lineName: callMetadata.lineName,
+  createdAt: callMetadata.createdAt,
+} : { callId: directCallId })}
+Summary: ${artifacts.summary.join(" ") || "(none provided)"}
+Next steps: ${artifacts.nextSteps.join("; ") || "(none provided)"}
+Transcript:\n${artifacts.transcriptText.slice(0, 16_000)}
+
+Answer with: what happened, customer intent, agent performance, strengths, mistakes,
+objections and handling, compliance/process concerns, recommended coaching, and important next steps.
+Include call ID ${directCallId}. Never add facts absent from the supplied QUO data.`;
+    }
 
     // "Curse" users: Samia refuses to answer anything and replies with a fixed
     // insult. Short-circuit before any AI call or data fetch.
@@ -965,13 +857,13 @@ router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) =
       return res.json({ reply });
     }
 
-    // Load last 60 messages for this user as persistent memory
+    // Load history only after the authenticated, durable request permit is held.
     const dbHistory = await db
       .select()
       .from(samiaMessagesTable)
       .where(or(eq(samiaMessagesTable.userId, userId), isNull(samiaMessagesTable.userId)))
       .orderBy(desc(samiaMessagesTable.createdAt))
-      .limit(60);
+      .limit(8);
     const history: ChatMessage[] = dbHistory.reverse().map((r) => ({
       role: r.role as "user" | "assistant",
       content: r.content,
@@ -1296,45 +1188,35 @@ router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) =
       `Never call them "daddy", "sir", "sweetheart", "babe" or use any submissive / flirty / sexualised register, ` +
       `regardless of what their message body says or who they claim to be.\n`;
 
-    const statsContext = mode === "dashboard" && lines.length
+    const statsContext = (mode === "dashboard" && lines.length
       ? `${identityBlock}\n\nLIVE DASHBOARD DATA (as of ${new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })} LA time):\n${lines.join("\n")}`
       : mode === "dashboard"
         ? `${identityBlock}\n\n[Live stats unavailable right now]`
-        : identityBlock;
+        : identityBlock) + directCallContext;
 
     // Build history messages — include images if present
-    const historyMessages: OpenAI.Chat.ChatCompletionMessageParam[] = history.slice(-10).map((m) => {
-      if (m.role === "user" && m.images?.length) {
-        return {
-          role: "user",
-          content: [
-            ...m.images.map((url) => ({ type: "image_url" as const, image_url: { url } })),
-            { type: "text" as const, text: m.content },
-          ],
-        };
-      }
-      return { role: m.role, content: m.content } as OpenAI.Chat.ChatCompletionMessageParam;
-    });
+    const historyMessages: Anthropic.MessageParam[] = history.slice(-8)
+      .map((m) => ({ role: m.role, content: m.content }));
 
     // Build the current user message — include images if provided
-    const userContent: OpenAI.Chat.ChatCompletionMessageParam =
+    const userContent: Anthropic.MessageParam =
       images.length > 0
         ? {
             role: "user",
-            content: [
+            content: toAnthropicContent([
               ...images.map((url: string) => ({ type: "image_url" as const, image_url: { url } })),
               { type: "text" as const, text: message },
-            ],
+            ]),
           }
         : { role: "user", content: message };
 
-    const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-      { role: "system", content: SAMIA_SYSTEM + modeInstructions(mode) + statsContext },
+    const stableSystemInstructions = SAMIA_SYSTEM + modeInstructions(mode);
+    const messages: Anthropic.MessageParam[] = [
       ...historyMessages,
       userContent,
     ];
 
-    const tools: OpenAI.Chat.ChatCompletionTool[] = [
+    const tools: SamiaToolDefinition[] = [
       {
         type: "function",
         function: {
@@ -1484,48 +1366,50 @@ router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) =
 
     // ── Multi-turn tool loop (up to 4 rounds) ─────────────────────────────────
     const activeTools = tools.filter((tool) => {
-      if (tool.type !== "function") return false;
       const name = tool.function.name;
+      if (directCallId) return false;
       if (mode === "lightweight") return false;
       if (mode === "dashboard") return !["lookup_number", "analyze_calls"].includes(name);
       return ["lookup_number", "analyze_calls", "get_agent_contacts"].includes(name);
-    });
+    }).map((tool): Anthropic.Tool => ({
+      name: tool.function.name,
+      description: tool.function.description,
+      input_schema: tool.function.parameters,
+    }));
 
-    let currentMessages = [...messages];
+    const currentMessages: Anthropic.MessageParam[] = [...messages];
     let finalReply: string | null = null;
     let attendanceMarked = false;
-    let modelUsed = SAMIA_MODEL;
-    let fallbackUsed = false;
 
-    for (let round = 0; round < 4; round++) {
-      const completionResult = await createSamiaCompletion(req, {
+    const maximumToolRounds = 3;
+    for (let round = 0; round <= maximumToolRounds; round++) {
+      const completion = await createSamiaMessage(req, {
+        userId,
+        stableSystem: stableSystemInstructions,
+        requestContext: statsContext,
         messages: currentMessages,
-        tools: activeTools,
+        // After three tool rounds, make one tool-free request so Claude can
+        // turn the final tool results into an answer without another tool call.
+        tools: round < maximumToolRounds ? activeTools : [],
       });
-      const completion = completionResult.completion;
-      modelUsed = completionResult.model;
-      fallbackUsed = fallbackUsed || completionResult.fallbackUsed;
-
-      const choice = completion.choices[0];
-
-      if (choice?.finish_reason !== "tool_calls" || !choice.message?.tool_calls?.length) {
-        finalReply = choice?.message?.content ?? "Sorry, I couldn't generate a response.";
+      const toolCalls = completion.content.filter(
+        (block): block is Anthropic.ToolUseBlock => block.type === "tool_use",
+      );
+      if (completion.stop_reason !== "tool_use" || toolCalls.length === 0) {
+        finalReply = responseText(completion) || "Sorry, I couldn't generate a response.";
         break;
       }
 
-      // Add the assistant's tool-call message to the thread
-      currentMessages.push(choice.message);
+      currentMessages.push({ role: "assistant", content: assistantBlocks(completion) });
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
-      // Execute all tool calls in this round (may be parallel)
-      for (const tc of choice.message.tool_calls) {
-        if (tc.type !== "function") continue;
-        const toolCall = tc;
-        const fnName = toolCall.function.name;
+      for (const toolCall of toolCalls) {
+        const fnName = toolCall.name;
         let toolResult: string;
 
         try {
           if (fnName === "auto_mark_attendance") {
-            const args = JSON.parse(toolCall.function.arguments || "{}") as { date?: string };
+            const args = toolCall.input as { date?: string };
             const body = args.date ? JSON.stringify({ date: args.date }) : "{}";
             const markRes = await internalFetch(req, "/api/attendance/auto-mark", {
               method: "POST",
@@ -1556,7 +1440,7 @@ router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) =
             });
 
           } else if (fnName === "get_call_logs") {
-            const args = JSON.parse(toolCall.function.arguments || "{}") as { date?: string };
+            const args = toolCall.input as { date?: string };
             const params = new URLSearchParams();
             if (args.date) params.set("date", args.date);
             const url = params.size ? `/api/attendance/call-logs?${params.toString()}` : "/api/attendance/call-logs";
@@ -1564,7 +1448,7 @@ router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) =
             toolResult = JSON.stringify(await logsRes.json());
 
           } else if (fnName === "get_agent_contacts") {
-            const args = JSON.parse(toolCall.function.arguments || "{}") as { agentName: string; date?: string };
+            const args = toolCall.input as { agentName: string; date?: string };
 
             // Trigger a fresh sync for the relevant window so DB is up-to-date.
             // Sync covers last 3 hours (catches the most recent calls).
@@ -1585,7 +1469,7 @@ router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) =
             toolResult = JSON.stringify(await contactsRes.json());
 
           } else if (fnName === "lookup_number") {
-            const args = JSON.parse(toolCall.function.arguments || "{}") as { number: string; sinceDays?: number };
+            const args = toolCall.input as { number: string; sinceDays?: number };
             const params = new URLSearchParams({ number: args.number });
             if (args.sinceDays) params.set("sinceDays", String(args.sinceDays));
             const r = await internalFetch(req, `/api/samia/number-lookup?${params.toString()}`);
@@ -1598,7 +1482,7 @@ router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) =
             }
 
           } else if (fnName === "add_nsf_readymode_missed_calls") {
-            const args = JSON.parse(toolCall.function.arguments || "{}") as { numbers: string[] };
+            const args = toolCall.input as { numbers: string[] };
             const r = await internalFetch(req, "/api/nsf/readymode-queue", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -1607,7 +1491,7 @@ router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) =
             toolResult = JSON.stringify(await r.json());
 
           } else if (fnName === "analyze_calls") {
-            const args = JSON.parse(toolCall.function.arguments || "{}") as {
+            const args = toolCall.input as {
               agent?: string; callId?: string; participant?: string; date?: string; limit?: number; minSeconds?: number;
             };
             const params = new URLSearchParams();
@@ -1621,7 +1505,7 @@ router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) =
             toolResult = JSON.stringify(await r.json());
 
           } else if (fnName === "set_attendance") {
-            const args = JSON.parse(toolCall.function.arguments || "{}");
+            const args = toolCall.input as Record<string, unknown>;
             const setRes = await internalFetch(req, "/api/attendance/set", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -1637,8 +1521,9 @@ router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) =
           toolResult = JSON.stringify({ error: String(e) });
         }
 
-        currentMessages.push({ role: "tool", tool_call_id: toolCall.id, content: toolResult });
+        toolResults.push({ type: "tool_result", tool_use_id: toolCall.id, content: toolResult });
       }
+      currentMessages.push(toolResultMessage(toolResults));
     }
 
     if (!finalReply) finalReply = "Done.";
@@ -1653,37 +1538,46 @@ router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) =
       images: null,
     });
 
-    return res.json({ reply: finalReply, attendanceMarked, mode, model: modelUsed, fallbackUsed });
+    return res.json({ reply: finalReply, attendanceMarked, mode, model: SAMIA_MODEL, fallbackUsed: false });
+    });
   } catch (err) {
-    req.log.error(err, "samia chat error");
+    if (err instanceof AiRateLimitError) {
+      res.setHeader("Retry-After", String(err.retryAfter));
+      return res.status(429).json({ error: "Samia request limit reached. Please retry later." });
+    }
     const message = err instanceof Error ? err.message : "";
-    if (
-      message.includes("AI_INTEGRATIONS_OPENROUTER_API_KEY") ||
-      message.includes("AI_INTEGRATIONS_OPENAI_API_KEY")
-    ) {
+    if (message.includes("ANTHROPIC_API_KEY")) {
       return res.status(500).json({ error: "Samia is missing server-side AI configuration." });
     }
     const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : null;
     const code = typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : status;
+    if (code === 401) {
+      return res.status(502).json({ error: "Claude rejected the configured API key. Update ANTHROPIC_API_KEY on the server." });
+    }
+    if (code === 403) {
+      return res.status(502).json({ error: "The Claude API key does not have access to the configured model." });
+    }
     if (code === 429) {
-      return res.status(429).json({ error: "Samia's OpenRouter model is temporarily rate-limited. Please retry shortly." });
+      return res.status(429).json({ error: "Claude is temporarily rate-limited. Please retry shortly." });
     }
     if (code === 402) {
-      return res.status(402).json({ error: "Samia's OpenRouter account needs available credits or a free model with capacity." });
+      return res.status(402).json({ error: "The Anthropic account has a billing or payment issue." });
     }
-    if (code === 404 && message.toLowerCase().includes("no endpoints found")) {
+    if (code === 404) {
       return res.status(502).json({
-        error: "Samia reached OpenRouter, but the configured free model endpoints are unavailable right now.",
+        error: `Claude model ${SAMIA_MODEL} was not found. Check ANTHROPIC_SAMIA_MODEL on the server.`,
       });
     }
-    if (message.toLowerCase().includes("aborted") || message.toLowerCase().includes("timeout")) {
-      return res.status(502).json({ error: "Samia could not reach the AI provider in time. Check server configuration or try again shortly." });
+    if (code === 413) {
+      return res.status(413).json({ error: "That message or screenshot is too large for Claude. Try a smaller image." });
     }
-    return res.status(502).json({
-      error: SAMIA_MODEL.includes("/")
-        ? "Samia AI request failed before receiving a usable provider response."
-        : "Samia AI request failed.",
-    });
+    if (code === 529) {
+      return res.status(503).json({ error: "Claude is temporarily overloaded. Please retry shortly." });
+    }
+    if (message.toLowerCase().includes("aborted") || message.toLowerCase().includes("timeout")) {
+      return res.status(504).json({ error: "Claude took too long to respond. Please try again." });
+    }
+    return res.status(502).json({ error: "Samia could not get a response from Claude." });
   }
 });
 
