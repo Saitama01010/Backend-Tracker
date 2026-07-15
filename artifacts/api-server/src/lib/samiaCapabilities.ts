@@ -200,10 +200,17 @@ function authorized(definition: SamiaCapabilityDefinition, user: AuthPayload): b
 
 export function capabilityTool(name: SamiaCapabilityName) {
   const definition = SAMIA_CAPABILITY_REGISTRY[name];
+  // Anthropic strict tools currently reject numeric minimum/maximum keywords.
+  // Keep those bounds in the server-owned registry validator, while exposing
+  // only the provider-supported structural schema to Claude.
+  const providerProperties = Object.fromEntries(Object.entries(definition.strictInputSchema.properties).map(([key, field]) => {
+    const { minimum: _minimum, maximum: _maximum, ...providerField } = field;
+    return [key, providerField];
+  }));
   return {
     name: definition.name,
     description: definition.description,
-    input_schema: definition.strictInputSchema,
+    input_schema: { ...definition.strictInputSchema, properties: providerProperties },
     strict: true,
   };
 }

@@ -17,6 +17,7 @@ import {
 } from "./qaPolicy.js";
 import {
   SAMIA_CAPABILITY_REGISTRY,
+  capabilityTool,
   executeSamiaCapability,
   hasForbiddenCapabilityInput,
 } from "./samiaCapabilities.js";
@@ -100,6 +101,7 @@ test("QA evaluation uses forced strict Anthropic tool output and validates befor
   assert.equal(schema.additionalProperties, false);
   assert.ok(schema.required.includes("managerReviewRequired"));
   assert.equal(schema.properties.categoryScores.additionalProperties, false);
+  assert.doesNotMatch(JSON.stringify(schema), /"(?:minimum|maximum|maxItems|maxLength)":/);
   assert.ok(validateQaResult(validCsEvaluation, "CS"));
   assert.match(source, /createAnthropicToolMessage/);
   assert.match(source, /name: "record_qa_evaluation"/);
@@ -202,6 +204,7 @@ test("Samia registry defines every required capability with strict schemas, auth
   }
   assert.equal(SAMIA_CAPABILITY_REGISTRY.attendance_set_record.requiredPermission, "edit_attendance");
   assert.equal(SAMIA_CAPABILITY_REGISTRY.qa_run.requiredRole, "admin");
+  assert.doesNotMatch(JSON.stringify(capabilityTool("call_analysis").input_schema), /"(?:minimum|maximum)":/);
 });
 
 test("unregistered capabilities, raw SQL, and route control fields are rejected", async () => {
