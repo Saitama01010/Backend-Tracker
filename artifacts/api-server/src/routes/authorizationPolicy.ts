@@ -47,7 +47,7 @@ export const PRIVATE_API_AUTHORIZATION_POLICIES: readonly RoutePolicy[] = [
   { methods: ["GET"], path: /^\/quo\/calls$/, requirement: "view_metrics and authorized requested team", allows: anyMetricTab },
   { methods: ["GET"], path: /^\/quo\/live$/, requirement: "view_metrics or view_attendance", allows: anyPermission("view_metrics", "view_attendance") },
 
-  { methods: ["POST"], path: /^\/vos\/refresh$/, requirement: "view_metrics and missed-no-callback tab", allows: tab("missed-no-cb") },
+  { methods: ["POST"], path: /^\/vos\/refresh$/, requirement: "admin PBX system control", allows: admin },
   { methods: ["GET"], path: /^\/vos\/stats$/, requirement: "view_metrics and a visible team metrics tab", allows: anyMetricTab },
   { methods: ["GET"], path: /^\/vos\/live$/, requirement: "view_metrics or view_attendance", allows: anyPermission("view_metrics", "view_attendance") },
   { methods: ["GET"], path: /^\/vos\/missed-no-callback$/, requirement: "view_metrics and missed-no-callback tab", allows: tab("missed-no-cb") },
@@ -66,7 +66,8 @@ export const PRIVATE_API_AUTHORIZATION_POLICIES: readonly RoutePolicy[] = [
   { methods: ["GET"], path: /^\/csv-proxy$/, requirement: "admin-only legacy endpoint; dashboard callers use /sheet", allows: admin },
   { methods: ["GET"], path: /^\/readymode\/stats$/, requirement: "view_metrics and a visible team metrics tab", allows: anyMetricTab },
   { methods: ["GET"], path: /^\/readymode\/probe$/, requirement: "admin", allows: admin },
-  { methods: ["POST"], path: /^\/readymode\/(?:upload|session\/reset)$/, requirement: "admin or edit role", allows: roles("admin", "edit") },
+  { methods: ["POST"], path: /^\/readymode\/upload$/, requirement: "admin or edit role", allows: roles("admin", "edit") },
+  { methods: ["POST"], path: /^\/readymode\/session\/reset$/, requirement: "admin ReadyMode system control", allows: admin },
 
   { methods: ["POST"], path: /^\/nsf\/readymode-queue$/, requirement: "admin Samia workflow", allows: admin },
   { methods: ["GET"], path: /^\/nsf\/readymode-queue$/, requirement: "NSF-capable missed-no-callback tab", allows: (user) => tab("missed-no-cb")(user) && (!user.teamAccess || user.teamAccess === "nsf") },

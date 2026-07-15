@@ -7,6 +7,12 @@ import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { getActiveReadymodeItems } from "./nsfReadymode.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { canAccessLiveAgent, canAccessMetricAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
+import {
+  approvedVosDebugPath,
+  parseBoundedInteger,
+  validateIntegrationCalendarDate,
+  validateIntegrationDateRange,
+} from "../lib/externalIntegrationPolicy.js";
 
 const router = Router();
 router.use("/vos", requireAuth);
@@ -1012,7 +1018,7 @@ if (backgroundJobsEnabled) {
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-router.post("/vos/refresh", (_req, res) => {
+router.post("/vos/refresh", requireRole("admin"), (_req, res) => {
   void refreshCallHistory(rootLogger);
   res.json({ ok: true });
 });
@@ -1095,7 +1101,7 @@ router.get("/vos/stats", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "vos stats error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX statistics are temporarily unavailable." });
   }
 });
 
@@ -1243,6 +1249,10 @@ router.get("/vos/missed-hourly", async (req, res) => {
     const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
     // Accept optional ?date=YYYY-MM-DD; fall back to today.
     const dateParam = typeof req.query["date"] === "string" ? req.query["date"] : todayLA;
+    if (!validateIntegrationCalendarDate(dateParam)) {
+      res.status(400).json({ error: "Invalid date; expected YYYY-MM-DD." });
+      return;
+    }
     const isToday = dateParam === todayLA;
     const mode = req.query["mode"] === "numbers" ? "numbers" : "times";
 
@@ -1354,7 +1364,7 @@ router.get("/vos/missed-hourly", async (req, res) => {
     res.json({ hours, date: dateParam });
   } catch (err) {
     req.log.error(err, "vos missed-hourly error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX hourly report is temporarily unavailable." });
   }
 });
 
@@ -1492,7 +1502,7 @@ router.get("/vos/missed-daily", async (req, res) => {
     res.json({ days });
   } catch (err) {
     req.log.error(err, "vos missed-daily error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX daily report is temporarily unavailable." });
   }
 });
 
@@ -1501,6 +1511,10 @@ router.get("/vos/missed-breakdown", async (req, res) => {
     const dateParam = typeof req.query["date"] === "string" ? req.query["date"] : null;
     if (!dateParam) {
       res.status(400).json({ error: "date required (YYYY-MM-DD)" });
+      return;
+    }
+    if (!validateIntegrationCalendarDate(dateParam)) {
+      res.status(400).json({ error: "Invalid date; expected YYYY-MM-DD." });
       return;
     }
 
@@ -1640,19 +1654,22 @@ router.get("/vos/missed-breakdown", async (req, res) => {
       return new Date(a.firstMissedAt).getTime() - new Date(b.firstMissedAt).getTime();
     });
 
-    const withCallback = numbers.filter(n => n.hasCallback).length;
-    const connected = numbers.filter(n => n.callbackConnected).length;
+    const visibleNumbers = req.user!.role === "admin" || !req.user!.teamAccess
+      ? numbers
+      : numbers.filter((number) => number.team === req.user!.teamAccess);
+    const withCallback = visibleNumbers.filter(n => n.hasCallback).length;
+    const connected = visibleNumbers.filter(n => n.callbackConnected).length;
     res.json({
-      date: dateParam, numbers,
+      date: dateParam, numbers: visibleNumbers,
       stats: {
-        total: numbers.length, withCallback, connected,
-        callbackRate: numbers.length > 0 ? Math.round(withCallback / numbers.length * 100) / 100 : 0,
+        total: visibleNumbers.length, withCallback, connected,
+        callbackRate: visibleNumbers.length > 0 ? Math.round(withCallback / visibleNumbers.length * 100) / 100 : 0,
         connectRate: withCallback > 0 ? Math.round(connected / withCallback * 100) / 100 : 0,
       },
     });
   } catch (err) {
     req.log.error(err, "vos missed-breakdown error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX historical breakdown is temporarily unavailable." });
   }
 });
 
@@ -1665,14 +1682,28 @@ router.get("/vos/callback-review", async (req, res) => {
     let cbWindowStart: Date;
     let cbWindowEnd: Date;
 
+    if ((fromParam && !toParam) || (!fromParam && toParam)) {
+      res.status(400).json({ error: "Both from and to are required." });
+      return;
+    }
+
     if (fromParam && toParam) {
+      const range = validateIntegrationDateRange(fromParam, toParam, 90);
+      if (!range.ok) {
+        res.status(400).json({ error: range.error });
+        return;
+      }
       missedWhereTime = sql`AND (created_at AT TIME ZONE 'America/Los_Angeles')::date BETWEEN ${fromParam}::date AND ${toParam}::date`;
       cbWindowStart = new Date(fromParam + "T00:00:00Z");
       cbWindowStart.setDate(cbWindowStart.getDate() - 1);
       cbWindowEnd = new Date(toParam + "T23:59:59Z");
       cbWindowEnd.setDate(cbWindowEnd.getDate() + 3);
     } else {
-      const days = Math.min(Math.max(Number(req.query["days"] ?? 14), 1), 90);
+      const days = parseBoundedInteger(req.query["days"], 14, { min: 1, max: 90 });
+      if (days === null) {
+        res.status(400).json({ error: "Invalid days; expected an integer from 1 to 90." });
+        return;
+      }
       const windowStart = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
       missedWhereTime = sql`AND created_at >= ${windowStart}`;
       cbWindowStart = windowStart;
@@ -1819,7 +1850,10 @@ router.get("/vos/callback-review", async (req, res) => {
 
     items.sort((a, b) => new Date(b.missedAt).getTime() - new Date(a.missedAt).getTime());
 
-    const realItems = items.filter(i => !i.isGhost);
+    const visibleItems = req.user!.role === "admin" || !req.user!.teamAccess
+      ? items
+      : items.filter((item) => item.team === req.user!.teamAccess);
+    const realItems = visibleItems.filter(i => !i.isGhost);
     const withCallback = realItems.filter(i => i.hasCallback).length;
     const connected = realItems.filter(i => i.callbackConnected).length;
     const rate = realItems.length > 0 ? withCallback / realItems.length : 0;
@@ -1830,10 +1864,10 @@ router.get("/vos/callback-review", async (req, res) => {
       : 0;
 
     res.json({
-      items,
+      items: visibleItems,
       stats: {
         total: realItems.length,
-        ghost: items.filter(i => i.isGhost).length,
+        ghost: visibleItems.filter(i => i.isGhost).length,
         withCallback, connected,
         rate: Math.round(rate * 100) / 100,
         connectRate: Math.round(connectRate * 100) / 100,
@@ -1842,7 +1876,7 @@ router.get("/vos/callback-review", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "vos callback-review error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX callback report is temporarily unavailable." });
   }
 });
 
@@ -1861,7 +1895,7 @@ router.get("/vos/live", async (req, res) => {
     res.json({ liveCalls, agentStatuses });
   } catch (err) {
     req.log.error(err, "vos live error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX live calls are temporarily unavailable." });
   }
 });
 
@@ -1874,18 +1908,22 @@ router.get("/vos/debug/calls", requireRole("admin"), async (req, res) => {
     res.json({ total: data.total, calls: data.calls });
   } catch (err) {
     req.log.error(err, "vos debug error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX diagnostic request failed." });
   }
 });
 
 router.get("/vos/debug/proxy", requireRole("admin"), async (req, res) => {
   try {
-    const path = String(req.query["path"] ?? "/api/calls?limit=1");
+    const path = approvedVosDebugPath(req.query["path"] ?? "/api/calls?limit=1");
+    if (!path) {
+      res.status(400).json({ error: "PBX diagnostic path is not approved." });
+      return;
+    }
     const data = await vosFetch<unknown>(path);
     res.json(data);
   } catch (err) {
     req.log.error(err, "vos debug proxy error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX diagnostic request failed." });
   }
 });
 

@@ -6,6 +6,10 @@ import { logger as rootLogger } from "../lib/logger";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { canAccessDateRange } from "../middleware/authorizationCore.js";
 import { canAccessMetricAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
+import {
+  approvedReadyModeProbePath,
+  validateIntegrationDateRange,
+} from "../lib/externalIntegrationPolicy.js";
 
 const router = Router();
 router.use("/readymode", requireAuth);
@@ -130,6 +134,20 @@ async function rmFetch(path: string, maxRedirects = 5): Promise<{ status: number
   }
 
   throw new Error(`ReadyMode: too many redirects from ${path}`);
+}
+
+async function probeReadyModePath(path: string): Promise<{ status: number; isJson: boolean; bodyLength: number }> {
+  await getSession();
+  const res = await fetch(`${RM_BASE}${path}`, {
+    headers: { "User-Agent": UA, "Accept": "text/html,application/json,*/*", "Cookie": cachedCookies },
+    redirect: "manual",
+  });
+  if (res.status >= 300 && res.status < 400) {
+    throw new Error("ReadyMode probe redirect rejected");
+  }
+  const body = await res.text();
+  const contentType = res.headers.get("content-type") ?? "";
+  return { status: res.status, isJson: contentType.includes("application/json"), bodyLength: body.length };
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -369,8 +387,8 @@ function parseReadymodeRows(
  * GET /api/readymode/stats
  * Returns per-agent dialer stats from the operator-maintained Google Sheet
  * (CSV export). Supports optional date filtering via ?from=YYYY-MM-DD&to=YYYY-MM-DD.
- * The legacy HTML scraper (rmFetch, parseAgentTable, REPORT_PROBE_PATHS) is
- * kept available via /api/readymode/probe for future re-enablement.
+ * The diagnostic route exposes only metadata for a small set of approved
+ * upstream paths; it is not a general-purpose scraper.
  */
 router.get("/readymode/stats", async (req, res) => {
   const log = req.log ?? rootLogger;
@@ -378,6 +396,13 @@ router.get("/readymode/stats", async (req, res) => {
   const toIso = typeof req.query["to"] === "string" ? req.query["to"] : undefined;
   if (!canAccessDateRange(req.user!, [fromIso, toIso])) {
     return res.status(403).json({ error: "Forbidden" });
+  }
+  if ((fromIso && !toIso) || (!fromIso && toIso)) {
+    return res.status(400).json({ error: "Both from and to are required." });
+  }
+  if (fromIso && toIso) {
+    const range = validateIntegrationDateRange(fromIso, toIso);
+    if (!range.ok) return res.status(400).json({ error: range.error });
   }
   try {
     // Three data sources, in increasing priority (later wins on (agent, day)):
@@ -527,32 +552,33 @@ router.get("/readymode/stats", async (req, res) => {
     return res.json(response);
   } catch (err) {
     log.error({ err }, "readymode/stats error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "ReadyMode statistics are temporarily unavailable." });
   }
 });
 
 /**
- * GET /api/readymode/probe?path=/some/path
- * Diagnostic: fetches a ReadyMode page with a valid session and returns status + first 4000 chars.
- * Admin-only — used to discover which endpoints return data.
+ * GET /api/readymode/probe?path=/approved/path
+ * Admin-only diagnostic for approved ReadyMode paths. It returns response
+ * metadata only and rejects redirects and response bodies.
  */
 router.get("/readymode/probe", requireRole("admin"), async (req, res) => {
   const log = req.log ?? rootLogger;
-  const path = typeof req.query["path"] === "string" ? req.query["path"] : "/";
+  const path = approvedReadyModeProbePath(req.query["path"] ?? "/");
+  if (!path) {
+    res.status(400).json({ error: "ReadyMode probe path is not approved." });
+    return;
+  }
   try {
-    const result = await rmFetch(path);
+    const result = await probeReadyModePath(path);
     res.json({
       path,
-      finalUrl: result.finalUrl,
       status: result.status,
       isJson: result.isJson,
-      bodyLength: result.body.length,
-      preview: result.body.slice(0, 8000),
-      cookies: cachedCookies ? "SET" : "EMPTY",
+      bodyLength: result.bodyLength,
     });
   } catch (err) {
     log.error({ err }, "readymode/probe error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "ReadyMode probe failed." });
   }
 });
 
@@ -641,7 +667,7 @@ router.post("/readymode/upload", requireAuth, requireRole("admin", "edit"), asyn
     });
   } catch (err) {
     log.error({ err }, "readymode/upload error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "ReadyMode upload could not be processed." });
   }
 });
 
@@ -649,7 +675,7 @@ router.post("/readymode/upload", requireAuth, requireRole("admin", "edit"), asyn
  * POST /api/readymode/session/reset
  * Clears cached session so the next request triggers a fresh login.
  */
-router.post("/readymode/session/reset", requireRole("admin", "edit"), (_req, res) => {
+router.post("/readymode/session/reset", requireRole("admin"), (_req, res) => {
   cachedCookies = "";
   cookieExpiry = 0;
   loginBackoffUntil = 0;

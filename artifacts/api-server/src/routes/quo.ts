@@ -5,7 +5,7 @@ import { runSync, startBackgroundSync, getSyncState, USER_EMAIL_OVERRIDES, USER_
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { logger } from "../lib/logger.js";
 import { liveWebhookCalls } from "./quoWebhook.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 import { canAccessDateRange, canAccessMetricTeam, type MetricTeam } from "../middleware/authorizationCore.js";
 import {
   authorizationAgent,
@@ -13,6 +13,12 @@ import {
   canAccessMetricAgent,
   loadAuthorizationAgentDirectory,
 } from "../lib/authorizationScope.js";
+import {
+  MAX_QUO_SYNC_DAYS,
+  paginateAfterAuthorization,
+  parseBoundedInteger,
+  validateIntegrationDateRange,
+} from "../lib/externalIntegrationPolicy.js";
 
 const router: IRouter = Router();
 router.use("/quo", requireAuth);
@@ -99,8 +105,7 @@ function quoHeaders(): Record<string, string> {
 async function quoFetch<T>(path: string): Promise<T> {
   const res = await fetch(`${QUO_BASE}${path}`, { headers: quoHeaders() });
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Quo API error ${res.status}: ${body}`);
+    throw new Error(`Quo API error ${res.status}`);
   }
   return res.json() as Promise<T>;
 }
@@ -211,7 +216,7 @@ router.get("/quo/lines", async (req, res) => {
     res.json({ data: classified });
   } catch (err) {
     req.log.error(err, "quo lines error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo lines are temporarily unavailable." });
   }
 });
 
@@ -224,22 +229,28 @@ router.get("/quo/all-lines", async (req, res) => {
     res.json({ data: lines });
   } catch (err) {
     req.log.error(err, "quo all-lines error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo lines are temporarily unavailable." });
   }
 });
 
 router.get("/quo/line-stats", async (req, res) => {
   try {
-    const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString();
-    const to = (req.query["to"] as string) || new Date().toISOString();
-    const lineId = req.query["lineId"] as string | undefined;
+    const from = typeof req.query["from"] === "string" ? req.query["from"] : new Date(Date.now() - 30 * 86400000).toISOString();
+    const to = typeof req.query["to"] === "string" ? req.query["to"] : new Date().toISOString();
+    const lineId = typeof req.query["lineId"] === "string" ? req.query["lineId"] : undefined;
 
-    if (!lineId) {
+    if (!lineId || lineId.length > 128) {
       res.status(400).json({ error: "lineId is required" });
       return;
     }
 
-    const { fromDate, toDate } = parseDateRange(from, to);
+    const range = validateIntegrationDateRange(from, to);
+    if (!range.ok) {
+      res.status(400).json({ error: range.error });
+      return;
+    }
+
+    const { fromDate, toDate } = parseDateRange(range.from, range.to);
 
     const rows = await db
       .select({
@@ -336,20 +347,25 @@ router.get("/quo/line-stats", async (req, res) => {
     res.json({ agentStats: serializedStats, agentLastCall: serializedLastCall, lineInbounds, agentUniqueContactsAll: serializedUniqueAll });
   } catch (err) {
     req.log.error(err, "quo line-stats error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo line statistics are temporarily unavailable." });
   }
 });
 
 router.get("/quo/stats", async (req, res) => {
   try {
-    const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString();
-    const to = (req.query["to"] as string) || new Date().toISOString();
+    const from = typeof req.query["from"] === "string" ? req.query["from"] : new Date(Date.now() - 30 * 86400000).toISOString();
+    const to = typeof req.query["to"] === "string" ? req.query["to"] : new Date().toISOString();
     if (!canAccessDateRange(req.user!, [from, to])) {
       res.status(403).json({ error: "Forbidden" });
       return;
     }
 
-    const { fromDate, toDate } = parseDateRange(from, to);
+    const range = validateIntegrationDateRange(from, to);
+    if (!range.ok) {
+      res.status(400).json({ error: range.error });
+      return;
+    }
+    const { fromDate, toDate } = parseDateRange(range.from, range.to);
 
     const rows = await db
       .select({
@@ -550,22 +566,27 @@ router.get("/quo/stats", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "quo stats error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo statistics are temporarily unavailable." });
   }
 });
 
-router.post("/quo/sync", async (req, res) => {
+router.post("/quo/sync", requireRole("admin"), async (req, res) => {
   try {
-    const from = (req.body?.from as string) || new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-    const to = (req.body?.to as string) || new Date().toISOString();
-    req.log.info({ from, to }, "quo sync triggered manually");
-    res.json({ success: true, message: "Sync started in background", from, to });
-    runSync(new Date(from), new Date(to)).catch((err) => {
+    const from = typeof req.body?.from === "string" ? req.body.from : new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const to = typeof req.body?.to === "string" ? req.body.to : new Date().toISOString();
+    const range = validateIntegrationDateRange(from, to, MAX_QUO_SYNC_DAYS);
+    if (!range.ok) {
+      res.status(400).json({ error: range.error });
+      return;
+    }
+    req.log.info({ from: range.from, to: range.to }, "quo sync triggered manually");
+    res.json({ success: true, message: "Sync started in background", from: range.from, to: range.to });
+    runSync(range.fromDate, range.toDate).catch((err) => {
       req.log.error(err, "quo manual sync background error");
     });
   } catch (err) {
     req.log.error(err, "quo sync error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo sync could not be started." });
   }
 });
 
@@ -575,7 +596,7 @@ router.get("/quo/sync-state", async (req, res) => {
     res.json(state ?? { id: "singleton", lastSyncedAt: null, isSyncing: false });
   } catch (err) {
     req.log.error(err, "quo sync state error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo sync state is temporarily unavailable." });
   }
 });
 
@@ -814,24 +835,32 @@ router.get("/quo/live", async (req, res) => {
     res.json({ active: scopedActive, agentCalls: scopedCalls, webhookActive: scopedWebhookActive });
   } catch (err) {
     req.log.error(err, "quo live error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo live calls are temporarily unavailable." });
   }
 });
 
 
 router.get("/quo/calls", async (req, res) => {
   try {
-    const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString();
-    const to = (req.query["to"] as string) || new Date().toISOString();
-    const team = (req.query["team"] as string) || undefined;
-    const limitParam = Math.min(Number(req.query["limit"] ?? 500), 1000);
-    const offsetParam = Number(req.query["offset"] ?? 0);
+    const from = typeof req.query["from"] === "string" ? req.query["from"] : new Date(Date.now() - 30 * 86400000).toISOString();
+    const to = typeof req.query["to"] === "string" ? req.query["to"] : new Date().toISOString();
+    const team = typeof req.query["team"] === "string" ? req.query["team"] : undefined;
+    const limitParam = parseBoundedInteger(req.query["limit"], 500, { min: 1, max: 1_000 });
+    const offsetParam = parseBoundedInteger(req.query["offset"], 0, { min: 0, max: 1_000_000 });
+    if (limitParam === null || offsetParam === null) {
+      res.status(400).json({ error: "Invalid pagination parameters." });
+      return;
+    }
 
     if (!canAccessDateRange(req.user!, [from, to])) {
       res.status(403).json({ error: "Forbidden" });
       return;
     }
     const requestedTeam = team as MetricTeam | undefined;
+    if (requestedTeam && !["retention", "nsf", "cs", "killers"].includes(requestedTeam)) {
+      res.status(400).json({ error: "Invalid team." });
+      return;
+    }
     if (req.user!.role !== "admin" && (
       !requestedTeam
       || !["retention", "nsf", "cs", "killers"].includes(requestedTeam)
@@ -841,7 +870,12 @@ router.get("/quo/calls", async (req, res) => {
       return;
     }
 
-    const { fromDate, toDate } = parseDateRange(from, to);
+    const range = validateIntegrationDateRange(from, to);
+    if (!range.ok) {
+      res.status(400).json({ error: range.error });
+      return;
+    }
+    const { fromDate, toDate } = parseDateRange(range.from, range.to);
 
     const rows = await db
       .select({
@@ -857,12 +891,10 @@ router.get("/quo/calls", async (req, res) => {
       })
       .from(phoneCallsTable)
       .where(and(gte(phoneCallsTable.createdAt, fromDate), lte(phoneCallsTable.createdAt, toDate)))
-      .orderBy(desc(phoneCallsTable.createdAt))
-      .limit(limitParam)
-      .offset(offsetParam);
+      .orderBy(desc(phoneCallsTable.createdAt));
 
     const directory = req.user!.role === "admin" ? null : await loadAuthorizationAgentDirectory();
-    const filtered = rows.filter((row) => {
+    const paged = paginateAfterAuthorization(rows, (row) => {
       const agentName = canonicalAgentName(row.agentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
       const rawTeam = agentTeam(agentName) ?? row.lineTeam;
       const fallbackTeam = rawTeam === "retention" || rawTeam === "nsf" || rawTeam === "cs" ? rawTeam : null;
@@ -870,12 +902,12 @@ router.get("/quo/calls", async (req, res) => {
       const resolvedTeam = authorizationAgent(directory, agentName)?.team ?? fallbackTeam;
       return (!requestedTeam || resolvedTeam === requestedTeam)
         && canAccessMetricAgent(req.user!, agentName, directory, fallbackTeam);
-    });
+    }, offsetParam, limitParam);
 
-    res.json({ data: filtered, total: filtered.length });
+    res.json(paged);
   } catch (err) {
     req.log.error(err, "quo calls error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo calls are temporarily unavailable." });
   }
 });
 

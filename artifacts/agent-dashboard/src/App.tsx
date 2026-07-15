@@ -8641,15 +8641,15 @@ function ReadyModePanel() {
             <p className="font-medium text-destructive">Could not load ReadyMode data</p>
             <p className="text-muted-foreground">{String(q.error)}</p>
             <p className="text-xs text-muted-foreground">
-              The ReadyMode portal uses session-based authentication. If the error persists, the login credentials may
-              have changed or the session probe path needs updating.
+              The ReadyMode portal uses session-based authentication. If the error persists, an administrator should
+              verify the configured integration.
             </p>
           </div>
         )}
 
         {showRaw && q.data?.raw && (
           <div className="rounded-lg border bg-muted/30 p-3">
-            <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wide">Raw page preview (first 3000 chars) — use to identify API paths</p>
+            <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wide">ReadyMode source summary</p>
             <pre className="text-[10px] text-zinc-400 whitespace-pre-wrap break-all overflow-auto max-h-64">{q.data.raw}</pre>
           </div>
         )}
@@ -8668,10 +8668,11 @@ function ReadyModePanel() {
             <p className="font-medium metric-warn">Session active — no parseable agent table found yet</p>
             <p className="text-muted-foreground text-xs">
               ReadyMode returned a page but no agent call table could be parsed. This is normal during initial setup.
-              Use the "Show raw" button above to inspect the HTML and identify the correct report path.
+              Use the "Show raw" button above to inspect the sanitized source summary.
             </p>
             <p className="text-muted-foreground text-xs">
-              You can also call <code className="bg-muted px-1 rounded">/api/readymode/probe?path=/supervisor/</code> from the browser to inspect other paths.
+              Administrators can check approved ReadyMode paths with <code className="bg-muted px-1 rounded">/api/readymode/probe?path=/supervisor/</code>.
+              Arbitrary paths and response-body previews are not available.
             </p>
           </div>
         )}
@@ -8869,12 +8870,14 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             {fetchedAt > 0 && <span>Updated {new Date(fetchedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/Los_Angeles" })} PDT</span>}
-            <Button size="sm" variant="ghost" className="h-7 px-2 gap-1" onClick={async () => {
-              await apiFetch("/api/vos/refresh", { method: "POST" });
-              await qc.invalidateQueries({ queryKey: ["missedNoCB"] });
-            }}>
-              <RefreshCw className="h-3 w-3" /> Refresh
-            </Button>
+            {user.role === "admin" && (
+              <Button size="sm" variant="ghost" className="h-7 px-2 gap-1" onClick={async () => {
+                await apiFetch("/api/vos/refresh", { method: "POST" });
+                await qc.invalidateQueries({ queryKey: ["missedNoCB"] });
+              }}>
+                <RefreshCw className="h-3 w-3" /> Refresh
+              </Button>
+            )}
           </div>
         </div>
         <p className="text-xs text-muted-foreground mt-1">
