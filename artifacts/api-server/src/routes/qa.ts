@@ -16,6 +16,10 @@ import {
   stableEligibleCalls,
   validateQaResultWithReason,
 } from "../lib/qaPolicy.js";
+import { setPrivateDownloadHeaders } from "../lib/sensitiveWorkflowPolicy.js";
+import type { AuthPayload } from "../middleware/authCore.js";
+import { canAccessAgent } from "../middleware/authorizationCore.js";
+import { authorizationAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
 
 const router: IRouter = Router();
 
@@ -504,11 +508,30 @@ async function runWeeklyAssignment(): Promise<{ created: number; agents: number 
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-function deptFilterArr(req: { query: Record<string, unknown> }): Department[] | null {
+type QaDepartmentScope =
+  | { ok: true; departments: Department[] | null }
+  | { ok: false; status: 400 | 403; error: string };
+
+function deptFilterArr(req: { query: Record<string, unknown>; user?: AuthPayload }): QaDepartmentScope {
   const d = String(req.query["department"] ?? "").trim().toLowerCase();
-  if (!d || d === "all") return null;
   const map: Record<string, Department> = { retention: "Retention", cs: "CS", nsf: "NSF" };
-  return map[d] ? [map[d]] : null;
+  const requested = !d || d === "all" ? null : map[d];
+  if (d && d !== "all" && !requested) return { ok: false, status: 400, error: "Invalid department." };
+
+  const team = req.user?.role === "admin" ? null : req.user?.teamAccess;
+  const allowed = team === "retention" ? "Retention" : team === "cs" ? "CS" : team === "nsf" ? "NSF" : null;
+  if (team && !allowed) return { ok: false, status: 403, error: "Forbidden" };
+  if (allowed && requested && requested !== allowed) return { ok: false, status: 403, error: "Forbidden" };
+  return { ok: true, departments: requested ? [requested] : allowed ? [allowed] : null };
+}
+
+async function qaAgentAccess(user: AuthPayload): Promise<(agentName: string) => boolean> {
+  if (user.role === "admin" || !user.allowedAgents?.length) return () => true;
+  const directory = await loadAuthorizationAgentDirectory();
+  return (agentName: string) => {
+    const agent = authorizationAgent(directory, agentName);
+    return canAccessAgent(user, agentName, agent ? [agent.name, agent.arabicName ?? ""] : []);
+  };
 }
 
 function qaReviewDateColumn(dateBasis: "evaluated" | "call") {
@@ -625,7 +648,9 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
   try {
     const from = req.query["from"] ? new Date(String(req.query["from"])) : new Date(Date.now() - 30 * 24 * 3600 * 1000);
     const to = req.query["to"] ? new Date(String(req.query["to"])) : new Date();
-    const depts = deptFilterArr(req);
+    const departmentScope = deptFilterArr(req);
+    if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
+    const depts = departmentScope.departments;
     const dateBasis = parseQaDateBasis(req.query["dateBasis"]);
     if (!dateBasis) return res.status(400).json({ error: "dateBasis must be evaluated or call" });
     const dateColumn = qaReviewDateColumn(dateBasis);
@@ -633,9 +658,11 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
     const filters = [gte(dateColumn, from), lte(dateColumn, to)];
     if (depts) filters.push(inArray(qaReviewsTable.department, depts));
 
-    const rows = await db
+    const canAccessQaAgent = await qaAgentAccess(req.user!);
+    const queriedRows = await db
       .select({
         id: qaReviewsTable.id,
+        agentName: qaReviewsTable.agentName,
         score: qaReviewsTable.score,
         softSkillsScore: qaReviewsTable.softSkillsScore,
         protocolScore: qaReviewsTable.protocolScore,
@@ -643,9 +670,11 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
         criticalFail: qaReviewsTable.criticalFail,
         managerReviewRequired: qaReviewsTable.managerReviewRequired,
         department: qaReviewsTable.department,
+        mentionsTax: sql<boolean>`(${qaReviewsTable.transcript} ~* ${TAX_REGEX})`,
       })
       .from(qaReviewsTable)
       .where(and(...filters));
+    const rows = queriedRows.filter((row) => canAccessQaAgent(row.agentName));
 
     const reviewed = rows.length;
     const avgScore = reviewed ? Math.round(rows.reduce((a, r) => a + r.score, 0) / reviewed) : 0;
@@ -663,69 +692,38 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
       byDept[d].avgScore += r.score;
       if (r.criticalFail) byDept[d].criticalFails++;
       if (!r.pass) byDept[d].failed++;
+      if (r.mentionsTax) byDept[d].taxMentions++;
     }
     for (const d of Object.keys(byDept)) {
       const b = byDept[d];
       b.avgScore = b.reviewed ? Math.round(b.avgScore / b.reviewed) : 0;
     }
 
-    // Tax mentions — count reviewed calls whose transcript mentions "tax"/"taxes",
-    // grouped by department (same date/dept filters as the rest of the stats).
-    const taxRows = await db
-      .select({
-        department: qaReviewsTable.department,
-        cnt: sql<number>`cast(count(*) filter (where ${qaReviewsTable.transcript} ~* ${TAX_REGEX}) as int)`,
-      })
-      .from(qaReviewsTable)
-      .where(and(...filters))
-      .groupBy(qaReviewsTable.department);
-    let taxMentions = 0;
-    for (const t of taxRows) {
-      const d = t.department || "Unknown";
-      const n = Number(t.cnt) || 0;
-      taxMentions += n;
-      if (!byDept[d]) byDept[d] = { reviewed: 0, avgScore: 0, criticalFails: 0, failed: 0, taxMentions: 0 };
-      byDept[d].taxMentions = n;
-    }
-
-    const openTaskFilters = [eq(managerQaTasksTable.status, "open")];
-    if (depts) openTaskFilters.push(inArray(managerQaTasksTable.department, depts));
-    const [{ openManagerQueue }] = await db
-      .select({ openManagerQueue: sql<number>`cast(count(*) as int)` })
-      .from(managerQaTasksTable)
-      .where(and(...openTaskFilters));
-
-    const createdTaskFilters = [
-      gte(managerQaTasksTable.createdAt, from),
-      lte(managerQaTasksTable.createdAt, to),
-    ];
-    if (depts) createdTaskFilters.push(inArray(managerQaTasksTable.department, depts));
-    const [{ managerTasksCreatedInRange }] = await db
-      .select({ managerTasksCreatedInRange: sql<number>`cast(count(*) as int)` })
-      .from(managerQaTasksTable)
-      .where(and(...createdTaskFilters));
-
-    // Variance — only over resolved tasks with managerScore set
-    const varianceFilters = [
-      eq(managerQaTasksTable.status, "resolved"),
-      sql`${managerQaTasksTable.managerScore} IS NOT NULL`,
-      gte(managerQaTasksTable.createdAt, from),
-      lte(managerQaTasksTable.createdAt, to),
-    ];
-    if (depts) varianceFilters.push(inArray(managerQaTasksTable.department, depts));
-    const variRows = await db
-      .select({ v: managerQaTasksTable.variance })
-      .from(managerQaTasksTable)
-      .where(and(...varianceFilters));
+    const taxMentions = rows.filter((row) => row.mentionsTax).length;
+    const taskFilters = depts ? [inArray(managerQaTasksTable.department, depts)] : [];
+    const tasks = (await db.select({
+      agentName: managerQaTasksTable.agentName,
+      status: managerQaTasksTable.status,
+      managerScore: managerQaTasksTable.managerScore,
+      variance: managerQaTasksTable.variance,
+      createdAt: managerQaTasksTable.createdAt,
+    }).from(managerQaTasksTable).where(taskFilters.length ? and(...taskFilters) : undefined))
+      .filter((task) => canAccessQaAgent(task.agentName));
+    const openManagerQueue = tasks.filter((task) => task.status === "open").length;
+    const managerTasksCreatedInRange = tasks.filter((task) => task.createdAt >= from && task.createdAt <= to).length;
+    const variRows = tasks.filter((task) => task.status === "resolved"
+      && task.managerScore !== null
+      && task.createdAt >= from
+      && task.createdAt <= to);
     const avgVariance = variRows.length
-      ? Math.round((variRows.reduce((a, r) => a + Math.abs(r.v ?? 0), 0) / variRows.length) * 10) / 10
+      ? Math.round((variRows.reduce((a, r) => a + Math.abs(r.variance ?? 0), 0) / variRows.length) * 10) / 10
       : 0;
 
     return res.json({
       reviewed, avgScore, avgProtocol, avgSoftSkills,
       failed, criticalFails,
-      openManagerQueue: Number(openManagerQueue) || 0,
-      managerTasksCreatedInRange: Number(managerTasksCreatedInRange) || 0,
+      openManagerQueue,
+      managerTasksCreatedInRange,
       avgVariance,
       taxMentions,
       byDept,
@@ -733,7 +731,7 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "qa stats error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Unable to load QA statistics." });
   }
 });
 
@@ -742,7 +740,9 @@ router.get("/qa/download", requireAuth, async (req, res) => {
   try {
     const from = req.query["from"] ? new Date(String(req.query["from"])) : new Date(Date.now() - 30 * 24 * 3600 * 1000);
     const to = req.query["to"] ? new Date(String(req.query["to"])) : new Date();
-    const depts = deptFilterArr(req);
+    const departmentScope = deptFilterArr(req);
+    if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
+    const depts = departmentScope.departments;
     const dateBasis = parseQaDateBasis(req.query["dateBasis"]);
     if (!dateBasis) return res.status(400).json({ error: "dateBasis must be evaluated or call" });
     const dateColumn = qaReviewDateColumn(dateBasis);
@@ -750,7 +750,8 @@ router.get("/qa/download", requireAuth, async (req, res) => {
     const filters = [gte(dateColumn, from), lte(dateColumn, to)];
     if (depts) filters.push(inArray(qaReviewsTable.department, depts));
 
-    const rows = await db
+    const canAccessQaAgent = await qaAgentAccess(req.user!);
+    const queriedRows = await db
       .select({
         evaluatedAt: qaReviewsTable.evaluatedAt,
         callDate: qaReviewsTable.callDate,
@@ -768,6 +769,7 @@ router.get("/qa/download", requireAuth, async (req, res) => {
       .from(qaReviewsTable)
       .where(and(...filters))
       .orderBy(desc(dateColumn));
+    const rows = queriedRows.filter((row) => canAccessQaAgent(row.agentName));
 
     const wb = new ExcelJS.Workbook();
     wb.creator = "Backend Tracker";
@@ -832,14 +834,13 @@ router.get("/qa/download", requireAuth, async (req, res) => {
     }
     ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: Math.max(4, r - 1), column: ncols } };
 
-    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", `attachment; filename="QA_Reviews.xlsx"`);
+    setPrivateDownloadHeaders(res, "QA_Reviews.xlsx");
     await wb.xlsx.write(res);
     res.end();
     return;
   } catch (err) {
     req.log.error(err, "qa download error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to generate QA export." });
     return;
   }
 });
@@ -850,7 +851,9 @@ router.get("/qa/reviews", requireAuth, async (req, res) => {
     const to = req.query["to"] ? new Date(String(req.query["to"])) : new Date();
     const agent = (req.query["agent"] as string) || "";
     const limit = Math.min(parseInt((req.query["limit"] as string) ?? "100", 10) || 100, 500);
-    const depts = deptFilterArr(req);
+    const departmentScope = deptFilterArr(req);
+    if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
+    const depts = departmentScope.departments;
     const dateBasis = parseQaDateBasis(req.query["dateBasis"]);
     if (!dateBasis) return res.status(400).json({ error: "dateBasis must be evaluated or call" });
     const dateColumn = qaReviewDateColumn(dateBasis);
@@ -859,17 +862,19 @@ router.get("/qa/reviews", requireAuth, async (req, res) => {
     if (agent) filters.push(sql`lower(${qaReviewsTable.agentName}) = ${agent.toLowerCase()}`);
     if (depts) filters.push(inArray(qaReviewsTable.department, depts));
 
-    const rows = await db
+    const canAccessQaAgent = await qaAgentAccess(req.user!);
+    if (agent && !canAccessQaAgent(agent)) return res.status(403).json({ error: "Forbidden" });
+    const queriedRows = await db
       .select()
       .from(qaReviewsTable)
       .where(and(...filters))
-      .orderBy(desc(dateColumn))
-      .limit(limit);
+      .orderBy(desc(dateColumn));
+    const rows = queriedRows.filter((row) => canAccessQaAgent(row.agentName)).slice(0, limit);
 
     return res.json({ reviews: rows, dateBasis });
   } catch (err) {
     req.log.error(err, "qa reviews error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Unable to load QA reviews." });
   }
 });
 
@@ -878,10 +883,17 @@ router.get("/qa/reviews/:id", requireAuth, async (req, res) => {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const [row] = await db.select().from(qaReviewsTable).where(eq(qaReviewsTable.id, id ?? "")).limit(1);
     if (!row) return res.status(404).json({ error: "not found" });
+    const departmentScope = deptFilterArr(req);
+    if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
+    if (departmentScope.departments && !departmentScope.departments.includes(row.department as Department)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const canAccessQaAgent = await qaAgentAccess(req.user!);
+    if (!canAccessQaAgent(row.agentName)) return res.status(403).json({ error: "Forbidden" });
     return res.json(row);
   } catch (err) {
     req.log.error(err, "qa review fetch error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Unable to load QA review." });
   }
 });
 
@@ -889,21 +901,24 @@ router.get("/qa/tasks", requireAuth, async (req, res) => {
   try {
     const status = (req.query["status"] as string) || "open";
     const limit = Math.min(parseInt((req.query["limit"] as string) ?? "100", 10) || 100, 500);
-    const depts = deptFilterArr(req);
+    const departmentScope = deptFilterArr(req);
+    if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
+    const depts = departmentScope.departments;
     const statuses = status === "all" ? ["open", "resolved"] : [status];
     const filters: any[] = [inArray(managerQaTasksTable.status, statuses)];
     if (depts) filters.push(inArray(managerQaTasksTable.department, depts));
 
-    const rows = await db
+    const canAccessQaAgent = await qaAgentAccess(req.user!);
+    const queriedRows = await db
       .select()
       .from(managerQaTasksTable)
       .where(and(...filters))
-      .orderBy(desc(managerQaTasksTable.createdAt))
-      .limit(limit);
+      .orderBy(desc(managerQaTasksTable.createdAt));
+    const rows = queriedRows.filter((row) => canAccessQaAgent(row.agentName)).slice(0, limit);
     return res.json({ tasks: rows });
   } catch (err) {
     req.log.error(err, "qa tasks error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Unable to load QA tasks." });
   }
 });
 
@@ -911,7 +926,7 @@ router.get("/qa/tasks", requireAuth, async (req, res) => {
 router.post("/qa/tasks/:id/resolve", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const resolvedBy = String(req.body?.resolvedBy ?? "").trim() || "manager";
+    const resolvedBy = req.user!.username;
     const notes = String(req.body?.notes ?? "").trim() || null;
     const comments = String(req.body?.comments ?? "").trim() || null;
     const coachingComplete = Boolean(req.body?.coachingComplete);
@@ -950,7 +965,7 @@ router.post("/qa/tasks/:id/resolve", requireAuth, requireRole("admin"), async (r
     return res.json(updated);
   } catch (err) {
     req.log.error(err, "qa resolve error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Unable to resolve QA task." });
   }
 });
 
@@ -959,7 +974,9 @@ router.get("/qa/agents", requireAuth, async (req, res) => {
   try {
     const from = req.query["from"] ? new Date(String(req.query["from"])) : new Date(Date.now() - 30 * 24 * 3600 * 1000);
     const to = req.query["to"] ? new Date(String(req.query["to"])) : new Date();
-    const depts = deptFilterArr(req);
+    const departmentScope = deptFilterArr(req);
+    if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
+    const depts = departmentScope.departments;
     const dateBasis = parseQaDateBasis(req.query["dateBasis"]);
     if (!dateBasis) return res.status(400).json({ error: "dateBasis must be evaluated or call" });
     const dateColumn = qaReviewDateColumn(dateBasis);
@@ -967,7 +984,8 @@ router.get("/qa/agents", requireAuth, async (req, res) => {
     const filters = [gte(dateColumn, from), lte(dateColumn, to)];
     if (depts) filters.push(inArray(qaReviewsTable.department, depts));
 
-    const rows = await db
+    const canAccessQaAgent = await qaAgentAccess(req.user!);
+    const queriedRows = await db
       .select({
         agentName: qaReviewsTable.agentName,
         department: qaReviewsTable.department,
@@ -982,11 +1000,12 @@ router.get("/qa/agents", requireAuth, async (req, res) => {
       .where(and(...filters))
       .groupBy(qaReviewsTable.agentName, qaReviewsTable.department)
       .orderBy(sql`avg(${qaReviewsTable.score}) asc`);
+    const rows = queriedRows.filter((row) => canAccessQaAgent(row.agentName));
 
     return res.json({ agents: rows, dateBasis });
   } catch (err) {
     req.log.error(err, "qa agents error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Unable to load QA agents." });
   }
 });
 

@@ -9859,7 +9859,7 @@ function nextCalendarDate(date: string): string {
 }
 
 function LiveTransfersCard() {
-  const { token } = useUser();
+  const { token, user } = useUser();
   const today = ltLaToday();
   const [downloading, setDownloading] = useState(false);
 
@@ -9938,11 +9938,13 @@ function LiveTransfersCard() {
           <span className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-muted-foreground/10 px-3 py-1.5 text-xs font-medium metric-info">
             <CalendarDays className="h-3.5 w-3.5" />Today
           </span>
-          <Button size="sm" variant="outline" onClick={() => refreshMutation.mutate()} disabled={running}>
-            {running
-              ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Refreshing…</>
-              : <><RefreshCw className="h-4 w-4 mr-1" />Refresh</>}
-          </Button>
+          {user.role === "admin" && (
+            <Button size="sm" variant="outline" onClick={() => refreshMutation.mutate()} disabled={running}>
+              {running
+                ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Refreshing…</>
+                : <><RefreshCw className="h-4 w-4 mr-1" />Refresh</>}
+            </Button>
+          )}
           <Button size="sm" onClick={download} disabled={downloading || !status || status.totalLive === 0}>
             {downloading
               ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Preparing…</>
@@ -10640,26 +10642,35 @@ function ViolationsPanel() {
     key: string, type: string, member: string, department: string, date: string, details: object,
   ) => {
     const isNowVerified = !localVerified.has(key);
+    if (!isNowVerified && user.role !== "admin") return;
     setLocalVerified(prev => { const s = new Set(prev); isNowVerified ? s.add(key) : s.delete(key); return s; });
     setPending(prev => new Set(prev).add(key));
     try {
       if (isNowVerified) {
-        await apiFetch("/api/violations/verify", {
+        const response = await apiFetch("/api/violations/verify", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ key, type, member, department, date, details: JSON.stringify(details), verifiedBy: user.username }),
+          body: JSON.stringify({ key, type, member, department, date, details: JSON.stringify(details) }),
         });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
       } else {
-        await apiFetch("/api/violations/verify", {
+        const response = await apiFetch("/api/violations/verify", {
           method: "DELETE",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ key }),
         });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
       }
       void refetchVerified();
-    } catch { /* optimistic — keep local state */ }
+    } catch {
+      setLocalVerified(prev => {
+        const restored = new Set(prev);
+        isNowVerified ? restored.delete(key) : restored.add(key);
+        return restored;
+      });
+    }
     finally { setPending(prev => { const s = new Set(prev); s.delete(key); return s; }); }
-  }, [localVerified, token, user.username, refetchVerified]);
+  }, [localVerified, token, user.role, refetchVerified]);
 
   const dismissViolation = useCallback((key: string) => {
     setLocalDismissed(prev => {
@@ -10886,14 +10897,15 @@ function ViolationsPanel() {
   }) => {
     const checked = localVerified.has(vkey);
     const busy    = pending.has(vkey);
+    const canToggle = !checked || user.role === "admin";
     return (
       <button
         onClick={() => void toggleVerify(vkey, type, member, department, date, details)}
-        disabled={busy}
-        className={`flex-shrink-0 h-4 w-4 rounded border transition-all ${busy ? "opacity-40 cursor-wait" : "cursor-pointer"} ${
+        disabled={busy || !canToggle}
+        className={`flex-shrink-0 h-4 w-4 rounded border transition-all ${busy ? "opacity-40 cursor-wait" : canToggle ? "cursor-pointer" : "cursor-default"} ${
           checked ? "bg-muted-foreground border-border" : "bg-transparent border-zinc-600 hover:border-zinc-400"
         }`}
-        title={checked ? "Unmark verified" : "Mark as verified"}
+        title={checked ? (canToggle ? "Unmark verified" : "Verified; only administrators can remove this record") : "Mark as verified"}
       >
         {checked && <svg viewBox="0 0 10 8" className="w-full h-full p-0.5 text-white fill-none stroke-current stroke-2"><polyline points="1,4 4,7 9,1"/></svg>}
       </button>
@@ -11394,14 +11406,16 @@ function ViolationsPanel() {
                         <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(it.date)}</TableCell>
                         <TableCell className="text-xs text-right text-zinc-500">{it.verifiedBy}</TableCell>
                         <TableCell className="pr-3">
-                          <button
-                            onClick={() => void toggleVerify(it.key, it.type, it.member, it.department, it.date, {})}
-                            disabled={pending.has(it.key)}
-                            title="Remove flag"
-                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-zinc-600 hover:text-red-400 hover:bg-red-500/10 disabled:cursor-wait"
-                          >
-                            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-current"><path d="M6.5 1h3a.5.5 0 0 1 .5.5v1H6v-1a.5.5 0 0 1 .5-.5M11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3A1.5 1.5 0 0 0 5 1.5v1H1.5a.5.5 0 0 0 0 1h.538l.853 10.66A2 2 0 0 0 4.885 16h6.23a2 2 0 0 0 1.994-1.84l.853-10.66h.538a.5.5 0 0 0 0-1zm1.958 1-.846 10.58a1 1 0 0 1-.997.92h-6.23a1 1 0 0 1-.997-.92L3.042 3.5zm-7.487 1a.5.5 0 0 1 .528.47l.5 8.5a.5.5 0 0 1-1 .06L5 5.03a.5.5 0 0 1 .47-.53Zm5.058 0a.5.5 0 0 1 .47.53l-.5 8.5a.5.5 0 1 1-1-.06l.5-8.5a.5.5 0 0 1 .53-.47M8 4.5a.5.5 0 0 1 .5.5v8.5a.5.5 0 0 1-1 0V5a.5.5 0 0 1 .5-.5"/></svg>
-                          </button>
+                          {user.role === "admin" && (
+                            <button
+                              onClick={() => void toggleVerify(it.key, it.type, it.member, it.department, it.date, {})}
+                              disabled={pending.has(it.key)}
+                              title="Remove flag"
+                              className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-zinc-600 hover:text-red-400 hover:bg-red-500/10 disabled:cursor-wait"
+                            >
+                              <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-current"><path d="M6.5 1h3a.5.5 0 0 1 .5.5v1H6v-1a.5.5 0 0 1 .5-.5M11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3A1.5 1.5 0 0 0 5 1.5v1H1.5a.5.5 0 0 0 0 1h.538l.853 10.66A2 2 0 0 0 4.885 16h6.23a2 2 0 0 0 1.994-1.84l.853-10.66h.538a.5.5 0 0 0 0-1zm1.958 1-.846 10.58a1 1 0 0 1-.997.92h-6.23a1 1 0 0 1-.997-.92L3.042 3.5zm-7.487 1a.5.5 0 0 1 .528.47l.5 8.5a.5.5 0 0 1-1 .06L5 5.03a.5.5 0 0 1 .47-.53Zm5.058 0a.5.5 0 0 1 .47.53l-.5 8.5a.5.5 0 1 1-1-.06l.5-8.5a.5.5 0 0 1 .53-.47M8 4.5a.5.5 0 0 1 .5.5v8.5a.5.5 0 0 1-1 0V5a.5.5 0 0 1 .5-.5"/></svg>
+                            </button>
+                          )}
                         </TableCell>
                       </TableRow>
                     );
@@ -12215,7 +12229,7 @@ function Dashboard() {
             )}
             {canSeeTab("onboarding") && (
               <TabsContent value="onboarding">
-                <OnboardingPanel />
+                <OnboardingPanel canRefresh={user.role === "admin"} />
               </TabsContent>
             )}
           </Tabs>

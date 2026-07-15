@@ -5,6 +5,7 @@ import { and, eq, gte, lte, ne } from "drizzle-orm";
 import { canonicalAgentName } from "./quoSync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { requireAuth } from "../middleware/auth.js";
+import { setPrivateDownloadHeaders, validateOptionalWorkflowRange } from "../lib/sensitiveWorkflowPolicy.js";
 
 const router: IRouter = Router();
 router.use("/ob-analytics", requireAuth);
@@ -628,11 +629,16 @@ router.get("/ob-analytics", async (req, res) => {
   try {
     const from = req.query["from"] as string | undefined;
     const to = req.query["to"] as string | undefined;
+    const requestedRange = validateOptionalWorkflowRange(from, to);
+    if (!requestedRange.ok) {
+      res.status(400).json({ error: requestedRange.error });
+      return;
+    }
     const data = await computeAnalytics(from, to);
     res.json(data);
   } catch (err) {
     req.log.error(err, "ob-analytics error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to load onboarding analytics." });
   }
 });
 
@@ -641,15 +647,19 @@ router.get("/ob-analytics/download", async (req, res) => {
   try {
     const from = req.query["from"] as string | undefined;
     const to = req.query["to"] as string | undefined;
+    const requestedRange = validateOptionalWorkflowRange(from, to);
+    if (!requestedRange.ok) {
+      res.status(400).json({ error: requestedRange.error });
+      return;
+    }
     const data = await computeAnalytics(from, to);
     const wb = await buildAnalyticsWorkbook(data);
     const buf = await wb.xlsx.writeBuffer();
-    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", `attachment; filename="Onboarding_Team_Analysis.xlsx"`);
+    setPrivateDownloadHeaders(res, "Onboarding_Team_Analysis.xlsx");
     res.end(Buffer.from(buf));
   } catch (err) {
     req.log.error(err, "ob-analytics download error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to generate onboarding analytics." });
   }
 });
 

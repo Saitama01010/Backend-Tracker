@@ -195,7 +195,7 @@ function StatPill({
 }
 
 // ─── Raw report card (Connection vs Onboarded) ────────────────────────────────
-function OnboardingReportCard() {
+function OnboardingReportCard({ canRefresh }: { canRefresh: boolean }) {
   const today = laToday();
   const thisMonth = today.slice(0, 7);
   const [gran, setGran] = useState<Granularity>("all");
@@ -318,11 +318,13 @@ function OnboardingReportCard() {
                 className="bg-transparent text-xs outline-none" />
             </div>
           )}
-          <Button size="sm" variant="outline" onClick={() => refreshMutation.mutate()} disabled={running}>
-            {running
-              ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Refreshing…</>
-              : <><RefreshCw className="h-4 w-4 mr-1" />Refresh</>}
-          </Button>
+          {canRefresh && (
+            <Button size="sm" variant="outline" onClick={() => refreshMutation.mutate()} disabled={running}>
+              {running
+                ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Refreshing…</>
+                : <><RefreshCw className="h-4 w-4 mr-1" />Refresh</>}
+            </Button>
+          )}
           <Button size="sm" onClick={download} disabled={downloading || !status || status.totalCalls === 0}>
             {downloading
               ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Preparing…</>
@@ -374,7 +376,7 @@ function laToday(): string {
   }).format(new Date());
 }
 
-export function OnboardingPanel() {
+export function OnboardingPanel({ canRefresh }: { canRefresh: boolean }) {
   const today = laToday();
   const thisMonth = today.slice(0, 7);
   const [gran, setGran] = useState<Granularity>("all");
@@ -496,7 +498,7 @@ export function OnboardingPanel() {
 
   return (
     <div className="space-y-6">
-      <OnboardingReportCard />
+      <OnboardingReportCard canRefresh={canRefresh} />
 
       {/* Controls */}
       <div className="rounded-xl border border-border bg-card backdrop-blur p-5 space-y-4">

@@ -74,7 +74,8 @@ export const PRIVATE_API_AUTHORIZATION_POLICIES: readonly RoutePolicy[] = [
   { methods: ["POST"], path: /^\/nsf\/readymode-queue\/(?:\d+\/done|done-by-number)$/, requirement: "NSF-capable missed-no-callback tab", allows: (user) => tab("missed-no-cb")(user) && (!user.teamAccess || user.teamAccess === "nsf") },
 
   { methods: ["GET"], path: /^\/violations(?:\/verified)?$/, requirement: "view_metrics and violations tab", allows: tab("violations") },
-  { methods: ["POST", "DELETE"], path: /^\/violations\/verify$/, requirement: "view_metrics and violations tab", allows: tab("violations") },
+  { methods: ["POST"], path: /^\/violations\/verify$/, requirement: "view_metrics and violations tab", allows: tab("violations") },
+  { methods: ["DELETE"], path: /^\/violations\/verify$/, requirement: "admin correction", allows: admin },
 
   { methods: ["POST"], path: /^\/qa\/(?:evaluate|biweekly-run|process|assign-weekly)$/, requirement: "admin", allows: admin },
   { methods: ["GET"], path: /^\/qa\/runs\/latest$/, requirement: "admin", allows: admin },
@@ -83,9 +84,9 @@ export const PRIVATE_API_AUTHORIZATION_POLICIES: readonly RoutePolicy[] = [
   { methods: ["GET"], path: /^\/qa\/reviews\/[^/]+$/, requirement: "view_metrics and QA tab", allows: tab("qa") },
 
   { methods: ["GET"], path: /^\/ob-(?:report\/(?:status|download)|analytics(?:\/download)?)$/, requirement: "view_metrics and onboarding tab", allows: tab("onboarding") },
-  { methods: ["POST"], path: /^\/ob-report\/refresh$/, requirement: "view_metrics and onboarding tab", allows: tab("onboarding") },
+  { methods: ["POST"], path: /^\/ob-report\/refresh$/, requirement: "admin AI and sync control", allows: admin },
   { methods: ["GET"], path: /^\/live-transfers\/(?:status|download)$/, requirement: "view_metrics and onboarding tab", allows: tab("onboarding") },
-  { methods: ["POST"], path: /^\/live-transfers\/refresh$/, requirement: "view_metrics and onboarding tab", allows: tab("onboarding") },
+  { methods: ["POST"], path: /^\/live-transfers\/refresh$/, requirement: "admin AI and sync control", allows: admin },
 
   { methods: ["GET"], path: /^\/team-agents$/, requirement: "view_metrics or view_attendance", allows: anyPermission("view_metrics", "view_attendance") },
   { methods: ["POST", "PATCH", "DELETE"], path: /^\/team-agents(?:\/\d+)?$/, requirement: "admin", allows: admin },

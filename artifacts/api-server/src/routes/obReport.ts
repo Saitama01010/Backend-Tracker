@@ -4,7 +4,8 @@ import { db, phoneCallsTable, onboardingClassificationsTable, onboardingReportSt
 import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { runSync } from "./quoSync.js";
 import { logger } from "../lib/logger.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+import { setPrivateDownloadHeaders, validateOptionalWorkflowRange } from "../lib/sensitiveWorkflowPolicy.js";
 import {
   anthropicErrorStatus,
   anthropicRequestId,
@@ -658,7 +659,7 @@ function sortByCount(rec: Record<string, number>): [string, number][] {
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 // POST /api/ob-report/refresh — start a background refresh (sync + classify new calls)
-router.post("/ob-report/refresh", requireAuth, async (req, res) => {
+router.post("/ob-report/refresh", requireAuth, requireRole("admin"), async (req, res) => {
   if (jobRunning) {
     return res.status(409).json({ error: "A refresh is already running" });
   }
@@ -669,6 +670,8 @@ router.post("/ob-report/refresh", requireAuth, async (req, res) => {
 // GET /api/ob-report/status — current refresh + report stats
 router.get("/ob-report/status", requireAuth, async (req, res) => {
   try {
+    const requestedRange = validateOptionalWorkflowRange(req.query["from"], req.query["to"]);
+    if (!requestedRange.ok) return res.status(400).json({ error: requestedRange.error });
     const state = await readState();
     const { fromDate, toDate } = rangeFromQuery(req);
     const rangeWhere = and(
@@ -728,14 +731,12 @@ router.get("/ob-report/download", requireAuth, async (req, res) => {
   try {
     const from = typeof req.query["from"] === "string" ? req.query["from"] : undefined;
     const to = typeof req.query["to"] === "string" ? req.query["to"] : undefined;
+    const requestedRange = validateOptionalWorkflowRange(from, to);
+    if (!requestedRange.ok) return res.status(400).json({ error: requestedRange.error });
     const rows = await loadReportRows(from, to);
     const wb = await buildWorkbook(rows);
     const stamp = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    );
-    res.setHeader("Content-Disposition", `attachment; filename="Onboarding_Line_Report_${stamp}.xlsx"`);
+    setPrivateDownloadHeaders(res, `Onboarding_Line_Report_${stamp}.xlsx`);
     await wb.xlsx.write(res);
     res.end();
     return;

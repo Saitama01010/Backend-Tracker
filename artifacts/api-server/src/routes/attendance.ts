@@ -18,14 +18,23 @@ import {
 import { resolveActiveAttendanceMember, setAttendanceRecord } from "../lib/attendanceService.js";
 import {
   attendanceDepartmentForUser,
+  canAccessAgent,
   canAccessAttendanceDepartment,
   canAccessDateRange,
   hasPermission,
 } from "../middleware/authorizationCore.js";
+import type { AuthPayload } from "../middleware/authCore.js";
 import { canAccessLiveAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
+import {
+  escapeLikePattern,
+  validateOptionalWorkflowRange,
+  validateWorkflowCalendarDate,
+} from "../lib/sensitiveWorkflowPolicy.js";
 
 const router = Router();
 router.use("/attendance", requireAuth);
+
+class AttendanceImportSourceError extends Error {}
 
 const MONTH_MAP: Record<string, string> = {
   Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",
@@ -87,10 +96,23 @@ function todayLA(): string {
   return attendanceDate();
 }
 
+function canAccessAttendanceMember(
+  user: AuthPayload,
+  member: { name: string; department: string },
+): boolean {
+  return canAccessAttendanceDepartment(user, member.department)
+    && canAccessAgent(user, member.name, ATTENDANCE_MEMBER_ALIASES[member.name] ?? []);
+}
+
 router.get("/attendance", async (req, res) => {
   try {
     const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
     const to = (req.query["to"] as string) || new Date().toISOString().slice(0, 10);
+    const requestedRange = validateOptionalWorkflowRange(from, to);
+    if (!requestedRange.ok) {
+      res.status(400).json({ error: requestedRange.error });
+      return;
+    }
     const includeInactive = req.query["includeInactive"] === "true";
     if (!canAccessDateRange(req.user!, [from, to]) || (includeInactive && !hasPermission(req.user!, "manage_members"))) {
       res.status(403).json({ error: "Forbidden" });
@@ -103,7 +125,7 @@ router.get("/attendance", async (req, res) => {
       .where(includeInactive ? undefined : eq(attendanceMembersTable.active, true))
       .orderBy(attendanceMembersTable.department, attendanceMembersTable.name);
 
-    const members = allMembers.filter((member) => canAccessAttendanceDepartment(req.user!, member.department));
+    const members = allMembers.filter((member) => canAccessAttendanceMember(req.user!, member));
     const records =
       members.length > 0
         ? await db
@@ -121,7 +143,7 @@ router.get("/attendance", async (req, res) => {
     res.json({ members, records, timezone: ATTENDANCE_TIMEZONE });
   } catch (err) {
     req.log.error(err, "attendance GET error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to load attendance." });
   }
 });
 
@@ -132,7 +154,7 @@ router.post("/attendance/members", requireAuth, requirePermission("manage_member
       res.status(400).json({ error: "name required" });
       return;
     }
-    if (!canAccessAttendanceDepartment(req.user!, department?.trim() ?? "")) {
+    if (!canAccessAttendanceMember(req.user!, { name: name.trim(), department: department?.trim() ?? "" })) {
       res.status(403).json({ error: "Forbidden" });
       return;
     }
@@ -143,13 +165,17 @@ router.post("/attendance/members", requireAuth, requirePermission("manage_member
     res.json(member);
   } catch (err) {
     req.log.error(err, "attendance POST member error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to create attendance member." });
   }
 });
 
 router.patch("/attendance/members/:id", requireAuth, requirePermission("manage_members"), async (req, res) => {
   try {
     const id = Number(req.params["id"]);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      res.status(400).json({ error: "Invalid attendance member id." });
+      return;
+    }
     const body = req.body as Partial<{ name: string; shift: string; shiftHours: string; department: string; active: boolean }>;
     const [existing] = await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.id, id)).limit(1);
     if (!existing) {
@@ -157,8 +183,9 @@ router.patch("/attendance/members/:id", requireAuth, requirePermission("manage_m
       return;
     }
     const finalDepartment = body.department?.trim() ?? existing.department;
-    if (!canAccessAttendanceDepartment(req.user!, existing.department)
-      || !canAccessAttendanceDepartment(req.user!, finalDepartment)) {
+    const finalName = body.name?.trim() ?? existing.name;
+    if (!canAccessAttendanceMember(req.user!, existing)
+      || !canAccessAttendanceMember(req.user!, { name: finalName, department: finalDepartment })) {
       res.status(403).json({ error: "Forbidden" });
       return;
     }
@@ -172,7 +199,7 @@ router.patch("/attendance/members/:id", requireAuth, requirePermission("manage_m
     res.json(member);
   } catch (err) {
     req.log.error(err, "attendance PATCH member error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to update attendance member." });
   }
 });
 
@@ -181,7 +208,7 @@ router.put("/attendance/record", requireAuth, requirePermission("edit_attendance
     const { memberId, date, status, note, coaching } = req.body as {
       memberId: number; date: string; status: string; note?: string; coaching?: boolean;
     };
-    if (!memberId || !date) {
+    if (!memberId || !validateWorkflowCalendarDate(date)) {
       res.status(400).json({ error: "memberId and date required" });
       return;
     }
@@ -191,7 +218,7 @@ router.put("/attendance/record", requireAuth, requirePermission("edit_attendance
     const resolved = await resolveActiveAttendanceMember(memberId);
     if (resolved.kind === "missing") return res.status(404).json({ error: "Attendance member not found" });
     if (resolved.kind === "ambiguous") return res.status(409).json({ error: "Attendance member is ambiguous" });
-    if (!canAccessAttendanceDepartment(req.user!, resolved.member.department)) {
+    if (!canAccessAttendanceMember(req.user!, resolved.member)) {
       return res.status(403).json({ error: "Forbidden" });
     }
     const result = await setAttendanceRecord({
@@ -208,13 +235,14 @@ router.put("/attendance/record", requireAuth, requirePermission("edit_attendance
     return res.json(result.record);
   } catch (err) {
     req.log.error(err, "attendance PUT record error");
-    return res.status((err as Error).message.includes("invalid") ? 400 : 500).json({ error: (err as Error).message });
+    const invalid = (err as Error).message.includes("invalid");
+    return res.status(invalid ? 400 : 500).json({ error: invalid ? "Invalid attendance record." : "Unable to update attendance." });
   }
 });
 
 router.post("/attendance/import", requireAuth, requirePermission("manage_members"), async (req, res) => {
   try {
-    if (attendanceDepartmentForUser(req.user!)) {
+    if (attendanceDepartmentForUser(req.user!) || req.user!.allowedAgents?.length) {
       res.status(403).json({ error: "Forbidden", reason: "The attendance import spans multiple departments." });
       return;
     }
@@ -229,13 +257,18 @@ router.post("/attendance/import", requireAuth, requirePermission("manage_members
       },
     ];
 
+    const sourceRows = await Promise.all(SHEETS.map(async ({ url, department }) => {
+      const response = await fetch(url);
+      if (!response.ok) throw new AttendanceImportSourceError();
+      const rows = parseCSV(await response.text());
+      if (rows.length < 2 || rows[0].length < 3) throw new AttendanceImportSourceError();
+      return { rows, department };
+    }));
+
     let totalMembers = 0;
     let totalRecords = 0;
 
-    for (const { url, department } of SHEETS) {
-      const text = await (await fetch(url)).text();
-      const rows = parseCSV(text);
-      if (rows.length < 2) continue;
+    for (const { rows, department } of sourceRows) {
 
       const header = rows[0];
       const dateIndices: { idx: number; iso: string }[] = [];
@@ -243,6 +276,7 @@ router.post("/attendance/import", requireAuth, requirePermission("manage_members
         const iso = parseSheetDate(header[i] ?? "");
         if (iso) dateIndices.push({ idx: i, iso });
       }
+      if (dateIndices.length === 0) throw new AttendanceImportSourceError();
 
       for (let r = 1; r < rows.length; r++) {
         const row = rows[r];
@@ -284,7 +318,10 @@ router.post("/attendance/import", requireAuth, requirePermission("manage_members
     res.json({ success: true, totalMembers, totalRecords });
   } catch (err) {
     req.log.error(err, "attendance import error");
-    res.status(500).json({ error: String(err) });
+    const upstreamFailure = err instanceof AttendanceImportSourceError;
+    res.status(upstreamFailure ? 502 : 500).json({
+      error: upstreamFailure ? "Attendance import source is unavailable or invalid." : "Unable to import attendance.",
+    });
   }
 });
 
@@ -384,7 +421,11 @@ router.get("/attendance/call-logs", async (req, res) => {
   try {
     const nowUtc = new Date();
     const defaultDate = todayLA();
-    const date = ((req.query["date"] as string) || defaultDate).trim().slice(0, 10);
+    const date = ((req.query["date"] as string) || defaultDate).trim();
+    if (!validateWorkflowCalendarDate(date)) {
+      res.status(400).json({ error: "Invalid attendance date." });
+      return;
+    }
     if (!canAccessDateRange(req.user!, [date])) {
       res.status(403).json({ error: "Forbidden" });
       return;
@@ -416,7 +457,7 @@ router.get("/attendance/call-logs", async (req, res) => {
       .from(attendanceMembersTable)
       .where(eq(attendanceMembersTable.active, true))
       .orderBy(attendanceMembersTable.department, attendanceMembersTable.name))
-      .filter((member) => canAccessAttendanceDepartment(req.user!, member.department));
+      .filter((member) => canAccessAttendanceMember(req.user!, member));
 
     const existingRecords = members.length > 0
       ? await db.select().from(attendanceRecordsTable)
@@ -464,7 +505,7 @@ router.get("/attendance/call-logs", async (req, res) => {
     res.json({ date, agents });
   } catch (err) {
     req.log.error(err, "attendance call-logs error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to load attendance call logs." });
   }
 });
 
@@ -485,13 +526,17 @@ router.post("/attendance/set", requireAuth, requirePermission("edit_attendance")
     if (records.length > 1 && !confirmed) {
       return res.status(409).json({ error: "Bulk attendance changes require confirmed=true" });
     }
+    if (records.some((record) => !validateWorkflowCalendarDate(record.date))) {
+      return res.status(400).json({ error: "Invalid attendance date." });
+    }
     if (!canAccessDateRange(req.user!, records.map((record) => record.date))) {
       return res.status(403).json({ error: "Forbidden" });
     }
 
     for (const record of records) {
       const resolved = await resolveActiveAttendanceMember(record.memberId, record.memberName);
-      if (resolved.kind === "unique" && !canAccessAttendanceDepartment(req.user!, resolved.member.department)) {
+      if (resolved.kind === "ambiguous") return res.status(409).json({ error: "Attendance member is ambiguous" });
+      if (resolved.kind === "unique" && !canAccessAttendanceMember(req.user!, resolved.member)) {
         return res.status(403).json({ error: "Forbidden" });
       }
     }
@@ -513,7 +558,7 @@ router.post("/attendance/set", requireAuth, requirePermission("edit_attendance")
       if (result.kind === "member_missing") {
         results.push({ memberName: requestedName, date: rec.date, status: rec.status, action: "skipped: member not found" });
       } else if (result.kind === "member_ambiguous") {
-        results.push({ memberName: requestedName, date: rec.date, status: rec.status, action: `skipped: ambiguous (${result.match.members.map((member) => member.name).join(", ")})` });
+        return res.status(409).json({ error: "Attendance member is ambiguous" });
       } else if (result.kind === "conflict") {
         results.push({ memberName: result.member.name, date: rec.date, status: rec.status, action: `skipped: already ${result.existing.status} (use force=true to overwrite)` });
       } else {
@@ -524,7 +569,8 @@ router.post("/attendance/set", requireAuth, requirePermission("edit_attendance")
     return res.json({ success: true, results, timezone: ATTENDANCE_TIMEZONE });
   } catch (err) {
     req.log.error(err, "attendance set error");
-    return res.status((err as Error).message.includes("invalid") ? 400 : 500).json({ error: (err as Error).message });
+    const invalid = (err as Error).message.includes("invalid");
+    return res.status(invalid ? 400 : 500).json({ error: invalid ? "Invalid attendance record." : "Unable to set attendance." });
   }
 });
 
@@ -535,7 +581,11 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
   try {
     const nowUtc = new Date();
     const defaultLADate = todayLA();
-    const targetDate: string = ((req.body as { date?: string })?.date ?? defaultLADate).trim().slice(0, 10);
+    const targetDate: string = ((req.body as { date?: string })?.date ?? defaultLADate).trim();
+    if (!validateWorkflowCalendarDate(targetDate)) {
+      res.status(400).json({ error: "Invalid attendance date." });
+      return;
+    }
     const isToday = targetDate === defaultLADate;
     if (!canAccessDateRange(req.user!, [targetDate])) {
       res.status(403).json({ error: "Forbidden" });
@@ -563,7 +613,7 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
     const quoCalls = await buildQuoCallsMap(dayStartUtc, dayEndUtc);
 
     const members = (await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true)))
-      .filter((member) => canAccessAttendanceDepartment(req.user!, member.department));
+      .filter((member) => canAccessAttendanceMember(req.user!, member));
 
     const existingRecords = await db.select()
       .from(attendanceRecordsTable)
@@ -614,7 +664,7 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
     res.json({ success: true, date: targetDate, results });
   } catch (err) {
     req.log.error(err, "attendance auto-mark error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to auto-mark attendance." });
   }
 });
 
@@ -627,6 +677,9 @@ router.get("/attendance/agent-contacts", async (req, res) => {
     const dateParam  = ((req.query["date"]  as string) ?? "").trim();
     if (!agentParam) {
       return res.status(400).json({ error: "agent param is required" });
+    }
+    if (agentParam.length > 128 || (dateParam && !validateWorkflowCalendarDate(dateParam))) {
+      return res.status(400).json({ error: "Invalid agent or attendance date." });
     }
     if (!canAccessDateRange(req.user!, [dateParam || todayLA()])) {
       return res.status(403).json({ error: "Forbidden" });
@@ -664,7 +717,7 @@ router.get("/attendance/agent-contacts", async (req, res) => {
       .from(phoneCallsTable)
       .where(
         and(
-          ilike(phoneCallsTable.agentName, `%${agentParam}%`),
+          ilike(phoneCallsTable.agentName, `%${escapeLikePattern(agentParam)}%`),
           gte(phoneCallsTable.createdAt, dayStartUtc),
           lte(phoneCallsTable.createdAt, dayEndUtc),
         ),
@@ -749,7 +802,7 @@ router.get("/attendance/agent-contacts", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "agent-contacts error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Unable to load agent contacts." });
   }
 });
 

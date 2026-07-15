@@ -8,7 +8,8 @@ import {
 } from "@workspace/db";
 import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+import { setPrivateDownloadHeaders, validateOptionalWorkflowRange } from "../lib/sensitiveWorkflowPolicy.js";
 import {
   anthropicErrorStatus,
   anthropicRequestId,
@@ -503,6 +504,8 @@ async function loadLiveRows(from?: string, to?: string): Promise<LiveRow[]> {
 // GET /api/live-transfers/status — counts + refresh progress for a date range.
 router.get("/live-transfers/status", requireAuth, async (req, res) => {
   try {
+    const requestedRange = validateOptionalWorkflowRange(req.query["from"], req.query["to"]);
+    if (!requestedRange.ok) return res.status(400).json({ error: requestedRange.error });
     const { fromDate, toDate } = rangeFromQuery(req);
     const inRange = and(
       gte(phoneCallsTable.createdAt, fromDate),
@@ -582,12 +585,12 @@ router.get("/live-transfers/status", requireAuth, async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "live-transfers status error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Unable to load live transfers." });
   }
 });
 
 // POST /api/live-transfers/refresh — classify new incoming calls in the background.
-router.post("/live-transfers/refresh", requireAuth, async (_req, res) => {
+router.post("/live-transfers/refresh", requireAuth, requireRole("admin"), async (_req, res) => {
   if (jobRunning) return res.status(409).json({ started: false, reason: "already running" });
   void runClassifier();
   return res.json({ started: true });
@@ -598,19 +601,17 @@ router.get("/live-transfers/download", requireAuth, async (req, res) => {
   try {
     const from = typeof req.query["from"] === "string" ? req.query["from"] : undefined;
     const to = typeof req.query["to"] === "string" ? req.query["to"] : undefined;
+    const requestedRange = validateOptionalWorkflowRange(from, to);
+    if (!requestedRange.ok) return res.status(400).json({ error: requestedRange.error });
     const rows = await loadLiveRows(from, to);
     const wb = await buildWorkbook(rows);
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    );
-    res.setHeader("Content-Disposition", `attachment; filename="Live_Transfers.xlsx"`);
+    setPrivateDownloadHeaders(res, "Live_Transfers.xlsx");
     await wb.xlsx.write(res);
     res.end();
     return;
   } catch (err) {
     req.log.error(err, "live-transfers download error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to generate live transfers report." });
     return;
   }
 });

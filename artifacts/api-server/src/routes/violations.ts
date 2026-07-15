@@ -6,7 +6,16 @@ import {
 } from "@workspace/db";
 import { and, gte, lte, or, eq, inArray } from "drizzle-orm";
 import { vosCallSpansCache, vosCallTimestampsCache } from "./vos";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+import {
+  canAccessAgent,
+  canAccessAttendanceDepartment,
+  canAccessDateRange,
+} from "../middleware/authorizationCore.js";
+import {
+  parseViolationVerificationPayload,
+  validateOptionalWorkflowRange,
+} from "../lib/sensitiveWorkflowPolicy.js";
 
 const TEAM_QUO_LINES = ["Retention", "CS Team", "Main NSF"];
 
@@ -45,12 +54,23 @@ function agentNamesForMember(name: string): string[] {
   return MEMBER_TO_AGENT_NAMES[name] ?? [name];
 }
 
+function canAccessViolationIdentity(
+  user: NonNullable<Express.Request["user"]>,
+  member: string,
+  department: string,
+): boolean {
+  return canAccessAttendanceDepartment(user, department)
+    && canAccessAgent(user, member, agentNamesForMember(member));
+}
+
 /** GET /api/violations?from=YYYY-MM-DD&to=YYYY-MM-DD */
 router.get("/violations", async (req, res) => {
   try {
     const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-    const from = ((req.query["from"] as string) || new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10)).slice(0, 10);
-    const to   = ((req.query["to"]   as string) || todayLA).slice(0, 10);
+    const from = (req.query["from"] as string) || new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+    const to   = (req.query["to"]   as string) || todayLA;
+    const requestedRange = validateOptionalWorkflowRange(from, to);
+    if (!requestedRange.ok) return res.status(400).json({ error: requestedRange.error });
 
     const dates = dateRangeLA(from, to).filter((d) => d <= todayLA);
     if (dates.length === 0) {
@@ -63,7 +83,7 @@ router.get("/violations", async (req, res) => {
     // Parallel fetch: members, verified keys, phone calls, missed PBX calls, missed Quo calls
     const [members, verifications, callRows, missedRows, quoMissedRows] = await Promise.all([
       db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true)),
-      db.select({ key: violationVerificationsTable.key }).from(violationVerificationsTable),
+      db.select().from(violationVerificationsTable),
       db.select({
         agentName:           phoneCallsTable.agentName,
         direction:           phoneCallsTable.direction,
@@ -102,10 +122,20 @@ router.get("/violations", async (req, res) => {
       )),
     ]);
 
-    const verifiedKeys = new Set(verifications.map((v) => v.key));
+    const scopedMembers = members.filter((member) => canAccessViolationIdentity(
+      req.user!,
+      member.name,
+      member.department,
+    ));
+    const scopedVerifications = verifications.filter((verification) => canAccessViolationIdentity(
+      req.user!,
+      verification.member,
+      verification.department,
+    ));
+    const verifiedKeys = new Set(scopedVerifications.map((v) => v.key));
 
     const allAgentLower = new Set<string>();
-    for (const m of members) {
+    for (const m of scopedMembers) {
       for (const n of agentNamesForMember(m.name)) allAgentLower.add(n.toLowerCase());
     }
 
@@ -208,7 +238,7 @@ router.get("/violations", async (req, res) => {
 
     for (const date of dates) {
       const dayStart = laStartOfDay(date);
-      for (const member of members) {
+      for (const member of scopedMembers) {
         const shiftNum = parseInt(member.shift || "0");
         if (!shiftNum) continue;
         // Shift N = N PM Egypt time. Egypt = UTC+2, PDT = UTC-7 → pdtHour = shiftNum + 3
@@ -279,7 +309,7 @@ router.get("/violations", async (req, res) => {
       const availableAgents: string[] = [];
       const busyAgents:      string[] = [];
 
-      const teamMembers = members.filter((m) => m.department.toLowerCase() === missed.team);
+      const teamMembers = scopedMembers.filter((m) => m.department.toLowerCase() === missed.team);
       for (const member of teamMembers) {
         const shiftNum = parseInt(member.shift || "0");
         if (!shiftNum) continue;
@@ -325,7 +355,7 @@ router.get("/violations", async (req, res) => {
       const availableAgents: string[] = [];
       const busyAgents:      string[] = [];
 
-      const teamMembers = members.filter((m) => m.department.toLowerCase() === r.lineTeam);
+      const teamMembers = scopedMembers.filter((m) => m.department.toLowerCase() === r.lineTeam);
       for (const member of teamMembers) {
         const shiftNum = parseInt(member.shift || "0");
         if (!shiftNum) continue;
@@ -357,38 +387,41 @@ router.get("/violations", async (req, res) => {
     return res.json({ lateLogin, availabilityGaps, missedWhileAvail, verifiedKeys: Array.from(verifiedKeys) });
   } catch (err) {
     req.log.error(err, "violations error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Unable to load violations." });
   }
 });
 
 /** POST /api/violations/verify — mark a violation verified (idempotent) */
 router.post("/violations/verify", async (req, res) => {
   try {
-    const { key, type, member, department, date, details, verifiedBy = "admin" } = req.body as {
-      key: string; type: string; member: string; department: string;
-      date: string; details: string; verifiedBy?: string;
-    };
-    if (!key || !type || !member || !date) return res.status(400).json({ error: "key, type, member, date required" });
+    const payload = parseViolationVerificationPayload(req.body, req.user!.username);
+    if (!payload) return res.status(400).json({ error: "Invalid violation verification." });
+    if (!canAccessDateRange(req.user!, [payload.date])) return res.status(403).json({ error: "Forbidden" });
+    if (!canAccessViolationIdentity(req.user!, payload.member, payload.department)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     await db.insert(violationVerificationsTable)
-      .values({ key, type, member, department, date, details: details ?? "{}", verifiedBy })
+      .values({ ...payload, verifiedBy: req.user!.username })
       .onConflictDoNothing();
     return res.json({ ok: true });
   } catch (err) {
     req.log.error(err, "violations/verify POST error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Unable to verify violation." });
   }
 });
 
 /** DELETE /api/violations/verify — unverify */
-router.delete("/violations/verify", async (req, res) => {
+router.delete("/violations/verify", requireRole("admin"), async (req, res) => {
   try {
     const { key } = req.body as { key: string };
-    if (!key) return res.status(400).json({ error: "key required" });
+    if (typeof key !== "string" || !key.trim() || key.length > 512) {
+      return res.status(400).json({ error: "key required" });
+    }
     await db.delete(violationVerificationsTable).where(eq(violationVerificationsTable.key, key));
     return res.json({ ok: true });
   } catch (err) {
     req.log.error(err, "violations/verify DELETE error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Unable to remove violation verification." });
   }
 });
 
@@ -397,10 +430,11 @@ router.get("/violations/verified", async (req, res) => {
   try {
     const rows = await db.select().from(violationVerificationsTable)
       .orderBy(violationVerificationsTable.verifiedAt);
-    return res.json({ items: rows });
+    const items = rows.filter((row) => canAccessViolationIdentity(req.user!, row.member, row.department));
+    return res.json({ items });
   } catch (err) {
     req.log.error(err, "violations/verified GET error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Unable to load verified violations." });
   }
 });
 
