@@ -7,7 +7,7 @@
     "dev": "pnpm run build && pnpm run start",
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
-    "test": "tsx --test src/lib/anthropic-features.test.ts",
+    "test": "tsx --test src/lib/anthropic-features.test.ts src/lib/dashboard-actions.test.ts",
     "setup-admin": "node ./scripts/setup-admin.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

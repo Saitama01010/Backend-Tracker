@@ -219,7 +219,8 @@ test("Samia route invokes Claude only inside the authenticated chat handler", as
   assert.ok(limiterStart > identityStart);
   assert.ok(source.indexOf("createSamiaMessage", routeStart) > routeStart);
   assert.ok(source.indexOf("/api/samia/call-analysis?", routeStart) < source.indexOf("createSamiaMessage", routeStart));
-  assert.match(source.slice(routeStart), /if \(directCallId \|\| directPhone\) return false/);
+  assert.match(source.slice(routeStart), /const activeCapabilityNames: SamiaCapabilityName\[\] = directCallId \|\| directPhone \|\| mode === "lightweight"/);
+  assert.ok(source.indexOf("detectSamiaOperationalIntent(message)", routeStart) < limiterStart);
   assert.match(source.slice(routeStart), /isStaleModelIdentityMessage\(item\.role, item\.content\)/);
   assert.match(source, /safeStoredMessages\(rows\.reverse\(\)\)/);
   const systemPrompt = source.slice(source.indexOf("const SAMIA_SYSTEM"), source.indexOf("interface ChatMessage"));

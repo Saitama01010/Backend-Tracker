@@ -9748,17 +9748,30 @@ function fmtHourLabel(h: number): string {
 // ─────────────────────────────────────────────────────────────────────────────
 interface QAStats {
   reviewed: number; avgScore: number; avgProtocol: number; avgSoftSkills: number;
-  failed: number; criticalFails: number; pendingReviews: number; avgVariance: number;
+  failed: number; criticalFails: number; openManagerQueue: number; managerTasksCreatedInRange: number; avgVariance: number;
   taxMentions: number;
+  dateBasis: "evaluated" | "call";
   byDept: Record<string, { reviewed: number; avgScore: number; criticalFails: number; failed: number; taxMentions: number }>;
 }
 interface QAReview {
-  id: string; agentName: string; phoneNumber: string | null; callDate: string;
+  id: string; agentName: string; phoneNumber: string | null; callDate: string; evaluatedAt: string;
   department: string;
   score: number; softSkillsScore: number; protocolScore: number;
   pass: boolean; criticalFail: boolean; managerReviewRequired: boolean;
   strengths: string[]; missedItems: string[]; criticalIssues: string[]; reason: string | null;
   categoryScores: Record<string, number>; aiSummary: string | null; transcript: string | null;
+}
+interface QARunResult {
+  runId: number;
+  evaluated: Array<{ agent: string; callId: string }>;
+  skipped: Array<{ agent: string; reason: string }>;
+  errors: Array<{ agent: string; reason: string }>;
+}
+interface QARunRecord {
+  id: number;
+  status: "running" | "completed" | "failed";
+  startedAt: string;
+  finishedAt: string | null;
 }
 interface QATask {
   id: string; agentName: string; department: string;
@@ -9803,6 +9816,36 @@ function ltLastDayOfMonth(ym: string): string {
   const [y, m] = ym.split("-").map(Number);
   const d = new Date(y!, m!, 0).getDate();
   return `${ym}-${String(d).padStart(2, "0")}`;
+}
+
+function zonedMidnightUtc(date: string, timeZone: string): Date {
+  const [year, month, day] = date.split("-").map(Number);
+  const desiredWallTime = Date.UTC(year!, month! - 1, day!, 0, 0, 0);
+  let instant = desiredWallTime;
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const parts = Object.fromEntries(formatter.formatToParts(new Date(instant)).map((part) => [part.type, part.value]));
+    const observedWallTime = Date.UTC(
+      Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+      Number(parts.hour), Number(parts.minute), Number(parts.second),
+    );
+    instant += desiredWallTime - observedWallTime;
+  }
+  return new Date(instant);
+}
+
+function nextCalendarDate(date: string): string {
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(Date.UTC(year!, month! - 1, day! + 1)).toISOString().slice(0, 10);
 }
 
 function LiveTransfersCard() {
@@ -9989,20 +10032,23 @@ function QAPanel() {
   const [dept, setDept] = useState<QADept>("all");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
+  const [runResult, setRunResult] = useState<QARunResult | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
   const [reviewingTask, setReviewingTask] = useState<QATask | null>(null);
+  const dateBasis = "evaluated" as const;
 
   const range = useMemo(() => {
-    const fromISO = new Date(`${from}T00:00:00-07:00`).toISOString();
-    const toISO   = new Date(`${to}T23:59:59-07:00`).toISOString();
+    const fromISO = zonedMidnightUtc(from, "America/Los_Angeles").toISOString();
+    const toISO = new Date(zonedMidnightUtc(nextCalendarDate(to), "America/Los_Angeles").getTime() - 1).toISOString();
     return { fromISO, toISO };
   }, [from, to]);
 
   const deptParam = dept === "all" ? "" : `&department=${dept}`;
 
   const stats = useQuery<QAStats>({
-    queryKey: ["qa-stats", range.fromISO, range.toISO, dept, token],
+    queryKey: ["qa-stats", dateBasis, range.fromISO, range.toISO, dept, token],
     queryFn: async () => {
-      const r = await fetch(`/api/qa/stats?from=${range.fromISO}&to=${range.toISO}${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await fetch(`/api/qa/stats?from=${range.fromISO}&to=${range.toISO}&dateBasis=${dateBasis}${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<QAStats>;
     },
@@ -10010,9 +10056,9 @@ function QAPanel() {
   });
 
   const reviews = useQuery<{ reviews: QAReview[] }>({
-    queryKey: ["qa-reviews", range.fromISO, range.toISO, dept, token],
+    queryKey: ["qa-reviews", dateBasis, range.fromISO, range.toISO, dept, token],
     queryFn: async () => {
-      const r = await fetch(`/api/qa/reviews?from=${range.fromISO}&to=${range.toISO}&limit=200${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await fetch(`/api/qa/reviews?from=${range.fromISO}&to=${range.toISO}&dateBasis=${dateBasis}&limit=200${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<{ reviews: QAReview[] }>;
     },
@@ -10031,17 +10077,40 @@ function QAPanel() {
     enabled: sub === "tasks",
   });
 
+  const latestRun = useQuery<{ run: QARunRecord | null }>({
+    queryKey: ["qa-runs", token],
+    queryFn: async () => {
+      const r = await fetch("/api/qa/runs/latest", { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json() as Promise<{ run: QARunRecord | null }>;
+    },
+  });
+
   const runProcessor = useCallback(async () => {
     setProcessing(true);
+    setRunError(null);
     try {
-      await fetch("/api/qa/process", {
+      const response = await fetch("/api/qa/process", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ batchSize: 10 }),
       });
-      await Promise.all([stats.refetch(), reviews.refetch(), tasks.refetch()]);
-    } finally { setProcessing(false); }
-  }, [token, stats, reviews, tasks]);
+      const body = await response.json().catch(() => ({ error: `QA run failed with HTTP ${response.status}` })) as QARunResult & { error?: string };
+      if (!response.ok) throw new Error(body.error || `QA run failed with HTTP ${response.status}`);
+      setRunResult(body);
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["qa-stats"] }),
+        qc.invalidateQueries({ queryKey: ["qa-reviews"] }),
+        qc.invalidateQueries({ queryKey: ["qa-tasks"] }),
+        qc.invalidateQueries({ queryKey: ["qa-agents"] }),
+        qc.invalidateQueries({ queryKey: ["qa-runs"] }),
+      ]);
+    } catch (error) {
+      setRunResult(null);
+      setRunError(error instanceof Error ? error.message : "QA run failed");
+    } finally {
+      setProcessing(false);
+    }
+  }, [token, qc]);
 
   const resolveTask = useCallback(async (
     id: string,
@@ -10060,7 +10129,7 @@ function QAPanel() {
   const downloadQa = useCallback(async () => {
     setDownloadingQa(true);
     try {
-      const res = await fetch(`/api/qa/download?from=${range.fromISO}&to=${range.toISO}${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(`/api/qa/download?from=${range.fromISO}&to=${range.toISO}&dateBasis=${dateBasis}${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
@@ -10074,7 +10143,7 @@ function QAPanel() {
     } finally {
       setDownloadingQa(false);
     }
-  }, [token, range.fromISO, range.toISO, deptParam, dept, from, to]);
+  }, [token, range.fromISO, range.toISO, deptParam, dept, from, to, dateBasis]);
 
   const reviewRows = reviews.data?.reviews ?? [];
   const taskRows = tasks.data?.tasks ?? [];
@@ -10087,8 +10156,13 @@ function QAPanel() {
       {/* Header */}
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900/70 px-3 h-8 text-xs font-medium text-zinc-300">
-          <CalendarDays className="h-3.5 w-3.5 text-zinc-400" />Today
+          <CalendarDays className="h-3.5 w-3.5 text-zinc-400" />Today · evaluated
         </span>
+        {latestRun.data?.run && (
+          <span className="text-[11px] text-zinc-500">
+            Last run #{latestRun.data.run.id}: {latestRun.data.run.status}
+          </span>
+        )}
         <div className="flex items-center gap-1 ml-2">
           {(["all", "Retention", "CS", "NSF"] as QADept[]).map((d) => (
             <button
@@ -10113,15 +10187,53 @@ function QAPanel() {
         </div>
       </div>
 
+      {runError && (
+        <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm metric-bad">
+          <div className="font-medium">QA run failed</div>
+          <div className="mt-1 text-xs opacity-90">{runError}</div>
+        </div>
+      )}
+      {runResult && (
+        <div role="status" className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+          <div className="font-medium">QA run #{runResult.runId} completed</div>
+          <div className="mt-1 text-xs">
+            {runResult.evaluated.length} agents evaluated · {runResult.skipped.length} skipped · {runResult.errors.length} errors
+          </div>
+          {(runResult.evaluated.length === 0 || runResult.skipped.length > 0 || runResult.errors.length > 0) && (
+            <details className="mt-2 text-xs">
+              <summary className="cursor-pointer text-emerald-200">Show run details</summary>
+              <div className="mt-2 space-y-2">
+                {runResult.evaluated.length > 0 && (
+                  <div><span className="font-medium">Evaluated:</span> {runResult.evaluated.map((item) => item.agent).join(", ")}</div>
+                )}
+                {runResult.skipped.length > 0 && (
+                  <div>
+                    <div className="font-medium">Skipped</div>
+                    <ul className="list-disc pl-5 space-y-0.5">{runResult.skipped.map((item) => <li key={`${item.agent}-${item.reason}`}>{item.agent}: {item.reason}</li>)}</ul>
+                  </div>
+                )}
+                {runResult.errors.length > 0 && (
+                  <div className="metric-bad">
+                    <div className="font-medium">Errors</div>
+                    <ul className="list-disc pl-5 space-y-0.5">{runResult.errors.map((item) => <li key={`${item.agent}-${item.reason}`}>{item.agent}: {item.reason}</li>)}</ul>
+                  </div>
+                )}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+
       {/* Stat tiles */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-9 gap-2">
         <QATile label="Reviewed" value={stats.data?.reviewed ?? 0} />
         <QATile label="Avg score" value={`${stats.data?.avgScore ?? 0}/100`} accent={stats.data && stats.data.avgScore >= 80 ? "good" : "warn"} />
         <QATile label="Protocol %" value={`${stats.data?.avgProtocol ?? 0}`} accent={stats.data && stats.data.avgProtocol >= 70 ? "good" : "bad"} />
         <QATile label="Soft skills" value={`${stats.data?.avgSoftSkills ?? 0}`} accent={stats.data && stats.data.avgSoftSkills >= 70 ? "good" : "warn"} />
         <QATile label="Failed" value={stats.data?.failed ?? 0} accent={stats.data && stats.data.failed > 0 ? "bad" : undefined} />
         <QATile label="Critical fails" value={stats.data?.criticalFails ?? 0} accent={stats.data && stats.data.criticalFails > 0 ? "bad" : undefined} />
-        <QATile label="Manager queue" value={stats.data?.pendingReviews ?? 0} accent={stats.data && stats.data.pendingReviews > 0 ? "warn" : undefined} />
+        <QATile label="Open manager queue" value={stats.data?.openManagerQueue ?? 0} accent={stats.data && stats.data.openManagerQueue > 0 ? "warn" : undefined} />
+        <QATile label="Manager tasks today" value={stats.data?.managerTasksCreatedInRange ?? 0} accent={stats.data && stats.data.managerTasksCreatedInRange > 0 ? "warn" : undefined} />
         <QATile label="Mention Tax" value={stats.data?.taxMentions ?? 0} accent={stats.data && stats.data.taxMentions > 0 ? "warn" : undefined} />
       </div>
 
@@ -10165,7 +10277,8 @@ function QAPanel() {
                   <TableRow className="border-zinc-800 hover:bg-transparent">
                     <TableHead className="text-zinc-400">Agent Name</TableHead>
                     <TableHead className="text-zinc-400">Dept</TableHead>
-                    <TableHead className="text-zinc-400">When</TableHead>
+                    <TableHead className="text-zinc-400">Evaluated</TableHead>
+                    <TableHead className="text-zinc-400">Call date</TableHead>
                     <TableHead className="text-zinc-400">Customer</TableHead>
                     <TableHead className="text-zinc-400 text-right">Score</TableHead>
                     <TableHead className="text-zinc-400 text-right">Proto</TableHead>
@@ -10175,9 +10288,9 @@ function QAPanel() {
                 </TableHeader>
                 <TableBody>
                   {reviews.isLoading ? (
-                    <TableRow><TableCell colSpan={8}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={9}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
                   ) : reviewRows.length === 0 ? (
-                    <TableRow><TableCell colSpan={8} className="text-center text-zinc-500 py-8">No QA reviews in this date range yet. Click "Run QA now" to evaluate recent calls.</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={9} className="text-center text-zinc-500 py-8">No reviews were evaluated today. Run QA to see qualifying, skipped, and error reasons.</TableCell></TableRow>
                   ) : reviewRows.map((r) => {
                     const isOpen = expanded === r.id;
                     const deptColor = r.department === "Retention" ? "border-border metric-info"
@@ -10191,6 +10304,7 @@ function QAPanel() {
                           <AvatarName name={parts.agentName} size="sm" textClassName="text-foreground" />
                         </TableCell>
                           <TableCell><Badge variant="outline" className={`${deptColor} text-[10px]`}>{r.department}</Badge></TableCell>
+                          <TableCell className="text-xs text-zinc-400">{new Date(r.evaluatedAt).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</TableCell>
                           <TableCell className="text-xs text-zinc-400">{new Date(r.callDate).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</TableCell>
                           <TableCell className="text-xs text-zinc-400 font-mono">{r.phoneNumber ?? "—"}</TableCell>
                           <TableCell className="text-right">
@@ -10215,7 +10329,7 @@ function QAPanel() {
                         </TableRow>
                         {isOpen && (
                           <TableRow className="border-zinc-800/60 bg-zinc-950/60">
-                            <TableCell colSpan={8} className="p-4">
+                            <TableCell colSpan={9} className="p-4">
                               <div className="grid md:grid-cols-2 gap-4 text-sm">
                                 <div>
                                   <div className="text-xs font-medium text-zinc-400 mb-1">Strengths</div>
@@ -12114,6 +12228,14 @@ function Dashboard() {
 
 interface SamiaMessage { role: "user" | "assistant"; content: string; images?: string[] }
 interface HistoryGroup { key: string; label: string; preview: string; messages: SamiaMessage[] }
+interface SamiaMutation { resource: string; action: string; [key: string]: unknown }
+interface SamiaResponse {
+  reply?: string;
+  error?: string;
+  fallbackUsed?: boolean;
+  mutations?: SamiaMutation[];
+  invalidateQueryKeys?: string[];
+}
 
 type ChatSize = "normal" | "minimized" | "maximized";
 
@@ -12143,6 +12265,7 @@ function SamiaChat() {
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { token, user } = useUser();
+  const qc = useQueryClient();
   const isAdmin = user.role === "admin";
   if (!isAdmin) return null;
 
@@ -12275,9 +12398,20 @@ function SamiaChat() {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ message: text || "What do you see in this image?", images, displayName: chatName || undefined }),
       });
-      const data = (await res.json()) as { reply?: string; error?: string; fallbackUsed?: boolean };
+      const data = (await res.json().catch(() => ({}))) as SamiaResponse;
+      if (res.ok && data.invalidateQueryKeys?.length) {
+        await Promise.all([...new Set(data.invalidateQueryKeys)].map((key) =>
+          qc.invalidateQueries({ queryKey: [key], refetchType: "active" })));
+        const resources = [...new Set((data.mutations ?? []).map((mutation) => mutation.resource))];
+        window.dispatchEvent(new CustomEvent<{ resources: string[]; mutations: SamiaMutation[] }>("dashboard:data-changed", {
+          detail: { resources, mutations: data.mutations ?? [] },
+        }));
+      }
       const note = data.fallbackUsed ? "\n\nUsed backup model." : "";
-      setMessages((prev) => [...prev, { role: "assistant", content: `${data.reply ?? data.error ?? "Sorry, something went wrong."}${note}` }]);
+      const content = res.ok
+        ? data.reply ?? "The action completed without a response."
+        : data.error ?? data.reply ?? `Request failed with HTTP ${res.status}.`;
+      setMessages((prev) => [...prev, { role: "assistant", content: `${content}${note}` }]);
     } catch {
       setMessages((prev) => [...prev, { role: "assistant", content: "Network error — try again." }]);
     } finally {
@@ -12565,8 +12699,7 @@ function SamiaChat() {
 
 interface AttMember { id: number; name: string; shift: string; shiftHours: string; department: string; active: boolean; }
 
-// Convert an Egypt-local shift hour (e.g. 4 → "4 PM") to a friendly label.
-// All shifts are afternoon/evening so values 1–11 are always PM.
+// Convert the stored attendance shift hour to a friendly label.
 function shiftLabel(shift: string): string {
   const n = parseInt(shift);
   if (!n) return shift;
@@ -12575,7 +12708,7 @@ function shiftLabel(shift: string): string {
   return `${h12} ${ampm}`;
 }
 interface AttRecord { id: number; memberId: number; date: string; status: string; note: string | null; coaching: boolean; }
-interface AttData { members: AttMember[]; records: AttRecord[]; }
+interface AttData { members: AttMember[]; records: AttRecord[]; timezone: string; }
 
 const ATT_STATUS = [
   { s: "in",   label: "In",        cell: "bg-muted-foreground/25 metric-good", badge: "metric-good" },
@@ -12612,9 +12745,9 @@ function AttendancePanel() {
   // Lock attendance view to the user's team when teamAccess is set (admins/unrestricted = null → see all).
   const TEAM_TO_DEPT: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "CS" };
   const lockedDept = user.teamAccess ? TEAM_TO_DEPT[user.teamAccess] : null;
-  const today = new Date();
-  const todayStr = today.toISOString().slice(0, 10);
-  const tomorrowStr = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).toISOString().slice(0, 10);
+  const todayStr = ltLaToday();
+  const tomorrowStr = nextCalendarDate(todayStr);
+  const [todayYear, todayMonth] = todayStr.split("-").map(Number);
   const [monthOff, setMonthOff] = useState(0);
   const [deptFilter, setDeptFilter] = useState<string>(lockedDept ?? "All");
   const [editCell, setEditCell] = useState<{ memberId: number; date: string; name: string } | null>(null);
@@ -12633,29 +12766,29 @@ function AttendancePanel() {
   const [viewingMember, setViewingMember] = useState<AttMember | null>(null);
   const [showInactive, setShowInactive] = useState(false);
 
-  const monthStart = new Date(today.getFullYear(), today.getMonth() + monthOff, 1);
-  const monthEnd = new Date(today.getFullYear(), today.getMonth() + monthOff + 1, 0);
+  const monthStart = new Date(Date.UTC(todayYear!, todayMonth! - 1 + monthOff, 1));
+  const monthEnd = new Date(Date.UTC(todayYear!, todayMonth! + monthOff, 0));
   const fromStr = monthStart.toISOString().slice(0, 10);
   const toStr = monthEnd.toISOString().slice(0, 10);
-  const monthLabel = monthStart.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  const monthLabel = monthStart.toLocaleDateString("en-US", { timeZone: "UTC", month: "long", year: "numeric" });
 
   const dateCols = useMemo(() => {
     const cols: string[] = [];
-    const d = new Date(monthStart);
-    while (d <= monthEnd) {
+    const d = new Date(`${fromStr}T00:00:00Z`);
+    while (d.toISOString().slice(0, 10) <= toStr) {
       cols.push(d.toISOString().slice(0, 10));
-      d.setDate(d.getDate() + 1);
+      d.setUTCDate(d.getUTCDate() + 1);
     }
     return cols;
-  }, [monthOff]);
+  }, [fromStr, toStr]);
 
   const qc = useQueryClient();
   const { data, isLoading } = useQuery<AttData>({
-    queryKey: ["attendance", fromStr, toStr, showInactive],
+    queryKey: ["attendance", fromStr, toStr, showInactive, token],
     queryFn: async () => {
       const params = new URLSearchParams({ from: fromStr, to: toStr });
       if (showInactive) params.set("includeInactive", "true");
-      const r = await fetch(`/api/attendance?${params}`);
+      const r = await fetch(`/api/attendance?${params}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error("fetch failed");
       return r.json();
     },

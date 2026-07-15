@@ -29,6 +29,13 @@
       "when": 1784102400000,
       "tag": "0003_anthropic_controls",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784106000000,
+      "tag": "0004_action_audit",
+      "breakpoints": true
     }
   ]
 }

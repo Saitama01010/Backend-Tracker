@@ -9,6 +9,21 @@ export interface QaPolicyCall {
   createdAt: Date;
 }
 
+export type QaDateBasis = "evaluated" | "call";
+
+export function parseQaDateBasis(value: unknown): QaDateBasis | null {
+  if (value === undefined || value === null || value === "") return "evaluated";
+  if (value === "evaluated" || value === "call") return value;
+  return null;
+}
+
+export function qaReviewDateForBasis<T extends { evaluatedAt: Date; callDate: Date }>(
+  review: T,
+  dateBasis: QaDateBasis,
+): Date {
+  return dateBasis === "evaluated" ? review.evaluatedAt : review.callDate;
+}
+
 export interface ValidatedQaResult {
   department?: string;
   categoryScores: Record<string, number>;
@@ -72,6 +87,63 @@ const CATEGORY_LIMITS: Record<QaDepartment, Record<string, number>> = {
   },
 };
 
+export function qaEvaluationToolInputSchema(department: QaDepartment) {
+  const categoryLimits = CATEGORY_LIMITS[department];
+  const categoryNames = Object.keys(categoryLimits);
+  return {
+    type: "object" as const,
+    additionalProperties: false,
+    properties: {
+      department: { type: "string" as const, enum: [department] },
+      categoryScores: {
+        type: "object" as const,
+        additionalProperties: false,
+        properties: Object.fromEntries(Object.entries(categoryLimits).map(([name, maximum]) => [
+          name,
+          { type: "number" as const, minimum: 0, maximum },
+        ])),
+        required: categoryNames,
+      },
+      score: { type: "number" as const, minimum: 0, maximum: 100 },
+      softSkillsScore: { type: "number" as const, minimum: 0, maximum: 100 },
+      protocolScore: { type: "number" as const, minimum: 0, maximum: 100 },
+      pass: { type: "boolean" as const },
+      criticalFail: { type: "boolean" as const },
+      strengths: {
+        type: "array" as const,
+        maxItems: 4,
+        items: { type: "string" as const, maxLength: 300 },
+      },
+      missedItems: {
+        type: "array" as const,
+        maxItems: 4,
+        items: { type: "string" as const, maxLength: 300 },
+      },
+      criticalIssues: {
+        type: "array" as const,
+        maxItems: 4,
+        items: { type: "string" as const, maxLength: 300 },
+      },
+      reason: { type: "string" as const, maxLength: 1_000 },
+      managerReviewRequired: { type: "boolean" as const },
+    },
+    required: [
+      "department",
+      "categoryScores",
+      "score",
+      "softSkillsScore",
+      "protocolScore",
+      "pass",
+      "criticalFail",
+      "strengths",
+      "missedItems",
+      "criticalIssues",
+      "reason",
+      "managerReviewRequired",
+    ],
+  };
+}
+
 const SOFT_SKILL_CATEGORIES = new Set(["greeting", "empathy", "ownership", "professionalism", "closing"]);
 
 function boundedScore(value: unknown): number | null {
@@ -80,28 +152,36 @@ function boundedScore(value: unknown): number | null {
     : null;
 }
 
-export function validateQaResult(value: unknown, expectedDepartment: QaDepartment): ValidatedQaResult | null {
-  if (!value || typeof value !== "object") return null;
+export function validateQaResultWithReason(
+  value: unknown,
+  expectedDepartment: QaDepartment,
+): { result: ValidatedQaResult | null; reason: string | null } {
+  const invalid = (reason: string) => ({ result: null, reason });
+  if (!value || typeof value !== "object") return invalid("tool input is not an object");
   const raw = value as Record<string, unknown>;
-  if (raw["department"] !== expectedDepartment) return null;
+  if (raw["department"] !== expectedDepartment) return invalid("department does not match the call line");
   if (boundedScore(raw["score"]) === null
     || boundedScore(raw["softSkillsScore"]) === null
-    || boundedScore(raw["protocolScore"]) === null) return null;
+    || boundedScore(raw["protocolScore"]) === null) return invalid("one or more aggregate scores are invalid");
   if (typeof raw["pass"] !== "boolean"
     || typeof raw["criticalFail"] !== "boolean"
     || typeof raw["managerReviewRequired"] !== "boolean"
-    || typeof raw["reason"] !== "string") return null;
+    || typeof raw["reason"] !== "string") return invalid("required result fields have invalid types");
   for (const field of ["strengths", "missedItems", "criticalIssues"] as const) {
-    if (!Array.isArray(raw[field]) || raw[field].some((item) => typeof item !== "string")) return null;
+    if (!Array.isArray(raw[field]) || raw[field].some((item) => typeof item !== "string")) {
+      return invalid(`${field} must be a string array`);
+    }
   }
-  if (!raw["categoryScores"] || typeof raw["categoryScores"] !== "object" || Array.isArray(raw["categoryScores"])) return null;
+  if (!raw["categoryScores"] || typeof raw["categoryScores"] !== "object" || Array.isArray(raw["categoryScores"])) {
+    return invalid("categoryScores is invalid");
+  }
   const limits = CATEGORY_LIMITS[expectedDepartment];
   const entries = Object.entries(raw["categoryScores"] as Record<string, unknown>);
-  if (entries.length !== Object.keys(limits).length) return null;
+  if (entries.length !== Object.keys(limits).length) return invalid("categoryScores has missing or extra categories");
   const categoryScores: Record<string, number> = {};
   for (const [key, scoreValue] of entries) {
     const score = boundedScore(scoreValue);
-    if (!(key in limits) || score === null || score > limits[key]!) return null;
+    if (!(key in limits) || score === null || score > limits[key]!) return invalid(`category score is invalid for ${key}`);
     categoryScores[key] = score;
   }
   const computedScore = Object.values(categoryScores).reduce((sum, score) => sum + score, 0);
@@ -120,7 +200,7 @@ export function validateQaResult(value: unknown, expectedDepartment: QaDepartmen
     .slice(0, 4);
   const criticalFail = raw["criticalFail"] === true;
   const score = computedScore;
-  return {
+  return { result: {
     department: expectedDepartment,
     categoryScores,
     score,
@@ -133,7 +213,11 @@ export function validateQaResult(value: unknown, expectedDepartment: QaDepartmen
     criticalIssues: stringList(raw["criticalIssues"]),
     reason: raw["reason"].slice(0, 1_000),
     managerReviewRequired: criticalFail || score < 80 || protocolScore < 70,
-  };
+  }, reason: null };
+}
+
+export function validateQaResult(value: unknown, expectedDepartment: QaDepartment): ValidatedQaResult | null {
+  return validateQaResultWithReason(value, expectedDepartment).result;
 }
 
 export function hasRecentAutomaticReview(

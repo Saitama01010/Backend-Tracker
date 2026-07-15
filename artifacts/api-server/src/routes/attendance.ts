@@ -6,6 +6,16 @@ import {
 } from "@workspace/db";
 import { eq, and, or, gte, lte, inArray, min, ilike, sql } from "drizzle-orm";
 import { getCallHistoryCache } from "./vos";
+import { requireAuth, requirePermission } from "../middleware/auth.js";
+import {
+  ATTENDANCE_MEMBER_ALIASES,
+  ATTENDANCE_TIMEZONE,
+  addAttendanceCalendarDays,
+  attendanceDate,
+  attendanceStartOfDay,
+  type AttendanceStatus,
+} from "../lib/attendancePolicy.js";
+import { setAttendanceRecord } from "../lib/attendanceService.js";
 
 const router = Router();
 
@@ -47,6 +57,8 @@ function normalizeStatus(raw: string): string {
   if (s === "off") return "off";
   if (s === "late") return "late";
   if (s === "pto") return "pto";
+  if (s === "absent") return "absent";
+  if (s === "nsnc") return "nsnc";
   return "";
 }
 
@@ -60,17 +72,11 @@ function normalizeStatus(raw: string): string {
 
 // Returns the UTC instant corresponding to midnight (00:00:00) in LA time
 // for the given YYYY-MM-DD date string. Handles PDT (UTC-7) and PST (UTC-8).
-function laStartOfDay(dateStr: string): Date {
-  // Try PDT first: midnight LA PDT = 07:00 UTC
-  const pdt = new Date(`${dateStr}T07:00:00Z`);
-  if (pdt.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" }) === dateStr) return pdt;
-  // Fall back to PST: midnight LA PST = 08:00 UTC
-  return new Date(`${dateStr}T08:00:00Z`);
-}
+const laStartOfDay = attendanceStartOfDay;
 
 // Today's date string in LA time.
 function todayLA(): string {
-  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  return attendanceDate();
 }
 
 router.get("/attendance", async (req, res) => {
@@ -99,14 +105,14 @@ router.get("/attendance", async (req, res) => {
             )
         : [];
 
-    res.json({ members, records });
+    res.json({ members, records, timezone: ATTENDANCE_TIMEZONE });
   } catch (err) {
     req.log.error(err, "attendance GET error");
     res.status(500).json({ error: String(err) });
   }
 });
 
-router.post("/attendance/members", async (req, res) => {
+router.post("/attendance/members", requireAuth, requirePermission("manage_members"), async (req, res) => {
   try {
     const { name, shift, shiftHours, department } = req.body as { name: string; shift?: string; shiftHours?: string; department?: string };
     if (!name?.trim()) {
@@ -124,7 +130,7 @@ router.post("/attendance/members", async (req, res) => {
   }
 });
 
-router.patch("/attendance/members/:id", async (req, res) => {
+router.patch("/attendance/members/:id", requireAuth, requirePermission("manage_members"), async (req, res) => {
   try {
     const id = Number(req.params["id"]);
     const body = req.body as Partial<{ name: string; shift: string; shiftHours: string; department: string; active: boolean }>;
@@ -142,7 +148,7 @@ router.patch("/attendance/members/:id", async (req, res) => {
   }
 });
 
-router.put("/attendance/record", async (req, res) => {
+router.put("/attendance/record", requireAuth, requirePermission("edit_attendance"), async (req, res) => {
   try {
     const { memberId, date, status, note, coaching } = req.body as {
       memberId: number; date: string; status: string; note?: string; coaching?: boolean;
@@ -151,22 +157,25 @@ router.put("/attendance/record", async (req, res) => {
       res.status(400).json({ error: "memberId and date required" });
       return;
     }
-    const [record] = await db
-      .insert(attendanceRecordsTable)
-      .values({ memberId, date, status: status ?? "", note: note ?? null, coaching: coaching ?? false })
-      .onConflictDoUpdate({
-        target: [attendanceRecordsTable.memberId, attendanceRecordsTable.date],
-        set: { status: status ?? "", note: note ?? null, coaching: coaching ?? false, updatedAt: new Date() },
-      })
-      .returning();
-    res.json(record);
+    const result = await setAttendanceRecord({
+      memberId,
+      date,
+      status: status as AttendanceStatus,
+      note: note ?? null,
+      coaching: coaching ?? false,
+      overwrite: true,
+    });
+    if (result.kind === "member_missing") return res.status(404).json({ error: "Attendance member not found" });
+    if (result.kind === "member_ambiguous") return res.status(409).json({ error: "Attendance member is ambiguous" });
+    if (result.kind === "conflict") return res.status(409).json({ error: "Conflicting attendance record" });
+    return res.json(result.record);
   } catch (err) {
     req.log.error(err, "attendance PUT record error");
-    res.status(500).json({ error: String(err) });
+    return res.status((err as Error).message.includes("invalid") ? 400 : 500).json({ error: (err as Error).message });
   }
 });
 
-router.post("/attendance/import", async (req, res) => {
+router.post("/attendance/import", requireAuth, requirePermission("manage_members"), async (req, res) => {
   try {
     const SHEETS = [
       {
@@ -245,17 +254,7 @@ router.post("/attendance/import", async (req, res) => {
 //
 // Mapping from attendance member name → VoS/PBX agent display names used in
 // call history. Only needed where the name doesn't match directly.
-const MEMBER_TO_AGENT_NAMES: Record<string, string[]> = {
-  // Member name → all VoS/PBX/Quo agent display names that belong to this person
-  "Levi Miller":       ["Levi Miller", "Ahmed Ayman"],
-  "Rick Miller":       ["Rick Miller", "Zeiad Fouad"],
-  "Jacob Stephenson":  ["Jacob Stephenson", "Abdulrhman Isawi", "Adam Maxwell"],
-  "Michael Belfort":   ["Michael Belfort", "Nouralden"],
-  "Ryan Henderson":    ["Ryan Henderson", "Jacob Ahmed"],
-  "Henry Hart":        ["Henry Hart", "Max Francis"],
-  "Jacob Xander":      ["Jacob Xander", "Youssef Nady"],
-  "John Marcus":       ["John Marcus", "Youssef Nasser", "Youssef-John Marcus"],
-};
+const MEMBER_TO_AGENT_NAMES = ATTENDANCE_MEMBER_ALIASES;
 
 function lateNote(minsLate: number): string {
   if (minsLate < 60) return `late ${minsLate}min`;
@@ -347,7 +346,7 @@ router.get("/attendance/call-logs", async (req, res) => {
     const date = ((req.query["date"] as string) || defaultDate).trim().slice(0, 10);
 
     const dayStartUtc = laStartOfDay(date);
-    const dayEndUtc   = new Date(dayStartUtc.getTime() + 24 * 3600 * 1000 - 1);
+    const dayEndUtc = new Date(laStartOfDay(addAttendanceCalendarDays(date, 1)).getTime() - 1);
     const isToday = date === defaultDate;
 
     // VoS only has today's data; skip for historical dates.
@@ -426,60 +425,57 @@ router.get("/attendance/call-logs", async (req, res) => {
 // ─── POST /attendance/set ────────────────────────────────────────────────────
 // Batch-write attendance records. Used by Samia for historical dates.
 // Pass force=true to overwrite existing records; otherwise existing records are skipped.
-router.post("/attendance/set", async (req, res) => {
+router.post("/attendance/set", requireAuth, requirePermission("edit_attendance"), async (req, res) => {
   try {
-    const { records, force = false } = req.body as {
-      records: { date: string; memberName: string; status: string; note?: string; coaching?: boolean }[];
+    const { records, force = false, confirmed = false } = req.body as {
+      records: { date: string; memberId?: number; memberName?: string; status: string; note?: string; coaching?: boolean }[];
       force?: boolean;
+      confirmed?: boolean;
     };
     if (!Array.isArray(records) || records.length === 0) {
       res.status(400).json({ error: "records array required" });
       return;
     }
-
-    const members = await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true));
-    const memberMap = new Map<string, typeof members[0]>(members.map((m) => [m.name.toLowerCase().trim(), m]));
+    if (records.length > 1 && !confirmed) {
+      return res.status(409).json({ error: "Bulk attendance changes require confirmed=true" });
+    }
 
     type SetResult = { memberName: string; date: string; status: string; action: string };
     const results: SetResult[] = [];
 
     for (const rec of records) {
-      const member = memberMap.get(rec.memberName.toLowerCase().trim());
-      if (!member) {
-        results.push({ memberName: rec.memberName, date: rec.date, status: rec.status, action: "skipped: member not found" });
-        continue;
+      const result = await setAttendanceRecord({
+        memberId: rec.memberId,
+        memberName: rec.memberName,
+        date: rec.date,
+        status: rec.status as AttendanceStatus,
+        note: rec.note,
+        coaching: rec.coaching,
+        overwrite: force,
+      });
+      const requestedName = rec.memberName ?? `member #${rec.memberId ?? "unknown"}`;
+      if (result.kind === "member_missing") {
+        results.push({ memberName: requestedName, date: rec.date, status: rec.status, action: "skipped: member not found" });
+      } else if (result.kind === "member_ambiguous") {
+        results.push({ memberName: requestedName, date: rec.date, status: rec.status, action: `skipped: ambiguous (${result.match.members.map((member) => member.name).join(", ")})` });
+      } else if (result.kind === "conflict") {
+        results.push({ memberName: result.member.name, date: rec.date, status: rec.status, action: `skipped: already ${result.existing.status} (use force=true to overwrite)` });
+      } else {
+        results.push({ memberName: result.member.name, date: rec.date, status: rec.status, action: result.action });
       }
-      const existing = await db.select({ id: attendanceRecordsTable.id })
-        .from(attendanceRecordsTable)
-        .where(and(eq(attendanceRecordsTable.memberId, member.id), eq(attendanceRecordsTable.date, rec.date)))
-        .limit(1);
-
-      if (existing.length > 0 && !force) {
-        results.push({ memberName: rec.memberName, date: rec.date, status: rec.status, action: "skipped: record exists (use force=true to overwrite)" });
-        continue;
-      }
-
-      await db.insert(attendanceRecordsTable)
-        .values({ memberId: member.id, date: rec.date, status: rec.status, note: rec.note ?? null, coaching: rec.coaching ?? false })
-        .onConflictDoUpdate({
-          target: [attendanceRecordsTable.memberId, attendanceRecordsTable.date],
-          set: { status: rec.status, note: rec.note ?? null, coaching: rec.coaching ?? false, updatedAt: new Date() },
-        });
-
-      results.push({ memberName: rec.memberName, date: rec.date, status: rec.status, action: existing.length > 0 ? "updated" : "created" });
     }
 
-    res.json({ success: true, results });
+    return res.json({ success: true, results, timezone: ATTENDANCE_TIMEZONE });
   } catch (err) {
     req.log.error(err, "attendance set error");
-    res.status(500).json({ error: String(err) });
+    return res.status((err as Error).message.includes("invalid") ? 400 : 500).json({ error: (err as Error).message });
   }
 });
 
 // ─── POST /attendance/auto-mark ──────────────────────────────────────────────
 // Accepts optional { date: "YYYY-MM-DD" } body (LA date).
 // Defaults to today in LA time. For past dates, VoS is skipped (only Quo DB).
-router.post("/attendance/auto-mark", async (req, res) => {
+router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attendance"), async (req, res) => {
   try {
     const nowUtc = new Date();
     const defaultLADate = todayLA();
@@ -487,7 +483,7 @@ router.post("/attendance/auto-mark", async (req, res) => {
     const isToday = targetDate === defaultLADate;
 
     const dayStartUtc = laStartOfDay(targetDate);
-    const dayEndUtc   = new Date(dayStartUtc.getTime() + 24 * 3600 * 1000 - 1);
+    const dayEndUtc = new Date(laStartOfDay(addAttendanceCalendarDays(targetDate, 1)).getTime() - 1);
 
     // VoS only has today's live data; use it only for today.
     const vosFirstCall = new Map<string, Date>();
@@ -580,7 +576,7 @@ router.get("/attendance/agent-contacts", async (req, res) => {
     if (dateParam) {
       // Specific LA calendar day
       dayStartUtc = laStartOfDay(dateParam);
-      dayEndUtc   = new Date(dayStartUtc.getTime() + 24 * 3600 * 1000 - 1);
+      dayEndUtc = new Date(laStartOfDay(addAttendanceCalendarDays(dateParam, 1)).getTime() - 1);
       laDate      = dateParam;
     } else {
       // "Today" = rolling 24h window ending now.
