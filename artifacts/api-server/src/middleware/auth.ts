@@ -4,20 +4,9 @@ import { db } from "@workspace/db";
 import { ALL_PERMISSIONS, portalUsersTable } from "@workspace/db/schema";
 import type { Permission, TeamAccess } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
+import { createRequireAuth, type AuthPayload } from "./authCore.js";
 
-export interface AuthPayload {
-  userId: number;
-  username: string;
-  role: "admin" | "edit" | "view";
-  permissions: Permission[];
-  teamAccess?: TeamAccess | null;
-  allowedTabs?: string[] | null;
-  allowedAgents?: string[] | null;
-  allowedSubTabs?: string[] | null;
-  lockToToday?: boolean;
-  samiaCurse?: boolean;
-  hideBackendStats?: boolean;
-}
+export type { AuthPayload } from "./authCore.js";
 
 declare global {
   namespace Express {
@@ -71,15 +60,9 @@ function parseTeamAccess(raw: string | null | undefined): TeamAccess | null {
   return raw === "retention" || raw === "nsf" || raw === "cs" ? raw : null;
 }
 
-export async function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const header = req.headers["authorization"];
-  const token = header?.startsWith("Bearer ") ? header.slice(7) : null;
-  if (!token) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-  try {
-    const payload = jwt.verify(token, secret()) as AuthPayload;
+export const requireAuth = createRequireAuth({
+  verifyToken: (token) => jwt.verify(token, secret()) as AuthPayload,
+  loadActiveUser: async (payload) => {
     const [user] = await db
       .select()
       .from(portalUsersTable)
@@ -87,11 +70,10 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       .limit(1);
 
     if (!user || !user.active) {
-      res.status(401).json({ error: "User not found or inactive" });
-      return;
+      return null;
     }
 
-    req.user = {
+    return {
       userId: user.id,
       username: user.username,
       role: user.role,
@@ -104,11 +86,8 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       samiaCurse: !!user.samiaCurse,
       hideBackendStats: !!user.hideBackendStats,
     };
-    next();
-  } catch {
-    res.status(401).json({ error: "Invalid or expired token" });
-  }
-}
+  },
+});
 
 export function requireRole(...roles: Array<"admin" | "edit" | "view">) {
   return (req: Request, res: Response, next: NextFunction) => {

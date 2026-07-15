@@ -30,7 +30,7 @@ function webhookSecret(): string {
 // ─── Signature verification ───────────────────────────────────────────────────
 function verifySignature(body: unknown, header: string | undefined): boolean {
   const secret = webhookSecret();
-  if (!secret) return process.env.NODE_ENV !== "production";
+  if (!secret) return false;
   if (!header) return false;
   const parts = header.split(";");
   if (parts.length < 4) return false;
@@ -226,6 +226,10 @@ async function handleCallCompleted(obj: Record<string, unknown>) {
 
 // ─── POST /api/quo/webhook ────────────────────────────────────────────────────
 async function handleOpenPhoneWebhook(req: Request, res: Response) {
+  if (!webhookSecret()) {
+    logger.error("quoWebhook: QUO_WEBHOOK_SECRET is not configured");
+    return res.status(503).json({ error: "Webhook verification is not configured" });
+  }
   const sig = req.headers["openphone-signature"] as string | undefined;
 
   if (!verifySignature(req.body, sig)) {

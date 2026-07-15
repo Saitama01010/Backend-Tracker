@@ -1,4 +1,6 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
+import { requireAuth } from "../middleware/auth.js";
+import { isPublicApiRoute } from "./apiPolicy.js";
 import healthRouter from "./health";
 import quoRouter from "./quo";
 import quoWebhookRouter from "./quoWebhook";
@@ -21,6 +23,16 @@ import obAnalyticsRouter from "./obAnalytics";
 import liveTransfersRouter from "./liveTransfers";
 
 const router: IRouter = Router();
+
+function defaultPrivateApiAuthentication(req: Request, res: Response, next: NextFunction) {
+  if (isPublicApiRoute(req.method, req.path)) {
+    next();
+    return;
+  }
+  void requireAuth(req, res, next);
+}
+
+router.use(defaultPrivateApiAuthentication);
 
 router.use(healthRouter);
 router.use(authRouter);
