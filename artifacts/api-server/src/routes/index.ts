@@ -1,5 +1,6 @@
 import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
 import { requireAuth } from "../middleware/auth.js";
+import { authorizeApiRoute } from "./authorizationPolicy.js";
 import { isPublicApiRoute } from "./apiPolicy.js";
 import healthRouter from "./health";
 import quoRouter from "./quo";
@@ -32,7 +33,21 @@ function defaultPrivateApiAuthentication(req: Request, res: Response, next: Next
   void requireAuth(req, res, next);
 }
 
+function defaultPrivateApiAuthorization(req: Request, res: Response, next: NextFunction) {
+  const decision = authorizeApiRoute(req.method, req.path, req.user);
+  if (decision.allowed) {
+    next();
+    return;
+  }
+  if (!req.user) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  res.status(403).json({ error: "Forbidden" });
+}
+
 router.use(defaultPrivateApiAuthentication);
+router.use(defaultPrivateApiAuthorization);
 
 router.use(healthRouter);
 router.use(authRouter);

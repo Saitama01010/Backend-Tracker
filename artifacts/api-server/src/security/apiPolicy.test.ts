@@ -43,4 +43,7 @@ test("the default-private guard is mounted before every API router", async () =>
 
   assert.ok(guard >= 0, "default-private guard must be mounted");
   assert.ok(firstRouter > guard, "default-private guard must run before public and private routers");
+  const authorization = source.indexOf("router.use(defaultPrivateApiAuthorization)");
+  assert.ok(authorization > guard, "authorization must run after authentication");
+  assert.ok(firstRouter > authorization, "authorization must run before every API router");
 });
