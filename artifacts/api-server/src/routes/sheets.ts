@@ -1,6 +1,7 @@
 import { Router } from "express";
 import jwt from "jsonwebtoken";
 import { requireAuth } from "../middleware/auth.js";
+import { loadAuthorizationAgentDirectory, scopeSheetData } from "../lib/authorizationScope.js";
 
 const router = Router();
 router.use("/sheet", requireAuth);
@@ -202,8 +203,13 @@ router.get("/sheet", async (req, res) => {
       if (hasData) rows.push(obj);
     }
     const payload: SheetData = { headers, rows };
+    const scoped = scopeSheetData(req.user!, payload, await loadAuthorizationAgentDirectory());
+    if (!scoped.ok) {
+      res.status(403).json({ error: "Forbidden", reason: scoped.reason });
+      return;
+    }
     res.set("Cache-Control", "no-cache, no-store, max-age=0");
-    res.json(payload);
+    res.json(scoped.data);
   } catch (err) {
     req.log.error({ err, spreadsheetId, gid }, "sheet fetch failed");
     res.status(502).json({ error: "Fetch failed" });

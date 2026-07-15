@@ -4,6 +4,7 @@ import { teamAgentsTable, VALID_TEAMS } from "@workspace/db/schema";
 import type { TeamSlug } from "@workspace/db/schema";
 import { eq, asc } from "drizzle-orm";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { canAccessAgent } from "../middleware/authorizationCore.js";
 
 const router = Router();
 
@@ -44,7 +45,13 @@ router.get("/team-agents", requireAuth, async (req, res) => {
       .select(teamAgentColumns)
       .from(teamAgentsTable)
       .orderBy(asc(teamAgentsTable.team), asc(teamAgentsTable.name));
-    res.json(agents);
+    const scoped = req.user?.role === "admin"
+      ? agents
+      : agents.filter((agent) => {
+          if (req.user?.teamAccess && agent.team !== req.user.teamAccess) return false;
+          return !!req.user && canAccessAgent(req.user, agent.name, agent.arabicName ? [agent.arabicName] : []);
+        });
+    res.json(scoped);
   } catch (err) {
     req.log.error(err, "team-agents GET error");
     res.status(500).json({ error: "Failed to load team agents" });

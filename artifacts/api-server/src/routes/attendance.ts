@@ -15,7 +15,14 @@ import {
   attendanceStartOfDay,
   type AttendanceStatus,
 } from "../lib/attendancePolicy.js";
-import { setAttendanceRecord } from "../lib/attendanceService.js";
+import { resolveActiveAttendanceMember, setAttendanceRecord } from "../lib/attendanceService.js";
+import {
+  attendanceDepartmentForUser,
+  canAccessAttendanceDepartment,
+  canAccessDateRange,
+  hasPermission,
+} from "../middleware/authorizationCore.js";
+import { canAccessLiveAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
 
 const router = Router();
 router.use("/attendance", requireAuth);
@@ -85,13 +92,18 @@ router.get("/attendance", async (req, res) => {
     const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
     const to = (req.query["to"] as string) || new Date().toISOString().slice(0, 10);
     const includeInactive = req.query["includeInactive"] === "true";
+    if (!canAccessDateRange(req.user!, [from, to]) || (includeInactive && !hasPermission(req.user!, "manage_members"))) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
 
-    const members = await db
+    const allMembers = await db
       .select()
       .from(attendanceMembersTable)
       .where(includeInactive ? undefined : eq(attendanceMembersTable.active, true))
       .orderBy(attendanceMembersTable.department, attendanceMembersTable.name);
 
+    const members = allMembers.filter((member) => canAccessAttendanceDepartment(req.user!, member.department));
     const records =
       members.length > 0
         ? await db
@@ -120,6 +132,10 @@ router.post("/attendance/members", requireAuth, requirePermission("manage_member
       res.status(400).json({ error: "name required" });
       return;
     }
+    if (!canAccessAttendanceDepartment(req.user!, department?.trim() ?? "")) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
     const [member] = await db
       .insert(attendanceMembersTable)
       .values({ name: name.trim(), shift: shift?.trim() ?? "", shiftHours: shiftHours?.trim() ?? "8", department: department?.trim() ?? "" })
@@ -135,6 +151,17 @@ router.patch("/attendance/members/:id", requireAuth, requirePermission("manage_m
   try {
     const id = Number(req.params["id"]);
     const body = req.body as Partial<{ name: string; shift: string; shiftHours: string; department: string; active: boolean }>;
+    const [existing] = await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.id, id)).limit(1);
+    if (!existing) {
+      res.status(404).json({ error: "Attendance member not found" });
+      return;
+    }
+    const finalDepartment = body.department?.trim() ?? existing.department;
+    if (!canAccessAttendanceDepartment(req.user!, existing.department)
+      || !canAccessAttendanceDepartment(req.user!, finalDepartment)) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
     const upd: Partial<{ name: string; shift: string; shiftHours: string; department: string; active: boolean }> = {};
     if (body.name !== undefined) upd.name = body.name.trim();
     if (body.shift !== undefined) upd.shift = body.shift.trim();
@@ -158,6 +185,15 @@ router.put("/attendance/record", requireAuth, requirePermission("edit_attendance
       res.status(400).json({ error: "memberId and date required" });
       return;
     }
+    if (!canAccessDateRange(req.user!, [date])) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const resolved = await resolveActiveAttendanceMember(memberId);
+    if (resolved.kind === "missing") return res.status(404).json({ error: "Attendance member not found" });
+    if (resolved.kind === "ambiguous") return res.status(409).json({ error: "Attendance member is ambiguous" });
+    if (!canAccessAttendanceDepartment(req.user!, resolved.member.department)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const result = await setAttendanceRecord({
       memberId,
       date,
@@ -178,6 +214,10 @@ router.put("/attendance/record", requireAuth, requirePermission("edit_attendance
 
 router.post("/attendance/import", requireAuth, requirePermission("manage_members"), async (req, res) => {
   try {
+    if (attendanceDepartmentForUser(req.user!)) {
+      res.status(403).json({ error: "Forbidden", reason: "The attendance import spans multiple departments." });
+      return;
+    }
     const SHEETS = [
       {
         url: "https://docs.google.com/spreadsheets/d/16qoZESE0gGQPdOXQUSh2JsadWDmUE7OyCajRwBy0E38/export?format=csv&gid=2116872008",
@@ -345,6 +385,10 @@ router.get("/attendance/call-logs", async (req, res) => {
     const nowUtc = new Date();
     const defaultDate = todayLA();
     const date = ((req.query["date"] as string) || defaultDate).trim().slice(0, 10);
+    if (!canAccessDateRange(req.user!, [date])) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
 
     const dayStartUtc = laStartOfDay(date);
     const dayEndUtc = new Date(laStartOfDay(addAttendanceCalendarDays(date, 1)).getTime() - 1);
@@ -367,11 +411,12 @@ router.get("/attendance/call-logs", async (req, res) => {
 
     const quoCalls = await buildQuoCallsMap(dayStartUtc, dayEndUtc);
 
-    const members = await db
+    const members = (await db
       .select()
       .from(attendanceMembersTable)
       .where(eq(attendanceMembersTable.active, true))
-      .orderBy(attendanceMembersTable.department, attendanceMembersTable.name);
+      .orderBy(attendanceMembersTable.department, attendanceMembersTable.name))
+      .filter((member) => canAccessAttendanceDepartment(req.user!, member.department));
 
     const existingRecords = members.length > 0
       ? await db.select().from(attendanceRecordsTable)
@@ -440,6 +485,16 @@ router.post("/attendance/set", requireAuth, requirePermission("edit_attendance")
     if (records.length > 1 && !confirmed) {
       return res.status(409).json({ error: "Bulk attendance changes require confirmed=true" });
     }
+    if (!canAccessDateRange(req.user!, records.map((record) => record.date))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    for (const record of records) {
+      const resolved = await resolveActiveAttendanceMember(record.memberId, record.memberName);
+      if (resolved.kind === "unique" && !canAccessAttendanceDepartment(req.user!, resolved.member.department)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    }
 
     type SetResult = { memberName: string; date: string; status: string; action: string };
     const results: SetResult[] = [];
@@ -482,6 +537,10 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
     const defaultLADate = todayLA();
     const targetDate: string = ((req.body as { date?: string })?.date ?? defaultLADate).trim().slice(0, 10);
     const isToday = targetDate === defaultLADate;
+    if (!canAccessDateRange(req.user!, [targetDate])) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
 
     const dayStartUtc = laStartOfDay(targetDate);
     const dayEndUtc = new Date(laStartOfDay(addAttendanceCalendarDays(targetDate, 1)).getTime() - 1);
@@ -503,7 +562,8 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
 
     const quoCalls = await buildQuoCallsMap(dayStartUtc, dayEndUtc);
 
-    const members = await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true));
+    const members = (await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true)))
+      .filter((member) => canAccessAttendanceDepartment(req.user!, member.department));
 
     const existingRecords = await db.select()
       .from(attendanceRecordsTable)
@@ -568,6 +628,9 @@ router.get("/attendance/agent-contacts", async (req, res) => {
     if (!agentParam) {
       return res.status(400).json({ error: "agent param is required" });
     }
+    if (!canAccessDateRange(req.user!, [dateParam || todayLA()])) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     const now = new Date();
     let dayStartUtc: Date;
@@ -589,7 +652,7 @@ router.get("/attendance/agent-contacts", async (req, res) => {
     }
 
     // Fetch all matching rows from phone_calls
-    const rows = await db
+    const matchingRows = await db
       .select({
         participant:     phoneCallsTable.participant,
         direction:       phoneCallsTable.direction,
@@ -607,6 +670,12 @@ router.get("/attendance/agent-contacts", async (req, res) => {
         ),
       )
       .orderBy(sql`${phoneCallsTable.createdAt} asc`);
+
+    const directory = await loadAuthorizationAgentDirectory();
+    const rows = matchingRows.filter((row) => !!row.agentName && canAccessLiveAgent(req.user!, row.agentName, directory));
+    if (matchingRows.length > 0 && rows.length === 0) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     // Group by participant
     const contactMap = new Map<string, {

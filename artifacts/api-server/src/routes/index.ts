@@ -1,6 +1,6 @@
 import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
 import { requireAuth } from "../middleware/auth.js";
-import { authorizeApiRoute } from "./authorizationPolicy.js";
+import { authorizeApiDateParameters, authorizeApiRoute } from "./authorizationPolicy.js";
 import { isPublicApiRoute } from "./apiPolicy.js";
 import healthRouter from "./health";
 import quoRouter from "./quo";
@@ -35,7 +35,14 @@ function defaultPrivateApiAuthentication(req: Request, res: Response, next: Next
 
 function defaultPrivateApiAuthorization(req: Request, res: Response, next: NextFunction) {
   const decision = authorizeApiRoute(req.method, req.path, req.user);
-  if (decision.allowed) {
+  const datesAllowed = authorizeApiDateParameters(
+    req.method,
+    req.path,
+    req.user,
+    req.query as Record<string, unknown>,
+    (req.body ?? {}) as Record<string, unknown>,
+  );
+  if (decision.allowed && datesAllowed) {
     next();
     return;
   }

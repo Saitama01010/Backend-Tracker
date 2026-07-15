@@ -3,6 +3,7 @@ import type { AuthPayload } from "../middleware/authCore.js";
 import {
   canViewAnyTab,
   canViewTab,
+  canAccessDateRange,
   hasAnyPermission,
   hasPermission,
   type DashboardTab,
@@ -61,7 +62,8 @@ export const PRIVATE_API_AUTHORIZATION_POLICIES: readonly RoutePolicy[] = [
   { methods: ["POST"], path: /^\/attendance\/(?:set|auto-mark)$/, requirement: "edit_attendance", allows: permission("edit_attendance") },
   { methods: ["POST"], path: /^\/attendance\/import$/, requirement: "manage_members", allows: permission("manage_members") },
 
-  { methods: ["GET"], path: /^\/(?:sheet|csv-proxy)$/, requirement: "backend-stats or visible team metrics tab", allows: sheetData },
+  { methods: ["GET"], path: /^\/sheet$/, requirement: "backend-stats or visible team metrics tab", allows: sheetData },
+  { methods: ["GET"], path: /^\/csv-proxy$/, requirement: "admin-only legacy endpoint; dashboard callers use /sheet", allows: admin },
   { methods: ["GET"], path: /^\/readymode\/stats$/, requirement: "view_metrics and a visible team metrics tab", allows: anyMetricTab },
   { methods: ["GET"], path: /^\/readymode\/probe$/, requirement: "admin", allows: admin },
   { methods: ["POST"], path: /^\/readymode\/(?:upload|session\/reset)$/, requirement: "admin or edit role", allows: roles("admin", "edit") },
@@ -107,3 +109,40 @@ export function authorizeApiRoute(method: string, path: string, user: AuthPayloa
   return { allowed: policy.allows(user), matched: true, requirement: policy.requirement };
 }
 
+const LOCKED_RANGE_ROUTES = [
+  /^GET \/quo\/(?:stats|calls)$/,
+  /^GET \/readymode\/stats$/,
+  /^GET \/attendance$/,
+  /^GET \/violations$/,
+  /^GET \/vos\/callback-review$/,
+  /^GET \/qa\/(?:stats|download|reviews|agents)$/,
+  /^GET \/ob-report\/(?:status|download)$/,
+  /^GET \/ob-analytics(?:\/download)?$/,
+  /^GET \/live-transfers\/(?:status|download)$/,
+  /^GET \/breaks$/,
+] as const;
+
+type RequestValues = Record<string, unknown>;
+
+export function authorizeApiDateParameters(
+  method: string,
+  path: string,
+  user: AuthPayload | undefined,
+  query: RequestValues = {},
+  body: RequestValues = {},
+): boolean {
+  if (!user || user.role === "admin" || !user.lockToToday) return true;
+  const key = `${method.toUpperCase()} ${path}`;
+  const requiresRange = LOCKED_RANGE_ROUTES.some((pattern) => pattern.test(key));
+  const from = typeof query["from"] === "string" ? query["from"] : typeof body["from"] === "string" ? body["from"] : undefined;
+  const to = typeof query["to"] === "string" ? query["to"] : typeof body["to"] === "string" ? body["to"] : undefined;
+  if (requiresRange && (!from || !to)) return false;
+
+  const values = [from, to];
+  for (const name of ["date", "breakStart", "breakEnd"] as const) {
+    const value = typeof query[name] === "string" ? query[name] : typeof body[name] === "string" ? body[name] : undefined;
+    values.push(value);
+  }
+  const requested = values.filter((value): value is string => typeof value === "string" && value.length > 0);
+  return requested.length === 0 || canAccessDateRange(user, requested);
+}

@@ -6,6 +6,7 @@ import { logger as rootLogger } from "../lib/logger";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { getActiveReadymodeItems } from "./nsfReadymode.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { canAccessLiveAgent, canAccessMetricAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
 
 const router = Router();
 router.use("/vos", requireAuth);
@@ -124,6 +125,11 @@ export interface MissedNoCallbackItem {
   callbackFound?: boolean;
   callbackId?: string | null;
   debugReason?: string;
+}
+
+function scopeMissedItems(req: { user?: { role: string; teamAccess?: string | null } }, items: MissedNoCallbackItem[]): MissedNoCallbackItem[] {
+  if (req.user?.role === "admin" || !req.user?.teamAccess) return items;
+  return items.filter((item) => item.team === req.user!.teamAccess);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1040,13 +1046,52 @@ router.get("/vos/stats", async (req, res) => {
             firstCallAt: null,
           }));
 
+    if (req.user!.role === "admin") {
+      res.json({ dashboard, agents, ringGroups, callHistory, callHistoryFetchedAt, ringGroupMissed: ringGroupMissedCache });
+      return;
+    }
+
+    const directory = await loadAuthorizationAgentDirectory();
+    const scopedAgents = agents.filter((agent) => canAccessMetricAgent(req.user!, agent.name, directory));
+    const allowedIds = new Set(scopedAgents.map((agent) => agent.id));
+    const scopedHistory = callHistory.filter((agent) => canAccessMetricAgent(req.user!, agent.agentName, directory));
+    const scopedCallsByAgent = (dashboard.callsByAgent ?? [])
+      .filter((agent) => canAccessMetricAgent(req.user!, agent.agentName, directory));
+    const scopedLiveCalls = (dashboard.liveCalls ?? [])
+      .filter((call) => !!call.agentName && canAccessMetricAgent(req.user!, call.agentName, directory));
+    const scopedStatuses = (dashboard.agentStatuses ?? [])
+      .filter((agent) => canAccessMetricAgent(req.user!, agent.name, directory));
+    const scopedRingGroups = ringGroups
+      .map((group) => ({ ...group, agentIds: group.agentIds.filter((id) => allowedIds.has(id)) }))
+      .filter((group) => group.agentIds.length > 0);
+    const allowedRingGroupIds = new Set(scopedRingGroups.map((group) => group.id));
+    const scopedRingGroupMissed = Object.fromEntries(
+      Object.entries(ringGroupMissedCache).filter(([id]) => allowedRingGroupIds.has(Number(id))),
+    );
+    const totalCalls = scopedHistory.reduce((sum, agent) => sum + agent.calls, 0);
+    const totalDuration = scopedHistory.reduce((sum, agent) => sum + agent.durationSeconds, 0);
+    const scopedDashboard: VosDashboard = {
+      ...dashboard,
+      activeCalls: scopedLiveCalls.length,
+      totalAgents: scopedAgents.length,
+      onlineAgents: scopedStatuses.filter((agent) => agent.status !== "offline").length,
+      availableAgents: scopedStatuses.filter((agent) => agent.status === "available").length,
+      totalCallsToday: totalCalls,
+      avgDurationToday: totalCalls > 0 ? Math.round(totalDuration / totalCalls) : 0,
+      totalInboundToday: scopedHistory.reduce((sum, agent) => sum + agent.inbound, 0),
+      totalOutboundToday: scopedHistory.reduce((sum, agent) => sum + agent.outbound, 0),
+      missedCallsToday: scopedHistory.reduce((sum, agent) => sum + agent.missed, 0),
+      callsByAgent: scopedCallsByAgent,
+      liveCalls: scopedLiveCalls,
+      agentStatuses: scopedStatuses,
+    };
     res.json({
-      dashboard,
-      agents,
-      ringGroups,
-      callHistory,
+      dashboard: scopedDashboard,
+      agents: scopedAgents,
+      ringGroups: scopedRingGroups,
+      callHistory: scopedHistory,
       callHistoryFetchedAt,
-      ringGroupMissed: ringGroupMissedCache,
+      ringGroupMissed: scopedRingGroupMissed,
     });
   } catch (err) {
     req.log.error(err, "vos stats error");
@@ -1079,7 +1124,7 @@ router.get("/vos/missed-no-callback", async (req, res) => {
       (i) => i.source !== "readymode",
     );
     const merged = [...cacheWithoutReadymode, ...extra];
-    return res.json({ items: merged, fetchedAt: callHistoryFetchedAt });
+    return res.json({ items: scopeMissedItems(req, merged), fetchedAt: callHistoryFetchedAt });
   }
   // PBX scan still in progress — serve Quo DB-only results so the page isn't empty
   try {
@@ -1186,10 +1231,10 @@ router.get("/vos/missed-no-callback", async (req, res) => {
       req.log.warn({ err: e }, "readymode queue merge failed (fallback)");
     }
 
-    return res.json({ items, fetchedAt: 0 });
+    return res.json({ items: scopeMissedItems(req, items), fetchedAt: 0 });
   } catch (err) {
     req.log.error(err, "vos missed-no-callback fallback error");
-    return res.json({ items: missedNoCallbackCache, fetchedAt: callHistoryFetchedAt });
+    return res.json({ items: scopeMissedItems(req, missedNoCallbackCache), fetchedAt: callHistoryFetchedAt });
   }
 });
 
@@ -1804,7 +1849,16 @@ router.get("/vos/callback-review", async (req, res) => {
 router.get("/vos/live", async (req, res) => {
   try {
     const dashboard = await vosFetch<VosDashboard>("/api/dashboard");
-    res.json({ liveCalls: dashboard.liveCalls ?? [], agentStatuses: dashboard.agentStatuses ?? [] });
+    if (req.user!.role === "admin") {
+      res.json({ liveCalls: dashboard.liveCalls ?? [], agentStatuses: dashboard.agentStatuses ?? [] });
+      return;
+    }
+    const directory = await loadAuthorizationAgentDirectory();
+    const liveCalls = (dashboard.liveCalls ?? [])
+      .filter((call) => !!call.agentName && canAccessLiveAgent(req.user!, call.agentName, directory));
+    const agentStatuses = (dashboard.agentStatuses ?? [])
+      .filter((agent) => canAccessLiveAgent(req.user!, agent.name, directory));
+    res.json({ liveCalls, agentStatuses });
   } catch (err) {
     req.log.error(err, "vos live error");
     res.status(500).json({ error: String(err) });

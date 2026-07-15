@@ -4,6 +4,8 @@ import { and, gte, lte, sql } from "drizzle-orm";
 import type { Logger } from "pino";
 import { logger as rootLogger } from "../lib/logger";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { canAccessDateRange } from "../middleware/authorizationCore.js";
+import { canAccessMetricAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
 
 const router = Router();
 router.use("/readymode", requireAuth);
@@ -374,6 +376,9 @@ router.get("/readymode/stats", async (req, res) => {
   const log = req.log ?? rootLogger;
   const fromIso = typeof req.query["from"] === "string" ? req.query["from"] : undefined;
   const toIso = typeof req.query["to"] === "string" ? req.query["to"] : undefined;
+  if (!canAccessDateRange(req.user!, [fromIso, toIso])) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   try {
     // Three data sources, in increasing priority (later wins on (agent, day)):
     //   1. attached_assets/Agent_report_*.csv — historical baseline.
@@ -487,7 +492,7 @@ router.get("/readymode/stats", async (req, res) => {
       included++;
     }
 
-    const agents: RmAgentStat[] = [...agg.entries()]
+    const allAgents: RmAgentStat[] = [...agg.entries()]
       .filter(([, v]) => v.dialed > 0 || v.talkTimeSecs > 0)
       .map(([agentName, v]) => ({
         agentName,
@@ -497,6 +502,10 @@ router.get("/readymode/stats", async (req, res) => {
         avgTalkSecs: v.dialed > 0 ? Math.round(v.talkTimeSecs / v.dialed) : 0,
         connectRate: 100,
       }));
+    const directory = req.user!.role === "admin" ? null : await loadAuthorizationAgentDirectory();
+    const agents = directory
+      ? allAgents.filter((agent) => canAccessMetricAgent(req.user!, agent.agentName, directory))
+      : allAgents;
 
     const totals = {
       dialed: agents.reduce((s, a) => s + a.dialed, 0),
@@ -511,7 +520,9 @@ router.get("/readymode/stats", async (req, res) => {
       agents,
       totals,
       updatedAt: new Date().toISOString(),
-      raw: `Sources: ${sourceSummary} → ${byKey.size} unique (agent,day) rows · ${included} in range · ${skipped} out of range`,
+      raw: directory
+        ? `Scoped to ${agents.length} authorized agent(s) · ${included} rows in requested range`
+        : `Sources: ${sourceSummary} → ${byKey.size} unique (agent,day) rows · ${included} in range · ${skipped} out of range`,
     };
     return res.json(response);
   } catch (err) {

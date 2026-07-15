@@ -6,6 +6,13 @@ import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { logger } from "../lib/logger.js";
 import { liveWebhookCalls } from "./quoWebhook.js";
 import { requireAuth } from "../middleware/auth.js";
+import { canAccessDateRange, canAccessMetricTeam, type MetricTeam } from "../middleware/authorizationCore.js";
+import {
+  authorizationAgent,
+  canAccessLiveAgent,
+  canAccessMetricAgent,
+  loadAuthorizationAgentDirectory,
+} from "../lib/authorizationScope.js";
 
 const router: IRouter = Router();
 router.use("/quo", requireAuth);
@@ -337,6 +344,10 @@ router.get("/quo/stats", async (req, res) => {
   try {
     const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString();
     const to = (req.query["to"] as string) || new Date().toISOString();
+    if (!canAccessDateRange(req.user!, [from, to])) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
 
     const { fromDate, toDate } = parseDateRange(from, to);
 
@@ -356,6 +367,16 @@ router.get("/quo/stats", async (req, res) => {
       })
       .from(phoneCallsTable)
       .where(and(gte(phoneCallsTable.createdAt, fromDate), lte(phoneCallsTable.createdAt, toDate), ne(phoneCallsTable.status, "in-progress")));
+
+    const directory = req.user!.role === "admin" ? null : await loadAuthorizationAgentDirectory();
+    const scopedRows = directory
+      ? rows.filter((row) => {
+          const agentName = canonicalAgentName(row.agentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
+          const rawTeam = agentTeam(agentName) ?? row.lineTeam;
+          const fallbackTeam = rawTeam === "retention" || rawTeam === "nsf" || rawTeam === "cs" ? rawTeam : null;
+          return canAccessMetricAgent(req.user!, agentName, directory, fallbackTeam);
+        })
+      : rows;
 
     const teamStats: Record<
       string,
@@ -404,7 +425,7 @@ router.get("/quo/stats", async (req, res) => {
     > = {};
 
     const blocklist = await getBlockedNumbers();
-    for (const row of rows) {
+    for (const row of scopedRows) {
       if (row.participant && blocklist.has(row.participant)) continue;
       const agentName = canonicalAgentName(row.agentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
       // Agent-based team takes priority over line-based. Calls that don't map to a
@@ -523,7 +544,7 @@ router.get("/quo/stats", async (req, res) => {
       lineInbound,
       agentLastCall: agentLastCallSerialized,
       allAgentLastCall: allAgentLastCallSerialized,
-      totalRows: rows.length,
+      totalRows: scopedRows.length,
       lastSyncedAt: syncState?.lastSyncedAt ?? null,
       isSyncing: syncState?.isSyncing ?? false,
     });
@@ -775,11 +796,22 @@ router.get("/quo/live", async (req, res) => {
       { fromWebhook: liveWebhookCalls.size, fromPoll: pollLiveAgents.size, total: active.size },
       "quo live"
     );
-    res.json({
-      active: [...active],
-      agentCalls: [...agentParticipant.entries()].map(([agentName, participant]) => ({ agentName, participant })),
-      webhookActive: liveWebhookCalls.size > 0,
-    });
+    if (req.user!.role === "admin") {
+      res.json({
+        active: [...active],
+        agentCalls: [...agentParticipant.entries()].map(([agentName, participant]) => ({ agentName, participant })),
+        webhookActive: liveWebhookCalls.size > 0,
+      });
+      return;
+    }
+    const directory = await loadAuthorizationAgentDirectory();
+    const scopedActive = [...active].filter((agentName) => canAccessLiveAgent(req.user!, agentName, directory));
+    const scopedCalls = [...agentParticipant.entries()]
+      .filter(([agentName]) => canAccessLiveAgent(req.user!, agentName, directory))
+      .map(([agentName, participant]) => ({ agentName, participant }));
+    const scopedWebhookActive = [...liveWebhookCalls.values()]
+      .some(({ agentName }) => canAccessLiveAgent(req.user!, agentName, directory));
+    res.json({ active: scopedActive, agentCalls: scopedCalls, webhookActive: scopedWebhookActive });
   } catch (err) {
     req.log.error(err, "quo live error");
     res.status(500).json({ error: String(err) });
@@ -794,6 +826,20 @@ router.get("/quo/calls", async (req, res) => {
     const team = (req.query["team"] as string) || undefined;
     const limitParam = Math.min(Number(req.query["limit"] ?? 500), 1000);
     const offsetParam = Number(req.query["offset"] ?? 0);
+
+    if (!canAccessDateRange(req.user!, [from, to])) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+    const requestedTeam = team as MetricTeam | undefined;
+    if (req.user!.role !== "admin" && (
+      !requestedTeam
+      || !["retention", "nsf", "cs", "killers"].includes(requestedTeam)
+      || !canAccessMetricTeam(req.user!, requestedTeam)
+    )) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
 
     const { fromDate, toDate } = parseDateRange(from, to);
 
@@ -815,12 +861,16 @@ router.get("/quo/calls", async (req, res) => {
       .limit(limitParam)
       .offset(offsetParam);
 
-    const filtered = team
-      ? rows.filter((r) => {
-          const effectiveTeam = (r.agentName ? agentTeam(r.agentName) : null) ?? r.lineTeam;
-          return effectiveTeam === team;
-        })
-      : rows;
+    const directory = req.user!.role === "admin" ? null : await loadAuthorizationAgentDirectory();
+    const filtered = rows.filter((row) => {
+      const agentName = canonicalAgentName(row.agentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
+      const rawTeam = agentTeam(agentName) ?? row.lineTeam;
+      const fallbackTeam = rawTeam === "retention" || rawTeam === "nsf" || rawTeam === "cs" ? rawTeam : null;
+      if (!directory) return !team || rawTeam === team;
+      const resolvedTeam = authorizationAgent(directory, agentName)?.team ?? fallbackTeam;
+      return (!requestedTeam || resolvedTeam === requestedTeam)
+        && canAccessMetricAgent(req.user!, agentName, directory, fallbackTeam);
+    });
 
     res.json({ data: filtered, total: filtered.length });
   } catch (err) {

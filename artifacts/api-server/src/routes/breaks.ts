@@ -2,6 +2,7 @@ import { Router } from "express";
 import { db, agentBreaksTable } from "@workspace/db";
 import { and, eq, gte, lte, isNull, or, desc } from "drizzle-orm";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { canAccessAgent, canAccessAttendanceDepartment, canAccessDateRange } from "../middleware/authorizationCore.js";
 
 const router = Router();
 
@@ -20,6 +21,11 @@ router.post("/breaks/start", requireAuth, requireRole("admin", "edit"), async (r
       return res.status(400).json({ error: "agentName and department are required" });
     }
     const start = breakStart ? new Date(breakStart) : new Date();
+    if (!canAccessAttendanceDepartment(req.user!, department)
+      || !canAccessAgent(req.user!, agentName)
+      || !canAccessDateRange(req.user!, [start.toISOString()])) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const [row] = await db.insert(agentBreaksTable).values({
       agentName: agentName.trim(),
       department: department.trim().toLowerCase(),
@@ -47,6 +53,13 @@ router.post("/breaks/end", requireAuth, requireRole("admin", "edit"), async (req
     const end = breakEnd ? new Date(breakEnd) : new Date();
 
     if (id) {
+      const [existing] = await db.select().from(agentBreaksTable).where(eq(agentBreaksTable.id, id)).limit(1);
+      if (!existing) return res.status(404).json({ error: "Break not found" });
+      if (!canAccessAttendanceDepartment(req.user!, existing.department)
+        || !canAccessAgent(req.user!, existing.agentName)
+        || !canAccessDateRange(req.user!, [existing.breakStart.toISOString(), end.toISOString()])) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       await db.update(agentBreaksTable)
         .set({ breakEnd: end })
         .where(eq(agentBreaksTable.id, id));
@@ -64,6 +77,11 @@ router.post("/breaks/end", requireAuth, requireRole("admin", "edit"), async (req
         .orderBy(desc(agentBreaksTable.breakStart))
         .limit(1);
       if (open.length === 0) return res.status(404).json({ error: "No open break found for this agent" });
+      if (!canAccessAttendanceDepartment(req.user!, open[0]!.department)
+        || !canAccessAgent(req.user!, open[0]!.agentName)
+        || !canAccessDateRange(req.user!, [open[0]!.breakStart.toISOString(), end.toISOString()])) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       await db.update(agentBreaksTable)
         .set({ breakEnd: end })
         .where(eq(agentBreaksTable.id, open[0].id));
@@ -92,6 +110,11 @@ router.post("/breaks/log", requireAuth, requireRole("admin", "edit"), async (req
     if (!agentName || !department || !breakStart || !breakEnd) {
       return res.status(400).json({ error: "agentName, department, breakStart, and breakEnd are required" });
     }
+    if (!canAccessAttendanceDepartment(req.user!, department)
+      || !canAccessAgent(req.user!, agentName)
+      || !canAccessDateRange(req.user!, [breakStart, breakEnd])) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const [row] = await db.insert(agentBreaksTable).values({
       agentName: agentName.trim(),
       department: department.trim().toLowerCase(),
@@ -116,6 +139,13 @@ router.delete("/breaks/:id", requireAuth, requireRole("admin", "edit"), async (r
     const rawId = req.params.id;
     const id = parseInt(Array.isArray(rawId) ? rawId[0] ?? "" : rawId ?? "");
     if (isNaN(id)) return res.status(400).json({ error: "invalid id" });
+    const [existing] = await db.select().from(agentBreaksTable).where(eq(agentBreaksTable.id, id)).limit(1);
+    if (!existing) return res.status(404).json({ error: "Break not found" });
+    if (!canAccessAttendanceDepartment(req.user!, existing.department)
+      || !canAccessAgent(req.user!, existing.agentName)
+      || !canAccessDateRange(req.user!, [existing.breakStart.toISOString()])) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     await db.delete(agentBreaksTable).where(eq(agentBreaksTable.id, id));
     return res.json({ ok: true });
   } catch (err) {
@@ -134,6 +164,9 @@ router.get("/breaks", requireAuth, async (req, res) => {
     const from = ((req.query["from"] as string) || todayLA).slice(0, 10);
     const to   = ((req.query["to"]   as string) || todayLA).slice(0, 10);
     const agentFilter = req.query["agent"] as string | undefined;
+    if (!canAccessDateRange(req.user!, [from, to]) || (agentFilter && !canAccessAgent(req.user!, agentFilter))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     const rangeStart = new Date(from + "T07:00:00Z");
     if (rangeStart.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" }) !== from) {
@@ -153,7 +186,9 @@ router.get("/breaks", requireAuth, async (req, res) => {
       .where(and(...conditions))
       .orderBy(desc(agentBreaksTable.breakStart));
 
-    return res.json({ breaks: rows });
+    const scopedRows = rows.filter((row) =>
+      canAccessAttendanceDepartment(req.user!, row.department) && canAccessAgent(req.user!, row.agentName));
+    return res.json({ breaks: scopedRows });
   } catch (err) {
     req.log.error(err, "breaks GET error");
     return res.status(500).json({ error: String(err) });
