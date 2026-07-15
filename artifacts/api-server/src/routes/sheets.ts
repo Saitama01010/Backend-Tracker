@@ -1,7 +1,9 @@
 import { Router } from "express";
 import jwt from "jsonwebtoken";
+import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
+router.use("/sheet", requireAuth);
 
 type SheetData = { headers: string[]; rows: Record<string, string>[] };
 

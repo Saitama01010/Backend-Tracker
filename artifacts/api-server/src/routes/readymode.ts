@@ -6,7 +6,7 @@ import { logger as rootLogger } from "../lib/logger";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
-router.use(requireAuth);
+router.use("/readymode", requireAuth);
 
 // One parsed ReadyMode report row, keyed per (agent, day).
 type DayRow = { name: string; iso: string; dialed: number; talkSecs: number };

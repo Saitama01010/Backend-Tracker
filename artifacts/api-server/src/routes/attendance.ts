@@ -18,6 +18,7 @@ import {
 import { setAttendanceRecord } from "../lib/attendanceService.js";
 
 const router = Router();
+router.use("/attendance", requireAuth);
 
 const MONTH_MAP: Record<string, string> = {
   Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",

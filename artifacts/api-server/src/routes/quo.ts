@@ -8,7 +8,7 @@ import { liveWebhookCalls } from "./quoWebhook.js";
 import { requireAuth } from "../middleware/auth.js";
 
 const router: IRouter = Router();
-router.use(requireAuth);
+router.use("/quo", requireAuth);
 
 // ─── California date helpers ──────────────────────────────────────────────────
 // All stats are grouped and filtered by California (Pacific) date so they match

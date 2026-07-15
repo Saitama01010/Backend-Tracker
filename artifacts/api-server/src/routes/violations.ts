@@ -6,10 +6,12 @@ import {
 } from "@workspace/db";
 import { and, gte, lte, or, eq, inArray } from "drizzle-orm";
 import { vosCallSpansCache, vosCallTimestampsCache } from "./vos";
+import { requireAuth } from "../middleware/auth.js";
 
 const TEAM_QUO_LINES = ["Retention", "CS Team", "Main NSF"];
 
 const router = Router();
+router.use("/violations", requireAuth);
 
 function laStartOfDay(dateStr: string): Date {
   const pdt = new Date(`${dateStr}T07:00:00Z`);

@@ -1,6 +1,8 @@
 import { Router } from "express";
+import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
+router.use("/csv-proxy", requireAuth);
 
 // Allowlisted Google Sheets CSV export URLs that can be proxied.
 // Only IDP tab is proxied here — browser fetches of this tab silently fail

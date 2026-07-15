@@ -4,7 +4,7 @@ import { db, nsfReadymodeQueueTable, phoneCallsTable } from "@workspace/db";
 import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
-router.use(requireAuth);
+router.use("/nsf", requireAuth);
 
 export interface ReadymodeItem {
   id: string;

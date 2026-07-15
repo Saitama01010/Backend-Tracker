@@ -8,7 +8,7 @@ import { getActiveReadymodeItems } from "./nsfReadymode.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
-router.use(requireAuth);
+router.use("/vos", requireAuth);
 
 const VOS_BASE = "https://phonesystem.voslogic.com";
 

@@ -667,7 +667,7 @@ router.post("/ob-report/refresh", requireAuth, async (req, res) => {
 });
 
 // GET /api/ob-report/status — current refresh + report stats
-router.get("/ob-report/status", async (req, res) => {
+router.get("/ob-report/status", requireAuth, async (req, res) => {
   try {
     const state = await readState();
     const { fromDate, toDate } = rangeFromQuery(req);
@@ -724,7 +724,7 @@ router.get("/ob-report/status", async (req, res) => {
 });
 
 // GET /api/ob-report/download — stream the latest Excel workbook
-router.get("/ob-report/download", async (req, res) => {
+router.get("/ob-report/download", requireAuth, async (req, res) => {
   try {
     const from = typeof req.query["from"] === "string" ? req.query["from"] : undefined;
     const to = typeof req.query["to"] === "string" ? req.query["to"] : undefined;

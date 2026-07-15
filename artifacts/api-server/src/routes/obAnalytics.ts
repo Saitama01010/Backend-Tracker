@@ -4,8 +4,10 @@ import { db, phoneCallsTable, onboardingClassificationsTable } from "@workspace/
 import { and, eq, gte, lte, ne } from "drizzle-orm";
 import { canonicalAgentName } from "./quoSync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
+import { requireAuth } from "../middleware/auth.js";
 
 const router: IRouter = Router();
+router.use("/ob-analytics", requireAuth);
 
 // ─── Onboarding line ──────────────────────────────────────────────────────────
 const LINE_ID = "PNdcJ0UEu5";
