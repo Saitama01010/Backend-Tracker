@@ -353,7 +353,7 @@ importers:
     dependencies:
       '@anthropic-ai/sdk':
         specifier: ^0.111.0
-        version: 0.111.0(zod@4.3.6)
+        version: 0.111.0(zod@3.25.76)
       '@replit/connectors-sdk':
         specifier: ^0.4.1
         version: 0.4.1
@@ -430,6 +430,9 @@ importers:
       tsx:
         specifier: 'catalog:'
         version: 4.21.0
+      zod:
+        specifier: 'catalog:'
+        version: 3.25.76
 
   artifacts/mockup-sandbox:
     devDependencies:
@@ -3599,12 +3602,12 @@ packages:
 
 snapshots:
 
-  '@anthropic-ai/sdk@0.111.0(zod@4.3.6)':
+  '@anthropic-ai/sdk@0.111.0(zod@3.25.76)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.0.0
     optionalDependencies:
-      zod: 4.3.6
+      zod: 3.25.76
 
   '@babel/code-frame@7.29.0':
     dependencies:
