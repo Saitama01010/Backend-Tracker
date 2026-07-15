@@ -5,8 +5,10 @@ import { runSync, startBackgroundSync, getSyncState, USER_EMAIL_OVERRIDES, USER_
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { logger } from "../lib/logger.js";
 import { liveWebhookCalls } from "./quoWebhook.js";
+import { requireAuth } from "../middleware/auth.js";
 
 const router: IRouter = Router();
+router.use(requireAuth);
 
 // ─── California date helpers ──────────────────────────────────────────────────
 // All stats are grouped and filtered by California (Pacific) date so they match

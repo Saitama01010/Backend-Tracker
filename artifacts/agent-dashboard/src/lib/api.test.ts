@@ -7,7 +7,7 @@ import {
   apiFetchWithRuntime,
   apiJsonWithRuntime,
   type ApiClientRuntime,
-} from "../../../agent-dashboard/src/lib/api.js";
+} from "./api.js";
 
 function runtimeFor(
   responder: (input: URL, init?: RequestInit) => Response | Promise<Response>,

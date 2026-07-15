@@ -5,8 +5,10 @@ import type { Logger } from "pino";
 import { logger as rootLogger } from "../lib/logger";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { getActiveReadymodeItems } from "./nsfReadymode.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
+router.use(requireAuth);
 
 const VOS_BASE = "https://phonesystem.voslogic.com";
 
@@ -1809,7 +1811,7 @@ router.get("/vos/live", async (req, res) => {
   }
 });
 
-router.get("/vos/debug/calls", async (req, res) => {
+router.get("/vos/debug/calls", requireRole("admin"), async (req, res) => {
   try {
     const qs = new URLSearchParams(req.query as Record<string, string>).toString();
     const data = await vosFetch<{ calls: VosCallRaw[]; total: number }>(
@@ -1822,7 +1824,7 @@ router.get("/vos/debug/calls", async (req, res) => {
   }
 });
 
-router.get("/vos/debug/proxy", async (req, res) => {
+router.get("/vos/debug/proxy", requireRole("admin"), async (req, res) => {
   try {
     const path = String(req.query["path"] ?? "/api/calls?limit=1");
     const data = await vosFetch<unknown>(path);

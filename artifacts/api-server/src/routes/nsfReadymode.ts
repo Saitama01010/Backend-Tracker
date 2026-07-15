@@ -1,8 +1,10 @@
 import { Router } from "express";
 import { and, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { db, nsfReadymodeQueueTable, phoneCallsTable } from "@workspace/db";
+import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
+router.use(requireAuth);
 
 export interface ReadymodeItem {
   id: string;

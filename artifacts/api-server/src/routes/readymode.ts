@@ -6,6 +6,7 @@ import { logger as rootLogger } from "../lib/logger";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
+router.use(requireAuth);
 
 // One parsed ReadyMode report row, keyed per (agent, day).
 type DayRow = { name: string; iso: string; dialed: number; talkSecs: number };
@@ -524,7 +525,7 @@ router.get("/readymode/stats", async (req, res) => {
  * Diagnostic: fetches a ReadyMode page with a valid session and returns status + first 4000 chars.
  * Admin-only — used to discover which endpoints return data.
  */
-router.get("/readymode/probe", async (req, res) => {
+router.get("/readymode/probe", requireRole("admin"), async (req, res) => {
   const log = req.log ?? rootLogger;
   const path = typeof req.query["path"] === "string" ? req.query["path"] : "/";
   try {
@@ -637,7 +638,7 @@ router.post("/readymode/upload", requireAuth, requireRole("admin", "edit"), asyn
  * POST /api/readymode/session/reset
  * Clears cached session so the next request triggers a fresh login.
  */
-router.post("/readymode/session/reset", (_req, res) => {
+router.post("/readymode/session/reset", requireRole("admin", "edit"), (_req, res) => {
   cachedCookies = "";
   cookieExpiry = 0;
   loginBackoffUntil = 0;

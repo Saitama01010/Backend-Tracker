@@ -73,15 +73,15 @@ test("live baseline smoke: login, dashboard, data workflows, filters, downloads,
   });
 
   await t.test("Quo/OpenPhone statistics and date filters return populated contracts", async () => {
-    const allTime = quoStatsSchema.parse(await json(`/api/quo/stats?from=${allTimeFrom}&to=${to}`));
-    const filtered = quoStatsSchema.parse(await json(`/api/quo/stats?from=${from}&to=${to}`));
+    const allTime = quoStatsSchema.parse(await json(`/api/quo/stats?from=${allTimeFrom}&to=${to}`, { headers: bearer(token) }));
+    const filtered = quoStatsSchema.parse(await json(`/api/quo/stats?from=${from}&to=${to}`, { headers: bearer(token) }));
     assert.ok(allTime.totalRows > 0, "Quo/OpenPhone baseline must contain rows for dashboard charts and tables");
     assert.ok(Object.keys(allTime.teamStats).length > 0);
     assert.ok(filtered.totalRows >= 0);
   });
 
   await t.test("PBX statistics return dashboard, agent, and ring-group data", async () => {
-    const pbx = vosStatsSchema.parse(await json("/api/vos/stats"));
+    const pbx = vosStatsSchema.parse(await json("/api/vos/stats", { headers: bearer(token) }));
     assert.ok(pbx.dashboard.totalAgents >= 0);
     assert.ok(Array.isArray(pbx.dashboard.callsByAgent));
   });
