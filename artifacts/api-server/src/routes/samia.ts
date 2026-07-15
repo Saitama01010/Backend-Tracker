@@ -7,6 +7,7 @@ import { anthropicErrorStatus, anthropicRequestId, createAnthropicClient, saniti
 import { AiRateLimitError, getAiControlTableStatus, postgresErrorCode, withDurableAiLimit } from "../lib/aiRateLimit.js";
 import { extractQuoCallId, getQuoCallArtifacts } from "../lib/quoCall.js";
 import {
+  appendVerifiedCallEvidenceBasis,
   assistantBlocks,
   deterministicIdentityReply,
   extractUsPhoneNumber,
@@ -1780,7 +1781,10 @@ ${JSON.stringify(verifiedCalls).slice(0, 24_000)}`;
     }
 
     if (!finalReply) finalReply = "Done.";
-    finalReply = safeVisibleSamiaReply(ensureSwearing(finalReply));
+    finalReply = ensureSwearing(finalReply);
+    if (directPhone) finalReply = appendVerifiedCallEvidenceBasis(finalReply);
+    else if (directCallId) finalReply = appendVerifiedCallEvidenceBasis(finalReply, directCallId);
+    finalReply = safeVisibleSamiaReply(finalReply);
 
     // Save Samia's reply to DB (scoped to same user)
     await db.insert(samiaMessagesTable).values({

@@ -6,6 +6,7 @@ import path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import { extractQuoCallId, getQuoCallArtifacts } from "./quoCall.js";
 import {
+  appendVerifiedCallEvidenceBasis,
   assistantBlocks,
   claudeModelDisplayName,
   deterministicIdentityReply,
@@ -131,6 +132,13 @@ test("internal Samia operation syntax can never reach a visible reply", () => {
   assert.equal(hasVisibleInternalToolSyntax('analyze_calls({ participant: "8508120151" })'), true);
   assert.equal(safeVisibleSamiaReply(fakeCall), "I couldn't complete that dashboard lookup safely. Please try again.");
   assert.equal(safeVisibleSamiaReply("I found two verified calls."), "I found two verified calls.");
+});
+
+test("call analysis replies always disclose their verified non-audio basis", () => {
+  assert.match(appendVerifiedCallEvidenceBasis("The customer asked to cancel."), /verified QUO\/OpenPhone transcript or summary data/);
+  const exactCall = appendVerifiedCallEvidenceBasis("The agent handled it well.", "AC1234567890abcdef");
+  assert.match(exactCall, /AC1234567890abcdef/);
+  assert.match(exactCall, /not audio/);
 });
 
 test("application/module startup performs zero Anthropic requests", async () => {

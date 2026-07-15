@@ -146,6 +146,13 @@ export function safeVisibleSamiaReply(reply: string): string {
   return "I couldn't complete that dashboard lookup safely. Please try again.";
 }
 
+export function appendVerifiedCallEvidenceBasis(reply: string, callId?: string): string {
+  const basis = callId
+    ? `Analysis basis: verified QUO/OpenPhone transcript and summary data for call ${callId}, not audio.`
+    : "Analysis basis: available verified QUO/OpenPhone transcript or summary data and dashboard call records, not audio.";
+  return `${reply.trim()}\n\n${basis}`;
+}
+
 export interface SamiaErrorMapping {
   status: number;
   error: string;
