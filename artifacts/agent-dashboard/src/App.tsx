@@ -963,7 +963,7 @@ function RosterProvider({ children }: { children: React.ReactNode }) {
   const q = useQuery<RosterAgent[]>({
     queryKey: ["roster"],
     queryFn: async () => {
-      const r = await fetch("/api/team-agents", { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch("/api/team-agents", { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) return [];
       return r.json() as Promise<RosterAgent[]>;
     },
@@ -1471,7 +1471,7 @@ async function fetchHeaderCsv(url: string): Promise<SheetData> {
   const id = idMatch[1];
   const gid = gidMatch?.[1] ?? "0";
   const params = new URLSearchParams({ id, gid, _: String(Date.now()) });
-  const res = await fetch(`/api/sheet?${params.toString()}`, {
+  const res = await apiFetch(`/api/sheet?${params.toString()}`, {
     cache: "no-store",
     headers: {
       "Cache-Control": "no-cache",
@@ -3168,7 +3168,7 @@ function RosterAgentDetailsDialog({
     if (!hit || !agentName.trim()) return;
     setSaving(true);
     try {
-      await fetch(`/api/team-agents/${hit.id}`, {
+      await apiFetch(`/api/team-agents/${hit.id}`, {
         method: "PATCH",
         headers: authHeaders(token),
         body: JSON.stringify({
@@ -3727,7 +3727,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
 
   async function fetchSheetSourceDirect(meta: SheetSourceMeta): Promise<SheetData> {
     const params = new URLSearchParams({ id: meta.spreadsheetId, gid: meta.gid, _: String(Date.now()) });
-    const res = await fetch(`/api/sheet?${params.toString()}`, {
+    const res = await apiFetch(`/api/sheet?${params.toString()}`, {
       cache: "no-store",
       headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" },
     });
@@ -4014,7 +4014,7 @@ function useLiveCalls(): LiveCallStatus {
   const quoQ = useQuery<{ active: string[]; agentCalls?: { agentName: string; participant: string | null }[] }>({
     queryKey: ["liveCalls"],
     queryFn: async () => {
-      const r = await fetch("/api/quo/live");
+      const r = await apiFetch("/api/quo/live");
       if (!r.ok) return { active: [] };
       return r.json() as Promise<{ active: string[]; agentCalls?: { agentName: string; participant: string | null }[] }>;
     },
@@ -4026,7 +4026,7 @@ function useLiveCalls(): LiveCallStatus {
   const vosQ = useQuery<{ liveCalls: { agentName: string | null }[]; agentStatuses: { name: string; status: string }[] }>({
     queryKey: ["vosLive"],
     queryFn: async () => {
-      const r = await fetch("/api/vos/live");
+      const r = await apiFetch("/api/vos/live");
       if (!r.ok) return { liveCalls: [], agentStatuses: [] };
       return r.json();
     },
@@ -4099,7 +4099,7 @@ function useVosStats() {
   return useQuery<LegacyVosStatsResponse>({
     queryKey: ["vosStats"],
     queryFn: async () => {
-      const r = await fetch("/api/vos/stats");
+      const r = await apiFetch("/api/vos/stats");
       if (!r.ok) return { dashboard: { callsByAgent: [] }, agents: [], ringGroups: [], callHistory: [], ringGroupMissed: {} };
       return r.json();
     },
@@ -4181,7 +4181,7 @@ function useMissedNoCB() {
   return useQuery<{ items: MissedNoCallbackItem[]; fetchedAt: number }>({
     queryKey: ["missedNoCB"],
     queryFn: async () => {
-      const r = await fetch("/api/vos/missed-no-callback");
+      const r = await apiFetch("/api/vos/missed-no-callback");
       if (!r.ok) return { items: [], fetchedAt: 0 };
       return r.json();
     },
@@ -4202,7 +4202,7 @@ function useMissedDaily(mode: "times" | "numbers" = "times") {
   return useQuery<{ days: DailyMissedDay[] }>({
     queryKey: ["missedDaily", mode],
     queryFn: async () => {
-      const r = await fetch(`/api/vos/missed-daily?mode=${mode}`);
+      const r = await apiFetch(`/api/vos/missed-daily?mode=${mode}`);
       if (!r.ok) return { days: [] };
       return r.json();
     },
@@ -4225,7 +4225,7 @@ function useMissedHourly(date: string, mode: "times" | "numbers" = "times") {
   return useQuery<{ hours: HourlyMissedHour[] }>({
     queryKey: ["missedHourly", date, mode],
     queryFn: async () => {
-      const r = await fetch(`/api/vos/missed-hourly?date=${date}&mode=${mode}`);
+      const r = await apiFetch(`/api/vos/missed-hourly?date=${date}&mode=${mode}`);
       if (!r.ok) return { hours: [] };
       return r.json();
     },
@@ -4322,7 +4322,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
   const pbxLiveQ = useQuery<{ liveCalls: VosLiveCall[]; agentStatuses: VosAgentStatus[] }>({
     queryKey: ["vosLive"],
     queryFn: async () => {
-      const r = await fetch("/api/vos/live");
+      const r = await apiFetch("/api/vos/live");
       if (!r.ok) return { liveCalls: [], agentStatuses: [] };
       return r.json();
     },
@@ -4913,7 +4913,7 @@ interface PhoneStatsResponse {
 
 async function fetchPhoneStats(pFrom: string, pTo: string): Promise<PhoneStatsResponse | null> {
   const params = new URLSearchParams({ from: pFrom, to: pTo, _: String(Date.now()) });
-  const res = await fetch(`/api/quo/stats?${params.toString()}`, {
+  const res = await apiFetch(`/api/quo/stats?${params.toString()}`, {
     cache: "no-store",
     headers: {
       "Cache-Control": "no-cache",
@@ -4935,7 +4935,7 @@ function useReadymodeByKey(from: string, to: string, roster: RosterIndex): Map<s
     queryKey: ["readymodeStats", from, to],
     queryFn: async () => {
       const qs = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-      const res = await fetch(`/api/readymode/stats${qs}`);
+      const res = await apiFetch(`/api/readymode/stats${qs}`);
       if (!res.ok) return null;
       return res.json();
     },
@@ -5273,7 +5273,7 @@ function CSPanel() {
     queryFn: async () => {
       const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
       const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
-      const res = await fetch(`/api/quo/stats?from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`);
+      const res = await apiFetch(`/api/quo/stats?from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`);
       if (!res.ok) return null;
       return res.json() as Promise<PhoneStatsResponse>;
     },
@@ -5470,7 +5470,7 @@ function RetentionPanel() {
     queryFn: async () => {
       const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
       const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
-      const res = await fetch(`/api/quo/stats?from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`);
+      const res = await apiFetch(`/api/quo/stats?from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`);
       if (!res.ok) return null;
       return res.json() as Promise<PhoneStatsResponse>;
     },
@@ -5669,7 +5669,7 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
     queryKey: ["calls", team, pFrom, pTo],
     queryFn: async () => {
       const url = `/api/quo/calls?team=${team}&from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}&limit=500`;
-      const r = await fetch(url);
+      const r = await apiFetch(url);
       if (!r.ok) return null;
       return r.json() as Promise<{ data: CallRecord[] }>;
     },
@@ -6453,7 +6453,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetch("/api/team-agents", { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch("/api/team-agents", { headers: { Authorization: `Bearer ${token}` } });
       if (r.ok) {
         setAgents(await r.json() as TeamAgent[]);
         setDrafts({});
@@ -6473,7 +6473,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
     if (!newName.trim()) return;
     setSaving(true); setError("");
     try {
-      const r = await fetch("/api/team-agents", {
+      const r = await apiFetch("/api/team-agents", {
         method: "POST",
         headers: authHeaders(token),
         body: JSON.stringify({
@@ -6501,7 +6501,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   async function patchAgent(id: number, body: Record<string, unknown>) {
     setBusyId(id); setError("");
     try {
-      const r = await fetch(`/api/team-agents/${id}`, {
+      const r = await apiFetch(`/api/team-agents/${id}`, {
         method: "PATCH",
         headers: authHeaders(token),
         body: JSON.stringify(body),
@@ -6524,7 +6524,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   async function removeAgent(id: number) {
     setBusyId(id); setError("");
     try {
-      const r = await fetch(`/api/team-agents/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch(`/api/team-agents/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) {
         setError(await readTeamAgentError(r, "Failed to delete"));
         return;
@@ -6880,7 +6880,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetch("/api/users", { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch("/api/users", { headers: { Authorization: `Bearer ${token}` } });
       if (r.ok) setUsers(await r.json() as PortalUser[]);
     } finally { setLoading(false); }
   }, [token]);
@@ -6909,7 +6909,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
       samiaCurse: newSamiaCurse,
       hideBackendStats: newHideBackendStats,
     };
-    const r = await fetch("/api/users", { method: "POST", headers: authHeaders(token), body: JSON.stringify(body) });
+    const r = await apiFetch("/api/users", { method: "POST", headers: authHeaders(token), body: JSON.stringify(body) });
     if (r.ok) {
       setNewUsername(""); setNewPassword(""); setNewRole("view");
       setNewPerms(DEFAULT_PERMS["view"]); setNewTeamAccess("");
@@ -6921,13 +6921,13 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   }
 
   async function patchUser(id: number, updates: Record<string, unknown>) {
-    await fetch(`/api/users/${id}`, { method: "PATCH", headers: authHeaders(token), body: JSON.stringify(updates) });
+    await apiFetch(`/api/users/${id}`, { method: "PATCH", headers: authHeaders(token), body: JSON.stringify(updates) });
     setEditingId(null); await load();
   }
 
   async function deleteUser(u: PortalUser) {
     if (!confirm(`Permanently delete user "${u.username}"? This cannot be undone.`)) return;
-    const r = await fetch(`/api/users/${u.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+    const r = await apiFetch(`/api/users/${u.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
     if (!r.ok) { const d = await r.json().catch(() => ({})) as { error?: string }; setError(d.error ?? "Failed to delete user"); return; }
     setEditingId(null); await load();
   }
@@ -7202,7 +7202,7 @@ function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetch("/api/blocked-numbers", { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch("/api/blocked-numbers", { headers: { Authorization: `Bearer ${token}` } });
       if (r.ok) setItems((await r.json() as { data: { number: string; note: string | null; createdAt: string }[] }).data);
     } finally { setLoading(false); }
   }, [token]);
@@ -7219,7 +7219,7 @@ function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
     const num = newNumber.trim();
     if (!num) return;
     setSaving(true); setError("");
-    const r = await fetch("/api/blocked-numbers", {
+    const r = await apiFetch("/api/blocked-numbers", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ number: num, note: newNote.trim() || null }),
@@ -7230,7 +7230,7 @@ function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
   }
 
   async function removeNumber(num: string) {
-    await fetch(`/api/blocked-numbers/${encodeURIComponent(num)}`, {
+    await apiFetch(`/api/blocked-numbers/${encodeURIComponent(num)}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -7482,7 +7482,7 @@ function QuoLinesPanel() {
   const linesQ = useQuery<{ data: QuoLine[] }>({
     queryKey: ["allLines"],
     queryFn: async () => {
-      const r = await fetch("/api/quo/all-lines");
+      const r = await apiFetch("/api/quo/all-lines");
       if (!r.ok) throw new Error("Failed to load lines");
       return r.json() as Promise<{ data: QuoLine[] }>;
     },
@@ -7496,7 +7496,7 @@ function QuoLinesPanel() {
       if (!selectedLine) return null;
       const pFrom = new Date(`${from}T00:00:00`).toISOString();
       const pTo = new Date(`${to}T23:59:59`).toISOString();
-      const r = await fetch(
+      const r = await apiFetch(
         `/api/quo/line-stats?lineId=${encodeURIComponent(selectedLine.id)}&from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`
       );
       if (!r.ok) return null;
@@ -7825,7 +7825,7 @@ function VoSPanel() {
   const q = useQuery<VosStatsResponse>({
     queryKey: ["vosStats"],
     queryFn: async () => {
-      const r = await fetch("/api/vos/stats");
+      const r = await apiFetch("/api/vos/stats");
       if (!r.ok) throw new Error("Failed to load VoSLogic stats");
       return r.json() as Promise<VosStatsResponse>;
     },
@@ -7837,7 +7837,7 @@ function VoSPanel() {
   const liveQ = useQuery<{ liveCalls: VosLiveCall[]; agentStatuses: VosAgentStatus[] }>({
     queryKey: ["vosLive"],
     queryFn: async () => {
-      const r = await fetch("/api/vos/live");
+      const r = await apiFetch("/api/vos/live");
       if (!r.ok) return { liveCalls: [], agentStatuses: [] };
       return r.json();
     },
@@ -8298,7 +8298,7 @@ function ReadyModeKillersPanel() {
     queryKey: ["rmkReadymodeStats", from, to],
     queryFn: async () => {
       const qs = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-      const res = await fetch(`/api/readymode/stats${qs}`);
+      const res = await apiFetch(`/api/readymode/stats${qs}`);
       if (!res.ok) return null;
       return res.json() as Promise<RmStatsResponse>;
     },
@@ -8555,7 +8555,7 @@ function ReadyModePanel() {
   const q = useQuery<RmStatsResponse>({
     queryKey: ["readymodeStats"],
     queryFn: async () => {
-      const r = await fetch("/api/readymode/stats", {
+      const r = await apiFetch("/api/readymode/stats", {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!r.ok) {
@@ -8870,7 +8870,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             {fetchedAt > 0 && <span>Updated {new Date(fetchedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/Los_Angeles" })} PDT</span>}
             <Button size="sm" variant="ghost" className="h-7 px-2 gap-1" onClick={async () => {
-              await fetch("/api/vos/refresh", { method: "POST" });
+              await apiFetch("/api/vos/refresh", { method: "POST" });
               await qc.invalidateQueries({ queryKey: ["missedNoCB"] });
             }}>
               <RefreshCw className="h-3 w-3" /> Refresh
@@ -9058,7 +9058,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                           variant="ghost"
                           className="h-6 px-2 text-[10px] metric-good hover:metric-good hover:bg-muted/60"
                           onClick={async () => {
-                            await fetch("/api/nsf/readymode-queue/done-by-number", {
+                            await apiFetch("/api/nsf/readymode-queue/done-by-number", {
                               method: "POST",
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({ number: it.fromNumber }),
@@ -9221,7 +9221,7 @@ function DailyMissedBreakdown({ date }: { date: string }) {
   const q = useQuery<{ date: string; numbers: NumberBreakdown[]; stats: { total: number; withCallback: number; connected: number; callbackRate: number; connectRate: number } }>({
     queryKey: ["missedBreakdown", date],
     queryFn: async () => {
-      const r = await fetch(`/api/vos/missed-breakdown?date=${date}`);
+      const r = await apiFetch(`/api/vos/missed-breakdown?date=${date}`);
       if (!r.ok) return { date, numbers: [], stats: { total: 0, withCallback: 0, connected: 0, callbackRate: 0, connectRate: 0 } };
       return r.json();
     },
@@ -9417,7 +9417,7 @@ function useCallbackReview(from: string, to: string) {
   return useQuery<{ items: CallbackReviewItem[]; stats: CallbackReviewStats }>({
     queryKey: ["callbackReview", from, to],
     queryFn: async () => {
-      const r = await fetch(`/api/vos/callback-review?from=${from}&to=${to}`);
+      const r = await apiFetch(`/api/vos/callback-review?from=${from}&to=${to}`);
       if (!r.ok) return { items: [], stats: { total: 0, withCallback: 0, connected: 0, rate: 0, connectRate: 0, avgResponseMinutes: 0, days: 0 } };
       return r.json();
     },
@@ -9868,7 +9868,7 @@ function LiveTransfersCard() {
   const { data: status, refetch } = useQuery<LTStatus>({
     queryKey: ["liveTransfersStatus", from, to, token],
     queryFn: async () => {
-      const res = await fetch(`/api/live-transfers/status${qs}`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await apiFetch(`/api/live-transfers/status${qs}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json() as Promise<LTStatus>;
     },
@@ -9878,7 +9878,7 @@ function LiveTransfersCard() {
 
   const refreshMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch(`/api/live-transfers/refresh`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+      const res = await apiFetch(`/api/live-transfers/refresh`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok && res.status !== 409) throw new Error(`HTTP ${res.status}`);
       return res.json().catch(() => ({}));
     },
@@ -9888,7 +9888,7 @@ function LiveTransfersCard() {
   const download = async () => {
     setDownloading(true);
     try {
-      const res = await fetch(`/api/live-transfers/download${qs}`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await apiFetch(`/api/live-transfers/download${qs}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
@@ -10055,7 +10055,7 @@ function QAPanel() {
   const stats = useQuery<QAStats>({
     queryKey: ["qa-stats", dateBasis, range.fromISO, range.toISO, dept, token],
     queryFn: async () => {
-      const r = await fetch(`/api/qa/stats?from=${range.fromISO}&to=${range.toISO}&dateBasis=${dateBasis}${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch(`/api/qa/stats?from=${range.fromISO}&to=${range.toISO}&dateBasis=${dateBasis}${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<QAStats>;
     },
@@ -10065,7 +10065,7 @@ function QAPanel() {
   const reviews = useQuery<{ reviews: QAReview[] }>({
     queryKey: ["qa-reviews", dateBasis, range.fromISO, range.toISO, dept, token],
     queryFn: async () => {
-      const r = await fetch(`/api/qa/reviews?from=${range.fromISO}&to=${range.toISO}&dateBasis=${dateBasis}&limit=200${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch(`/api/qa/reviews?from=${range.fromISO}&to=${range.toISO}&dateBasis=${dateBasis}&limit=200${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<{ reviews: QAReview[] }>;
     },
@@ -10076,7 +10076,7 @@ function QAPanel() {
   const tasks = useQuery<{ tasks: QATask[] }>({
     queryKey: ["qa-tasks", dept, token],
     queryFn: async () => {
-      const r = await fetch(`/api/qa/tasks?status=open&limit=200${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch(`/api/qa/tasks?status=open&limit=200${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<{ tasks: QATask[] }>;
     },
@@ -10087,7 +10087,7 @@ function QAPanel() {
   const latestRun = useQuery<{ run: QARunRecord | null }>({
     queryKey: ["qa-runs", token],
     queryFn: async () => {
-      const r = await fetch("/api/qa/runs/latest", { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch("/api/qa/runs/latest", { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<{ run: QARunRecord | null }>;
     },
@@ -10097,7 +10097,7 @@ function QAPanel() {
     setProcessing(true);
     setRunError(null);
     try {
-      const response = await fetch("/api/qa/process", {
+      const response = await apiFetch("/api/qa/process", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       });
@@ -10123,7 +10123,7 @@ function QAPanel() {
     id: string,
     body: { managerScore?: number | null; comments?: string; coachingComplete?: boolean } = {},
   ) => {
-    await fetch(`/api/qa/tasks/${id}/resolve`, {
+    await apiFetch(`/api/qa/tasks/${id}/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ resolvedBy: user.username, ...body }),
@@ -10136,7 +10136,7 @@ function QAPanel() {
   const downloadQa = useCallback(async () => {
     setDownloadingQa(true);
     try {
-      const res = await fetch(`/api/qa/download?from=${range.fromISO}&to=${range.toISO}&dateBasis=${dateBasis}${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await apiFetch(`/api/qa/download?from=${range.fromISO}&to=${range.toISO}&dateBasis=${dateBasis}${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
@@ -10464,7 +10464,7 @@ function ManagerReviewDialog({
   const review = useQuery<QAReview>({
     queryKey: ["qa-review-detail", task.id, token],
     queryFn: async () => {
-      const r = await fetch(`/api/qa/reviews/${task.id}`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch(`/api/qa/reviews/${task.id}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<QAReview>;
     },
@@ -10601,7 +10601,7 @@ function ViolationsPanel() {
   const { data, isLoading, isError, refetch } = useQuery<ViolationsData>({
     queryKey: ["violations", from, to, token],
     queryFn: async () => {
-      const r = await fetch(`/api/violations?from=${from}&to=${to}`, {
+      const r = await apiFetch(`/api/violations?from=${from}&to=${to}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!r.ok) throw new Error(await r.text());
@@ -10615,7 +10615,7 @@ function ViolationsPanel() {
   const { data: verifiedData, refetch: refetchVerified } = useQuery<{ items: VerifiedItem[] }>({
     queryKey: ["violations-verified", token],
     queryFn: async () => {
-      const r = await fetch("/api/violations/verified", { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch("/api/violations/verified", { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<{ items: VerifiedItem[] }>;
     },
@@ -10641,13 +10641,13 @@ function ViolationsPanel() {
     setPending(prev => new Set(prev).add(key));
     try {
       if (isNowVerified) {
-        await fetch("/api/violations/verify", {
+        await apiFetch("/api/violations/verify", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ key, type, member, department, date, details: JSON.stringify(details), verifiedBy: user.username }),
         });
       } else {
-        await fetch("/api/violations/verify", {
+        await apiFetch("/api/violations/verify", {
           method: "DELETE",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ key }),
@@ -11976,7 +11976,7 @@ function Dashboard() {
     setRmUploading(true);
     try {
       const csv = await file.text();
-      const r = await fetch("/api/readymode/upload", {
+      const r = await apiFetch("/api/readymode/upload", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ csv, filename: file.name, date: date.trim() }),
@@ -12303,7 +12303,7 @@ function SamiaChat() {
   function openAdminUsers() {
     setAdminView("users");
     setAdminLoading(true);
-    fetch("/api/samia/users", { headers: { Authorization: `Bearer ${token}` } })
+    apiFetch("/api/samia/users", { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => r.ok ? r.json() : [])
       .then((rows: { userId: number; username: string }[]) => setAdminUsers(rows))
       .catch(() => setAdminUsers([]))
@@ -12314,7 +12314,7 @@ function SamiaChat() {
     setAdminViewUser(u);
     setAdminView("viewUser");
     setAdminLoading(true);
-    fetch(`/api/samia/history/${u.userId}`, { headers: { Authorization: `Bearer ${token}` } })
+    apiFetch(`/api/samia/history/${u.userId}`, { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => r.ok ? r.json() : [])
       .then((rows: Array<{ role: string; content: string; images?: string[] | null }>) =>
         setAdminMessages(rows.map((r) => ({ role: r.role as "user" | "assistant", content: r.content, images: r.images ?? undefined })))
@@ -12326,7 +12326,7 @@ function SamiaChat() {
   function openHistory() {
     setAdminView("history");
     setHistoryLoading(true);
-    fetch("/api/samia/history", { headers: { Authorization: `Bearer ${token}` } })
+    apiFetch("/api/samia/history", { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => r.ok ? r.json() : [])
       .then((rows: Array<{ role: string; content: string; images?: string[] | null; createdAt: string }>) => {
         const byKey = new Map<string, HistoryGroup>();
@@ -12400,7 +12400,7 @@ function SamiaChat() {
     setMessages((prev) => [...prev, { role: "user", content: text, images: images.length ? images : undefined }]);
     setLoading(true);
     try {
-      const res = await fetch("/api/samia/chat", {
+      const res = await apiFetch("/api/samia/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ message: text || "What do you see in this image?", images, displayName: chatName || undefined }),
@@ -12795,7 +12795,7 @@ function AttendancePanel() {
     queryFn: async () => {
       const params = new URLSearchParams({ from: fromStr, to: toStr });
       if (showInactive) params.set("includeInactive", "true");
-      const r = await fetch(`/api/attendance?${params}`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch(`/api/attendance?${params}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error("fetch failed");
       return r.json();
     },
@@ -12864,7 +12864,7 @@ function AttendancePanel() {
   }, [scopedMembers, recordMap, todayStr]);
 
   async function upsert(memberId: number, date: string, status: string, note: string, coaching: boolean) {
-    await fetch("/api/attendance/record", {
+    await apiFetch("/api/attendance/record", {
       method: "PUT", headers: authHeaders(token),
       body: JSON.stringify({ memberId, date, status, note: note || null, coaching }),
     });
@@ -12887,7 +12887,7 @@ function AttendancePanel() {
 
   async function addMember() {
     if (!newName.trim()) return;
-    await fetch("/api/attendance/members", {
+    await apiFetch("/api/attendance/members", {
       method: "POST", headers: authHeaders(token),
       body: JSON.stringify({ name: newName.trim(), shift: newShift.trim(), shiftHours: newShiftHours.trim() || "8", department: newDept.trim() }),
     });
@@ -12897,7 +12897,7 @@ function AttendancePanel() {
 
   async function saveMember() {
     if (!editingMember) return;
-    await fetch(`/api/attendance/members/${editingMember.id}`, {
+    await apiFetch(`/api/attendance/members/${editingMember.id}`, {
       method: "PATCH", headers: authHeaders(token),
       body: JSON.stringify({ name: editingMember.name, shift: editingMember.shift, shiftHours: editingMember.shiftHours, department: editingMember.department }),
     });
@@ -12906,7 +12906,7 @@ function AttendancePanel() {
   }
 
   async function setMemberActive(id: number, active: boolean) {
-    await fetch(`/api/attendance/members/${id}`, {
+    await apiFetch(`/api/attendance/members/${id}`, {
       method: "PATCH", headers: authHeaders(token),
       body: JSON.stringify({ active }),
     });
@@ -12915,7 +12915,7 @@ function AttendancePanel() {
 
   async function doImport() {
     setImporting(true);
-    await fetch("/api/attendance/import", { method: "POST", headers: authHeaders(token) });
+    await apiFetch("/api/attendance/import", { method: "POST", headers: authHeaders(token) });
     qc.invalidateQueries({ queryKey: ["attendance"] });
     setImporting(false);
   }
@@ -12924,7 +12924,7 @@ function AttendancePanel() {
     setAutoMarking(true);
     setAutoMarkResult(null);
     try {
-      const r = await fetch("/api/attendance/auto-mark", { method: "POST", headers: authHeaders(token) });
+      const r = await apiFetch("/api/attendance/auto-mark", { method: "POST", headers: authHeaders(token) });
       const data = await r.json() as { success: boolean; results?: { name: string; status: string; note: string; skipped?: string }[] };
       if (data.success && data.results) {
         const marked = data.results.filter((x) => x.status);

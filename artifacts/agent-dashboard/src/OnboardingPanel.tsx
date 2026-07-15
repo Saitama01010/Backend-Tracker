@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { apiFetch } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -215,7 +216,7 @@ function OnboardingReportCard() {
   const { data: status, refetch } = useQuery<ObStatus>({
     queryKey: ["obReportStatus", from, to],
     queryFn: async () => {
-      const res = await fetch(`${BASE}/api/ob-report/status${qs}`);
+      const res = await apiFetch(`${BASE}/api/ob-report/status${qs}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     },
@@ -225,7 +226,7 @@ function OnboardingReportCard() {
 
   const refreshMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch(`${BASE}/api/ob-report/refresh`, { method: "POST" });
+      const res = await apiFetch(`${BASE}/api/ob-report/refresh`, { method: "POST" });
       if (!res.ok && res.status !== 409) throw new Error(`HTTP ${res.status}`);
       return res.json().catch(() => ({}));
     },
@@ -235,7 +236,7 @@ function OnboardingReportCard() {
   const download = async () => {
     setDownloading(true);
     try {
-      const res = await fetch(`${BASE}/api/ob-report/download${qs}`);
+      const res = await apiFetch(`${BASE}/api/ob-report/download${qs}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
@@ -404,7 +405,7 @@ export function OnboardingPanel() {
   const { data, isLoading, isError, refetch, isFetching } = useQuery<Analytics>({
     queryKey: ["obAnalytics", from, to],
     queryFn: async () => {
-      const res = await fetch(`${BASE}/api/ob-analytics${qs}`);
+      const res = await apiFetch(`${BASE}/api/ob-analytics${qs}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     },
@@ -414,7 +415,7 @@ export function OnboardingPanel() {
   const downloadExcel = async () => {
     setDownloading(true);
     try {
-      const res = await fetch(`${BASE}/api/ob-analytics/download${qs}`);
+      const res = await apiFetch(`${BASE}/api/ob-analytics/download${qs}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);

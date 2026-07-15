@@ -7,6 +7,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
+import { apiFetch } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -164,7 +165,7 @@ function OnboardingReportCard() {
   const { data: status, refetch } = useQuery<ObStatus>({
     queryKey: ["obReportStatus"],
     queryFn: async () => {
-      const res = await fetch(`${BASE}/api/ob-report/status`);
+      const res = await apiFetch(`${BASE}/api/ob-report/status`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     },
@@ -174,7 +175,7 @@ function OnboardingReportCard() {
 
   const refreshMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch(`${BASE}/api/ob-report/refresh`, { method: "POST" });
+      const res = await apiFetch(`${BASE}/api/ob-report/refresh`, { method: "POST" });
       if (!res.ok && res.status !== 409) throw new Error(`HTTP ${res.status}`);
       return res.json().catch(() => ({}));
     },
@@ -186,7 +187,7 @@ function OnboardingReportCard() {
   const download = async () => {
     setDownloading(true);
     try {
-      const res = await fetch(`${BASE}/api/ob-report/download`);
+      const res = await apiFetch(`${BASE}/api/ob-report/download`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
@@ -501,7 +502,7 @@ export function PhoneTab() {
       const params = new URLSearchParams();
       if (fromISO) params.set("from", fromISO);
       if (toISO) params.set("to", toISO);
-      const res = await fetch(`${BASE}/api/quo/stats?${params}`);
+      const res = await apiFetch(`${BASE}/api/quo/stats?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     },
@@ -512,7 +513,7 @@ export function PhoneTab() {
 
   const syncMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch(`${BASE}/api/quo/sync`, {
+      const res = await apiFetch(`${BASE}/api/quo/sync`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ from: fromISO, to: toISO }),
