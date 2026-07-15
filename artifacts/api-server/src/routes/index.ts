@@ -18,7 +18,7 @@ import teamAgentsRouter from "./teamAgents";
 import qaRouter from "./qa";
 import obReportRouter from "./obReport";
 import obAnalyticsRouter from "./obAnalytics";
-import liveTransfersRouter, { startLiveTransfersBackground } from "./liveTransfers";
+import liveTransfersRouter from "./liveTransfers";
 
 const router: IRouter = Router();
 
@@ -42,8 +42,6 @@ router.use(obReportRouter);
 router.use(obAnalyticsRouter);
 router.use(liveTransfersRouter);
 
-// Kick off background live-transfer classifier (Aspire/Resync inbound transfers).
-startLiveTransfersBackground();
 router.use(teamAgentsRouter);
 
 export default router;

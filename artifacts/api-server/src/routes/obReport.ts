@@ -1,10 +1,20 @@
 import { Router, type IRouter } from "express";
 import ExcelJS from "exceljs";
-import OpenAI from "openai";
 import { db, phoneCallsTable, onboardingClassificationsTable, onboardingReportStateTable } from "@workspace/db";
 import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { runSync } from "./quoSync.js";
 import { logger } from "../lib/logger.js";
+import { requireAuth } from "../middleware/auth.js";
+import {
+  anthropicErrorStatus,
+  anthropicRequestId,
+  createAnthropicToolMessage,
+  isPermanentAnthropicError,
+  sanitizedErrorMessage,
+  toolInput,
+  usageFields,
+} from "../lib/anthropic.js";
+import { withDatabaseLease } from "../lib/aiRateLimit.js";
 
 const router: IRouter = Router();
 
@@ -12,8 +22,8 @@ const router: IRouter = Router();
 const LINE_ID = "PNdcJ0UEu5";
 const LINE_NUMBER = "+19493157441";
 const LINE_LABEL = "(949) 315-7441";
-const MODEL = process.env["OB_MODEL"] ?? "gpt-4.1-mini";
-const CONCURRENCY = Number(process.env["OB_CONC"] ?? 4);
+const MODEL = process.env["ANTHROPIC_OB_MODEL"]?.trim() || "claude-haiku-4-5";
+const CONCURRENCY = Math.max(1, Math.min(4, Number(process.env["OB_CONC"] ?? 2) || 2));
 const TAX_RE = /\btaxes?\b/i;
 
 // ─── Date range helpers (LA timezone, mirrors obAnalytics) ────────────────────
@@ -100,14 +110,7 @@ async function fetchTranscript(callId: string, tries = 5): Promise<TranscriptRes
   return { kind: "error" };
 }
 
-// ─── AI client (Replit AI Integrations OpenAI proxy) ──────────────────────────
-function aiClient(): OpenAI {
-  return new OpenAI({
-    baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
-    apiKey: process.env["AI_INTEGRATIONS_OPENAI_API_KEY"],
-  });
-}
-
+// ─── Claude classification ────────────────────────────────────────────────────
 interface DialogueLine {
   identifier?: string;
   content?: string;
@@ -127,7 +130,7 @@ function buildTranscript(dialogue: DialogueLine[]): string {
 
 const SYS_PROMPT = `You analyze transcripts from a debt-relief company's ONBOARDING phone line (Better Lending).
 On this line, a closer/sales rep usually warm-transfers a customer who just signed up, and the ONBOARDING agent enrolls them (collects file/case number, sets up the payment schedule, confirms the program, welcomes them).
-Return STRICT JSON only with these keys:
+Return the result only through the provided classification tool with these fields:
 {
   "customerName": string | null,   // the CUSTOMER's full name as stated on the call (not the agent). null if unknown.
   "closerAgent": string | null,    // name of the SALES CLOSER who closed the deal and warm-transferred the customer, IF mentioned (e.g. "transferred from John", "I have X for you", a rep who hands off then leaves). NOT the onboarding agent. null if none.
@@ -139,41 +142,82 @@ callType rubric:
 - "connection": someone called to get connected / inquire / was transferred but was NOT onboarded — just a connection, a question, not ready, declined, wrong dept, callback only, no enrollment completed.
 - "other": internal/test/unclear/no real conversation.`;
 
+const CLASSIFICATION_TOOL = {
+  name: "record_onboarding_classification",
+  description: "Record the validated onboarding-call classification.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      customerName: { anyOf: [{ type: "string", maxLength: 120 }, { type: "null" }] },
+      closerAgent: { anyOf: [{ type: "string", maxLength: 120 }, { type: "null" }] },
+      callType: { type: "string", enum: ["onboarded", "connection", "other"] },
+      notes: { type: "string", maxLength: 180 },
+    },
+    required: ["customerName", "closerAgent", "callType", "notes"],
+    additionalProperties: false,
+  },
+};
+
 interface ClassifyResult {
   customerName: string | null;
   closerAgent: string | null;
   callType: string;
   notes: string;
 }
+type ClassifyAttempt =
+  | { status: "ok"; value: ClassifyResult }
+  | { status: "temporary_error" }
+  | { status: "permanent_error" };
+
+function validateClassifyResult(value: unknown): ClassifyResult | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const nullableString = (item: unknown, maximum: number) =>
+    item === null || (typeof item === "string" && item.length <= maximum);
+  if (!nullableString(raw["customerName"], 120) || !nullableString(raw["closerAgent"], 120)) return null;
+  if (!(["onboarded", "connection", "other"] as unknown[]).includes(raw["callType"])) return null;
+  if (typeof raw["notes"] !== "string" || raw["notes"].length > 180) return null;
+  return {
+    customerName: typeof raw["customerName"] === "string" ? raw["customerName"].trim() || null : null,
+    closerAgent: typeof raw["closerAgent"] === "string" ? raw["closerAgent"].trim() || null : null,
+    callType: raw["callType"] as string,
+    notes: raw["notes"].trim(),
+  };
+}
 
 async function classify(
-  ai: OpenAI,
   agentName: string | null,
   direction: string,
   transcript: string,
-): Promise<ClassifyResult | null> {
+): Promise<ClassifyAttempt> {
   try {
-    const resp = await ai.chat.completions.create(
-      {
-        model: MODEL,
-        temperature: 0,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: SYS_PROMPT },
-          {
-            role: "user",
-            content: `Onboarding agent who handled this call (our system): ${agentName ?? "unknown"}\nDirection: ${direction}\n\nTRANSCRIPT:\n${transcript}`,
-          },
-        ],
-      },
-      { timeout: 60000, maxRetries: 2 },
-    );
-    const content = resp.choices[0]?.message?.content;
-    if (!content) return null;
-    return JSON.parse(content) as ClassifyResult;
+    const response = await createAnthropicToolMessage({
+      model: MODEL,
+      system: SYS_PROMPT,
+      prompt: `Onboarding agent who handled this call (our system): ${agentName ?? "unknown"}\nDirection: ${direction}\n\nTRANSCRIPT:\n${transcript}`,
+      tool: CLASSIFICATION_TOOL,
+      maxTokens: 256,
+    });
+    logger.info({
+      feature: "outbound_call_classification",
+      model: response.model,
+      requestId: response._request_id,
+      success: true,
+      ...usageFields(response.usage),
+    }, "anthropic request complete");
+    const value = validateClassifyResult(toolInput(response, CLASSIFICATION_TOOL.name));
+    return value ? { status: "ok", value } : { status: "permanent_error" };
   } catch (err) {
-    logger.warn({ err: String(err) }, "obReport: classify failed");
-    return null;
+    logger.warn({
+      feature: "outbound_call_classification",
+      model: MODEL,
+      errorName: err instanceof Error ? err.name : "UnknownError",
+      errorMessage: sanitizedErrorMessage(err),
+      anthropicStatus: anthropicErrorStatus(err),
+      anthropicRequestId: anthropicRequestId(err),
+      success: false,
+    }, "anthropic request failed");
+    return { status: isPermanentAnthropicError(err) ? "permanent_error" : "temporary_error" };
   }
 }
 
@@ -207,6 +251,7 @@ async function runReport(): Promise<void> {
   jobRunning = true;
 
   try {
+    await withDatabaseLease("outbound_call_classifier", async () => {
     await writeState({ isRunning: true, lastError: null, progressDone: 0, progressTotal: 0 });
     logger.info("obReport: refresh started");
 
@@ -245,7 +290,6 @@ async function runReport(): Promise<void> {
     await writeState({ progressTotal: pending.length, progressDone: 0 });
     logger.info({ pending: pending.length }, "obReport: classifying new calls");
 
-    const ai = aiClient();
     let done = 0;
     let idx = 0;
 
@@ -275,12 +319,23 @@ async function runReport(): Promise<void> {
           } else {
             const transcript = buildTranscript(tx.dialogue);
             const mentionsTax = TAX_RE.test(transcript);
-            const res = await classify(ai, call.agentName, call.direction, transcript);
-            if (!res) {
+            const attempt = await classify(call.agentName, call.direction, transcript);
+            if (attempt.status === "temporary_error") {
               // LLM failed/timed out: skip so the next refresh retries instead of
               // permanently storing a wrong "error" classification.
               logger.warn({ callId: call.id }, "obReport: classify failed, will retry next refresh");
+            } else if (attempt.status === "permanent_error") {
+              await db.insert(onboardingClassificationsTable).values({
+                callId: call.id,
+                callType: "error",
+                customerName: null,
+                closerAgent: null,
+                mentionsTax,
+                txStatus: "ai_error",
+                notes: "Permanent Claude or schema error; review required",
+              }).onConflictDoNothing();
             } else {
+              const res = attempt.value;
               await db
                 .insert(onboardingClassificationsTable)
                 .values({
@@ -309,6 +364,7 @@ async function runReport(): Promise<void> {
 
     await writeState({ isRunning: false, lastRunAt: new Date(), progressDone: pending.length, lastError: null });
     logger.info({ classified: pending.length }, "obReport: refresh done");
+    });
   } catch (err) {
     logger.error({ err: String(err) }, "obReport: refresh failed");
     await writeState({ isRunning: false, lastError: String(err) });
@@ -602,7 +658,7 @@ function sortByCount(rec: Record<string, number>): [string, number][] {
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 // POST /api/ob-report/refresh — start a background refresh (sync + classify new calls)
-router.post("/ob-report/refresh", async (req, res) => {
+router.post("/ob-report/refresh", requireAuth, async (req, res) => {
   if (jobRunning) {
     return res.status(409).json({ error: "A refresh is already running" });
   }

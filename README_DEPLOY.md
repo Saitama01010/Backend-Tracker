@@ -38,6 +38,8 @@ To enable the admin-only Samia chatbot with Claude, add:
 ANTHROPIC_API_KEY=<your Anthropic API key>
 ANTHROPIC_SAMIA_MODEL=claude-sonnet-5
 ANTHROPIC_QA_MODEL=claude-haiku-4-5
+ANTHROPIC_LT_MODEL=claude-haiku-4-5
+ANTHROPIC_OB_MODEL=claude-haiku-4-5
 SAMIA_REQUESTS_PER_MINUTE=6
 SAMIA_REQUESTS_PER_DAY=50
 QA_REVIEW_INTERVAL_DAYS=14
@@ -125,8 +127,9 @@ PORT=8080
 
 Add the optional integration variables from `.env.example` only when the matching feature needs them.
 
-For Samia and QA, add `ANTHROPIC_API_KEY` and `CRON_SECRET` as Vercel secrets,
-plus the Anthropic model and limit variables shown above. The daily Vercel cron
+For every AI feature, add `ANTHROPIC_API_KEY` and `CRON_SECRET` as Vercel secrets,
+plus the Anthropic model and limit variables shown above. Samia uses Sonnet;
+QA, Live Transfer, and outbound classification use Haiku. The daily Vercel cron
 calls `/api/qa/biweekly-run`; PostgreSQL eligibility checks still limit each
 agent to one automatic review in any rolling 14-day period.
 

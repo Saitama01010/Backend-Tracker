@@ -1,6 +1,5 @@
 import { Router, type IRouter } from "express";
 import ExcelJS from "exceljs";
-import OpenAI from "openai";
 import {
   db,
   phoneCallsTable,
@@ -10,6 +9,16 @@ import {
 import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { requireAuth } from "../middleware/auth.js";
+import {
+  anthropicErrorStatus,
+  anthropicRequestId,
+  createAnthropicToolMessage,
+  isPermanentAnthropicError,
+  sanitizedErrorMessage,
+  toolInput,
+  usageFields,
+} from "../lib/anthropic.js";
+import { withDatabaseLease } from "../lib/aiRateLimit.js";
 
 const router: IRouter = Router();
 
@@ -19,8 +28,8 @@ const router: IRouter = Router();
 // ignored. We only classify INCOMING completed calls >= MIN_SECONDS on this line.
 const RETENTION_MAIN_LINE_ID = "PN0uO5PSsk";
 const MIN_SECONDS = Number(process.env["LT_MIN_SECONDS"] ?? 20);
-const MODEL = process.env["LT_MODEL"] ?? "gpt-4.1-mini";
-const CONCURRENCY = Number(process.env["LT_CONC"] ?? 4);
+const MODEL = process.env["ANTHROPIC_LT_MODEL"]?.trim() || "claude-haiku-4-5";
+const CONCURRENCY = Math.max(1, Math.min(4, Number(process.env["LT_CONC"] ?? 2) || 2));
 
 const ASPIRE_RE = /\baspire\b/i;
 const RESYNC_RE = /re-?sync/i;
@@ -157,29 +166,30 @@ function dialogueText(dialogue: DialogueLine[]): string {
     .join("\n");
 }
 
-// ─── AI client (Replit AI Integrations OpenAI proxy) ──────────────────────────
-function aiClient(): OpenAI {
-  return new OpenAI({
-    baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
-    apiKey: process.env["AI_INTEGRATIONS_OPENAI_API_KEY"],
-  });
-}
-
+// ─── Claude classification ────────────────────────────────────────────────────
 const SYS_PROMPT = `You analyze the OPENING of an INCOMING phone call to a debt-relief company. Classify whether the call is a warm-transfer (someone handing a client off to this team), and if so, what KIND.
 
 Two kinds of transfer:
 1. PARTNER — a representative from an EXTERNAL partner company warm-transfers a client to us. The partner companies are "Aspire", "Resync" (sometimes said "re-sync"), "Clarity", and "Concordia". e.g. "Hi, this is Marcus with Aspire, I have a client for you".
 2. INTERNAL — one of OUR OWN departments/agents hands the client to this team. Internal departments include Customer Service ("CS"), "NSF", "Retention", "Onboarding", "Billing", "Sales". e.g. "Hey, it's Sarah from the NSF team, I've got a customer who needs...".
 
-If the caller is the client themselves, a company name is only mentioned in passing, or it is any other kind of call, it is NOT a transfer.
+If the caller is the client themselves, a company name is only mentioned in passing, or it is any other kind of call, it is NOT a transfer. Submit the classification through the provided tool.`;
 
-Return STRICT JSON only:
-{
-  "kind": "partner" | "internal" | "none",
-  "company": string,   // for partner: one of "Aspire","Resync","Clarity","Concordia" (or "" if a partner transfer but company unclear); for internal: the department that transferred, e.g. "CS","NSF","Retention","Onboarding","Billing" ("" if unclear); "" when kind is "none"
-  "agent": string,     // the transferring rep/agent's name as introduced; "" if none stated
-  "evidence": string   // <= 18 words: the intro line / why this is (or isn't) a transfer
-}`;
+const CLASSIFICATION_TOOL = {
+  name: "record_live_transfer_classification",
+  description: "Record the validated classification for this call opening.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      kind: { type: "string", enum: ["partner", "internal", "none"] },
+      company: { type: "string", maxLength: 80 },
+      agent: { type: "string", maxLength: 100 },
+      evidence: { type: "string", maxLength: 180 },
+    },
+    required: ["kind", "company", "agent", "evidence"],
+    additionalProperties: false,
+  },
+};
 
 type TransferKind = "partner" | "internal" | "none";
 interface ExtractResult {
@@ -188,27 +198,54 @@ interface ExtractResult {
   agent: string;
   evidence: string;
 }
+type ExtractAttempt =
+  | { status: "ok"; value: ExtractResult }
+  | { status: "temporary_error" }
+  | { status: "permanent_error" };
 
-async function extract(ai: OpenAI, transcript: string): Promise<ExtractResult | null> {
+function validateExtractResult(value: unknown): ExtractResult | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (!(["partner", "internal", "none"] as unknown[]).includes(raw["kind"])) return null;
+  if (typeof raw["company"] !== "string" || typeof raw["agent"] !== "string" || typeof raw["evidence"] !== "string") return null;
+  if (raw["company"].length > 80 || raw["agent"].length > 100 || raw["evidence"].length > 180) return null;
+  return {
+    kind: raw["kind"] as TransferKind,
+    company: raw["company"].trim(),
+    agent: raw["agent"].trim(),
+    evidence: raw["evidence"].trim(),
+  };
+}
+
+async function extract(transcript: string): Promise<ExtractAttempt> {
   try {
-    const resp = await ai.chat.completions.create(
-      {
-        model: MODEL,
-        temperature: 0,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: SYS_PROMPT },
-          { role: "user", content: `OPENING TRANSCRIPT:\n${transcript.slice(0, 4000)}` },
-        ],
-      },
-      { timeout: 60000, maxRetries: 2 },
-    );
-    const content = resp.choices[0]?.message?.content;
-    if (!content) return null;
-    return JSON.parse(content) as ExtractResult;
+    const response = await createAnthropicToolMessage({
+      model: MODEL,
+      system: SYS_PROMPT,
+      prompt: `OPENING TRANSCRIPT:\n${transcript.slice(0, 4000)}`,
+      tool: CLASSIFICATION_TOOL,
+      maxTokens: 256,
+    });
+    logger.info({
+      feature: "live_transfer_classification",
+      model: response.model,
+      requestId: response._request_id,
+      success: true,
+      ...usageFields(response.usage),
+    }, "anthropic request complete");
+    const value = validateExtractResult(toolInput(response, CLASSIFICATION_TOOL.name));
+    return value ? { status: "ok", value } : { status: "permanent_error" };
   } catch (err) {
-    logger.warn({ err: String(err) }, "liveTransfers: extract failed");
-    return null;
+    logger.warn({
+      feature: "live_transfer_classification",
+      model: MODEL,
+      errorName: err instanceof Error ? err.name : "UnknownError",
+      errorMessage: sanitizedErrorMessage(err),
+      anthropicStatus: anthropicErrorStatus(err),
+      anthropicRequestId: anthropicRequestId(err),
+      success: false,
+    }, "anthropic request failed");
+    return { status: isPermanentAnthropicError(err) ? "permanent_error" : "temporary_error" };
   }
 }
 
@@ -243,6 +280,7 @@ async function runClassifier(): Promise<void> {
   if (jobRunning) return;
   jobRunning = true;
   try {
+    await withDatabaseLease("live_transfer_classifier", async () => {
     await writeState({ isRunning: true, lastError: null, progressDone: 0, progressTotal: 0 });
     logger.info("liveTransfers: classify started");
 
@@ -268,7 +306,6 @@ async function runClassifier(): Promise<void> {
     await writeState({ progressTotal: pending.length, progressDone: 0 });
     logger.info({ pending: pending.length }, "liveTransfers: classifying new calls");
 
-    const ai = aiClient();
     let done = 0;
     let idx = 0;
 
@@ -320,11 +357,22 @@ async function runClassifier(): Promise<void> {
                 .onConflictDoNothing();
             } else {
               const opening = tx.dialogue.slice(0, 26);
-              const res = await extract(ai, dialogueText(opening));
-              if (res === null) {
+              const attempt = await extract(dialogueText(opening));
+              if (attempt.status === "temporary_error") {
                 // AI failed — leave unclassified so the next run retries.
                 logger.warn({ callId: call.id }, "liveTransfers: AI extract failed, will retry");
-              } else if (res.kind !== "partner" && res.kind !== "internal") {
+              } else if (attempt.status === "permanent_error") {
+                await db.insert(liveTransferClassificationsTable).values({
+                  callId: call.id,
+                  isLive: false,
+                  kind: null,
+                  company: null,
+                  agent: null,
+                  evidence: null,
+                  txStatus: "ai_error",
+                }).onConflictDoNothing();
+              } else if (attempt.value.kind !== "partner" && attempt.value.kind !== "internal") {
+                const res = attempt.value;
                 await db
                   .insert(liveTransferClassificationsTable)
                   .values({
@@ -338,6 +386,7 @@ async function runClassifier(): Promise<void> {
                   })
                   .onConflictDoNothing();
               } else {
+                const res = attempt.value;
                 let company: string;
                 if (res.kind === "partner") {
                   // Prefer AI company; fall back to an unambiguous keyword hit.
@@ -380,6 +429,7 @@ async function runClassifier(): Promise<void> {
       lastError: null,
     });
     logger.info({ classified: pending.length }, "liveTransfers: classify done");
+    });
   } catch (err) {
     logger.error({ err: String(err) }, "liveTransfers: classify failed");
     await writeState({ isRunning: false, lastError: String(err) });
@@ -744,12 +794,6 @@ async function buildWorkbook(rows: LiveRow[]): Promise<ExcelJS.Workbook> {
   totalRow("TOTAL LIVE TRANSFERS", rows.length);
 
   return wb;
-}
-
-export function startLiveTransfersBackground(): void {
-  // Kick off shortly after boot, then every 15 minutes.
-  setTimeout(() => void runClassifier(), 30_000);
-  setInterval(() => void runClassifier(), 15 * 60 * 1000);
 }
 
 export default router;

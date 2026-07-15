@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import { extractQuoCallId, getQuoCallArtifacts } from "./quoCall.js";
-import { assistantBlocks, toolResultMessage, validateSamiaPayload } from "./samiaPolicy.js";
+import { assistantBlocks, mapSamiaError, toolResultMessage, validateSamiaPayload } from "./samiaPolicy.js";
 import {
   hasRecentAutomaticReview,
   shouldReuseStoredReview,
@@ -21,6 +21,8 @@ test("Samia accepts a valid request only after payload validation", () => {
   assert.equal(valid.ok, true);
   const invalid = validateSamiaPayload({ message: " ", images: [] });
   assert.deepEqual(invalid, { ok: false, status: 400, error: "message is required" });
+  const invalidImage = validateSamiaPayload({ message: "hello", images: ["data:text/plain;base64,AA=="] });
+  assert.equal(invalidImage.ok, false);
 });
 
 test("application/module startup performs zero Anthropic requests", async () => {
@@ -38,10 +40,57 @@ test("application/module startup performs zero Anthropic requests", async () => 
   }
 });
 
+test("dashboard application import performs zero Anthropic requests", async () => {
+  let fetchCalls = 0;
+  const originalFetch = globalThis.fetch;
+  const originalVercel = process.env["VERCEL"];
+  process.env["VERCEL"] = "1";
+  globalThis.fetch = (async () => {
+    fetchCalls += 1;
+    throw new Error("unexpected network request");
+  }) as typeof fetch;
+  try {
+    await import(`../app.js?dashboard-test=${Date.now()}`);
+    assert.equal(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalVercel === undefined) delete process.env["VERCEL"];
+    else process.env["VERCEL"] = originalVercel;
+  }
+});
+
 test("missing Anthropic key fails safely without a request", async () => {
+  const originalKey = process.env["ANTHROPIC_API_KEY"];
   process.env["ANTHROPIC_API_KEY"] = "";
   const { createAnthropicClient, AnthropicConfigurationError } = await import("./anthropic.js");
-  assert.throws(() => createAnthropicClient(), AnthropicConfigurationError);
+  try {
+    assert.throws(() => createAnthropicClient(), AnthropicConfigurationError);
+  } finally {
+    if (originalKey === undefined) delete process.env["ANTHROPIC_API_KEY"];
+    else process.env["ANTHROPIC_API_KEY"] = originalKey;
+  }
+});
+
+test("missing AI controls migration maps to a clear 503", () => {
+  const error = Object.assign(new Error('relation "ai_request_usage" does not exist'), { code: "42P01" });
+  assert.deepEqual(mapSamiaError(error, "claude-sonnet-5"), {
+    status: 503,
+    error: "Samia's database controls are not migrated. Run the database migration and retry.",
+  });
+});
+
+test("Anthropic failures map to explicit HTTP responses", () => {
+  assert.equal(mapSamiaError({ status: 401 }, "model").status, 502);
+  assert.equal(mapSamiaError({ status: 403 }, "model").status, 502);
+  assert.equal(mapSamiaError({ status: 402 }, "model").status, 402);
+  assert.match(mapSamiaError({ status: 404 }, "missing-model").error, /missing-model/);
+  assert.deepEqual(mapSamiaError({ status: 429 }, "model"), {
+    status: 429,
+    error: "Claude is temporarily rate-limited. Please retry shortly.",
+    retryAfter: 60,
+  });
+  assert.equal(mapSamiaError({ status: 529 }, "model").status, 503);
+  assert.equal(mapSamiaError({ name: "APIConnectionTimeoutError", message: "timed out" }, "model").status, 504);
 });
 
 test("Samia route invokes Claude only inside the authenticated chat handler", async () => {
@@ -258,6 +307,48 @@ test("existing reviews are reused unless an admin explicitly forces reevaluation
   const source = await readFile(path.join(routesDir, "qa.ts"), "utf8");
   assert.match(source, /router\.post\("\/qa\/evaluate", requireAuth, requireRole\("admin"\)/);
   assert.match(source, /existingWasAutomatic \? "auto_biweekly" : "manual_call_id"/);
+  assert.match(source, /evaluateCall\(callId/);
+});
+
+test("Live Transfer classification uses strict Anthropic tools and has no startup job", async () => {
+  const source = await readFile(path.join(routesDir, "liveTransfers.ts"), "utf8");
+  const indexSource = await readFile(path.join(routesDir, "index.ts"), "utf8");
+  assert.match(source, /ANTHROPIC_LT_MODEL/);
+  assert.match(source, /createAnthropicToolMessage/);
+  assert.match(source, /record_live_transfer_classification/);
+  assert.equal(indexSource.includes("startLiveTransfersBackground"), false);
+});
+
+async function runtimeSourceFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const resolved = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await runtimeSourceFiles(resolved));
+    else if (/\.(?:[cm]?js|ts)$/.test(entry.name) && !entry.name.endsWith(".test.ts")) files.push(resolved);
+  }
+  return files;
+}
+
+test("runtime sources contain no OpenAI or OpenRouter implementation", async () => {
+  const roots = [path.resolve(routesDir, ".."), path.resolve(routesDir, "../../../../scripts/src")];
+  for (const root of roots) {
+    for (const file of await runtimeSourceFiles(root)) {
+      const source = await readFile(file, "utf8");
+      assert.doesNotMatch(source, /openai|openrouter|AI_INTEGRATIONS_OPENAI|AI_INTEGRATIONS_OPENROUTER/i, file);
+    }
+  }
+});
+
+test("Samia diagnostics is admin-only and never returns a secret value", async () => {
+  const source = await readFile(path.join(routesDir, "samia.ts"), "utf8");
+  const start = source.indexOf('router.get("/samia/diagnostics"');
+  const end = source.indexOf("});", start) + 3;
+  const route = source.slice(start, end);
+  assert.match(route, /requireAuth, requireRole\("admin"\)/);
+  assert.match(route, /anthropicKeyExists: Boolean/);
+  assert.match(route, /aiRequestUsageExists/);
+  assert.doesNotMatch(route, /anthropicApiKey|apiKey:/i);
 });
 
 test("QA validation rejects malformed scores without a retry", () => {

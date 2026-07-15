@@ -10,6 +10,11 @@ type QueryClient = Pick<PoolClient, "release"> & {
 };
 type ConnectionPool = Pick<Pool, "connect">;
 
+export interface AiControlTableStatus {
+  aiRequestUsageExists: boolean;
+  qaBiweeklyRunsExists: boolean;
+}
+
 export class AiRateLimitError extends Error {
   readonly retryAfter: number;
   readonly reason: "concurrent" | "minute" | "day" | "lease";
@@ -19,6 +24,37 @@ export class AiRateLimitError extends Error {
     this.name = "AiRateLimitError";
     this.reason = reason;
     this.retryAfter = Math.max(1, Math.ceil(retryAfter));
+  }
+}
+
+export function postgresErrorCode(error: unknown): string | null {
+  const code = (error as { code?: unknown })?.code;
+  return typeof code === "string" ? code : null;
+}
+
+export function isMissingAiControlsMigration(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return postgresErrorCode(error) === "42P01"
+    && /ai_request_usage|qa_biweekly_runs/i.test(message);
+}
+
+export async function getAiControlTableStatus(
+  connectionPool: ConnectionPool = workspacePool,
+): Promise<AiControlTableStatus> {
+  const client = await connectionPool.connect() as QueryClient;
+  try {
+    const result = await client.query<{
+      usage_exists: boolean;
+      runs_exists: boolean;
+    }>(`SELECT
+      to_regclass('public.ai_request_usage') IS NOT NULL AS usage_exists,
+      to_regclass('public.qa_biweekly_runs') IS NOT NULL AS runs_exists`);
+    return {
+      aiRequestUsageExists: result.rows[0]?.usage_exists === true,
+      qaBiweeklyRunsExists: result.rows[0]?.runs_exists === true,
+    };
+  } finally {
+    client.release();
   }
 }
 interface DurableLimitOptions {

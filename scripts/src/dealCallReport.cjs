@@ -4,14 +4,30 @@ const { createRequire } = require("module");
 const reqDb = createRequire("/home/runner/workspace/lib/db/index.js");
 const reqApi = createRequire("/home/runner/workspace/artifacts/api-server/index.js");
 const pg = reqDb("pg");
-const OpenAI = reqApi("openai");
+const { createAnthropicClient } = reqApi("./src/lib/anthropicClient.cjs");
 
 const QUO_KEY = process.env.QUO_API_KEY || "";
-const openai = new OpenAI({
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-});
-const MODEL = process.env.SAMIA_MODEL || "gpt-4.1";
+const anthropic = createAnthropicClient();
+const MODEL = process.env.ANTHROPIC_OB_MODEL || "claude-haiku-4-5";
+const RESULT_TOOL = {
+  name: "record_deal_call_analysis",
+  description: "Record the validated call-history classification for one customer.",
+  strict: true,
+  input_schema: {
+    type: "object",
+    properties: {
+      live_call: { type: "string", enum: ["Yes", "No"] },
+      live_call_evidence: { type: "string", maxLength: 500 },
+      transfer_company: { type: "string", enum: ["Aspire", "Resync", ""] },
+      transfer_agent: { type: "string", maxLength: 120 },
+      transfer_source: { type: "string", maxLength: 200 },
+      ob_done_no_retention: { type: "boolean" },
+      outcome_summary: { type: "string", maxLength: 1200 },
+    },
+    required: ["live_call", "live_call_evidence", "transfer_company", "transfer_agent", "transfer_source", "ob_done_no_retention", "outcome_summary"],
+    additionalProperties: false,
+  },
+};
 
 const deals = JSON.parse(fs.readFileSync("/tmp/deals.json", "utf8"));
 let phones = [...new Set(deals.map((d) => d._e164).filter(Boolean))];
@@ -213,7 +229,7 @@ Definitions:
 - "transfer_source" = which line/agent/department the live/incoming call came in on or was transferred from (e.g., "Aspire/Resync via Onboarding line", a named agent, or a department). Empty only if there is no incoming call.
 - "ob_done_no_retention" = TRUE only if there were outbound (OB) calls/attempts to this customer but ZERO completed incoming calls on the Retention line.
 - "Outcome summary" = 2-4 sentence plain-English summary of what happened across ALL the calls (cancellation, retained, payment, onboarding, voicemails, no answer, etc.).
-Return STRICT JSON: {"live_call":"Yes|No","live_call_evidence":"...","transfer_company":"Aspire|Resync|","transfer_agent":"...","transfer_source":"...","ob_done_no_retention":true|false,"outcome_summary":"..."}`;
+Submit the result through the provided classification tool.`;
 
       const user = `Customer: ${deal0.CustomerName || "?"} | Deal status: ${deal0.Status || "?"} | Agent: ${deal0.AgentName || "?"}
 Totals: total calls ${cs.length}; completed ${completed.length}; incoming retention-line completed ${retInCompleted.length}; outbound completed ${obCompleted.length}; outbound attempts ${obAttempts.length}.
@@ -227,11 +243,26 @@ DETAILED CALLS (summaries + retention-call opening transcripts):
 ${enrText || "(no transcribable conversations)"}`;
 
       try {
-        const comp = await openai.chat.completions.create({
-          model: MODEL, temperature: 0.2, response_format: { type: "json_object" },
-          messages: [{ role: "system", content: sys }, { role: "user", content: user }],
+        const message = await anthropic.messages.create({
+          model: MODEL,
+          max_tokens: 400,
+          system: sys,
+          messages: [{ role: "user", content: user }],
+          tools: [RESULT_TOOL],
+          tool_choice: { type: "tool", name: RESULT_TOOL.name },
         });
-        ai = JSON.parse(comp.choices[0]?.message?.content || "{}");
+        const block = message.content.find((item) => item.type === "tool_use" && item.name === RESULT_TOOL.name);
+        const input = block?.input;
+        if (!input || typeof input !== "object" || !["Yes", "No"].includes(input.live_call)
+          || !["Aspire", "Resync", ""].includes(input.transfer_company)
+          || typeof input.live_call_evidence !== "string"
+          || typeof input.transfer_agent !== "string"
+          || typeof input.transfer_source !== "string"
+          || typeof input.ob_done_no_retention !== "boolean"
+          || typeof input.outcome_summary !== "string") {
+          throw new Error("Claude returned an invalid deal-call classification");
+        }
+        ai = input;
       } catch (e) {
         ai.outcome_summary = `AI error: ${String(e).slice(0, 120)}`;
       }

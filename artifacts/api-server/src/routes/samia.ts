@@ -3,10 +3,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { db, samiaMessagesTable, phoneCallsTable, pbxMissedCallsTable, portalUsersTable } from "@workspace/db";
 import { and, gte, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { createAnthropicClient, usageFields } from "../lib/anthropic.js";
-import { AiRateLimitError, withDurableAiLimit } from "../lib/aiRateLimit.js";
+import { anthropicErrorStatus, anthropicRequestId, createAnthropicClient, sanitizedErrorMessage, usageFields } from "../lib/anthropic.js";
+import { AiRateLimitError, getAiControlTableStatus, postgresErrorCode, withDurableAiLimit } from "../lib/aiRateLimit.js";
 import { extractQuoCallId, getQuoCallArtifacts } from "../lib/quoCall.js";
-import { assistantBlocks, toolResultMessage, validateSamiaPayload } from "../lib/samiaPolicy.js";
+import { assistantBlocks, mapSamiaError, toolResultMessage, validateSamiaPayload } from "../lib/samiaPolicy.js";
 
 const router = Router();
 
@@ -312,6 +312,33 @@ router.get("/samia/call-analysis", requireAuth, requireRole("admin"), async (req
 const SAMIA_MODEL = process.env["ANTHROPIC_SAMIA_MODEL"]?.trim() || "claude-sonnet-5";
 const SAMIA_REQUESTS_PER_MINUTE = Math.max(1, Number(process.env["SAMIA_REQUESTS_PER_MINUTE"] ?? 6) || 6);
 const SAMIA_REQUESTS_PER_DAY = Math.max(1, Number(process.env["SAMIA_REQUESTS_PER_DAY"] ?? 50) || 50);
+
+router.get("/samia/diagnostics", requireAuth, requireRole("admin"), async (req, res) => {
+  let tableStatus = { aiRequestUsageExists: false, qaBiweeklyRunsExists: false };
+  try {
+    tableStatus = await getAiControlTableStatus();
+  } catch (error) {
+    req.log.error({
+      feature: "samia_diagnostics",
+      errorName: error instanceof Error ? error.name : "UnknownError",
+      errorMessage: sanitizedErrorMessage(error),
+      postgresCode: postgresErrorCode(error),
+    }, "samia diagnostics database check failed");
+  }
+  return res.json({
+    anthropicKeyExists: Boolean(process.env["ANTHROPIC_API_KEY"]?.trim()),
+    samiaModel: SAMIA_MODEL,
+    qaModel: process.env["ANTHROPIC_QA_MODEL"]?.trim() || "claude-haiku-4-5",
+    liveTransferModel: process.env["ANTHROPIC_LT_MODEL"]?.trim() || "claude-haiku-4-5",
+    aiRequestUsageExists: tableStatus.aiRequestUsageExists,
+    qaBiweeklyRunsExists: tableStatus.qaBiweeklyRunsExists,
+    rateLimits: {
+      requestsPerMinute: SAMIA_REQUESTS_PER_MINUTE,
+      requestsPerDay: SAMIA_REQUESTS_PER_DAY,
+    },
+    deploymentEnvironment: process.env["VERCEL_ENV"] || process.env["NODE_ENV"] || "unknown",
+  });
+});
 
 function toAnthropicContent(content: unknown): string | Anthropic.ContentBlockParam[] {
   if (typeof content === "string") return content;
@@ -1545,39 +1572,18 @@ Include call ID ${directCallId}. Never add facts absent from the supplied QUO da
       res.setHeader("Retry-After", String(err.retryAfter));
       return res.status(429).json({ error: "Samia request limit reached. Please retry later." });
     }
-    const message = err instanceof Error ? err.message : "";
-    if (message.includes("ANTHROPIC_API_KEY")) {
-      return res.status(500).json({ error: "Samia is missing server-side AI configuration." });
-    }
-    const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : null;
-    const code = typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : status;
-    if (code === 401) {
-      return res.status(502).json({ error: "Claude rejected the configured API key. Update ANTHROPIC_API_KEY on the server." });
-    }
-    if (code === 403) {
-      return res.status(502).json({ error: "The Claude API key does not have access to the configured model." });
-    }
-    if (code === 429) {
-      return res.status(429).json({ error: "Claude is temporarily rate-limited. Please retry shortly." });
-    }
-    if (code === 402) {
-      return res.status(402).json({ error: "The Anthropic account has a billing or payment issue." });
-    }
-    if (code === 404) {
-      return res.status(502).json({
-        error: `Claude model ${SAMIA_MODEL} was not found. Check ANTHROPIC_SAMIA_MODEL on the server.`,
-      });
-    }
-    if (code === 413) {
-      return res.status(413).json({ error: "That message or screenshot is too large for Claude. Try a smaller image." });
-    }
-    if (code === 529) {
-      return res.status(503).json({ error: "Claude is temporarily overloaded. Please retry shortly." });
-    }
-    if (message.toLowerCase().includes("aborted") || message.toLowerCase().includes("timeout")) {
-      return res.status(504).json({ error: "Claude took too long to respond. Please try again." });
-    }
-    return res.status(502).json({ error: "Samia could not get a response from Claude." });
+    req.log.error({
+      feature: "samia",
+      model: SAMIA_MODEL,
+      errorName: err instanceof Error ? err.name : "UnknownError",
+      errorMessage: sanitizedErrorMessage(err),
+      anthropicStatus: anthropicErrorStatus(err),
+      anthropicRequestId: anthropicRequestId(err),
+      postgresCode: postgresErrorCode(err),
+    }, "samia request failed");
+    const mapped = mapSamiaError(err, SAMIA_MODEL);
+    if (mapped.retryAfter) res.setHeader("Retry-After", String(mapped.retryAfter));
+    return res.status(mapped.status).json({ error: mapped.error });
   }
 });
 
