@@ -8146,56 +8146,61 @@ function rmkStatusTone(status: string): string {
 //   2. IDP-Handled         — gid=871007220             (IDP_RETENTION_URL)      → "IDP-Handled"
 //   3. IDP-Cancel-Retained — gid=1018337469            (IDP_CANCEL_RETAINED_URL)→ "Retained"
 //   4. Retained/Cancelled  — retention sheet gid=837339339 (NEW_RETENTION_URL)  → "Retained" or "Cancelled"
-async function fetchRMKSubmissions(): Promise<SheetData> {
-  // Match a sheet's agent name against the fixed Killer roster, resolving
-  // aliases and dash-separated compound names ("riham samir-leah tanner-1234").
-  const matchesRMK = (agentRaw: string): boolean => !!resolveKillerAgentKey(agentRaw);
+async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetData> {
+  const teamNames = rosterTeamMembers(RMK_AGENT_NAMES, roster, "killers");
+  const [backendSheet, retentionSubmissionSheet] = await Promise.all([
+    fetchHeaderCsv(NEW_NSF_URL),
+    fetchHeaderCsv(NEW_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
+  ]);
 
-  // Sources 1–3 share spreadsheet 11kOhk8x — fetch sequentially so Google does
-  // not silently drop concurrent requests on the same workbook. Source 4 is a
-  // different workbook and is fetched alongside.
-  const newRetentionP = fetchHeaderCsv(NEW_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
-  const newRows = await fetchNewSheetForTeam(RMK_AGENT_NAMES).catch(() => [] as Row[]);
-  const idpRows = await fetchIDPSheetForTeam(RMK_AGENT_NAMES).catch(() => [] as Row[]);
-  const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
-  const newRetentionSheet = await newRetentionP;
+  const canonicalize = (rows: Row[]): Row[] => {
+    const out: Row[] = [];
+    for (const row of rows) {
+      const agentRaw = String(row["Agent"] ?? "").trim();
+      const resolved = resolveSheetAgent(agentRaw, roster);
+      if (resolved?.team !== "killers" || resolved.active === false) continue;
+      out.push({ ...row, Agent: resolved.name });
+    }
+    return out;
+  };
 
-  // 3. IDP Cancel Retained → every row is a Retained for the submitting agent.
-  const idpCancelRows: Row[] = [];
-  for (const r of idpCancelSheet.rows) {
-    const d = parseEgyptTimestamp((r["Timestamp"] ?? "").trim());
-    if (!d) continue;
-    const agentRaw = (r["Agent Name"] ?? "").trim();
-    if (!agentRaw || !matchesRMK(agentRaw)) continue;
-    const key = resolveKillerAgentKey(agentRaw);
-    idpCancelRows.push({ Agent: key ? (RMK_DISPLAY[key] ?? agentRaw) : agentRaw, Status: "Retained", Date: toCaliforniaDateStr(d), "File ID": (r["File ID"] ?? "").trim(), __sourceTab: "IDP-Cancel-Retained" });
-  }
-
-  // 4. Retention sheet → keep Retained and Cancelled rows (IDP-Handled rows are
-  // already covered by source 2, so they are skipped here).
   const retentionRows: Row[] = [];
-  for (const r of newRetentionSheet.rows) {
-    const d = parseEgyptTimestamp((r["Timestamp"] ?? "").trim());
+  for (const r of retentionSubmissionSheet.rows) {
+    const tsRaw = (r["Timestamp"] ?? "").trim();
+    const d = parseEgyptTimestamp(tsRaw);
     if (!d) continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
-    if (!agentRaw || !matchesRMK(agentRaw)) continue;
+    if (!sheetCandidateMatchesTeamNames(agentRaw, teamNames, roster, "killers", { source: "rmk:retention-submission", agentColumn: "Agent Name", row: r })) continue;
     const kw = detectKeywordStatus(r);
     const derived = kw ?? deriveNewRetentionStatus(r["Cancel request update"] ?? "");
     if (derived !== "Retained" && derived !== "Cancelled") continue;
-    const key = resolveKillerAgentKey(agentRaw);
-    retentionRows.push({ Agent: key ? (RMK_DISPLAY[key] ?? agentRaw) : agentRaw, Status: derived, Date: toCaliforniaDateStr(d), "File ID": (r["File ID"] ?? "").trim() });
+    retentionRows.push({ Agent: agentRaw, Status: derived, Date: toCaliforniaDateStr(d), "File ID": (r["File ID"] ?? "").trim() });
   }
 
-  const rows = [...newRows, ...idpRows, ...idpCancelRows, ...retentionRows].map((row) => {
-    const key = resolveKillerAgentKey(row.Agent ?? "");
-    return key ? { ...row, Agent: RMK_DISPLAY[key] ?? row.Agent } : row;
-  });
+  const newRows = await fetchNewSheetForTeam(teamNames, roster, "killers", backendSheet);
+  const idpSheet = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
+  const idpRows = await fetchIDPSheetForTeam(teamNames, roster, "killers", idpSheet);
+  const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
 
-  return { headers: ["Agent", "Status", "Date", "File ID"], rows };
-}
+  const idpCancelRows: Row[] = [];
+  for (const r of idpCancelSheet.rows) {
+    const tsRaw = (r["Timestamp"] ?? "").trim();
+    const d = parseEgyptTimestamp(tsRaw);
+    if (!d) continue;
+    const agentRaw = (r["Agent Name"] ?? "").trim();
+    if (!sheetCandidateMatchesTeamNames(agentRaw, teamNames, roster, "killers", { source: "rmk:idp-cancel-retained", agentColumn: "Agent Name", row: r })) continue;
+    idpCancelRows.push({ Agent: agentRaw, Status: "Retained", Date: toCaliforniaDateStr(d), "File ID": (r["File ID"] ?? "").trim(), __sourceTab: "IDP-Cancel-Retained" });
+  }
 
-async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetData> {
-  return fetchBackendStatsSheetForTeam(roster, "killers");
+  const debugRows: LoadedSheetDebugRow[] = [
+    ...debugRowsForRequiredSheet({ sheet: backendSheet, meta: SHEET_SOURCES.backend, panelTeam: "killers", roster, teamNames, statusMode: "fixed" }),
+    ...debugRowsForRequiredSheet({ sheet: idpSheet, meta: SHEET_SOURCES.idpHandled, panelTeam: "killers", roster, teamNames, statusMode: "idp-handled" }),
+    ...debugRowsForRequiredSheet({ sheet: idpCancelSheet, meta: SHEET_SOURCES.idpCancelRetained, panelTeam: "killers", roster, teamNames, statusMode: "idp-cancel-retained" }),
+    ...debugRowsForRequiredSheet({ sheet: retentionSubmissionSheet, meta: SHEET_SOURCES.retentionSubmission, panelTeam: "killers", roster, teamNames, statusMode: "retention-update" }),
+  ];
+
+  const rows = canonicalize([...newRows, ...retentionRows, ...idpRows, ...idpCancelRows]);
+  return { headers: ["Agent", "Status", "Date", "File ID"], rows, debugRows };
 }
 
 function ReadyModeKillersPanel() {
@@ -11473,7 +11478,7 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<BStatR
   return out;
 }
 
-async function fetchBackendStatsSheetForTeam(roster: RosterIndex, team: RosterTeam): Promise<SheetData> {
+async function fetchBackendStatsSheetForTeam(roster: RosterIndex, team: TeamMode): Promise<SheetData> {
   const rows = (await fetchBackendStatsSubmissions(roster))
     .filter((r) => r.team === team)
     .map((r) => ({
