@@ -8195,78 +8195,7 @@ async function fetchRMKSubmissions(): Promise<SheetData> {
 }
 
 async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetData> {
-  const teamNames = rosterTeamMembers(RMK_AGENT_NAMES, roster, "killers");
-  const rows: Row[] = [];
-  const seen = new Set<string>();
-
-  const addSheetRow = (
-    row: Row,
-    sheet: SheetData,
-    meta: SheetSourceMeta,
-    rawIndex: number,
-    status: string,
-    sourceTab: string,
-  ) => {
-    const agentCol = sheetAgentColumn(sheet.headers);
-    const dateCol = sheetDateColumn(sheet.headers);
-    const fileCol = sheetFileIdColumn(sheet.headers);
-    const agentRaw = sheetAgentValue(row, agentCol);
-    if (!agentRaw) return;
-    const rosterHit = resolveSheetAgent(agentRaw, roster);
-    const legacyKey = resolveKillerAgentKey(agentRaw);
-    const isKiller =
-      rosterHit?.team === "killers" ||
-      !!legacyKey ||
-      sheetCandidateMatchesTeamNames(agentRaw, teamNames, roster, "killers");
-    if (!isKiller) return;
-    const d = parseSheetDate(sheetDateValue(row, dateCol), dateCol);
-    if (!d) return;
-    const display = rosterHit?.name ?? (legacyKey ? (RMK_DISPLAY[legacyKey] ?? agentRaw) : agentRaw);
-    const fileId = cell(row, fileCol);
-    const date = toCaliforniaDateStr(d);
-    const key = `${meta.sourceName}:${meta.gid}:${rawIndex}:${display}:${date}:${fileId}:${status}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    rows.push({ Agent: display, Status: status || "Fixed", Date: date, "File ID": fileId, __sourceTab: sourceTab });
-  };
-
-  const newRetentionP = fetchHeaderCsv(NEW_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
-  const backendSheet = await fetchHeaderCsv(NEW_NSF_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
-  const idpSheet = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
-  const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
-  const newRetentionSheet = await newRetentionP;
-
-  for (let i = 0; i < backendSheet.rows.length; i++) {
-    const row = backendSheet.rows[i]!;
-    const kw = detectKeywordStatus(row);
-    const fileStatus = cell(row, findColumnByHeader(backendSheet.headers, ["File Status", "Status", "Result", "Outcome"]));
-    addSheetRow(row, backendSheet, SHEET_SOURCES.backend, i + 2, (kw ?? fileStatus) || "Fixed", "backend");
-  }
-
-  for (let i = 0; i < idpSheet.rows.length; i++) {
-    addSheetRow(idpSheet.rows[i]!, idpSheet, SHEET_SOURCES.idpHandled, i + 2, "IDP-Handled", "idp-handled");
-  }
-
-  for (let i = 0; i < idpCancelSheet.rows.length; i++) {
-    addSheetRow(idpCancelSheet.rows[i]!, idpCancelSheet, SHEET_SOURCES.idpCancelRetained, i + 2, "Retained", "IDP-Cancel-Retained");
-  }
-
-  for (let i = 0; i < newRetentionSheet.rows.length; i++) {
-    const row = newRetentionSheet.rows[i]!;
-    const kw = detectKeywordStatus(row);
-    const derived = kw ?? deriveNewRetentionStatus(row["Cancel request update"] ?? "");
-    if (derived !== "Retained" && derived !== "Cancelled") continue;
-    addSheetRow(row, newRetentionSheet, SHEET_SOURCES.retentionSubmission, i + 2, derived, "Retention Submission");
-  }
-
-  const debugRows: LoadedSheetDebugRow[] = [
-    ...debugRowsForRequiredSheet({ sheet: backendSheet, meta: SHEET_SOURCES.backend, panelTeam: "killers", roster, teamNames, statusMode: "fixed" }),
-    ...debugRowsForRequiredSheet({ sheet: idpSheet, meta: SHEET_SOURCES.idpHandled, panelTeam: "killers", roster, teamNames, statusMode: "idp-handled" }),
-    ...debugRowsForRequiredSheet({ sheet: idpCancelSheet, meta: SHEET_SOURCES.idpCancelRetained, panelTeam: "killers", roster, teamNames, statusMode: "idp-cancel-retained" }),
-    ...debugRowsForRequiredSheet({ sheet: newRetentionSheet, meta: SHEET_SOURCES.retentionSubmission, panelTeam: "killers", roster, teamNames, statusMode: "retention-update" }),
-  ];
-
-  return { headers: ["Agent", "Status", "Date", "File ID"], rows, debugRows };
+  return fetchBackendStatsSheetForTeam(roster, "killers");
 }
 
 function ReadyModeKillersPanel() {
@@ -11544,7 +11473,7 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<BStatR
   return out;
 }
 
-async function fetchBackendStatsSheetForTeam(roster: RosterIndex, team: TeamMode): Promise<SheetData> {
+async function fetchBackendStatsSheetForTeam(roster: RosterIndex, team: RosterTeam): Promise<SheetData> {
   const rows = (await fetchBackendStatsSubmissions(roster))
     .filter((r) => r.team === team)
     .map((r) => ({
