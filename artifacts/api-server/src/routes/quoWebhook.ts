@@ -1,20 +1,39 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import crypto from "node:crypto";
 import { sql } from "drizzle-orm";
 import { db, phoneCallsTable } from "@workspace/db";
 import { logger } from "../lib/logger.js";
+import {
+  processDurableWebhook,
+  sanitizedWebhookErrorCode,
+  type WebhookTerminalStatus,
+} from "../lib/durableWebhook.js";
+import {
+  parseOpenPhoneWebhook,
+  verifyOpenPhoneSignature,
+  webhookTimestampToleranceSeconds,
+  type VerifiedWebhookEvent,
+} from "../lib/openPhoneWebhook.js";
+import { hasProcessedCallCompletion, openPhoneWebhookInbox } from "../lib/webhookInboxStore.js";
 import { classifyLine, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES } from "./quoSync.js";
 
 const router: IRouter = Router();
 
-// ─── Shared live-call state (imported by quo.ts for /api/quo/live) ────────────
-export interface LiveCallEntry { agentName: string; participant: string; ringingSince: Date }
+export interface LiveCallEntry {
+  agentName: string;
+  participant: string;
+  ringingSince: Date;
+}
+
+// This map remains a low-latency view only. Durable event receipt and completed
+// call persistence are database-backed, and /api/quo/live retains its existing
+// provider polling/database fallback behavior.
 export const liveWebhookCalls = new Map<string, LiveCallEntry>();
 
 function purgeExpiredLiveCalls() {
   const cutoff = Date.now() - 2 * 60 * 60 * 1000;
-  for (const [callId, entry] of liveWebhookCalls)
+  for (const [callId, entry] of liveWebhookCalls) {
     if (entry.ringingSince.getTime() < cutoff) liveWebhookCalls.delete(callId);
+  }
 }
 
 const QUO_BASE = "https://api.openphone.com/v1";
@@ -27,87 +46,76 @@ function webhookSecret(): string {
   return process.env["QUO_WEBHOOK_SECRET"] ?? "";
 }
 
-// ─── Signature verification ───────────────────────────────────────────────────
-function verifySignature(body: unknown, header: string | undefined): boolean {
-  const secret = webhookSecret();
-  if (!secret) return false;
-  if (!header) return false;
-  const parts = header.split(";");
-  if (parts.length < 4) return false;
-  const timestamp = parts[2];
-  const provided  = parts[3];
-  const signedData = `${timestamp}.${JSON.stringify(body)}`;
-  const keyBinary  = Buffer.from(secret, "base64").toString("binary");
-  const computed   = crypto
-    .createHmac("sha256", keyBinary)
-    .update(Buffer.from(signedData, "utf8"))
-    .digest("base64");
-  const computedBuffer = Buffer.from(computed);
-  const providedBuffer = Buffer.from(provided);
-  if (computedBuffer.length !== providedBuffer.length) return false;
-  return crypto.timingSafeEqual(computedBuffer, providedBuffer);
+interface LineInfo {
+  id: string;
+  name: string;
+  team: string;
 }
 
-// ─── Line info cache (5-min TTL) ─────────────────────────────────────────────
-interface LineInfo { id: string; name: string; team: string; }
 let lineCache: Map<string, LineInfo> | null = null;
 let lineCachedAt = 0;
 
 async function getLineInfo(phoneNumberId: string): Promise<LineInfo | null> {
+  if (!quoKey()) return lineCache?.get(phoneNumberId) ?? null;
   const now = Date.now();
   if (!lineCache || now - lineCachedAt > 5 * 60 * 1000) {
     try {
       const res = await fetch(`${QUO_BASE}/phone-numbers`, {
         headers: { Authorization: quoKey() },
+        signal: AbortSignal.timeout(2_500),
       });
       if (res.ok) {
         const json = await res.json() as { data: { id: string; name: string }[] };
         lineCache = new Map();
-        for (const l of json.data ?? []) {
-          lineCache.set(l.id, { id: l.id, name: l.name, team: classifyLine(l.name) ?? "unknown" });
+        for (const line of json.data ?? []) {
+          lineCache.set(line.id, {
+            id: line.id,
+            name: line.name,
+            team: classifyLine(line.name) ?? "unknown",
+          });
         }
         lineCachedAt = now;
       }
-    } catch (err) {
-      logger.warn(err, "quoWebhook: failed to refresh line cache");
+    } catch {
+      logger.warn("quoWebhook: failed to refresh line cache");
     }
   }
   return lineCache?.get(phoneNumberId) ?? null;
 }
 
-// ─── User name cache (5-min TTL) ─────────────────────────────────────────────
 let userCache: Map<string, string> | null = null;
 let userCachedAt = 0;
 
 async function getAgentName(userId: string): Promise<string | null> {
   if (USER_ID_OVERRIDES[userId]) return USER_ID_OVERRIDES[userId] ?? null;
+  if (!quoKey()) return userCache?.get(userId) ?? null;
   const now = Date.now();
   if (!userCache || now - userCachedAt > 5 * 60 * 1000) {
     try {
       const res = await fetch(`${QUO_BASE}/users`, {
         headers: { Authorization: quoKey() },
+        signal: AbortSignal.timeout(2_500),
       });
       if (res.ok) {
         const json = await res.json() as {
           data: { id: string; firstName: string; lastName: string; email?: string }[];
         };
         userCache = new Map();
-        for (const u of json.data ?? []) {
-          const emailKey = u.email?.toLowerCase().trim() ?? "";
+        for (const user of json.data ?? []) {
+          const emailKey = user.email?.toLowerCase().trim() ?? "";
           const name = (emailKey && USER_EMAIL_OVERRIDES[emailKey])
-            ?? `${u.firstName} ${u.lastName}`.trim();
-          userCache.set(u.id, name);
+            ?? `${user.firstName} ${user.lastName}`.trim();
+          userCache.set(user.id, name);
         }
         userCachedAt = now;
       }
-    } catch (err) {
-      logger.warn(err, "quoWebhook: failed to refresh user cache");
+    } catch {
+      logger.warn("quoWebhook: failed to refresh user cache");
     }
   }
   return userCache?.get(userId) ?? null;
 }
 
-// ─── Call object shape from Quo webhook ──────────────────────────────────────
 interface WebhookCall {
   id?: string;
   from?: string;
@@ -130,6 +138,7 @@ function secondsBetween(start?: string | null, end?: string | null): number | nu
   return Math.max(0, Math.round(ms / 1000));
 }
 
+// Keep the pre-hardening status interpretation and KPI thresholds unchanged.
 function classifyWebhookStatus(call: WebhookCall, postAnswerSeconds: number | null): string {
   const rawStatus = call.status ?? "completed";
 
@@ -169,18 +178,17 @@ async function handleCallCompleted(obj: Record<string, unknown>) {
     return;
   }
 
-  const lineInfo  = await getLineInfo(call.phoneNumberId);
-  const lineName  = lineInfo?.name ?? call.phoneNumberId;
-  const lineTeam  = lineInfo?.team ?? "unknown";
-
+  const [lineInfo, agentName] = await Promise.all([
+    getLineInfo(call.phoneNumberId),
+    call.userId ? getAgentName(call.userId) : Promise.resolve(null),
+  ]);
+  const lineName = lineInfo?.name ?? call.phoneNumberId;
+  const lineTeam = lineInfo?.team ?? "unknown";
   const participant = call.direction === "outgoing" ? (call.to ?? "") : (call.from ?? "");
-
   const postAnswerSeconds = secondsBetween(call.answeredAt, call.completedAt);
   const ringDurationSeconds = secondsBetween(call.createdAt, call.completedAt);
   const durationSeconds = postAnswerSeconds ?? call.voicemail?.duration ?? 0;
   const effectiveStatus = classifyWebhookStatus(call, postAnswerSeconds);
-
-  const agentName = call.userId ? await getAgentName(call.userId) : null;
 
   await db
     .insert(phoneCallsTable)
@@ -189,11 +197,11 @@ async function handleCallCompleted(obj: Record<string, unknown>) {
       lineId: call.phoneNumberId,
       lineName,
       lineTeam,
-      agentId:   call.userId ?? null,
+      agentId: call.userId ?? null,
       agentName,
       participant,
-      direction:       call.direction ?? "unknown",
-      status:          effectiveStatus,
+      direction: call.direction ?? "unknown",
+      status: effectiveStatus,
       durationSeconds,
       postAnswerSeconds,
       ringDurationSeconds,
@@ -219,60 +227,128 @@ async function handleCallCompleted(obj: Record<string, unknown>) {
     });
 
   logger.info(
-    { callId: call.id, lineName, lineTeam, agentName, direction: call.direction, status: effectiveStatus, durationSeconds },
+    { callId: call.id, eventType: "call.completed", status: effectiveStatus, durationSeconds },
     "quoWebhook: upserted call.completed",
   );
 }
 
-// ─── POST /api/quo/webhook ────────────────────────────────────────────────────
+async function processOpenPhoneEvent(delivery: VerifiedWebhookEvent): Promise<WebhookTerminalStatus> {
+  const type = delivery.eventType;
+  const obj = delivery.event.data?.object ?? {};
+
+  logger.info(
+    { providerEventId: delivery.providerEventId, eventType: type },
+    "quoWebhook: processing event",
+  );
+  purgeExpiredLiveCalls();
+
+  if (type === "call.ringing" || type === "call.answered") {
+    const call = obj as {
+      id?: string;
+      userId?: string | null;
+      from?: string;
+      to?: string;
+      direction?: string;
+    };
+    if (call.id && call.userId) {
+      // A delayed ringing/answered delivery must not resurrect a call that has
+      // already completed. The completion check is durable across processes.
+      if (await hasProcessedCallCompletion(call.id)) {
+        logger.info(
+          { providerEventId: delivery.providerEventId, eventType: type, callId: call.id },
+          "quoWebhook: ignored late live-call event",
+        );
+        return "processed";
+      }
+      const agentName = await getAgentName(call.userId).catch(() => call.userId!);
+      const participant = call.direction === "outgoing" ? (call.to ?? "") : (call.from ?? "");
+      liveWebhookCalls.set(call.id, {
+        agentName: agentName ?? call.userId,
+        participant,
+        ringingSince: new Date(),
+      });
+      logger.info(
+        { providerEventId: delivery.providerEventId, eventType: type, callId: call.id },
+        "quoWebhook: agent now live",
+      );
+    }
+    return "processed";
+  }
+
+  if (type === "call.completed") {
+    const call = obj as { id?: string };
+    if (call.id) {
+      liveWebhookCalls.delete(call.id);
+      logger.info(
+        { providerEventId: delivery.providerEventId, eventType: type, callId: call.id },
+        "quoWebhook: agent cleared",
+      );
+    }
+    await handleCallCompleted(obj);
+    return "processed";
+  }
+
+  // Existing behavior acknowledges other configured events without applying
+  // them to dashboard calculations. They are still durably recorded.
+  return "ignored";
+}
+
 async function handleOpenPhoneWebhook(req: Request, res: Response) {
   if (!webhookSecret()) {
     logger.error("quoWebhook: QUO_WEBHOOK_SECRET is not configured");
     return res.status(503).json({ error: "Webhook verification is not configured" });
   }
-  const sig = req.headers["openphone-signature"] as string | undefined;
+  if (!Buffer.isBuffer(req.body)) {
+    logger.warn("quoWebhook: request did not contain an application/json raw body");
+    return res.status(415).json({ error: "Unsupported Media Type" });
+  }
 
-  if (!verifySignature(req.body, sig)) {
-    logger.warn("quoWebhook: signature verification failed");
+  const verification = verifyOpenPhoneSignature(
+    req.body,
+    req.get("openphone-signature"),
+    webhookSecret(),
+    { toleranceSeconds: webhookTimestampToleranceSeconds() },
+  );
+  if (!verification.valid) {
+    logger.warn({ reason: verification.reason }, "quoWebhook: signature verification failed");
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  // Always respond 200 immediately so Quo doesn't retry
-  res.json({ ok: true });
-
-  const event = req.body as {
-    type?: string;
-    data?: { object?: Record<string, unknown> };
-  };
-  const type = event?.type ?? "";
-  const obj  = event?.data?.object ?? {};
-
-  logger.info({ type }, "quoWebhook: received event");
-
-  purgeExpiredLiveCalls();
-
-  if (type === "call.ringing" || type === "call.answered") {
-    // Track live call immediately from webhook — no poll lag
-    const call = obj as { id?: string; userId?: string | null; from?: string; to?: string; direction?: string };
-    if (call.id && call.userId) {
-      const agentName = await getAgentName(call.userId).catch(() => call.userId!);
-      const participant = call.direction === "outgoing" ? (call.to ?? "") : (call.from ?? "");
-      liveWebhookCalls.set(call.id, { agentName: agentName ?? call.userId!, participant, ringingSince: new Date() });
-      logger.info({ callId: call.id, agentName, participant, type }, "quoWebhook: agent now live");
-    }
-  } else if (type === "call.completed") {
-    const call = obj as { id?: string };
-    if (call.id) {
-      const entry = liveWebhookCalls.get(call.id);
-      liveWebhookCalls.delete(call.id);
-      if (entry) logger.info({ callId: call.id, agentName: entry.agentName }, "quoWebhook: agent cleared");
-    }
-    handleCallCompleted(obj).catch((err) => {
-      logger.error(err, "quoWebhook: handleCallCompleted error");
-    });
+  let delivery: VerifiedWebhookEvent;
+  try {
+    delivery = parseOpenPhoneWebhook(req.body);
+  } catch {
+    logger.warn("quoWebhook: rejected malformed signed event envelope");
+    return res.status(400).json({ error: "Invalid webhook payload" });
   }
-  // call.summary.completed, message.*, contact.* — acknowledged, not processed
-  return;
+
+  try {
+    const result = await processDurableWebhook(
+      delivery,
+      openPhoneWebhookInbox,
+      processOpenPhoneEvent,
+    );
+    if (result === "collision") {
+      logger.error(
+        { providerEventId: delivery.providerEventId, eventType: delivery.eventType },
+        "quoWebhook: provider event id reused with a different payload",
+      );
+      return res.status(409).json({ error: "Webhook event conflict" });
+    }
+    if (result === "busy") {
+      res.setHeader("Retry-After", "5");
+      return res.status(503).json({ error: "Webhook processing in progress" });
+    }
+    return res.json({ ok: true });
+  } catch (error) {
+    const errorCode = sanitizedWebhookErrorCode(error);
+    logger.error(
+      { providerEventId: delivery.providerEventId, eventType: delivery.eventType, errorCode },
+      "quoWebhook: durable processing failed",
+    );
+    res.setHeader("Retry-After", "5");
+    return res.status(503).json({ error: "Webhook processing failed" });
+  }
 }
 
 router.post("/quo/webhook", handleOpenPhoneWebhook);

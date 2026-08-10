@@ -10,6 +10,7 @@
     "test": "tsx --test src/lib/anthropic-features.test.ts src/lib/dashboard-actions.test.ts src/baseline/regression.test.ts",
     "test:baseline": "tsx --test src/baseline/regression.test.ts",
     "test:security": "tsx --test src/security/*.test.ts",
+    "test:webhooks:integration": "tsx --test src/security/webhooks.integration.test.ts",
     "test:smoke": "tsx --test src/baseline/smoke.test.ts",
     "baseline:serve": "tsx src/baseline/server.ts",
     "setup-admin": "node ./scripts/setup-admin.mjs",

@@ -43,6 +43,13 @@
       "when": 1786338000000,
       "tag": "0005_login_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786424400000,
+      "tag": "0006_webhook_inbox",
+      "breakpoints": true
     }
   ]
 }

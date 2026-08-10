@@ -61,6 +61,13 @@ app.use((req, res, next) => {
 // Samia accepts at most two screenshots; give that authenticated route enough
 // room for base64 payloads while preserving the smaller default limit elsewhere.
 app.use("/api/samia/chat", express.json({ limit: "8mb" }));
+// Signature verification must receive the exact bytes delivered by Quo. Mount
+// this before the general JSON parser so whitespace and property order are not
+// changed by a parse/serialize round trip.
+app.use(
+  ["/api/quo/webhook", "/api/openphone/webhook"],
+  express.raw({ type: "application/json", limit: "1mb" }),
+);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
