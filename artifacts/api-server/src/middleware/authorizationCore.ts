@@ -1,5 +1,6 @@
 import type { Permission } from "@workspace/db/schema";
 import type { AuthPayload } from "./authCore.js";
+import { businessDayWindow, formatCalendarDate } from "../lib/businessTime.js";
 
 export const DASHBOARD_TABS = [
   "backend-stats",
@@ -103,20 +104,12 @@ export function canAccessAttendanceDepartment(user: AuthPayload, department: str
 }
 
 export function todayInLosAngeles(now = new Date()): string {
-  return now.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  return formatCalendarDate(now);
 }
 
 function losAngelesDayBounds(date: string): { from: number; to: number } {
-  const noonUtc = new Date(`${date}T12:00:00Z`);
-  const offsetParts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Los_Angeles",
-    timeZoneName: "longOffset",
-  }).formatToParts(noonUtc);
-  const offset = offsetParts.find((part) => part.type === "timeZoneName")?.value.match(/GMT([+-])(\d{2}):(\d{2})/);
-  const sign = offset?.[1] === "-" ? -1 : 1;
-  const offsetMinutes = offset ? sign * (Number(offset[2]) * 60 + Number(offset[3])) : -8 * 60;
-  const from = Date.parse(`${date}T00:00:00Z`) - offsetMinutes * 60_000;
-  return { from, to: from + 24 * 60 * 60_000 };
+  const window = businessDayWindow(date);
+  return { from: window.start.getTime(), to: window.endExclusive.getTime() };
 }
 
 function isTodayValue(value: string, today: string): boolean {

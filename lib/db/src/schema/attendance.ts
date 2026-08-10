@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp, unique, index } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, unique, index, date } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -24,6 +24,7 @@ export const attendanceRecordsTable = pgTable(
       .notNull()
       .references(() => attendanceMembersTable.id, { onDelete: "cascade" }),
     date: text("date").notNull(),
+    dateValue: date("attendance_date", { mode: "string" }),
     status: text("status").notNull().default(""),
     note: text("note"),
     coaching: boolean("coaching").notNull().default(false),

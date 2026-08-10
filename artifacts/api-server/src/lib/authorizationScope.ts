@@ -7,6 +7,7 @@ import {
   todayInLosAngeles,
   type MetricTeam,
 } from "../middleware/authorizationCore.js";
+import { formatCalendarDate } from "./businessTime.js";
 
 export interface AuthorizationAgent {
   name: string;
@@ -88,7 +89,7 @@ function sheetCalendarDate(value: string): string | null {
   if (us) return `${us[3]}-${us[1]!.padStart(2, "0")}-${us[2]!.padStart(2, "0")}`;
   const parsed = new Date(value);
   if (!Number.isFinite(parsed.getTime())) return null;
-  return parsed.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  return formatCalendarDate(parsed);
 }
 
 export function scopeSheetData(

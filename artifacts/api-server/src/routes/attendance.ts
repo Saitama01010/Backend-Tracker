@@ -13,10 +13,12 @@ import {
   addAttendanceCalendarDays,
   attendanceDate,
   attendanceStartOfDay,
-  type AttendanceStatus,
+  canonicalAttendanceStatus,
 } from "../lib/attendancePolicy.js";
 import {
   activeAttendanceMembers,
+  attendanceRecordDate,
+  attendanceRecordSelection,
   resolveActiveAttendanceMember,
   resolveActiveAttendanceMemberFromList,
   setAttendanceRecord,
@@ -42,6 +44,8 @@ import {
   validateOptionalWorkflowRange,
   validateWorkflowCalendarDate,
 } from "../lib/sensitiveWorkflowPolicy.js";
+import { attendanceShiftStart, parseBusinessTimestampCompatibility } from "../lib/businessTime.js";
+import { googleCsvUrl, OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 
 const router = Router();
 router.use("/attendance", requireAuth);
@@ -53,13 +57,14 @@ const MONTH_MAP: Record<string, string> = {
   Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12",
 };
 
-function parseSheetDate(raw: string): string | null {
+export function parseAttendanceImportDate(raw: string, year = OPERATIONAL_CONFIG.attendanceImportYear): string | null {
   const m = raw.trim().match(/^(\d{1,2})-([A-Za-z]{3})$/);
   if (!m) return null;
   const mon = MONTH_MAP[m[2]];
   if (!mon) return null;
   const day = m[1].padStart(2, "0");
-  return `2026-${mon}-${day}`;
+  const date = `${year}-${mon}-${day}`;
+  return validateWorkflowCalendarDate(date) ? date : null;
 }
 
 function parseCSV(text: string): string[][] {
@@ -80,24 +85,14 @@ function parseCSV(text: string): string[][] {
   return rows;
 }
 
-function normalizeStatus(raw: string): string {
-  const s = raw.trim().toLowerCase();
-  if (s === "in") return "in";
-  if (s === "off") return "off";
-  if (s === "late") return "late";
-  if (s === "pto") return "pto";
-  if (s === "absent") return "absent";
-  if (s === "nsnc") return "nsnc";
-  return "";
-}
-
 // ─── Timezone helpers ─────────────────────────────────────────────────────────
 //
-// All attendance dates and shift times are in America/Los_Angeles (PDT/PST).
-// Shift N = N:00 LA time (24-hour). E.g. shift 15 = 3:00 PM PDT.
+// Attendance calendar dates use the configured business timezone. Historical
+// shift instants retain the legacy offset formula through the configured
+// cutover; new dates resolve the stored shift as an Africa/Cairo wall time.
 //
-// Quo DB timestamps are UTC (TIMESTAMPTZ). VoS/PBX timestamps are PDT (no TZ
-// indicator, parsePdt appends -07:00). Both are compared against UTC windows.
+// Quo DB timestamps are UTC (TIMESTAMPTZ). Zoneless VoS/PBX timestamps are
+// resolved with the business timezone rules that apply on the record date.
 
 // Returns the UTC instant corresponding to midnight (00:00:00) in LA time
 // for the given YYYY-MM-DD date string. Handles PDT (UTC-7) and PST (UTC-8).
@@ -118,8 +113,8 @@ function canAccessAttendanceMember(
 
 router.get("/attendance", async (req, res) => {
   try {
-    const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-    const to = (req.query["to"] as string) || new Date().toISOString().slice(0, 10);
+    const to = (req.query["to"] as string) || attendanceDate();
+    const from = (req.query["from"] as string) || addAttendanceCalendarDays(to, -30);
     const requestedRange = validateOptionalWorkflowRange(from, to);
     if (!requestedRange.ok) {
       res.status(400).json({ error: requestedRange.error });
@@ -141,13 +136,13 @@ router.get("/attendance", async (req, res) => {
     const records =
       members.length > 0
         ? await db
-            .select()
+            .select(attendanceRecordSelection)
             .from(attendanceRecordsTable)
             .where(
               and(
                 inArray(attendanceRecordsTable.memberId, members.map((m) => m.id)),
-                gte(attendanceRecordsTable.date, from),
-                lte(attendanceRecordsTable.date, to),
+                gte(attendanceRecordDate, from),
+                lte(attendanceRecordDate, to),
               ),
             )
         : [];
@@ -236,7 +231,7 @@ router.put("/attendance/record", requireAuth, requirePermission("edit_attendance
     const result = await setAttendanceRecord({
       memberId,
       date,
-      status: status as AttendanceStatus,
+      status,
       note: note ?? null,
       coaching: coaching ?? false,
       overwrite: true,
@@ -258,16 +253,10 @@ router.post("/attendance/import", requireAuth, requirePermission("manage_members
       res.status(403).json({ error: "Forbidden", reason: "The attendance import spans multiple departments." });
       return;
     }
-    const SHEETS = [
-      {
-        url: "https://docs.google.com/spreadsheets/d/16qoZESE0gGQPdOXQUSh2JsadWDmUE7OyCajRwBy0E38/export?format=csv&gid=2116872008",
-        department: "CS",
-      },
-      {
-        url: "https://docs.google.com/spreadsheets/d/1qF5Dc5quGrAywf5Rtx4q7DrX91VlNIFOfKr-REoSkII/export?format=csv&gid=655352634",
-        department: "Backend",
-      },
-    ];
+    const SHEETS = OPERATIONAL_CONFIG.attendanceImportSources.map((source) => ({
+      url: googleCsvUrl(source),
+      department: source.department,
+    }));
 
     const sourceRows = await Promise.all(SHEETS.map(async ({ url, department }) => {
       const response = await fetch(url);
@@ -284,7 +273,7 @@ router.post("/attendance/import", requireAuth, requirePermission("manage_members
       const header = rows[0];
       const dateIndices: { idx: number; iso: string }[] = [];
       for (let i = 2; i < header.length; i++) {
-        const iso = parseSheetDate(header[i] ?? "");
+        const iso = parseAttendanceImportDate(header[i] ?? "");
         if (iso) dateIndices.push({ idx: i, iso });
       }
       if (dateIndices.length === 0) throw new AttendanceImportSourceError();
@@ -298,8 +287,9 @@ router.post("/attendance/import", requireAuth, requirePermission("manage_members
         const records: Array<{ date: string; status: string }> = [];
         for (const { idx, iso } of dateIndices) {
           const rawStatus = row[idx]?.trim() ?? "";
-          const status = normalizeStatus(rawStatus);
           if (!rawStatus) continue;
+          const status = canonicalAttendanceStatus(rawStatus);
+          if (!status) throw new AttendanceImportSourceError();
           records.push({ date: iso, status });
         }
         importCandidates.push({ name, shift, department, records });
@@ -340,7 +330,7 @@ router.post("/attendance/import", requireAuth, requirePermission("manage_members
       const pendingRecords = [...importedMembers].flatMap(([key, member]) => {
         const memberId = memberIds.get(key);
         if (memberId === undefined) throw new Error("Attendance import member persistence failed");
-        return member.records.map((record) => ({ memberId, ...record }));
+        return member.records.map((record) => ({ memberId, ...record, dateValue: record.date }));
       });
       const chunkSize = 500;
       for (let offset = 0; offset < pendingRecords.length; offset += chunkSize) {
@@ -380,9 +370,7 @@ function lateNote(minsLate: number): string {
 // VoS/PBX timestamps have no timezone indicator and are in PDT (UTC-7).
 // Quo DB timestamps are stored as UTC (TIMESTAMPTZ from OpenPhone API).
 function parsePdt(s: string): Date {
-  // If the string already has a timezone (+, -, or Z) treat it as-is.
-  if (/[Z+]/.test(s) || (s.includes('-') && s.lastIndexOf('-') > 7)) return new Date(s);
-  return new Date(s + '-07:00');
+  return parseBusinessTimestampCompatibility(s);
 }
 
 // Build a Quo calls map: agentName (lowercase) → all call timestamps within the day window.
@@ -425,7 +413,7 @@ function resolveFirstCall(
   if (!shiftStartUtc) return null;
   const floor = dayStartUtc;
 
-  const agentNames: string[] = MEMBER_TO_AGENT_NAMES[member.name]
+  const agentNames: readonly string[] = MEMBER_TO_AGENT_NAMES[member.name]
     ?? [member.name.split("-")[0].trim(), member.name];
 
   let firstCallAt: Date | null = null;
@@ -489,19 +477,16 @@ router.get("/attendance/call-logs", async (req, res) => {
       .filter((member) => canAccessAttendanceMember(req.user!, member));
 
     const existingRecords = members.length > 0
-      ? await db.select().from(attendanceRecordsTable)
-          .where(and(inArray(attendanceRecordsTable.memberId, members.map((m) => m.id)), eq(attendanceRecordsTable.date, date)))
+      ? await db.select(attendanceRecordSelection).from(attendanceRecordsTable)
+          .where(and(inArray(attendanceRecordsTable.memberId, members.map((m) => m.id)), eq(attendanceRecordDate, date)))
       : [];
     const existingMap = new Map(existingRecords.map((r) => [r.memberId, r]));
 
     const agents = members.map((member) => {
       const shiftNum = parseInt(member.shift || "0");
-      // Shift N = N PM Egypt time. Egypt = UTC+2, PDT = UTC-7 → subtract 9h → PDT hour = shiftNum + 3
-      // e.g. shift 4 (4 PM EGY = 16:00 EGY) → 7:00 PDT; shift 8 → 11:00 PDT
-      const pdtHour = shiftNum ? shiftNum + 3 : 0;
-      const shiftStartUtc = pdtHour
-        ? new Date(dayStartUtc.getTime() + pdtHour * 3600 * 1000)
-        : null;
+      // Shift N is an Egypt wall-clock PM hour. The shared policy preserves the
+      // legacy offset before the configured cutover and uses IANA timezone data after it.
+      const shiftStartUtc = shiftNum ? attendanceShiftStart(date, shiftNum) : null;
       // ISO string of shift start (for AI/display use)
       const shiftStartLA = shiftStartUtc ? shiftStartUtc.toISOString() : null;
 
@@ -575,7 +560,7 @@ router.post("/attendance/set", requireAuth, requirePermission("edit_attendance")
       memberId: record.memberId,
       memberName: record.memberName,
       date: record.date,
-      status: record.status as AttendanceStatus,
+      status: record.status,
       note: record.note,
       coaching: record.coaching,
       overwrite: force,
@@ -648,9 +633,9 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
     const members = (await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true)))
       .filter((member) => canAccessAttendanceMember(req.user!, member));
 
-    const existingRecords = await db.select()
+    const existingRecords = await db.select({ memberId: attendanceRecordsTable.memberId })
       .from(attendanceRecordsTable)
-      .where(eq(attendanceRecordsTable.date, targetDate));
+      .where(eq(attendanceRecordDate, targetDate));
     const existingSet = new Set(existingRecords.map((r) => r.memberId));
 
     const results: { name: string; status: string; note: string; skipped?: string }[] = [];
@@ -660,10 +645,9 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
       const shiftNum = parseInt(member.shift || "0");
       if (!shiftNum) { results.push({ name: member.name, status: "", note: "", skipped: "no shift" }); continue; }
 
-      // Shift N = N PM Egypt time. Egypt = UTC+2, PDT = UTC-7 → pdtHour = shiftNum + 3
-      // e.g. shift 4 (4 PM EGY) → 7 AM PDT; shift 8 (8 PM EGY) → 11 AM PDT
-      const pdtHour = shiftNum + 3;
-      const shiftStartUtc = new Date(dayStartUtc.getTime() + pdtHour * 3600 * 1000);
+      // Resolve the Egypt wall-clock shift through the compatibility cutover.
+      const shiftStartUtc = attendanceShiftStart(targetDate, shiftNum);
+      if (!shiftStartUtc) { results.push({ name: member.name, status: "", note: "", skipped: "invalid shift" }); continue; }
 
       // For today: skip if shift hasn't started. For past dates: always process.
       if (isToday && nowUtc < shiftStartUtc) {
@@ -688,7 +672,7 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
       const status = minsLate <= GRACE_MINS ? "in" : "late";
       const note   = minsLate <= GRACE_MINS ? "" : lateNote(minsLate);
 
-      pending.push({ memberId: member.id, date: targetDate, status, note: note || null, coaching: false });
+      pending.push({ memberId: member.id, date: targetDate, dateValue: targetDate, status, note: note || null, coaching: false });
       results.push({ name: member.name, status, note });
     }
 

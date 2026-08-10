@@ -50,6 +50,8 @@ import {
   type CapabilityExecutionResult,
   type SamiaCapabilityName,
 } from "../lib/samiaCapabilities.js";
+import { businessDayWindow, startOfBusinessDay } from "../lib/businessTime.js";
+import { googleCsvUrl, OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 
 const router = Router();
 
@@ -263,8 +265,9 @@ router.get("/samia/call-analysis", requireAuth, requireRole("admin"), async (req
       // Date window in LA time → UTC
       let dayStart: Date, dayEnd: Date;
       if (dateStr) {
-        dayStart = new Date(`${dateStr}T00:00:00-07:00`);
-        dayEnd   = new Date(`${dateStr}T23:59:59-07:00`);
+        const window = businessDayWindow(dateStr);
+        dayStart = window.start;
+        dayEnd = new Date(window.endExclusive.getTime() - 1);
       } else {
         dayEnd   = new Date();
         // Wider window when searching by phone — customers may have called days ago.
@@ -363,7 +366,7 @@ router.get("/samia/call-analysis", requireAuth, requireRole("admin"), async (req
   }
 });
 
-const SAMIA_MODEL = process.env["ANTHROPIC_SAMIA_MODEL"]?.trim() || "claude-sonnet-5";
+const SAMIA_MODEL = OPERATIONAL_CONFIG.aiModels.samia;
 const SAMIA_REQUESTS_PER_MINUTE = Math.max(1, Number(process.env["SAMIA_REQUESTS_PER_MINUTE"] ?? 6) || 6);
 const SAMIA_REQUESTS_PER_DAY = Math.max(1, Number(process.env["SAMIA_REQUESTS_PER_DAY"] ?? 50) || 50);
 
@@ -382,8 +385,8 @@ router.get("/samia/diagnostics", requireAuth, requireRole("admin"), async (req, 
   return res.json({
     anthropicKeyExists: Boolean(process.env["ANTHROPIC_API_KEY"]?.trim()),
     samiaModel: SAMIA_MODEL,
-    qaModel: process.env["ANTHROPIC_QA_MODEL"]?.trim() || "claude-haiku-4-5",
-    liveTransferModel: process.env["ANTHROPIC_LT_MODEL"]?.trim() || "claude-haiku-4-5",
+    qaModel: OPERATIONAL_CONFIG.aiModels.qa,
+    liveTransferModel: OPERATIONAL_CONFIG.aiModels.liveTransfers,
     aiRequestUsageExists: tableStatus.aiRequestUsageExists,
     qaBiweeklyRunsExists: tableStatus.qaBiweeklyRunsExists,
     rateLimits: {
@@ -1439,14 +1442,15 @@ ${dataProtector.wrap("quo_phone_calls", JSON.stringify(verifiedCalls), 20_000)}`
 
     const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
     const monthStr = todayStr.slice(0, 7);
-    const todayStart = `${todayStr}T00:00:00.000Z`;
+    const todayStart = startOfBusinessDay(todayStr).toISOString();
+    const monthStart = startOfBusinessDay(`${monthStr}-01`).toISOString();
     const nowStr = new Date().toISOString();
 
-    const CUTOVER = "2026-05-04";
-    const OLD_RETENTION_URL = "https://docs.google.com/spreadsheets/d/1qF5Dc5quGrAywf5Rtx4q7DrX91VlNIFOfKr-REoSkII/export?format=csv&gid=0";
-    const NEW_RETENTION_URL = "https://docs.google.com/spreadsheets/d/1Eje6BABFbmRGHa6D1ET2sMvlE8o61iJ71yOvydD-R3o/export?format=csv&gid=837339339";
-    const OLD_NSF_URL = "https://docs.google.com/spreadsheets/d/16qoZESE0gGQPdOXQUSh2JsadWDmUE7OyCajRwBy0E38/export?format=csv&gid=0";
-    const NEW_NSF_URL = "https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=0";
+    const CUTOVER = OPERATIONAL_CONFIG.retentionCutoverDate;
+    const OLD_RETENTION_URL = googleCsvUrl(OPERATIONAL_CONFIG.dashboardSheets.oldRetention);
+    const NEW_RETENTION_URL = googleCsvUrl(OPERATIONAL_CONFIG.dashboardSheets.newRetention);
+    const OLD_NSF_URL = googleCsvUrl(OPERATIONAL_CONFIG.dashboardSheets.oldNsf);
+    const NEW_NSF_URL = googleCsvUrl(OPERATIONAL_CONFIG.dashboardSheets.newNsf);
 
     // Fetch dashboard context only when the admin asks dashboard/stat questions.
     const [
@@ -1464,7 +1468,7 @@ ${dataProtector.wrap("quo_phone_calls", JSON.stringify(verifiedCalls), 20_000)}`
       ? await Promise.allSettled([
           internalJson(req, "/api/vos/stats"),
           internalJson(req, `/api/quo/stats?from=${encodeURIComponent(todayStart)}&to=${encodeURIComponent(nowStr)}`),
-          internalJson(req, `/api/quo/stats?from=${encodeURIComponent(monthStr + "T00:00:00.000Z")}&to=${encodeURIComponent(nowStr)}`),
+          internalJson(req, `/api/quo/stats?from=${encodeURIComponent(monthStart)}&to=${encodeURIComponent(nowStr)}`),
           internalJson(req, "/api/vos/missed-hourly"),
           internalJson(req, "/api/vos/missed-daily"),
           internalJson(req, "/api/vos/missed-no-callback"),

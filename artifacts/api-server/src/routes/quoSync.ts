@@ -1,6 +1,7 @@
 import { db, phoneCallsTable, phoneSyncStateTable } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
+import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 
 const QUO_KEY = process.env.QUO_API_KEY ?? "";
 const BASE = "https://api.openphone.com/v1";
@@ -27,24 +28,7 @@ async function quoFetch<T>(path: string, attempt = 0): Promise<T> {
 }
 
 // Exact line name → team overrides (takes priority over regex, handles moved agents)
-const LINE_TEAM_MAP: Record<string, "retention" | "nsf" | "cs"> = {
-  "ahmed ayman-levi miller":         "retention", // Ahmed Ayman → Retention
-  "youssef nady-jacob xander":       "cs",
-  "nour-michael belfort-2900":       "retention", // Michael Belfort → Retention
-  "levi ob":                         "retention", // Ahmed Ayman → Retention
-  "levi cs ob":                      "retention", // Ahmed Ayman → Retention
-  "talia nsf":                       "retention", // Talia Morgan → Retention
-  "talia morgan cs ob":              "retention", // Talia Morgan → Retention
-  "jacob ob":                        "cs",        // Youssef Nady → CS
-  "jacob cs ob":                     "retention", // Jacob Xander → Retention
-  "adam ob":                         "retention",
-  "rick ob":                         "retention",
-  "ryan ob":                         "retention",
-  "abdlrhman-jacob stephenson":      "retention",
-  "zeiad fouad-zack ford":           "retention",
-  "mohammed ayman-max francis-2268": "retention",
-  "max - ma":                        "retention",
-};
+const LINE_TEAM_MAP = OPERATIONAL_CONFIG.lineTeamMap;
 
 export function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   const n = name.toLowerCase().trim();

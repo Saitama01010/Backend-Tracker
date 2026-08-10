@@ -438,8 +438,10 @@ test("existing reviews are reused unless an admin explicitly forces reevaluation
 
 test("Live Transfer classification uses strict Anthropic tools and has no startup job", async () => {
   const source = await readFile(path.join(routesDir, "liveTransfers.ts"), "utf8");
+  const configSource = await readFile(path.resolve(routesDir, "../lib/operationalConfig.ts"), "utf8");
   const indexSource = await readFile(path.join(routesDir, "index.ts"), "utf8");
-  assert.match(source, /ANTHROPIC_LT_MODEL/);
+  assert.match(source, /OPERATIONAL_CONFIG\.aiModels\.liveTransfers/);
+  assert.match(configSource, /ANTHROPIC_LT_MODEL/);
   assert.match(source, /createAnthropicToolMessage/);
   assert.match(source, /record_live_transfer_classification/);
   assert.equal(indexSource.includes("startLiveTransfersBackground"), false);

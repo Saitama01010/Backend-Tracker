@@ -10,6 +10,7 @@ import {
   approvedReadyModeProbePath,
   validateIntegrationDateRange,
 } from "../lib/externalIntegrationPolicy.js";
+import { googleCsvUrl, OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 
 const router = Router();
 router.use("/readymode", requireAuth);
@@ -52,7 +53,7 @@ async function getSession(): Promise<string> {
   params.set("login_password", password);
   params.set("then", "");
   params.set("use_phone_module", "auto");
-  params.set("user_tz", "America/Los_Angeles");
+  params.set("user_tz", OPERATIONAL_CONFIG.businessTimeZone);
 
   const postRes = await fetch(`${RM_BASE}/login_new/`, {
     method: "POST",
@@ -263,8 +264,7 @@ const REPORT_PROBE_PATHS = [
 // scraper. The sheet is published with daily ReadyMode agent reports
 // (Day/date, Name, Ready (t), Break (t), Logged calls, Transfers,
 //  Ready:Avg wait, Ready:Avg wrap, Ready:Talk Time).
-const READYMODE_CSV_URL =
-  "https://docs.google.com/spreadsheets/d/1wjOupcSaJMl7uSvZEQsoVl2J-US-62HamjVLvKHl-fM/export?format=csv&gid=0";
+const READYMODE_CSV_URL = googleCsvUrl(OPERATIONAL_CONFIG.readyModeSheet);
 
 const MONTHS: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,

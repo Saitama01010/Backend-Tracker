@@ -14,6 +14,7 @@
     "test:security": "pnpm --filter @workspace/agent-dashboard run test:security && pnpm --filter @workspace/api-server run test:security",
     "test:performance": "pnpm --filter @workspace/api-server run test:performance",
     "test:frontend-performance": "pnpm --filter @workspace/agent-dashboard run test:performance",
+    "test:data-correctness": "pnpm --filter @workspace/agent-dashboard run test:data-correctness && pnpm --filter @workspace/api-server run test:data-correctness",
     "check:frontend-bundle": "node ./scripts/check-frontend-bundle.mjs",
     "baseline:serve": "pnpm --filter @workspace/api-server run baseline:serve",
     "typecheck:libs": "tsc --build",

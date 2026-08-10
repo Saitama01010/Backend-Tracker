@@ -201,6 +201,7 @@ test("sanitized database benchmark proves query and batch equivalence", async (t
         id serial PRIMARY KEY,
         member_id integer NOT NULL REFERENCES attendance_members(id) ON DELETE CASCADE,
         date text NOT NULL,
+        attendance_date date,
         status text NOT NULL DEFAULT '',
         note text,
         coaching boolean NOT NULL DEFAULT false,

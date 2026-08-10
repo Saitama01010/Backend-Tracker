@@ -19,6 +19,13 @@ import { dashboardQueryClient, clearDashboardQueryCache } from "@/lib/dashboardQ
 import { accountQueryScope, pollingDelay, queryPollingInterval } from "@/lib/queryPolicy";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import {
+  addCalendarDays as addBusinessCalendarDays,
+  businessDateApiRange,
+  formatBusinessDate,
+  parseStaffTimestamp,
+} from "@/lib/businessDate";
+import { DASHBOARD_OPERATIONAL_CONFIG, googleCsvUrl } from "@/lib/dashboardConfig";
+import {
   Table,
   TableBody,
   TableCell,
@@ -947,25 +954,25 @@ function rosterDrivesTeam(roster: RosterIndex | null | undefined, team: RosterTe
 }
 
 const RETENTION = {
-  status: "https://docs.google.com/spreadsheets/d/1qF5Dc5quGrAywf5Rtx4q7DrX91VlNIFOfKr-REoSkII/export?format=csv&gid=0",
+  status: googleCsvUrl(DASHBOARD_OPERATIONAL_CONFIG.sheets.oldRetention),
 };
 const NEW_RETENTION_URL =
-  "https://docs.google.com/spreadsheets/d/1Eje6BABFbmRGHa6D1ET2sMvlE8o61iJ71yOvydD-R3o/export?format=csv&gid=837339339";
+  googleCsvUrl(DASHBOARD_OPERATIONAL_CONFIG.sheets.newRetention);
 const NEW_NSF_URL =
-  "https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=0";
+  googleCsvUrl(DASHBOARD_OPERATIONAL_CONFIG.sheets.newNsf);
 // IDP-Handled submissions tab in the same Discord-bot spreadsheet — all rows count as IDP-Handled.
 // Browser fetches of this tab fail silently when fetched concurrently with gid=0 (same spreadsheet).
 // Route through the API server proxy so the server fetches it without browser CORS constraints.
 const IDP_RETENTION_URL =
-  `/api/csv-proxy?url=${encodeURIComponent("https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=871007220")}`;
+  `/api/csv-proxy?url=${encodeURIComponent(googleCsvUrl(DASHBOARD_OPERATIONAL_CONFIG.sheets.idpHandled))}`;
 // IDP Cancel Retained tab — same spreadsheet, fetched sequentially to avoid silent drops.
 // Every row counts as "Retained" (file was ultimately retained via the IDP cancel path).
 const IDP_CANCEL_RETAINED_URL =
-  `/api/csv-proxy?url=${encodeURIComponent("https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=1018337469")}`;
+  `/api/csv-proxy?url=${encodeURIComponent(googleCsvUrl(DASHBOARD_OPERATIONAL_CONFIG.sheets.idpCancelRetained))}`;
 // Records on/after this date come from the new Discord-bot sheets; older records from the old sheets.
-const RETENTION_CUTOVER = new Date("2026-05-04T00:00:00");
+const RETENTION_CUTOVER = DASHBOARD_OPERATIONAL_CONFIG.retentionCutoverDate;
 const NSF = {
-  status: "https://docs.google.com/spreadsheets/d/16qoZESE0gGQPdOXQUSh2JsadWDmUE7OyCajRwBy0E38/export?format=csv&gid=0",
+  status: googleCsvUrl(DASHBOARD_OPERATIONAL_CONFIG.sheets.oldNsf),
 };
 
 type Row = Record<string, string>;
@@ -1139,26 +1146,22 @@ type SheetSourceMeta = {
 const SHEET_SOURCES = {
   retentionSubmission: {
     sourceName: "Cancelation Requests Updates",
-    spreadsheetId: "1Eje6BABFbmRGHa6D1ET2sMvlE8o61iJ71yOvydD-R3o",
-    gid: "837339339",
+    ...DASHBOARD_OPERATIONAL_CONFIG.sheets.newRetention,
     tabName: "Retention Submission",
   },
   backend: {
     sourceName: "Back-end submissions",
-    spreadsheetId: "11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc",
-    gid: "0",
+    ...DASHBOARD_OPERATIONAL_CONFIG.sheets.newNsf,
     tabName: "backend",
   },
   idpHandled: {
     sourceName: "Back-end submissions",
-    spreadsheetId: "11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc",
-    gid: "871007220",
+    ...DASHBOARD_OPERATIONAL_CONFIG.sheets.idpHandled,
     tabName: "idp-handled",
   },
   idpCancelRetained: {
     sourceName: "Back-end submissions",
-    spreadsheetId: "11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc",
-    gid: "1018337469",
+    ...DASHBOARD_OPERATIONAL_CONFIG.sheets.idpCancelRetained,
     tabName: "idp-cancel-retained",
   },
 } as const satisfies Record<string, SheetSourceMeta>;
@@ -1560,7 +1563,7 @@ async function fetchRetentionCombinedSheet(
     const d = parseEgyptTimestamp(tsRaw);
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
-    if (caDate < "2026-05-04") continue;
+    if (caDate < RETENTION_CUTOVER) continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!includeForRetention(agentRaw, "retention:new", r, "Agent Name")) continue;
     const kw = detectKeywordStatus(r);
@@ -1579,7 +1582,7 @@ async function fetchRetentionCombinedSheet(
     const d = parseEgyptTimestamp(tsRaw);
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
-    if (caDate < "2026-05-04") continue;
+    if (caDate < RETENTION_CUTOVER) continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
     // Roster-aware team gate: respects rosterDrives + inactive hide + segment lookup.
     if (!includeForRetention(agentRaw, "retention:discord", r, "Agent Name")) {
@@ -2486,14 +2489,11 @@ function toIsoDate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-const CA_TZ = "America/Los_Angeles";
+const CA_TZ = DASHBOARD_OPERATIONAL_CONFIG.businessTimeZone;
 
 /** Returns today's date as "YYYY-MM-DD" in PDT, regardless of device timezone. */
 function todayPDT(): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: CA_TZ,
-    year: "numeric", month: "2-digit", day: "2-digit",
-  }).format(new Date());
+  return formatBusinessDate();
 }
 
 /** Returns current year/month(0-indexed)/date components in PDT. */
@@ -2518,41 +2518,19 @@ function formatPDTDate(d: Date): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: CA_TZ });
 }
 
-// Discord-bot sheets record timestamps in Egypt local time (EET = UTC+2, no DST since 2011).
-// This parses those timestamps and returns a proper UTC Date so the California date can be derived.
+// Discord-bot sheets record timestamps in Egypt local time. Resolve them with
+// Africa/Cairo IANA data so Egypt's current DST rules are applied by date.
 // Google Forms timestamp format is typically "M/D/YYYY HH:MM:SS".
 function parseEgyptTimestamp(s: string): Date | null {
   if (!s) return null;
   const trimmed = s.trim();
-
-  let year: number, month: number, day: number, hour = 0, minute = 0, second = 0;
-
-  // "M/D/YYYY HH:MM:SS" (Google Forms default)
-  const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(trimmed);
-  // "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS"
-  const iso = /^(\d{4})-(\d{2})-(\d{2})[T\s](\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(trimmed);
-
-  if (us) {
-    month  = Number(us[1]); day    = Number(us[2]); year   = Number(us[3]);
-    hour   = Number(us[4]); minute = Number(us[5]); second = Number(us[6] ?? 0);
-  } else if (iso) {
-    year   = Number(iso[1]); month  = Number(iso[2]); day    = Number(iso[3]);
-    hour   = Number(iso[4]); minute = Number(iso[5]); second = Number(iso[6] ?? 0);
-  } else {
-    // Date-only string — no time means no timezone conversion needed
-    return parseDate(trimmed);
-  }
-
-  // Egypt is permanently UTC+2 → subtract 2 h to get UTC
-  const utcMs = Date.UTC(year, month - 1, day, hour - 2, minute, second);
-  const d = new Date(utcMs);
-  return isNaN(d.getTime()) ? null : d;
+  return parseStaffTimestamp(trimmed) ?? parseDate(trimmed);
 }
 
 // Given a UTC Date, return the YYYY-MM-DD date string in California time (America/Los_Angeles).
 // This correctly handles Pacific Standard Time (UTC-8) and Pacific Daylight Time (UTC-7).
 const _caFmt = new Intl.DateTimeFormat("en-CA", {
-  timeZone: "America/Los_Angeles",
+  timeZone: CA_TZ,
   year: "numeric", month: "2-digit", day: "2-digit",
 });
 function toCaliforniaDateStr(d: Date): string {
@@ -2907,10 +2885,7 @@ function aggregate(
     // Use California time (America/Los_Angeles) — sheet dates are stored in CA time.
     // Do NOT use browser local time here: some browsers may be in non-LA timezones,
     // always derive "today" explicitly in LA time.
-    const todayIso = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "America/Los_Angeles",
-      year: "numeric", month: "2-digit", day: "2-digit",
-    }).format(new Date()); // "YYYY-MM-DD"
+    const todayIso = todayPDT();
     const thisMonthStr = todayIso.slice(0, 7); // "YYYY-MM"
     for (const r of status.rows) {
       const d = parseSheetDate(sheetDateValue(r, dateColumn), dateColumn);
@@ -3182,12 +3157,11 @@ function SortHeader({
   );
 }
 
-function startOfWeek(d: Date): Date {
+function startOfWeek(date: string): string {
   // Group week as Monday–Sunday (Sunday is the closing day, like the old sheet)
-  const day = d.getDay(); // 0=Sun..6=Sat
+  const day = new Date(`${date}T12:00:00Z`).getUTCDay(); // 0=Sun..6=Sat
   const offset = day === 0 ? -6 : 1 - day; // back to Monday
-  const start = new Date(d.getFullYear(), d.getMonth(), d.getDate() + offset);
-  return start;
+  return addBusinessCalendarDays(date, offset);
 }
 
 function sumRetained(byStatus: Map<string, number>, retained: Set<string>): number {
@@ -3227,13 +3201,12 @@ function ByDayView({ data }: { data: Aggregated }) {
       ? data.byAgentDay.get(agentFilter)!
       : data.byDay;
   // Group days into weeks (Mon–Sun) and emit a subtotal row at the end of each week
-  type WeekGroup = { weekStart: Date; days: DayBreakdown[] };
+  type WeekGroup = { weekStart: string; days: DayBreakdown[] };
   const weeks: WeekGroup[] = [];
   for (const day of sourceDays) {
-    const ws = startOfWeek(day.date);
-    const wsTime = ws.getTime();
+    const ws = startOfWeek(day.iso);
     let group = weeks[weeks.length - 1];
-    if (!group || group.weekStart.getTime() !== wsTime) {
+    if (!group || group.weekStart !== ws) {
       group = { weekStart: ws, days: [] };
       weeks.push(group);
     }
@@ -3345,17 +3318,17 @@ function ByDayView({ data }: { data: Aggregated }) {
                   byStatus: new Map<string, number>(),
                 },
               );
-              const weekEnd = new Date(week.weekStart);
-              weekEnd.setDate(weekEnd.getDate() + 6);
+              const weekStart = new Date(`${week.weekStart}T12:00:00Z`);
+              const weekEnd = new Date(`${addBusinessCalendarDays(week.weekStart, 6)}T12:00:00Z`);
               return (
                 <Fragment key={`week-frag-${wi}`}>
                   {week.days.map((d) => (
                     <TableRow key={d.iso} className="hover-elevate">
                       <TableCell className="font-medium whitespace-nowrap">
-                        {DAY_NAMES[d.date.getDay()]}
+                        {DAY_NAMES[new Date(`${d.iso}T12:00:00Z`).getUTCDay()]}
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-muted-foreground tabular-nums">
-                        {d.date.toLocaleDateString("en-US", { timeZone: CA_TZ, month: "short", day: "numeric" })}
+                        {new Date(`${d.iso}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" })}
                       </TableCell>
                       <TableCell className="text-right tabular-nums font-mono">
                         {d.calls || ""}
@@ -3387,7 +3360,7 @@ function ByDayView({ data }: { data: Aggregated }) {
                   <TableRow key={`week-${wi}`} className="bg-accent/40 font-semibold">
                     <TableCell className="whitespace-nowrap">Week of</TableCell>
                     <TableCell className="whitespace-nowrap text-muted-foreground tabular-nums">
-                      {week.weekStart.toLocaleDateString("en-US", { timeZone: CA_TZ, month: "short", day: "numeric" })} – {weekEnd.toLocaleDateString("en-US", { timeZone: CA_TZ, month: "short", day: "numeric" })}
+                      {weekStart.toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" })} – {weekEnd.toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" })}
                     </TableCell>
                     <TableCell className="text-right tabular-nums font-mono">
                       {subtotal.calls || ""}
@@ -4940,8 +4913,9 @@ function TeamPanel({
   const phoneQ = useQuery<PhoneStatsResponse | null>({
     queryKey: ["phoneStats", from, to],
     queryFn: async () => {
-      const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
-      const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
+      const range = businessDateApiRange(from || addBusinessCalendarDays(todayPDT(), -30), to || todayPDT());
+      const pFrom = range.from;
+      const pTo = range.to;
       return fetchPhoneStats(pFrom, pTo);
     },
     staleTime: PHONE_STALE_MS,
@@ -5203,8 +5177,9 @@ function CSPanel() {
   const phoneQ = useQuery<PhoneStatsResponse | null>({
     queryKey: ["phoneStats", from, to],
     queryFn: async () => {
-      const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
-      const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
+      const range = businessDateApiRange(from || addBusinessCalendarDays(todayPDT(), -30), to || todayPDT());
+      const pFrom = range.from;
+      const pTo = range.to;
       return fetchPhoneStats(pFrom, pTo);
     },
     staleTime: 30 * 1000,
@@ -5402,8 +5377,9 @@ function RetentionPanel() {
   const phoneQ = useQuery<PhoneStatsResponse | null>({
     queryKey: ["phoneStats", from, to],
     queryFn: async () => {
-      const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
-      const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
+      const range = businessDateApiRange(from || addBusinessCalendarDays(todayPDT(), -30), to || todayPDT());
+      const pFrom = range.from;
+      const pTo = range.to;
       return fetchPhoneStats(pFrom, pTo);
     },
     staleTime: 30 * 1000,
@@ -5598,8 +5574,9 @@ function statusIcon(status: string) {
 }
 
 function ByCallView({ team, from, to }: { team: string; from: string; to: string }) {
-  const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
-  const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
+  const range = businessDateApiRange(from || addBusinessCalendarDays(todayPDT(), -30), to || todayPDT());
+  const pFrom = range.from;
+  const pTo = range.to;
 
   const q = useQuery<{ data: CallRecord[] } | null>({
     queryKey: ["calls", team, pFrom, pTo],
@@ -7461,8 +7438,9 @@ function QuoLinesPanel() {
     queryKey: ["lineStats", selectedLine?.id, from, to],
     queryFn: async () => {
       if (!selectedLine) return null;
-      const pFrom = new Date(`${from}T00:00:00`).toISOString();
-      const pTo = new Date(`${to}T23:59:59`).toISOString();
+      const range = businessDateApiRange(from, to);
+      const pFrom = range.from;
+      const pTo = range.to;
       const r = await apiFetch(
         `/api/quo/line-stats?lineId=${encodeURIComponent(selectedLine.id)}&from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`
       );
@@ -8286,8 +8264,9 @@ function ReadyModeKillersPanel() {
   const phoneQ = useQuery<PhoneStatsResponse | null>({
     queryKey: ["phoneStats", from, to],
     queryFn: async () => {
-      const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
-      const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
+      const range = businessDateApiRange(from || addBusinessCalendarDays(todayPDT(), -30), to || todayPDT());
+      const pFrom = range.from;
+      const pTo = range.to;
       return fetchPhoneStats(pFrom, pTo);
     },
     staleTime: PHONE_STALE_MS,
@@ -9098,16 +9077,14 @@ function HourlyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) 
   const hours = data?.hours ?? [];
 
   const shift = (days: number) => {
-    const d = new Date(date + "T12:00:00");
-    d.setDate(d.getDate() + days);
-    const next = d.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+    const next = addBusinessCalendarDays(date, days);
     if (next <= todayStr) setDate(next);
   };
 
   const fmtDate = (d: string) => {
     if (d === todayStr) return "Today";
-    const dt = new Date(d + "T12:00:00");
-    return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+    const dt = new Date(d + "T12:00:00Z");
+    return dt.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
   };
 
   const fmt = (h: number) => {
@@ -9426,11 +9403,9 @@ function CallbackReviewPanel() {
   const { from, to } = useMemo((): { from: string; to: string } => {
     if (preset === "today") return { from: todayStr, to: todayStr };
     if (preset === "week") {
-      const laDate = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
-      const dow = laDate.getDay();
+      const dow = new Date(`${todayStr}T12:00:00Z`).getUTCDay();
       const daysToMon = dow === 0 ? 6 : dow - 1;
-      laDate.setDate(laDate.getDate() - daysToMon);
-      return { from: laDate.toLocaleDateString("en-CA"), to: todayStr };
+      return { from: addBusinessCalendarDays(todayStr, -daysToMon), to: todayStr };
     }
     if (preset === "month") return { from: todayStr.slice(0, 7) + "-01", to: todayStr };
     return { from: customFrom || todayStr, to: customTo || todayStr };
@@ -9801,47 +9776,12 @@ interface LTStatus {
 }
 
 function ltLaToday(): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Los_Angeles",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
+  return formatBusinessDate();
 }
 function ltLastDayOfMonth(ym: string): string {
   const [y, m] = ym.split("-").map(Number);
-  const d = new Date(y!, m!, 0).getDate();
+  const d = new Date(Date.UTC(y!, m!, 0)).getUTCDate();
   return `${ym}-${String(d).padStart(2, "0")}`;
-}
-
-function zonedMidnightUtc(date: string, timeZone: string): Date {
-  const [year, month, day] = date.split("-").map(Number);
-  const desiredWallTime = Date.UTC(year!, month! - 1, day!, 0, 0, 0);
-  let instant = desiredWallTime;
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const parts = Object.fromEntries(formatter.formatToParts(new Date(instant)).map((part) => [part.type, part.value]));
-    const observedWallTime = Date.UTC(
-      Number(parts.year), Number(parts.month) - 1, Number(parts.day),
-      Number(parts.hour), Number(parts.minute), Number(parts.second),
-    );
-    instant += desiredWallTime - observedWallTime;
-  }
-  return new Date(instant);
-}
-
-function nextCalendarDate(date: string): string {
-  const [year, month, day] = date.split("-").map(Number);
-  return new Date(Date.UTC(year!, month! - 1, day! + 1)).toISOString().slice(0, 10);
 }
 
 function LiveTransfersCard() {
@@ -10022,7 +9962,7 @@ function QAPanel() {
   const { token, user } = useUser();
   const qaRoster = useRoster();
   const qc = useQueryClient();
-  const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  const todayLA = formatBusinessDate();
   // QA filter is locked to today.
   const from = todayLA;
   const to = todayLA;
@@ -10036,9 +9976,8 @@ function QAPanel() {
   const dateBasis = "evaluated" as const;
 
   const range = useMemo(() => {
-    const fromISO = zonedMidnightUtc(from, "America/Los_Angeles").toISOString();
-    const toISO = new Date(zonedMidnightUtc(nextCalendarDate(to), "America/Los_Angeles").getTime() - 1).toISOString();
-    return { fromISO, toISO };
+    const resolved = businessDateApiRange(from, to);
+    return { fromISO: resolved.from, toISO: resolved.to };
   }, [from, to]);
 
   const deptParam = dept === "all" ? "" : `&department=${dept}`;
@@ -10586,7 +10525,7 @@ function QATile({ label, value, accent }: { label: string; value: number | strin
 function ViolationsPanel() {
   const { token, user } = useUser();
   const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-  const sevenAgo = new Date(Date.now() - 6 * 86400000).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  const sevenAgo = addBusinessCalendarDays(formatBusinessDate(), -6);
 
   const [from, setFrom] = useState(todayLA);
   const [to, setTo]     = useState(todayLA);
@@ -11901,9 +11840,7 @@ function Dashboard() {
   async function handleRmUpload(file: File) {
     // Daily reports label the day as a weekday ("Thursday"), not a calendar
     // date, so ask which day this report covers. Default to yesterday.
-    const y = new Date();
-    y.setDate(y.getDate() - 1);
-    const yIso = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, "0")}-${String(y.getDate()).padStart(2, "0")}`;
+    const yIso = addBusinessCalendarDays(formatBusinessDate(), -1);
     const date = window.prompt(
       "Which day does this report cover? (YYYY-MM-DD)",
       yIso,
@@ -12193,6 +12130,7 @@ const ATT_STATUS = [
   { s: "off",  label: "Off",       cell: "bg-muted metric-warn",     badge: "metric-warn" },
   { s: "late", label: "Late",      cell: "bg-yellow-400/25 text-yellow-300",   badge: "text-yellow-400" },
   { s: "pto",  label: "PTO",       cell: "bg-muted-foreground/25 metric-info",       badge: "metric-info" },
+  { s: "absent", label: "Absent",  cell: "bg-red-900/30 text-red-300",         badge: "text-red-300" },
   { s: "nsnc", label: "NSNC",      cell: "bg-red-700/30 text-red-400",         badge: "text-red-400" },
   { s: "conf", label: "Confirmed", cell: "bg-teal-500/25 text-teal-300",       badge: "text-teal-400" },
   { s: "",     label: "Clear",     cell: "",                                    badge: "text-zinc-500" },
@@ -12203,7 +12141,7 @@ function AttCell({ status, note, coaching, weekend }: { status: string; note?: s
   if (!status) return weekend
     ? <span className="text-zinc-800 text-xs font-medium select-none">—</span>
     : <span className="text-zinc-700 text-base leading-none">·</span>;
-  const label = status === "in" ? "In" : status === "off" ? "Off" : status === "late" ? "Late" : status === "pto" ? "PTO" : status === "nsnc" ? "NSNC" : "Conf";
+  const label = cfg?.label ?? status;
   return (
     <span className={`relative inline-flex items-center justify-center px-1.5 h-5 rounded text-[10px] font-bold whitespace-nowrap ${cfg?.cell ?? ""}`}>
       {label}
@@ -12224,7 +12162,7 @@ function AttendancePanel() {
   const TEAM_TO_DEPT: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "CS" };
   const lockedDept = user.teamAccess ? TEAM_TO_DEPT[user.teamAccess] : null;
   const todayStr = ltLaToday();
-  const tomorrowStr = nextCalendarDate(todayStr);
+  const tomorrowStr = addBusinessCalendarDays(todayStr, 1);
   const [todayYear, todayMonth] = todayStr.split("-").map(Number);
   const [monthOff, setMonthOff] = useState(0);
   const [deptFilter, setDeptFilter] = useState<string>(lockedDept ?? "All");
@@ -12457,7 +12395,7 @@ function AttendancePanel() {
             </div>
             <div className="w-24">
               <Label className="text-xs text-muted-foreground mb-1 block">Shift start</Label>
-              <Input value={newShift} onChange={(e) => setNewShift(e.target.value)} placeholder="e.g. 8 (8 AM)" className="h-8" />
+              <Input value={newShift} onChange={(e) => setNewShift(e.target.value)} placeholder="e.g. 8 (8 PM Egypt)" className="h-8" />
             </div>
             <div className="w-20">
               <Label className="text-xs text-muted-foreground mb-1 block">Hours</Label>
@@ -12588,7 +12526,7 @@ function AttendancePanel() {
                   if (s === "in") cIn++; else if (s === "off") cOff++;
                   else if (s === "late") cLate++; else if (s === "pto") cPto++;
                   else if (s === "nsnc") cNsnc++;
-                  if ((s === "in" || s === "late") && new Date(d + "T12:00:00").getDay() === 6) cSat++;
+                  if ((s === "in" || s === "late") && new Date(d + "T12:00:00Z").getUTCDay() === 6) cSat++;
                 }
                 const rowBg = mi % 2 === 0 ? "bg-zinc-900/20" : "bg-zinc-900/50";
                 const parts = agentNameParts(member.name, roster);
@@ -12598,7 +12536,7 @@ function AttendancePanel() {
                       <AvatarName name={parts.agentName} size="sm" textClassName={member.active ? "text-white" : "text-zinc-400 line-through"} />
                       {!member.active && <span className="ml-1.5 no-underline text-[10px] font-normal text-amber-500/70 bg-muted/50 px-1 rounded" style={{textDecoration:"none"}}>inactive</span>}
                     </td>
-                    <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`} title={`Shift ${member.shift} (LA time) · ${member.shiftHours || "8"}h shift`}>
+                    <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`} title={`Shift ${member.shift} (Egypt time) · ${member.shiftHours || "8"}h shift`}>
                       <div>{shiftLabel(member.shift)}</div>
                       {member.shiftHours && member.shiftHours !== "8" && (
                         <span className="text-[9px] font-semibold metric-warn bg-muted/60 rounded px-1">{member.shiftHours}h</span>
@@ -12614,8 +12552,8 @@ function AttendancePanel() {
                       const isTomorrow = d === tomorrowStr;
                       const isFuture = d > tomorrowStr;
                       const isToday = d === todayStr;
-                      const dt = new Date(d + "T12:00:00");
-                      const isWknd = dt.getDay() === 0 || dt.getDay() === 6;
+                      const dt = new Date(d + "T12:00:00Z");
+                      const isWknd = dt.getUTCDay() === 0 || dt.getUTCDay() === 6;
                       return (
                         <td
                           key={d}

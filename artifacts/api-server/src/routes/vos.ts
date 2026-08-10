@@ -15,6 +15,7 @@ import {
 import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
 import { manualJobKey, scheduledJobKey } from "../lib/durableBackgroundJobs.js";
 import { getDurableRuntimeState, putDurableRuntimeState } from "../lib/durableRuntimeState.js";
+import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 
 const router = Router();
 router.use("/vos", requireAuth);
@@ -308,7 +309,7 @@ async function fetchQuoLineNumbers(): Promise<Set<string>> {
 
 // Only these Quo/OpenPhone line names are team-shared lines.
 // Personal agent lines (e.g. "Rick Miller RT OB", "Jenny NSF") are excluded.
-const TEAM_QUO_LINES = ["Retention", "CS Team", "Main NSF"];
+const TEAM_QUO_LINES = [...OPERATIONAL_CONFIG.trackedTeamLines];
 
 function teamFromRingGroupName(name: string): "retention" | "nsf" | "cs" | "other" {
   const n = name.toLowerCase();

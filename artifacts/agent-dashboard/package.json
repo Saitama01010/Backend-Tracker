@@ -9,6 +9,7 @@
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "test:security": "tsx --test src/lib/api.test.ts",
     "test:performance": "tsx --test src/components/TablePager.test.ts src/lib/queryPolicy.test.ts src/performance/frontendPerformance.test.ts",
+    "test:data-correctness": "tsx --test src/lib/businessDate.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

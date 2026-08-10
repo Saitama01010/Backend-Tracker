@@ -71,6 +71,13 @@
       "when": 1786683600000,
       "tag": "0009_background_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1786770000000,
+      "tag": "0010_attendance_date_compatibility",
+      "breakpoints": true
     }
   ]
 }

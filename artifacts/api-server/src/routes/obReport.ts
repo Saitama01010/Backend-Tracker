@@ -19,29 +19,25 @@ import { AI_UNTRUSTED_DATA_SYSTEM_POLICY, wrapUntrustedAiData } from "../lib/aiP
 import { AiRateLimitError, withDatabaseLease, withDurableAiLimit } from "../lib/aiRateLimit.js";
 import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
 import { manualJobKey } from "../lib/durableBackgroundJobs.js";
+import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
+import { businessDayWindow } from "../lib/businessTime.js";
 
 const router: IRouter = Router();
 
 // ─── Onboarding line constants ────────────────────────────────────────────────
-const LINE_ID = "PNdcJ0UEu5";
-const LINE_NUMBER = "+19493157441";
-const LINE_LABEL = "(949) 315-7441";
-const MODEL = process.env["ANTHROPIC_OB_MODEL"]?.trim() || "claude-haiku-4-5";
+const LINE_ID = OPERATIONAL_CONFIG.lineIds.onboarding;
+const LINE_NUMBER = OPERATIONAL_CONFIG.lineIds.onboardingNumber;
+const LINE_LABEL = OPERATIONAL_CONFIG.lineIds.onboardingLabel;
+const MODEL = OPERATIONAL_CONFIG.aiModels.onboarding;
 const CONCURRENCY = Math.max(1, Math.min(4, Number(process.env["OB_CONC"] ?? 2) || 2));
 const TAX_RE = /\btaxes?\b/i;
 
 // ─── Date range helpers (LA timezone, mirrors obAnalytics) ────────────────────
-const TZ = "America/Los_Angeles";
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-function caDate(d: Date): string {
-  return d.toLocaleDateString("en-CA", { timeZone: TZ });
-}
 /** Midnight (California) for a YYYY-MM-DD string → UTC bounds for that CA day. */
 function caDateBounds(dateStr: string): { from: Date; to: Date } {
-  const pdtMidnight = new Date(`${dateStr}T07:00:00Z`);
-  const fromMs =
-    caDate(pdtMidnight) === dateStr ? pdtMidnight.getTime() : pdtMidnight.getTime() + 60 * 60 * 1000;
-  return { from: new Date(fromMs), to: new Date(fromMs + 24 * 60 * 60 * 1000) };
+  const { start, endExclusive } = businessDayWindow(dateStr);
+  return { from: start, to: endExclusive };
 }
 function parseRange(from?: string, to?: string): { fromDate: Date; toDate: Date } {
   let fromDate = !from

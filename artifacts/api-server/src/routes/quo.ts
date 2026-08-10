@@ -22,6 +22,8 @@ import {
 import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
 import { manualJobKey, scheduledJobKey } from "../lib/durableBackgroundJobs.js";
 import { getDurableRuntimeState, listDurableRuntimeState, putDurableRuntimeState } from "../lib/durableRuntimeState.js";
+import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
+import { businessDayWindow } from "../lib/businessTime.js";
 
 const router: IRouter = Router();
 router.use("/quo", requireAuth);
@@ -32,7 +34,7 @@ router.use("/quo", requireAuth);
 
 /** Format a UTC Date as a YYYY-MM-DD string in California time. */
 function toCaDate(d: Date): string {
-  return d.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  return d.toLocaleDateString("en-CA", { timeZone: OPERATIONAL_CONFIG.businessTimeZone });
 }
 
 /**
@@ -41,13 +43,8 @@ function toCaDate(d: Date): string {
  * Handles PDT (UTC-7) and PST (UTC-8) automatically.
  */
 function caDateBounds(dateStr: string): { from: Date; to: Date } {
-  // Midnight PDT = 07:00 UTC; midnight PST = 08:00 UTC.
-  // Try 07:00 first; if that still lands on a different CA date, use 08:00.
-  const pdtMidnight = new Date(`${dateStr}T07:00:00Z`);
-  const fromMs = toCaDate(pdtMidnight) === dateStr
-    ? pdtMidnight.getTime()
-    : pdtMidnight.getTime() + 60 * 60 * 1000; // PST offset
-  return { from: new Date(fromMs), to: new Date(fromMs + 24 * 60 * 60 * 1000) };
+  const { start, endExclusive } = businessDayWindow(dateStr);
+  return { from: start, to: endExclusive };
 }
 
 /**
@@ -122,24 +119,7 @@ interface QuoPhoneNumber {
 }
 
 // Exact line name → team (mirrors quoSync.ts LINE_TEAM_MAP)
-const LINE_TEAM_MAP: Record<string, "retention" | "nsf" | "cs"> = {
-  "ahmed ayman-levi miller":         "retention", // Ahmed Ayman → Retention
-  "youssef nady-jacob xander":       "cs",
-  "nour-michael belfort-2900":       "retention", // Michael Belfort → Retention
-  "levi ob":                         "retention", // Ahmed Ayman → Retention
-  "levi cs ob":                      "retention", // Ahmed Ayman → Retention
-  "talia nsf":                       "retention", // Talia Morgan → Retention
-  "talia morgan cs ob":              "retention", // Talia Morgan → Retention
-  "jacob ob":                        "cs",
-  "jacob cs ob":                     "retention", // Jacob Xander → Retention
-  "adam ob":                         "retention",
-  "rick ob":                         "retention",
-  "ryan ob":                         "retention",
-  "abdlrhman-jacob stephenson":      "retention",
-  "zeiad fouad-zack ford":           "retention",
-  "mohammed ayman-max francis-2268": "retention",
-  "max - ma":                        "retention",
-};
+const LINE_TEAM_MAP = OPERATIONAL_CONFIG.lineTeamMap;
 
 function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   const n = name.toLowerCase().trim();

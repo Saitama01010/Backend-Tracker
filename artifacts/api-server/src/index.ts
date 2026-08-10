@@ -7,8 +7,16 @@ import bcrypt from "bcryptjs";
 import { validateNewPassword } from "./lib/passwordPolicy";
 import { revokeUserSessions } from "./lib/sessionStore";
 import { configureHttpServerPolicy } from "./lib/httpServerPolicy";
+import { validateOperationalConfiguration } from "./lib/operationalConfig";
 
 const rawPort = process.env["PORT"];
+const operationalConfig = validateOperationalConfiguration();
+logger.info({
+  businessTimeZone: operationalConfig.businessTimeZone,
+  staffTimeZone: operationalConfig.staffTimeZone,
+  attendanceShiftTimezoneCutover: operationalConfig.attendanceShiftTimezoneCutover,
+  attendanceImportSources: operationalConfig.attendanceImportSources.length,
+}, "Validated operational configuration");
 
 if (!rawPort) {
   throw new Error(

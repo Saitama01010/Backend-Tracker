@@ -16,41 +16,35 @@ import {
   parseViolationVerificationPayload,
   validateOptionalWorkflowRange,
 } from "../lib/sensitiveWorkflowPolicy.js";
+import {
+  ATTENDANCE_MEMBER_ALIASES,
+  addAttendanceCalendarDays,
+  attendanceDate,
+  attendanceStartOfDay,
+} from "../lib/attendancePolicy.js";
+import { attendanceShiftStart } from "../lib/businessTime.js";
+import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 
-const TEAM_QUO_LINES = ["Retention", "CS Team", "Main NSF"];
+const TEAM_QUO_LINES = [...OPERATIONAL_CONFIG.trackedTeamLines];
 
 const router = Router();
 router.use("/violations", requireAuth);
 
 function laStartOfDay(dateStr: string): Date {
-  const pdt = new Date(`${dateStr}T07:00:00Z`);
-  if (pdt.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" }) === dateStr) return pdt;
-  return new Date(`${dateStr}T08:00:00Z`);
+  return attendanceStartOfDay(dateStr);
 }
 
 function dateRangeLA(from: string, to: string): string[] {
   const dates: string[] = [];
-  const cur = new Date(from + "T12:00:00Z");
-  const end = new Date(to + "T12:00:00Z");
-  while (cur <= end) {
-    dates.push(cur.toISOString().slice(0, 10));
-    cur.setUTCDate(cur.getUTCDate() + 1);
+  for (let current = from; current <= to; current = addAttendanceCalendarDays(current, 1)) {
+    dates.push(current);
   }
   return dates;
 }
 
-const MEMBER_TO_AGENT_NAMES: Record<string, string[]> = {
-  "Levi Miller":      ["Levi Miller", "Ahmed Ayman"],
-  "Rick Miller":      ["Rick Miller", "Zeiad Fouad"],
-  "Jacob Stephenson": ["Jacob Stephenson", "Abdulrhman Isawi", "Adam Maxwell"],
-  "Michael Belfort":  ["Michael Belfort", "Nouralden"],
-  "Ryan Henderson":   ["Ryan Henderson", "Jacob Ahmed"],
-  "Henry Hart":       ["Henry Hart", "Max Francis"],
-  "Jacob Xander":     ["Jacob Xander", "Youssef Nady"],
-  "John Marcus":      ["John Marcus", "Youssef Nasser", "Youssef-John Marcus"],
-};
+const MEMBER_TO_AGENT_NAMES = ATTENDANCE_MEMBER_ALIASES;
 
-function agentNamesForMember(name: string): string[] {
+function agentNamesForMember(name: string): readonly string[] {
   return MEMBER_TO_AGENT_NAMES[name] ?? [name];
 }
 
@@ -67,8 +61,8 @@ function canAccessViolationIdentity(
 router.get("/violations", async (req, res) => {
   try {
     await hydrateVosState();
-    const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-    const from = (req.query["from"] as string) || new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+    const todayLA = attendanceDate();
+    const from = (req.query["from"] as string) || addAttendanceCalendarDays(todayLA, -7);
     const to   = (req.query["to"]   as string) || todayLA;
     const requestedRange = validateOptionalWorkflowRange(from, to);
     if (!requestedRange.ok) return res.status(400).json({ error: requestedRange.error });
@@ -79,7 +73,7 @@ router.get("/violations", async (req, res) => {
     }
 
     const rangeStart = laStartOfDay(dates[0]);
-    const rangeEnd   = new Date(laStartOfDay(dates[dates.length - 1]).getTime() + 24 * 3600 * 1000 - 1);
+    const rangeEnd = new Date(laStartOfDay(addAttendanceCalendarDays(dates[dates.length - 1]!, 1)).getTime() - 1);
 
     // Parallel fetch: members, verified keys, phone calls, missed PBX calls, missed Quo calls
     const [members, verifications, callRows, missedRows, quoMissedRows] = await Promise.all([
@@ -242,9 +236,8 @@ router.get("/violations", async (req, res) => {
       for (const member of scopedMembers) {
         const shiftNum = parseInt(member.shift || "0");
         if (!shiftNum) continue;
-        // Shift N = N PM Egypt time. Egypt = UTC+2, PDT = UTC-7 → pdtHour = shiftNum + 3
-        const pdtHour = shiftNum + 3;
-        const shiftStartUtc = new Date(dayStart.getTime() + pdtHour * 3600 * 1000);
+        const shiftStartUtc = attendanceShiftStart(date, shiftNum);
+        if (!shiftStartUtc) continue;
         if (shiftStartUtc > nowUtc) continue;
 
         const memberNames = agentNamesForMember(member.name);
@@ -305,8 +298,6 @@ router.get("/violations", async (req, res) => {
       const missedMs   = new Date(missed.createdAt).getTime();
       if (missedMs > missedCutoffMs) continue;
       const missedDate = new Date(missed.createdAt).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-      const dayStart   = laStartOfDay(missedDate);
-
       const availableAgents: string[] = [];
       const busyAgents:      string[] = [];
 
@@ -314,8 +305,9 @@ router.get("/violations", async (req, res) => {
       for (const member of teamMembers) {
         const shiftNum = parseInt(member.shift || "0");
         if (!shiftNum) continue;
-        // Shift N = N PM Egypt time. Egypt = UTC+2, PDT = UTC-7 → pdtHour = shiftNum + 3
-        const shiftStart = dayStart.getTime() + (shiftNum + 3) * 3600 * 1000;
+        const shiftStartDate = attendanceShiftStart(missedDate, shiftNum);
+        if (!shiftStartDate) continue;
+        const shiftStart = shiftStartDate.getTime();
         const shiftDurH  = Math.max(1, parseInt(member.shiftHours || "8"));
         const shiftEnd   = shiftStart + shiftDurH * 3600 * 1000;
         if (missedMs < shiftStart || missedMs > shiftEnd) continue;
@@ -351,8 +343,6 @@ router.get("/violations", async (req, res) => {
       const missedMs   = new Date(r.createdAt).getTime();
       if (missedMs > missedCutoffMs) continue;
       const missedDate = new Date(r.createdAt).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-      const dayStart   = laStartOfDay(missedDate);
-
       const availableAgents: string[] = [];
       const busyAgents:      string[] = [];
 
@@ -360,8 +350,9 @@ router.get("/violations", async (req, res) => {
       for (const member of teamMembers) {
         const shiftNum = parseInt(member.shift || "0");
         if (!shiftNum) continue;
-        // Shift N = N PM Egypt time. Egypt = UTC+2, PDT = UTC-7 → pdtHour = shiftNum + 3
-        const shiftStart = dayStart.getTime() + (shiftNum + 3) * 3600 * 1000;
+        const shiftStartDate = attendanceShiftStart(missedDate, shiftNum);
+        if (!shiftStartDate) continue;
+        const shiftStart = shiftStartDate.getTime();
         const shiftDurH  = Math.max(1, parseInt(member.shiftHours || "8"));
         const shiftEnd   = shiftStart + shiftDurH * 3600 * 1000;
         if (missedMs < shiftStart || missedMs > shiftEnd) continue;

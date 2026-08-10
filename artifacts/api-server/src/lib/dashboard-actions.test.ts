@@ -259,7 +259,7 @@ test("dashboard attendance dates and API descriptions use the canonical LA timez
   const ui = await dashboardSource();
   assert.match(attendance, /ATTENDANCE_TIMEZONE/);
   assert.match(ui, /const todayStr = ltLaToday\(\)/);
-  assert.match(ui, /const tomorrowStr = nextCalendarDate\(todayStr\)/);
+  assert.match(ui, /const tomorrowStr = addBusinessCalendarDays\(todayStr, 1\)/);
   const prompt = samia.slice(samia.indexOf("## Attendance actions"), samia.indexOf("## Phone contact lookup"));
   assert.doesNotMatch(prompt, /Egypt|ALWAYS REFUSE/);
   assert.match(prompt, /America\/Los_Angeles/);

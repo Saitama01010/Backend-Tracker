@@ -1,4 +1,4 @@
-const DEFAULT_ALLOWED_ANTHROPIC_MODELS = ["claude-sonnet-5", "claude-haiku-4-5"] as const;
+import { DEFAULT_ALLOWED_ANTHROPIC_MODELS } from "./operationalConfig.js";
 
 const PHONE_PATTERN = /(?:\+?1[\s.()-]*)?(?:\(\s*\d{3}\s*\)|\d{3})[\s.-]*\d{3}[\s.-]*\d{4}\b/g;
 const LONG_DIGIT_PATTERN = /\b\d{10,15}\b/g;

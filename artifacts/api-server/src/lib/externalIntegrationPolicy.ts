@@ -1,3 +1,5 @@
+import { OPERATIONAL_CONFIG } from "./operationalConfig.js";
+
 export const MAX_INTEGRATION_READ_DAYS = 1_096;
 export const MAX_QUO_SYNC_DAYS = 31;
 
@@ -95,10 +97,21 @@ export function approvedVosDebugPath(value: unknown): string | null {
   return typeof value === "string" && approvedVosDebugPaths.has(value) ? value : null;
 }
 
-const DEFAULT_APPROVED_SHEETS: Readonly<Record<string, readonly number[]>> = {
-  "1Eje6BABFbmRGHa6D1ET2sMvlE8o61iJ71yOvydD-R3o": [837_339_339],
-  "11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc": [0, 871_007_220, 1_018_337_469],
-};
+function defaultApprovedSheets(): Map<string, Set<number>> {
+  const result = new Map<string, Set<number>>();
+  for (const source of [
+    OPERATIONAL_CONFIG.dashboardSheets.newRetention,
+    OPERATIONAL_CONFIG.dashboardSheets.newNsf,
+    OPERATIONAL_CONFIG.dashboardSheets.idpHandled,
+    OPERATIONAL_CONFIG.dashboardSheets.idpCancelRetained,
+    OPERATIONAL_CONFIG.readyModeSheet,
+  ]) {
+    const gids = result.get(source.spreadsheetId) ?? new Set<number>();
+    gids.add(source.gid);
+    result.set(source.spreadsheetId, gids);
+  }
+  return result;
+}
 
 export function parseSheetGid(value: unknown): number | null {
   if (typeof value !== "string" || !/^(?:0|[1-9]\d{0,9})$/.test(value)) return null;
@@ -107,9 +120,7 @@ export function parseSheetGid(value: unknown): number | null {
 }
 
 function sheetAllowlist(additionalSources: string | undefined): Map<string, Set<number>> {
-  const result = new Map<string, Set<number>>(
-    Object.entries(DEFAULT_APPROVED_SHEETS).map(([id, gids]) => [id, new Set(gids)]),
-  );
+  const result = defaultApprovedSheets();
   if (!additionalSources?.trim()) return result;
 
   for (const entry of additionalSources.split(",")) {

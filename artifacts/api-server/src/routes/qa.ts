@@ -25,10 +25,12 @@ import { planWeeklyQaAssignments } from "../lib/databasePerformance.js";
 import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
 import { manualJobKey, runNextBackgroundJob, scheduledJobKey } from "../lib/durableBackgroundJobs.js";
 import { validCronAuthorization } from "../lib/cronAuth.js";
+import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
+import { addCalendarDays, calendarDateParts, formatCalendarDate, startOfBusinessDay } from "../lib/businessTime.js";
 
 const router: IRouter = Router();
 
-const QA_MODEL = process.env["ANTHROPIC_QA_MODEL"]?.trim() || "claude-haiku-4-5";
+const QA_MODEL = OPERATIONAL_CONFIG.aiModels.qa;
 const QA_REVIEW_INTERVAL_DAYS = Math.max(1, Number(process.env["QA_REVIEW_INTERVAL_DAYS"] ?? 14) || 14);
 const QA_MIN_CALL_SECONDS = Math.max(30, Number(process.env["QA_MIN_CALL_SECONDS"] ?? 90) || 90);
 
@@ -437,20 +439,16 @@ export async function runBiweeklyQa(
 // Runs every Monday. Idempotent per week.
 // Compute Monday 00:00 of the current LA week (in UTC) for stable weekly window.
 function currentLAWeekStart(): Date {
-  const nowLA = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
-  const dow = nowLA.getDay(); // 0=Sun..6=Sat
+  const today = formatCalendarDate(new Date());
+  const { year, month, day } = calendarDateParts(today);
+  const dow = new Date(Date.UTC(year, month - 1, day)).getUTCDay(); // 0=Sun..6=Sat
   const daysSinceMon = (dow + 6) % 7;
-  const mondayLA = new Date(nowLA);
-  mondayLA.setDate(mondayLA.getDate() - daysSinceMon);
-  mondayLA.setHours(0, 0, 0, 0);
-  // mondayLA is a Date whose components reflect LA wall-clock; convert back to UTC instant
-  const offsetMin = new Date(mondayLA.toLocaleString("en-US", { timeZone: "UTC" })).getTime() - mondayLA.getTime();
-  return new Date(mondayLA.getTime() - offsetMin);
+  return startOfBusinessDay(addCalendarDays(today, -daysSinceMon));
 }
 
 export async function runWeeklyAssignment(): Promise<{ created: number; agents: number }> {
   const weekStart = currentLAWeekStart();
-  const lookback = new Date(weekStart.getTime() - 7 * 24 * 3600 * 1000);
+  const lookback = startOfBusinessDay(addCalendarDays(formatCalendarDate(weekStart), -7));
 
   // Eligible reviews: from the prior week through now (so Monday-morning runs see last week's calls).
   const reviews = await db

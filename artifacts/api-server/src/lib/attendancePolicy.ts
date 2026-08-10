@@ -1,32 +1,37 @@
+import {
+  addCalendarDays,
+  calendarDateParts,
+  formatCalendarDate,
+  startOfBusinessDay,
+} from "./businessTime.js";
+import { OPERATIONAL_CONFIG } from "./operationalConfig.js";
+
 export const DEFAULT_ATTENDANCE_TIMEZONE = "America/Los_Angeles";
+export const ATTENDANCE_TIMEZONE = OPERATIONAL_CONFIG.businessTimeZone;
 
-function validTimeZone(value: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date());
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-const configuredTimezone = process.env["ATTENDANCE_TIMEZONE"]?.trim() || DEFAULT_ATTENDANCE_TIMEZONE;
-export const ATTENDANCE_TIMEZONE = validTimeZone(configuredTimezone)
-  ? configuredTimezone
-  : DEFAULT_ATTENDANCE_TIMEZONE;
-
-export const ATTENDANCE_STATUSES = ["in", "off", "late", "pto", "absent", "nsnc"] as const;
+export const ATTENDANCE_STATUSES = ["in", "off", "late", "pto", "absent", "nsnc", "conf"] as const;
 export type AttendanceStatus = typeof ATTENDANCE_STATUSES[number];
 
-export const ATTENDANCE_MEMBER_ALIASES: Record<string, string[]> = {
-  "Levi Miller": ["Levi Miller", "Ahmed Ayman"],
-  "Rick Miller": ["Rick Miller", "Zeiad Fouad"],
-  "Jacob Stephenson": ["Jacob Stephenson", "Abdulrhman Isawi", "Adam Maxwell"],
-  "Michael Belfort": ["Michael Belfort", "Nouralden"],
-  "Ryan Henderson": ["Ryan Henderson", "Jacob Ahmed"],
-  "Henry Hart": ["Henry Hart", "Max Francis"],
-  "Jacob Xander": ["Jacob Xander", "Youssef Nady"],
-  "John Marcus": ["John Marcus", "Youssef Nasser", "Youssef-John Marcus"],
+export const ATTENDANCE_MEMBER_ALIASES = OPERATIONAL_CONFIG.attendanceMemberAliases;
+
+const ATTENDANCE_STATUS_VARIANTS: Readonly<Record<string, AttendanceStatus>> = {
+  in: "in",
+  off: "off",
+  "day off": "off",
+  late: "late",
+  pto: "pto",
+  absent: "absent",
+  nsnc: "nsnc",
+  "no show no call": "nsnc",
+  conf: "conf",
+  confirmed: "conf",
 };
+
+export function canonicalAttendanceStatus(value: unknown): AttendanceStatus | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase().replace(/[-_]+/g, " ").replace(/\s+/g, " ");
+  return ATTENDANCE_STATUS_VARIANTS[normalized] ?? null;
+}
 
 export interface AttendanceMemberCandidate {
   id: number;
@@ -129,18 +134,12 @@ function datePartsInTimezone(now: Date, timeZone = ATTENDANCE_TIMEZONE) {
   return { year: Number(parts.year), month: Number(parts.month), day: Number(parts.day), weekday: parts.weekday };
 }
 
-function isoFromParts(year: number, month: number, day: number): string {
-  return new Date(Date.UTC(year, month - 1, day)).toISOString().slice(0, 10);
-}
-
 export function attendanceDate(now = new Date()): string {
-  const parts = datePartsInTimezone(now);
-  return isoFromParts(parts.year, parts.month, parts.day);
+  return formatCalendarDate(now, ATTENDANCE_TIMEZONE);
 }
 
 export function addAttendanceCalendarDays(date: string, days: number): string {
-  const [year, month, day] = date.split("-").map(Number);
-  return isoFromParts(year!, month!, day! + days);
+  return addCalendarDays(date, days);
 }
 
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
@@ -164,10 +163,12 @@ export function resolveAttendanceDate(value: string, now = new Date()): Attendan
 
   const isoMatch = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
   if (isoMatch) {
-    const date = isoFromParts(Number(isoMatch[1]), Number(isoMatch[2]), Number(isoMatch[3]));
-    return date === isoMatch[0]
-      ? { kind: "resolved", date }
-      : { kind: "invalid", reason: "That calendar date is invalid." };
+    try {
+      calendarDateParts(isoMatch[0]);
+      return { kind: "resolved", date: isoMatch[0] };
+    } catch {
+      return { kind: "invalid", reason: "That calendar date is invalid." };
+    }
   }
 
   const monthMatch = text.match(/\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sept|sep|october|oct|november|nov|december|dec)\s+(\d{1,2})(?:\s+(\d{4}))?\b/);
@@ -176,7 +177,7 @@ export function resolveAttendanceDate(value: string, now = new Date()): Attendan
     const year = Number(monthMatch[3] ?? parts.year);
     const month = MONTHS[monthMatch[1]!]!;
     const day = Number(monthMatch[2]);
-    const date = isoFromParts(year, month, day);
+    const date = new Date(Date.UTC(year, month - 1, day)).toISOString().slice(0, 10);
     const [actualYear, actualMonth, actualDay] = date.split("-").map(Number);
     return actualYear === year && actualMonth === month && actualDay === day
       ? { kind: "resolved", date }
@@ -197,23 +198,7 @@ export function resolveAttendanceDate(value: string, now = new Date()): Attendan
 }
 
 export function attendanceStartOfDay(date: string, timeZone = ATTENDANCE_TIMEZONE): Date {
-  const [year, month, day] = date.split("-").map(Number);
-  const desiredWallTime = Date.UTC(year!, month! - 1, day!, 0, 0, 0);
-  let instant = desiredWallTime;
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
-  });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const parts = Object.fromEntries(formatter.formatToParts(new Date(instant)).map((part) => [part.type, part.value]));
-    const observed = Date.UTC(
-      Number(parts.year), Number(parts.month) - 1, Number(parts.day),
-      Number(parts.hour), Number(parts.minute), Number(parts.second),
-    );
-    instant += desiredWallTime - observed;
-  }
-  return new Date(instant);
+  return startOfBusinessDay(date, timeZone);
 }
 
 export function formatAttendanceDate(date: string): string {
