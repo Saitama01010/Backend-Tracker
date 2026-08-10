@@ -2,3 +2,8 @@
 # path-wide or rule-wide exception while allowing both Git and directory scans.
 2694da7e4c8a43a6c1eaa641669339e6ce3c57ae:artifacts/api-server/src/security/backgroundJobs.test.ts:generic-api-key:230
 artifacts/api-server/src/security/backgroundJobs.test.ts:generic-api-key:230
+
+# Reviewed historical credentials already reachable from origin/main. These
+# commit-qualified fingerprints do not suppress current or future occurrences.
+6b751acf4bc47de775ef9d435a1fd690ae86f4cf:.replit:generic-api-key:54
+fa47625f200a92daaddfc69bcc1e4c8ffceee8ad:.replit:generic-api-key:41

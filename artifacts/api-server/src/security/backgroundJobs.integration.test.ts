@@ -18,7 +18,6 @@ test("PostgreSQL queue enforces idempotency, type leases, restart recovery, and 
   skip: enabled ? false : "DATABASE_URL and BACKGROUND_JOBS_TEST_DATABASE_URL must match an isolated test database",
 }, async () => {
   await pool.query("TRUNCATE TABLE background_jobs RESTART IDENTITY");
-  const now = new Date("2026-08-10T10:00:00.000Z");
   const first = await postgresBackgroundJobStore.enqueue({
     jobType: "integration_live_refresh",
     idempotencyKey: "integration:postgres:duplicate",
@@ -32,6 +31,7 @@ test("PostgreSQL queue enforces idempotency, type leases, restart recovery, and 
   assert.equal(first.created, true);
   assert.equal(duplicate.created, false);
   assert.equal(first.job.id, duplicate.job.id);
+  const now = new Date(first.job.createdAt.getTime() + 1_000);
 
   await postgresBackgroundJobStore.enqueue({
     jobType: "integration_live_refresh",

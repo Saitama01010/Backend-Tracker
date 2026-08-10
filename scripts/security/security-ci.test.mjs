@@ -68,10 +68,10 @@ test("scanner exceptions remain narrow and time bounded", async () => {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("#"));
-  assert.equal(gitleaksEntries.length, 2);
-  assert.ok(
-    gitleaksEntries.every((line) =>
-      line.includes("backgroundJobs.test.ts:generic-api-key:230"),
-    ),
-  );
+  assert.deepEqual(gitleaksEntries.sort(), [
+    "2694da7e4c8a43a6c1eaa641669339e6ce3c57ae:artifacts/api-server/src/security/backgroundJobs.test.ts:generic-api-key:230",
+    "6b751acf4bc47de775ef9d435a1fd690ae86f4cf:.replit:generic-api-key:54",
+    "artifacts/api-server/src/security/backgroundJobs.test.ts:generic-api-key:230",
+    "fa47625f200a92daaddfc69bcc1e4c8ffceee8ad:.replit:generic-api-key:41",
+  ].sort());
 });
