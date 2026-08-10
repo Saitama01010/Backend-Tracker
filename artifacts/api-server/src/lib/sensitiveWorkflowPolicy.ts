@@ -48,7 +48,7 @@ export function privateDownloadHeaders(filename: string): Record<string, string>
   return {
     "Content-Type": PRIVATE_WORKBOOK_CONTENT_TYPE,
     "Content-Disposition": `attachment; filename="${filename}"`,
-    "Cache-Control": "private, no-store, max-age=0",
+    "Cache-Control": "private, no-store, max-age=0, no-transform",
     Pragma: "no-cache",
     Expires: "0",
     "X-Content-Type-Options": "nosniff",

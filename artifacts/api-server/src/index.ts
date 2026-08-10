@@ -6,6 +6,7 @@ import { count, eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { validateNewPassword } from "./lib/passwordPolicy";
 import { revokeUserSessions } from "./lib/sessionStore";
+import { configureHttpServerPolicy } from "./lib/httpServerPolicy";
 
 const rawPort = process.env["PORT"];
 
@@ -298,7 +299,7 @@ async function deactivateFormerUsers() {
   }
 }
 
-app.listen(port, async (err) => {
+const server = app.listen(port, async (err) => {
   if (err) {
     logger.error({ err }, "Error listening on port");
     process.exit(1);
@@ -312,3 +313,4 @@ app.listen(port, async (err) => {
   await seedAttendanceMembers();
   await seedAttendanceRecords();
 });
+configureHttpServerPolicy(server);

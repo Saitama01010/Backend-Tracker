@@ -119,6 +119,6 @@ test("workflow dates, wildcard escaping, and private workbook headers are determ
 
   const headers = privateDownloadHeaders("QA_Reviews.xlsx");
   assert.equal(headers["Content-Disposition"], 'attachment; filename="QA_Reviews.xlsx"');
-  assert.equal(headers["Cache-Control"], "private, no-store, max-age=0");
+  assert.equal(headers["Cache-Control"], "private, no-store, max-age=0, no-transform");
   assert.equal(headers["X-Content-Type-Options"], "nosniff");
 });

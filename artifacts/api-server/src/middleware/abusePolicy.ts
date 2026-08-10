@@ -22,6 +22,9 @@ const ACTION_RULES: readonly ActionRule[] = [
   { method: "POST", path: /^\/qa\/(?:evaluate|biweekly-run|process|assign-weekly)$/, key: "qa-expensive-action", limit: 20, windowSeconds: 10 * 60 },
   { method: "POST", path: /^\/attendance\/(?:import|auto-mark)$/, key: "attendance-bulk-action", limit: 12, windowSeconds: 10 * 60 },
   { method: "POST", path: /^\/samia\/chat$/, key: "samia-chat", limit: 30, windowSeconds: 5 * 60 },
+  { method: "GET", path: /^\/(?:qa|ob-report|ob-analytics|live-transfers)\/download$/, key: "private-report-download", limit: 30, windowSeconds: 10 * 60 },
+  { method: "GET", path: /^\/readymode\/probe$/, key: "readymode-probe", limit: 20, windowSeconds: 10 * 60 },
+  { method: "GET", path: /^\/vos\/debug\/(?:calls|proxy)$/, key: "vos-diagnostic", limit: 20, windowSeconds: 10 * 60 },
   { method: "POST", path: /^\/users$/, key: "account-password-create", limit: 10, windowSeconds: 60 * 60 },
   {
     method: "PATCH",

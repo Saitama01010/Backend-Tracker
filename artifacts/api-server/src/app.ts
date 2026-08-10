@@ -1,5 +1,4 @@
 import express, { type Express } from "express";
-import cors from "cors";
 import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
 import path from "node:path";
@@ -7,6 +6,17 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import {
+  BODY_LIMITS,
+  apiNotFound,
+  createCorsMiddleware,
+  privateApiCache,
+  requestContext,
+  responseCompression,
+  sanitizedErrorHandler,
+  securityHeaders,
+  stableErrorResponses,
+} from "./middleware/platformControls";
 
 const app: Express = express();
 
@@ -16,9 +26,14 @@ if (process.env["VERCEL"] === "1") {
   app.set("trust proxy", Number(process.env["TRUST_PROXY_HOPS"]));
 }
 
+app.use(requestContext);
+app.use(securityHeaders());
 app.use(
   pinoHttp({
     logger,
+    genReqId(req) {
+      return req.requestId;
+    },
     serializers: {
       req(req) {
         return {
@@ -35,44 +50,26 @@ app.use(
     },
   }),
 );
-const configuredOrigins = (process.env["FRONTEND_ORIGIN"] ?? process.env["CORS_ORIGIN"] ?? "")
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
-
-app.use((req, res, next) => {
-  const requestHost = req.headers.host;
-  cors({
-    origin(origin, cb) {
-      if (!origin) return cb(null, true);
-      if (configuredOrigins.includes(origin)) return cb(null, true);
-      if (configuredOrigins.length === 0 && process.env.NODE_ENV !== "production") return cb(null, true);
-
-      try {
-        if (requestHost && new URL(origin).host === requestHost) return cb(null, true);
-      } catch {
-        // Fall through to the CORS rejection below.
-      }
-
-      return cb(new Error("CORS origin not allowed"));
-    },
-  })(req, res, next);
-});
+app.use(createCorsMiddleware());
+app.use(responseCompression());
+app.use(stableErrorResponses);
+app.use("/api", privateApiCache);
 // Samia accepts at most two screenshots; give that authenticated route enough
 // room for base64 payloads while preserving the smaller default limit elsewhere.
-app.use("/api/samia/chat", express.json({ limit: "8mb" }));
+app.use("/api/samia/chat", express.json({ limit: BODY_LIMITS.samia }));
 // Signature verification must receive the exact bytes delivered by Quo. Mount
 // this before the general JSON parser so whitespace and property order are not
 // changed by a parse/serialize round trip.
 app.use(
   ["/api/quo/webhook", "/api/openphone/webhook"],
-  express.raw({ type: "application/json", limit: "1mb" }),
+  express.raw({ type: "application/json", limit: BODY_LIMITS.webhook }),
 );
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: BODY_LIMITS.json }));
+app.use(express.urlencoded({ extended: true, limit: BODY_LIMITS.form, parameterLimit: 1_000 }));
 app.use(cookieParser());
 
 app.use("/api", router);
+app.use("/api", apiNotFound);
 
 // Serve the built frontend from the same origin (single-deploy hosting, e.g.
 // Render). The dashboard fetches the API via relative "/api" URLs, so no CORS
@@ -92,5 +89,7 @@ if (existsSync(clientDir)) {
   });
   logger.info({ clientDir }, "Serving built frontend");
 }
+
+app.use(sanitizedErrorHandler);
 
 export default app;

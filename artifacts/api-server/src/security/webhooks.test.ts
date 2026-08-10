@@ -286,7 +286,7 @@ test("webhook endpoints use raw parsing, retryable failures, sanitized logs, and
   ]);
 
   const rawParserAt = appSource.indexOf("express.raw");
-  const jsonParserAt = appSource.indexOf("app.use(express.json())");
+  const jsonParserAt = appSource.indexOf("app.use(express.json(");
   assert.ok(rawParserAt >= 0 && rawParserAt < jsonParserAt);
   assert.doesNotMatch(routeSource, /JSON\.stringify\(req\.body\)/);
   assert.match(routeSource, /status\(401\)/);
