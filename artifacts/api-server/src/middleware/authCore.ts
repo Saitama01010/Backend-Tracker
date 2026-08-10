@@ -13,6 +13,7 @@ export interface AuthPayload {
   lockToToday?: boolean;
   samiaCurse?: boolean;
   hideBackendStats?: boolean;
+  sessionId?: string;
 }
 
 interface AuthenticatedRequest extends Request {
@@ -42,7 +43,7 @@ export function createRequireAuth({ verifyToken, loadActiveUser }: Authenticatio
       const claims = verifyToken(token);
       const user = await loadActiveUser(claims);
       if (!user) {
-        res.status(401).json({ error: "User not found or inactive" });
+        res.status(401).json({ error: "Invalid or expired token" });
         return;
       }
 

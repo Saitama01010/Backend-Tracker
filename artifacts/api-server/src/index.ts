@@ -4,6 +4,8 @@ import { db } from "@workspace/db";
 import { portalUsersTable, ALL_PERMISSIONS, attendanceMembersTable, attendanceRecordsTable } from "@workspace/db/schema";
 import { count, eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
+import { validateNewPassword } from "./lib/passwordPolicy";
+import { revokeUserSessions } from "./lib/sessionStore";
 
 const rawPort = process.env["PORT"];
 
@@ -32,7 +34,10 @@ function dashboardPassword(): string {
 async function seedAdminUser() {
   const [{ value }] = await db.select({ value: count() }).from(portalUsersTable);
   if (value === 0) {
-    const hash = await bcrypt.hash(dashboardPassword(), 10);
+    const password = dashboardPassword();
+    const passwordError = validateNewPassword(password, "admin");
+    if (passwordError) throw new Error(`DASHBOARD_PASSWORD: ${passwordError}`);
+    const hash = await bcrypt.hash(password, 10);
     await db.insert(portalUsersTable).values({
       username: "admin",
       passwordHash: hash,
@@ -45,13 +50,19 @@ async function seedAdminUser() {
   }
 
   if (process.env["RESET_ADMIN_PASSWORD_ON_BOOT"] === "true") {
-    const hash = await bcrypt.hash(dashboardPassword(), 10);
+    const password = dashboardPassword();
+    const passwordError = validateNewPassword(password, "admin");
+    if (passwordError) throw new Error(`DASHBOARD_PASSWORD: ${passwordError}`);
+    const hash = await bcrypt.hash(password, 10);
     const [updated] = await db
       .update(portalUsersTable)
       .set({ passwordHash: hash })
       .where(eq(portalUsersTable.username, "admin"))
       .returning({ id: portalUsersTable.id });
-    if (updated) logger.info("Updated admin password from DASHBOARD_PASSWORD because RESET_ADMIN_PASSWORD_ON_BOOT=true");
+    if (updated) {
+      await revokeUserSessions(updated.id);
+      logger.info("Updated admin password from DASHBOARD_PASSWORD because RESET_ADMIN_PASSWORD_ON_BOOT=true");
+    }
   }
 }
 

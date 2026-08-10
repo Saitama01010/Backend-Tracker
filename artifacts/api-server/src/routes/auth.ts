@@ -1,138 +1,166 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import bcrypt from "bcryptjs";
-import { databaseConnectionInfo, db } from "@workspace/db";
-import { portalUsersTable, ALL_PERMISSIONS } from "@workspace/db/schema";
-import type { Permission } from "@workspace/db/schema";
+import { db } from "@workspace/db";
+import { portalUsersTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
-import { signToken, requireAuth } from "../middleware/auth.js";
+import { requireAuth, signToken } from "../middleware/auth.js";
+import { authPayloadForUser, loadActivePortalUser, publicAuthUser } from "../lib/authUser.js";
+import {
+  createRefreshSession,
+  findActiveRefreshSession,
+  revokeRefreshSession,
+  touchRefreshSession,
+} from "../lib/sessionStore.js";
+import {
+  clearRefreshCookie,
+  readRefreshCookie,
+  setRefreshCookie,
+} from "../lib/sessionToken.js";
+import {
+  clearFixedWindow,
+  consumeFixedWindow,
+  inspectFixedWindow,
+  privateScopeHash,
+  requestAddress,
+  type RateLimitDecision,
+} from "../lib/rateLimitStore.js";
 import { logger } from "../lib/logger.js";
 
 const router = Router();
+const INVALID_CREDENTIALS = "Invalid credentials";
+const DUMMY_PASSWORD_HASH = "$2b$10$cjArsAjWlR.lS7mPsVkMbuAKlNoYmFuzH.95QfojL5OZkVUZLPv9W";
+const LOGIN_WINDOW_SECONDS = 15 * 60;
+const LOGIN_IP_LIMIT = 30;
+const LOGIN_FAILURE_LIMIT = 5;
 
-function parsePermissions(raw: string | null | undefined, role: string): Permission[] {
-  if (role === "admin") return [...ALL_PERMISSIONS];
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed as Permission[] : [];
-  } catch { return []; }
+function rateLimited(res: Response, decision: RateLimitDecision): void {
+  res.setHeader("Retry-After", String(decision.retryAfter));
+  res.status(429).json({ error: "Too many attempts. Try again later." });
 }
 
-function parseJsonArray(raw: string | null | undefined): string[] | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed as string[] : null;
-  } catch { return null; }
+async function issueSession(userId: number, res: Response) {
+  const session = await createRefreshSession(userId);
+  setRefreshCookie(res, session.token);
+  return session.id;
 }
 
 router.post("/auth/login", async (req, res) => {
   const { username, password } = req.body ?? {};
-  const hasUsernameField = typeof username === "string";
-  const hasPasswordField = typeof password === "string";
-  const normalizedUsername = hasUsernameField ? username.trim().toLowerCase() : null;
-  const dbInfo = databaseConnectionInfo();
+  const normalizedUsername = typeof username === "string" ? username.trim().toLowerCase() : "";
+  const address = requestAddress(req);
+  const ipScope = privateScopeHash(`login-ip:${address}`);
+  const loginDecision = await consumeFixedWindow(ipScope, "login-request", LOGIN_IP_LIMIT, LOGIN_WINDOW_SECONDS);
+  if (!loginDecision.allowed) {
+    rateLimited(res, loginDecision);
+    return;
+  }
 
-  logger.info({
-    username: normalizedUsername,
-    hasUsernameField,
-    hasPasswordField,
-    db: dbInfo,
-  }, "auth.login: request received");
-
-  if (typeof username !== "string" || typeof password !== "string") {
-    logger.warn({
-      username: normalizedUsername,
-      hasUsernameField,
-      hasPasswordField,
-    }, "auth.login: missing required fields");
+  if (typeof username !== "string" || typeof password !== "string" || !normalizedUsername) {
     res.status(400).json({ error: "username and password required" });
     return;
   }
 
+  // The IP limiter limits distributed username guessing from one source. This
+  // independent account key also limits a distributed attack on one account.
+  const failureScope = privateScopeHash(`login-failure:${normalizedUsername}`);
+  const existingFailures = await inspectFixedWindow(
+    failureScope,
+    "login-failure",
+    LOGIN_FAILURE_LIMIT,
+    LOGIN_WINDOW_SECONDS,
+  );
+  if (!existingFailures.allowed) {
+    rateLimited(res, existingFailures);
+    return;
+  }
+
   const [user] = await db
     .select()
     .from(portalUsersTable)
-    .where(eq(portalUsersTable.username, normalizedUsername!))
+    .where(eq(portalUsersTable.username, normalizedUsername))
     .limit(1);
 
-  if (!user || !user.active) {
-    logger.warn({
-      username: normalizedUsername,
-      userFound: !!user,
-      active: user?.active ?? null,
-      role: user?.role ?? null,
-      db: dbInfo,
-    }, "auth.login: user missing or inactive");
-    res.status(401).json({ error: "Invalid credentials" });
+  const passwordValid = await bcrypt.compare(password, user?.active ? user.passwordHash : DUMMY_PASSWORD_HASH);
+  if (!user?.active || !passwordValid) {
+    const failureDecision = await consumeFixedWindow(
+      failureScope,
+      "login-failure",
+      LOGIN_FAILURE_LIMIT,
+      LOGIN_WINDOW_SECONDS,
+    );
+    logger.warn({ event: "auth.login.failed" }, "Authentication failed");
+    if (!failureDecision.allowed) {
+      rateLimited(res, failureDecision);
+      return;
+    }
+    res.status(401).json({ error: INVALID_CREDENTIALS });
     return;
   }
 
-  const valid = await bcrypt.compare(password, user.passwordHash);
-  logger.info({
-    username: normalizedUsername,
-    userFound: true,
-    active: user.active,
-    role: user.role,
-    passwordMatch: valid,
-    passwordHashPrefix: user.passwordHash.slice(0, 4),
-    db: dbInfo,
-  }, "auth.login: password checked");
-
-  if (!valid) {
-    res.status(401).json({ error: "Invalid credentials" });
-    return;
-  }
-
-  const permissions = parsePermissions(user.permissions, user.role);
-  const teamAccess = (user.teamAccess ?? null) as "retention" | "nsf" | "cs" | null;
-  const allowedTabs = parseJsonArray(user.allowedTabs);
-  const allowedAgents = parseJsonArray(user.allowedAgents);
-  const allowedSubTabs = parseJsonArray(user.allowedSubTabs);
-  const lockToToday = !!user.lockToToday;
-  const hideBackendStats = !!user.hideBackendStats;
-
-  let token: string;
+  await clearFixedWindow(failureScope, "login-failure");
   try {
-    token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday, hideBackendStats });
-    logger.info({
-      username: normalizedUsername,
-      userId: user.id,
-      role: user.role,
-    }, "auth.login: token created");
-  } catch (err) {
-    logger.error({
-      err,
-      username: normalizedUsername,
-      userId: user.id,
-      role: user.role,
-    }, "auth.login: token creation failed");
-    res.status(500).json({ error: "Authentication service is not configured correctly." });
+    const sessionId = await issueSession(user.id, res);
+    const payload = authPayloadForUser(user, sessionId);
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ token: signToken(payload), user: publicAuthUser(payload) });
+  } catch (error) {
+    logger.error({ err: error }, "Authentication session creation failed");
+    res.status(503).json({ error: "Authentication service is temporarily unavailable." });
+  }
+});
+
+router.post("/auth/refresh", async (req, res) => {
+  const addressScope = privateScopeHash(`refresh-ip:${requestAddress(req)}`);
+  const decision = await consumeFixedWindow(addressScope, "session-refresh", 60, 5 * 60);
+  if (!decision.allowed) {
+    rateLimited(res, decision);
     return;
   }
 
-  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday, hideBackendStats } });
+  const refreshToken = readRefreshCookie(req);
+  if (!refreshToken) {
+    clearRefreshCookie(res);
+    res.status(401).json({ error: "Invalid or expired session" });
+    return;
+  }
+
+  const session = await findActiveRefreshSession(refreshToken);
+  const user = session ? await loadActivePortalUser(session.userId) : null;
+  if (!session || !user) {
+    if (session) await revokeRefreshSession(refreshToken);
+    clearRefreshCookie(res);
+    res.status(401).json({ error: "Invalid or expired session" });
+    return;
+  }
+
+  await touchRefreshSession(session.id);
+  const payload = authPayloadForUser(user, session.id);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ token: signToken(payload), user: publicAuthUser(payload) });
+});
+
+router.post("/auth/logout", async (req, res) => {
+  const refreshToken = readRefreshCookie(req);
+  if (refreshToken) await revokeRefreshSession(refreshToken);
+  clearRefreshCookie(res);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true });
 });
 
 router.get("/auth/me", requireAuth, async (req, res) => {
-  const [user] = await db
-    .select()
-    .from(portalUsersTable)
-    .where(eq(portalUsersTable.id, req.user!.userId))
-    .limit(1);
-  if (!user || !user.active) {
-    res.status(401).json({ error: "User not found or inactive" });
+  const user = await loadActivePortalUser(req.user!.userId);
+  if (!user) {
+    clearRefreshCookie(res);
+    res.status(401).json({ error: "Invalid or expired token" });
     return;
   }
-  const permissions = parsePermissions(user.permissions, user.role);
-  const teamAccess = (user.teamAccess ?? null) as "retention" | "nsf" | "cs" | null;
-  const allowedTabs = parseJsonArray(user.allowedTabs);
-  const allowedAgents = parseJsonArray(user.allowedAgents);
-  const allowedSubTabs = parseJsonArray(user.allowedSubTabs);
-  const lockToToday = !!user.lockToToday;
-  const hideBackendStats = !!user.hideBackendStats;
-  const token = signToken({ userId: user.id, username: user.username, role: user.role as "admin" | "edit" | "view", permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday, hideBackendStats });
-  res.json({ token, user: { id: user.id, username: user.username, role: user.role, permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday, hideBackendStats } });
+
+  // Legacy 30-day JWTs do not have a session ID. The first /auth/me call
+  // upgrades them in place without forcing the user to sign in again.
+  const sessionId = req.user!.sessionId ?? await issueSession(user.id, res);
+  const payload = authPayloadForUser(user, sessionId);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ token: signToken(payload), user: publicAuthUser(payload) });
 });
 
 export default router;

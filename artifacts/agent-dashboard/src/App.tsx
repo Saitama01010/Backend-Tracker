@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Calendar as CalendarPicker } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { API_UNAUTHORIZED_EVENT, apiFetch } from "@/lib/api";
+import { API_SESSION_RENEWED_EVENT, API_UNAUTHORIZED_EVENT, apiFetch } from "@/lib/api";
 import {
   Table,
   TableBody,
@@ -6053,6 +6053,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
+    void apiFetch("/api/auth/logout", { method: "POST", auth: "none" }).catch(() => undefined);
     localStorage.removeItem("tracker_token");
     localStorage.removeItem("tracker_user");
     setAuth(null);
@@ -6063,6 +6064,17 @@ function LoginGate({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener(API_UNAUTHORIZED_EVENT, logout);
   }, [logout]);
 
+  useEffect(() => {
+    const applyRenewedSession = () => {
+      const token = localStorage.getItem("tracker_token");
+      const rawUser = localStorage.getItem("tracker_user");
+      if (!token || !rawUser) return;
+      try { setAuth({ token, user: JSON.parse(rawUser) as AuthUser }); } catch { /* Ignore invalid local state. */ }
+    };
+    window.addEventListener(API_SESSION_RENEWED_EVENT, applyRenewedSession);
+    return () => window.removeEventListener(API_SESSION_RENEWED_EVENT, applyRenewedSession);
+  }, []);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
@@ -6072,7 +6084,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
         method: "POST",
         auth: "none",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: username.trim(), password: password.trim() }),
+        body: JSON.stringify({ username: username.trim(), password }),
       });
       if (r.ok) {
         const data = await r.json() as { token: string; user: AuthUser };
@@ -6893,12 +6905,12 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   }
 
   async function addUser() {
-    if (!newUsername.trim() || !newPassword.trim()) return;
+    if (!newUsername.trim() || !newPassword) return;
     setSaving(true); setError("");
     const perms = newRole === "admin" ? DEFAULT_PERMS["admin"] : newPerms;
     const body = {
       username: newUsername.trim(),
-      password: newPassword.trim(),
+      password: newPassword,
       role: newRole,
       permissions: perms,
       teamAccess: newTeamAccess || null,
@@ -6921,8 +6933,16 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   }
 
   async function patchUser(id: number, updates: Record<string, unknown>) {
-    await apiFetch(`/api/users/${id}`, { method: "PATCH", headers: authHeaders(token), body: JSON.stringify(updates) });
-    setEditingId(null); await load();
+    setError("");
+    const response = await apiFetch(`/api/users/${id}`, { method: "PATCH", headers: authHeaders(token), body: JSON.stringify(updates) });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({})) as { error?: string };
+      setError(data.error ?? "Failed to update user");
+      return;
+    }
+    setEditingId(null);
+    setEditPw("");
+    await load();
   }
 
   async function deleteUser(u: PortalUser) {
@@ -7043,7 +7063,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
               <input type="checkbox" checked={newHideBackendStats} onChange={(e) => setNewHideBackendStats(e.target.checked)} className="h-3.5 w-3.5 accent-amber-500" />
               Hide Backend Statistics tab
             </label>
-            <Button size="sm" className="bg-primary hover:bg-primary/90 text-primary-foreground w-full" onClick={addUser} disabled={saving || !newUsername.trim() || !newPassword.trim()}>
+            <Button size="sm" className="bg-primary hover:bg-primary/90 text-primary-foreground w-full" onClick={addUser} disabled={saving || !newUsername.trim() || !newPassword}>
               <Plus className="h-3.5 w-3.5 mr-1" />Add User
             </Button>
             {error && <p className="text-xs metric-bad">{error}</p>}

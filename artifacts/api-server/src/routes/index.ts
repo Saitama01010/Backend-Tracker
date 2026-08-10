@@ -2,6 +2,7 @@ import { Router, type IRouter, type NextFunction, type Request, type Response } 
 import { requireAuth } from "../middleware/auth.js";
 import { authorizeApiDateParameters, authorizeApiRoute } from "./authorizationPolicy.js";
 import { isPublicApiRoute } from "./apiPolicy.js";
+import { rateLimitExpensiveActions } from "../middleware/abuseProtection.js";
 import healthRouter from "./health";
 import quoRouter from "./quo";
 import quoWebhookRouter from "./quoWebhook";
@@ -55,6 +56,7 @@ function defaultPrivateApiAuthorization(req: Request, res: Response, next: NextF
 
 router.use(defaultPrivateApiAuthentication);
 router.use(defaultPrivateApiAuthorization);
+router.use(rateLimitExpensiveActions);
 
 router.use(healthRouter);
 router.use(authRouter);

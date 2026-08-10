@@ -26,6 +26,17 @@ function requiredEnv(name) {
   return value;
 }
 
+function validatePassword(password, username) {
+  const categories = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/]
+    .filter((pattern) => pattern.test(password)).length;
+  if (password.length < 12 || password.length > 128 || categories < 3) {
+    throw new Error("ADMIN_PASSWORD must be 12-128 characters and include at least three character categories");
+  }
+  if (username.length >= 3 && password.toLowerCase().includes(username)) {
+    throw new Error("ADMIN_PASSWORD must not contain ADMIN_USERNAME");
+  }
+}
+
 function databaseUrls() {
   const target = (process.env.ADMIN_SETUP_DATABASES ?? "active").trim().toLowerCase();
   const urls = [
@@ -44,7 +55,7 @@ function databaseUrls() {
 async function upsertAdmin(label, connectionString, username, passwordHash) {
   const pool = new Pool({ connectionString });
   try {
-    await pool.query(
+    const result = await pool.query(
       `
         insert into portal_users (
           username,
@@ -86,6 +97,10 @@ async function upsertAdmin(label, connectionString, username, passwordHash) {
         ]),
       ],
     );
+    const sessionTable = await pool.query("select to_regclass('public.auth_sessions') as table_name");
+    if (sessionTable.rows[0]?.table_name && result.rows[0]?.id) {
+      await pool.query("delete from auth_sessions where user_id = $1", [result.rows[0].id]);
+    }
     console.log(`Admin user is ready in ${label}.`);
   } finally {
     await pool.end();
@@ -96,6 +111,7 @@ loadEnvFile();
 
 const username = requiredEnv("ADMIN_USERNAME").toLowerCase();
 const password = requiredEnv("ADMIN_PASSWORD");
+validatePassword(password, username);
 const passwordHash = await bcrypt.hash(password, 10);
 
 for (const [label, connectionString] of databaseUrls()) {

@@ -72,10 +72,10 @@ test("today-only users cannot submit historical or future date parameters", () =
   assert.equal(canAccessDateRange(todayOnly, ["2026-07-16"], now), false);
   assert.equal(canAccessDateRange(todayOnly, [], now), false);
   assert.equal(canAccessDateRange(admin, ["2025-01-01"], now), true);
-  assert.equal(authorizeApiDateParameters("GET", "/violations", todayOnly, { from: "2026-07-14", to: "2026-07-15" }), false);
-  assert.equal(authorizeApiDateParameters("GET", "/violations", todayOnly, { from: "2026-07-15", to: "2026-07-15" }), true);
-  assert.equal(authorizeApiDateParameters("GET", "/violations", todayOnly, {}), false);
-  assert.equal(authorizeApiDateParameters("PUT", "/attendance/record", todayOnly, {}, { date: "2026-07-14" }), false);
+  assert.equal(authorizeApiDateParameters("GET", "/violations", todayOnly, { from: "2026-07-14", to: "2026-07-15" }, {}, now), false);
+  assert.equal(authorizeApiDateParameters("GET", "/violations", todayOnly, { from: "2026-07-15", to: "2026-07-15" }, {}, now), true);
+  assert.equal(authorizeApiDateParameters("GET", "/violations", todayOnly, {}, {}, now), false);
+  assert.equal(authorizeApiDateParameters("PUT", "/attendance/record", todayOnly, {}, { date: "2026-07-14" }, now), false);
 });
 
 test("missing authentication is denied before route authorization and unknown routes default to admin", () => {

@@ -90,7 +90,7 @@ test("deactivated or missing users are rejected even when their token verifies",
   await requireAuth(requestWithAuthorization("Bearer valid-but-deactivated"), res.response, () => assert.fail("next must not run"));
 
   assert.equal(res.status(), 401);
-  assert.deepEqual(res.body(), { error: "User not found or inactive" });
+  assert.deepEqual(res.body(), { error: "Invalid or expired token" });
 });
 
 test("route-level authorization reuses the user loaded by the default-private guard", async () => {

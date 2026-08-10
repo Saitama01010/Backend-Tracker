@@ -1,4 +1,5 @@
 export const API_UNAUTHORIZED_EVENT = "tracker:unauthorized";
+export const API_SESSION_RENEWED_EVENT = "tracker:session-renewed";
 
 export type ApiAuthentication = "required" | "none";
 
@@ -10,6 +11,7 @@ export interface ApiClientRuntime {
   origin: string;
   fetch: typeof fetch;
   getToken: () => string | null;
+  renewSession?: () => Promise<string | null>;
   onUnauthorized: () => void;
 }
 
@@ -32,11 +34,34 @@ export class ApiUnauthorizedError extends ApiHttpError {
   }
 }
 
+let browserRenewal: Promise<string | null> | null = null;
+
+function renewBrowserSession(): Promise<string | null> {
+  if (browserRenewal) return browserRenewal;
+  browserRenewal = window.fetch(new URL("/api/auth/refresh", window.location.origin), {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+  }).then(async (response) => {
+    if (!response.ok) return null;
+    const data = await response.json() as { token?: unknown; user?: unknown };
+    if (typeof data.token !== "string" || !data.user) return null;
+    window.localStorage.setItem("tracker_token", data.token);
+    window.localStorage.setItem("tracker_user", JSON.stringify(data.user));
+    window.dispatchEvent(new CustomEvent(API_SESSION_RENEWED_EVENT));
+    return data.token;
+  }).catch(() => null).finally(() => {
+    browserRenewal = null;
+  });
+  return browserRenewal;
+}
+
 function browserRuntime(): ApiClientRuntime {
   return {
     origin: window.location.origin,
     fetch: window.fetch.bind(window),
     getToken: () => window.localStorage.getItem("tracker_token"),
+    renewSession: renewBrowserSession,
     onUnauthorized: () => {
       window.localStorage.removeItem("tracker_token");
       window.localStorage.removeItem("tracker_user");
@@ -68,8 +93,23 @@ export async function apiFetchWithRuntime(
     if (token) headers.set("Authorization", `Bearer ${token}`);
   }
 
-  const response = await runtime.fetch(requestUrl, { ...requestInit, headers });
+  const response = await runtime.fetch(requestUrl, {
+    credentials: requestInit.credentials ?? "same-origin",
+    ...requestInit,
+    headers,
+  });
   if (auth === "required" && response.status === 401) {
+    const renewedToken = await runtime.renewSession?.();
+    if (renewedToken) {
+      const retryHeaders = new Headers(requestInit.headers);
+      retryHeaders.set("Authorization", `Bearer ${renewedToken}`);
+      const retry = await runtime.fetch(requestUrl, {
+        credentials: requestInit.credentials ?? "same-origin",
+        ...requestInit,
+        headers: retryHeaders,
+      });
+      if (retry.status !== 401) return retry;
+    }
     runtime.onUnauthorized();
     throw new ApiUnauthorizedError(response);
   }

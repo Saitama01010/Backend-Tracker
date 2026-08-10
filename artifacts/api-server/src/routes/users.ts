@@ -5,6 +5,8 @@ import { portalUsersTable, ALL_PERMISSIONS } from "@workspace/db/schema";
 import type { Permission } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { validateNewPassword } from "../lib/passwordPolicy.js";
+import { revokeUserSessions } from "../lib/sessionStore.js";
 
 const router = Router();
 
@@ -66,8 +68,13 @@ function serializeJsonArray(v: unknown): string | null {
 
 router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
   const { username, password, role, permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday, samiaCurse, hideBackendStats } = req.body ?? {};
-  if (!username || !password || !["admin", "edit", "view"].includes(role)) {
+  if (typeof username !== "string" || typeof password !== "string" || !username.trim() || !["admin", "edit", "view"].includes(role)) {
     res.status(400).json({ error: "username, password and role required" });
+    return;
+  }
+  const passwordError = validateNewPassword(password, username);
+  if (passwordError) {
+    res.status(400).json({ error: passwordError });
     return;
   }
   const perms: Permission[] = role === "admin" ? [...ALL_PERMISSIONS] : (Array.isArray(permissions) ? permissions : []);
@@ -93,9 +100,36 @@ router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
 
 router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) => {
   const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
   const { username, password, role, active, permissions, teamAccess, allowedTabs, allowedAgents, allowedSubTabs, lockToToday, samiaCurse, hideBackendStats } = req.body ?? {};
+  const [existing] = await db.select().from(portalUsersTable).where(eq(portalUsersTable.id, id)).limit(1);
+  if (!existing) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+  if (req.user?.userId === id && (active === false || (role && role !== "admin"))) {
+    res.status(400).json({ error: "Cannot deactivate or demote your own account" });
+    return;
+  }
+  if (typeof password === "string") {
+    const passwordError = validateNewPassword(password, typeof username === "string" ? username : existing.username);
+    if (passwordError) {
+      res.status(400).json({ error: passwordError });
+      return;
+    }
+  }
+  if (existing.active && existing.role === "admin" && (active === false || (role && role !== "admin"))) {
+    const remaining = await db.select({ id: portalUsersTable.id, role: portalUsersTable.role, active: portalUsersTable.active }).from(portalUsersTable);
+    if (!remaining.some((candidate) => candidate.id !== id && candidate.active && candidate.role === "admin")) {
+      res.status(400).json({ error: "Cannot remove the last active administrator" });
+      return;
+    }
+  }
   const updates: Record<string, unknown> = {};
-  if (username) updates["username"] = username.trim().toLowerCase();
+  if (typeof username === "string" && username.trim()) updates["username"] = username.trim().toLowerCase();
   if (password) updates["passwordHash"] = await bcrypt.hash(password, 10);
   if (role && ["admin", "edit", "view"].includes(role)) updates["role"] = role;
   if (typeof active === "boolean") updates["active"] = active;
@@ -116,6 +150,11 @@ router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) =
     .set(updates)
     .where(eq(portalUsersTable.id, id))
     .returning(SELECTABLE);
+  if (!user) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+  if (typeof password === "string" || active === false) await revokeUserSessions(id);
   res.json({ ...user, permissions: parsePermissions(user.permissions, user.role), allowedTabs: parseJsonArray(user.allowedTabs), allowedAgents: parseJsonArray(user.allowedAgents), allowedSubTabs: parseJsonArray(user.allowedSubTabs) });
 });
 
@@ -123,6 +162,15 @@ router.delete("/users/:id", requireAuth, requireRole("admin"), async (req, res) 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
   if (req.user?.userId === id) { res.status(400).json({ error: "Cannot delete your own account" }); return; }
+  const [existing] = await db.select().from(portalUsersTable).where(eq(portalUsersTable.id, id)).limit(1);
+  if (!existing) { res.status(404).json({ error: "User not found" }); return; }
+  if (existing.active && existing.role === "admin") {
+    const remaining = await db.select({ id: portalUsersTable.id, role: portalUsersTable.role, active: portalUsersTable.active }).from(portalUsersTable);
+    if (!remaining.some((candidate) => candidate.id !== id && candidate.active && candidate.role === "admin")) {
+      res.status(400).json({ error: "Cannot delete the last active administrator" });
+      return;
+    }
+  }
   await db.delete(portalUsersTable).where(eq(portalUsersTable.id, id));
   res.json({ ok: true });
 });

@@ -36,6 +36,13 @@
       "when": 1784106000000,
       "tag": "0004_action_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786338000000,
+      "tag": "0005_login_sessions",
+      "breakpoints": true
     }
   ]
 }

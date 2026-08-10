@@ -132,6 +132,7 @@ export function authorizeApiDateParameters(
   user: AuthPayload | undefined,
   query: RequestValues = {},
   body: RequestValues = {},
+  now = new Date(),
 ): boolean {
   if (!user || user.role === "admin" || !user.lockToToday) return true;
   const key = `${method.toUpperCase()} ${path}`;
@@ -146,5 +147,5 @@ export function authorizeApiDateParameters(
     values.push(value);
   }
   const requested = values.filter((value): value is string => typeof value === "string" && value.length > 0);
-  return requested.length === 0 || canAccessDateRange(user, requested);
+  return requested.length === 0 || canAccessDateRange(user, requested, now);
 }

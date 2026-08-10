@@ -3,10 +3,13 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { PUBLIC_API_ROUTES, isPublicApiRoute } from "../routes/apiPolicy.js";
 
-test("only the exact reviewed health, login, webhook, cron, and import routes are public", () => {
+test("only exact reviewed public or independently authenticated routes bypass bearer authentication", () => {
   for (const route of PUBLIC_API_ROUTES) {
     assert.equal(isPublicApiRoute(route.method, route.path), true, `${route.method} ${route.path}`);
   }
+
+  assert.equal(isPublicApiRoute("POST", "/auth/refresh"), true);
+  assert.equal(isPublicApiRoute("POST", "/auth/logout"), true);
 
   for (const [method, path] of [
     ["GET", "/auth/me"],
@@ -31,6 +34,8 @@ test("only the exact reviewed health, login, webhook, cron, and import routes ar
 test("method, path, and prefix variants cannot bypass the public allowlist", () => {
   assert.equal(isPublicApiRoute("POST", "/healthz"), false);
   assert.equal(isPublicApiRoute("GET", "/auth/login"), false);
+  assert.equal(isPublicApiRoute("GET", "/auth/refresh"), false);
+  assert.equal(isPublicApiRoute("GET", "/auth/logout"), false);
   assert.equal(isPublicApiRoute("POST", "/quo/webhook/extra"), false);
   assert.equal(isPublicApiRoute("POST", "/ob-report/import/extra"), false);
   assert.equal(isPublicApiRoute("GET", "/QA/biweekly-run"), false);

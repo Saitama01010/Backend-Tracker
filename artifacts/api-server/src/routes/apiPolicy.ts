@@ -1,5 +1,6 @@
 export type PublicApiClassification =
   | "public health/login route"
+  | "cookie-authenticated session route"
   | "verified webhook"
   | "cron/server-to-server route";
 
@@ -28,6 +29,18 @@ export const PUBLIC_API_ROUTES: readonly PublicApiRoute[] = [
     path: "/auth/login",
     classification: "public health/login route",
     reason: "Users need this endpoint to obtain their bearer token.",
+  },
+  {
+    method: "POST",
+    path: "/auth/refresh",
+    classification: "cookie-authenticated session route",
+    reason: "Expired access tokens renew through a validated HttpOnly refresh-session cookie.",
+  },
+  {
+    method: "POST",
+    path: "/auth/logout",
+    classification: "cookie-authenticated session route",
+    reason: "Logout must revoke or clear the refresh session even when the access token has expired.",
   },
   {
     method: "POST",

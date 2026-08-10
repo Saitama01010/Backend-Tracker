@@ -12,12 +12,14 @@ import {
 function runtimeFor(
   responder: (input: URL, init?: RequestInit) => Response | Promise<Response>,
   token = "sanitized-test-token",
+  renewSession?: () => Promise<string | null>,
 ) {
   const requests: Array<{ input: URL; init?: RequestInit }> = [];
   let unauthorizedCount = 0;
   const runtime: ApiClientRuntime = {
     origin: "https://dashboard.example.test",
     getToken: () => token,
+    renewSession,
     onUnauthorized: () => { unauthorizedCount += 1; },
     fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = input instanceof URL ? input : new URL(String(input));
@@ -72,6 +74,47 @@ test("private 401 responses clear the authenticated session through one consiste
     apiFetchWithRuntime("/api/private", {}, runtime),
     (error: unknown) => error instanceof ApiUnauthorizedError && error.status === 401,
   );
+  assert.equal(unauthorizedCount(), 1);
+});
+
+test("an expired access token renews once and retries the original authenticated request", async () => {
+  let attempts = 0;
+  let renewals = 0;
+  const { runtime, requests, unauthorizedCount } = runtimeFor(
+    () => {
+      attempts += 1;
+      return new Response(JSON.stringify({ ok: true }), {
+        status: attempts === 1 ? 401 : 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+    "sanitized-expired-token",
+    async () => {
+      renewals += 1;
+      return "sanitized-renewed-token";
+    },
+  );
+
+  const response = await apiFetchWithRuntime("/api/private", {
+    headers: { Authorization: "Bearer sanitized-expired-token", "X-Fixture": "preserved" },
+  }, runtime);
+
+  assert.equal(response.status, 200);
+  assert.equal(renewals, 1);
+  assert.equal(unauthorizedCount(), 0);
+  assert.equal(requests.length, 2);
+  const retryHeaders = new Headers(requests[1]?.init?.headers);
+  assert.equal(retryHeaders.get("Authorization"), "Bearer sanitized-renewed-token");
+  assert.equal(retryHeaders.get("X-Fixture"), "preserved");
+});
+
+test("failed renewal clears authentication after the original 401", async () => {
+  const { runtime, unauthorizedCount } = runtimeFor(
+    () => new Response(null, { status: 401 }),
+    "sanitized-expired-token",
+    async () => null,
+  );
+  await assert.rejects(apiFetchWithRuntime("/api/private", {}, runtime), ApiUnauthorizedError);
   assert.equal(unauthorizedCount(), 1);
 });
 

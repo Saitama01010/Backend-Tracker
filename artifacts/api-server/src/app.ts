@@ -1,5 +1,6 @@
 import express, { type Express } from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
 import path from "node:path";
 import { existsSync } from "node:fs";
@@ -8,6 +9,12 @@ import router from "./routes";
 import { logger } from "./lib/logger";
 
 const app: Express = express();
+
+if (process.env["VERCEL"] === "1") {
+  app.set("trust proxy", 1);
+} else if (process.env["TRUST_PROXY_HOPS"]) {
+  app.set("trust proxy", Number(process.env["TRUST_PROXY_HOPS"]));
+}
 
 app.use(
   pinoHttp({
@@ -56,6 +63,7 @@ app.use((req, res, next) => {
 app.use("/api/samia/chat", express.json({ limit: "8mb" }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 
 app.use("/api", router);
 
