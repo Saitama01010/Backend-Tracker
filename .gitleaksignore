@@ -1,0 +1,4 @@
+# Sanitized background-job test fixture. These exact fingerprints avoid a
+# path-wide or rule-wide exception while allowing both Git and directory scans.
+2694da7e4c8a43a6c1eaa641669339e6ce3c57ae:artifacts/api-server/src/security/backgroundJobs.test.ts:generic-api-key:230
+artifacts/api-server/src/security/backgroundJobs.test.ts:generic-api-key:230
