@@ -3925,7 +3925,7 @@ function useLiveCalls(): LiveCallStatus {
     queryKey: ["vosLive"],
     queryFn: async () => {
       const r = await apiFetch("/api/vos/live");
-      if (!r.ok) return { liveCalls: [], agentStatuses: [] };
+      if (!r.ok) throw new Error("PBX live status request failed");
       return r.json();
     },
     refetchInterval: queryPollingInterval({
@@ -4002,7 +4002,7 @@ function useVosStats() {
     queryKey: ["vosStats"],
     queryFn: async () => {
       const r = await apiFetch("/api/vos/stats");
-      if (!r.ok) return { dashboard: { callsByAgent: [] }, agents: [], ringGroups: [], callHistory: [], ringGroupMissed: {} };
+      if (!r.ok) throw new Error("Failed to load VoSLogic stats");
       return r.json();
     },
     staleTime: 30_000,
@@ -4225,7 +4225,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
     queryKey: ["vosLive"],
     queryFn: async () => {
       const r = await apiFetch("/api/vos/live");
-      if (!r.ok) return { liveCalls: [], agentStatuses: [] };
+      if (!r.ok) throw new Error("PBX live status request failed");
       return r.json();
     },
     staleTime: 10_000,
@@ -4334,6 +4334,12 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
 
   return (
     <div className="space-y-4">
+      {pbxLiveQ.isError && (
+        <div role="status" className="ops-card flex flex-wrap items-center justify-between gap-3 border-destructive/30 px-4 py-3 text-sm">
+          <span className="text-destructive">PBX live status is temporarily unavailable. Historical totals are unchanged.</span>
+          <Button variant="outline" size="sm" onClick={() => void pbxLiveQ.refetch()}>Retry</Button>
+        </div>
+      )}
       {liveInView.length > 0 && (
         <div className="space-y-2">
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Live calls right now</p>
@@ -7784,7 +7790,7 @@ function VoSPanel() {
     queryKey: ["vosLive"],
     queryFn: async () => {
       const r = await apiFetch("/api/vos/live");
-      if (!r.ok) return { liveCalls: [], agentStatuses: [] };
+      if (!r.ok) throw new Error("Failed to load VoSLogic live state");
       return r.json();
     },
     staleTime: 10_000,
@@ -7893,10 +7899,11 @@ function VoSPanel() {
       </CardHeader>
       <CardContent className="space-y-5">
         {q.isLoading && <Skeleton className="h-40 w-full" />}
-        {q.error && (
-          <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
-            {String(q.error)}
-          </div>
+        {(q.error || liveQ.error) && (
+          <ErrorState
+            message="PBX data is temporarily unavailable."
+            onRetry={() => { q.refetch(); liveQ.refetch(); }}
+          />
         )}
         {d && (
           <>

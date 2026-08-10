@@ -44,3 +44,17 @@ test("expensive table searches use the shared debounce hook", async () => {
   const app = await readFile(path.join(srcRoot, "App.tsx"), "utf8");
   assert.ok((app.match(/useDebouncedValue\(search\)/g) ?? []).length >= 6);
 });
+
+test("PBX request failures remain explicit instead of becoming zero-valued dashboard data", async () => {
+  const app = await readFile(path.join(srcRoot, "App.tsx"), "utf8");
+  const sharedPbxHook = app.match(/function useVosStats\(\)[\s\S]*?function useVosRingGroupMissed/)?.[0] ?? "";
+  const pbxPanel = app.match(/function VoSPanel\(\)[\s\S]*?interface RmAgentStat/)?.[0] ?? "";
+
+  assert.match(sharedPbxHook, /if \(!r\.ok\) throw new Error\("Failed to load VoSLogic stats"\)/);
+  assert.doesNotMatch(sharedPbxHook, /return \{ dashboard: \{ callsByAgent: \[\] \}/);
+  assert.match(pbxPanel, /if \(!r\.ok\) throw new Error\("Failed to load VoSLogic live state"\)/);
+  assert.match(pbxPanel, /\{\(q\.error \|\| liveQ\.error\) && \(/);
+  assert.match(pbxPanel, /PBX data is temporarily unavailable\./);
+  assert.doesNotMatch(app, /if \(!r\.ok\) return \{ liveCalls: \[\], agentStatuses: \[\] \};/);
+  assert.match(app, /PBX live status is temporarily unavailable\. Historical totals are unchanged\./);
+});
