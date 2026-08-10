@@ -1,6 +1,6 @@
 # Background jobs hardening baseline
 
-Branch: `hardening/10-background-jobs`  
+Branch: `hardening/10-background-jobs`
 Base: tested `hardening/09-database-performance` at `5a1f27ef773a5067cf2589a86115e321c3477e83`
 
 This phase changes execution ownership, not dashboard calculations. Existing Quo, PBX, onboarding, live-transfer, QA, attendance, export, and API response calculations remain in their existing functions. The new layer durably records when those functions must run and prevents more than one active lease for the same job type.
