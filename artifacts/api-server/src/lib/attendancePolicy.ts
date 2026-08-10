@@ -33,6 +33,13 @@ export function canonicalAttendanceStatus(value: unknown): AttendanceStatus | nu
   return ATTENDANCE_STATUS_VARIANTS[normalized] ?? null;
 }
 
+export function attendanceNoteForWrite(
+  requested: string | null | undefined,
+  previous: string | null,
+): string | null {
+  return requested === undefined ? previous : requested;
+}
+
 export interface AttendanceMemberCandidate {
   id: number;
   name: string;

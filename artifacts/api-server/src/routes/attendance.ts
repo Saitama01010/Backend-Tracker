@@ -213,7 +213,7 @@ router.patch("/attendance/members/:id", requireAuth, requirePermission("manage_m
 router.put("/attendance/record", requireAuth, requirePermission("edit_attendance"), async (req, res) => {
   try {
     const { memberId, date, status, note, coaching } = req.body as {
-      memberId: number; date: string; status: string; note?: string; coaching?: boolean;
+      memberId: number; date: string; status: string; note?: string | null; coaching?: boolean;
     };
     if (!memberId || !validateWorkflowCalendarDate(date)) {
       res.status(400).json({ error: "memberId and date required" });
@@ -232,7 +232,7 @@ router.put("/attendance/record", requireAuth, requirePermission("edit_attendance
       memberId,
       date,
       status,
-      note: note ?? null,
+      note,
       coaching: coaching ?? false,
       overwrite: true,
     });

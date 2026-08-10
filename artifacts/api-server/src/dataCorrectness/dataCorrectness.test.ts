@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ATTENDANCE_STATUSES,
+  attendanceNoteForWrite,
   canonicalAttendanceStatus,
 } from "../lib/attendancePolicy.js";
 import {
@@ -27,6 +28,13 @@ test("attendance write boundaries recognize all canonical historical statuses", 
   assert.equal(canonicalAttendanceStatus("confirmed"), "conf");
   assert.equal(canonicalAttendanceStatus("unknown operational state"), null);
   assert.equal(canonicalAttendanceStatus(0), null);
+});
+
+test("attendance note writes distinguish omission from an intentional clear", () => {
+  assert.equal(attendanceNoteForWrite("sanitized note", null), "sanitized note");
+  assert.equal(attendanceNoteForWrite(undefined, "existing note"), "existing note");
+  assert.equal(attendanceNoteForWrite(null, "existing note"), null);
+  assert.equal(attendanceNoteForWrite(null, null), null);
 });
 
 test("calendar arithmetic crosses month, year, and leap-day boundaries without 24-hour assumptions", () => {

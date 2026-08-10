@@ -119,6 +119,18 @@ export function parseSheetGid(value: unknown): number | null {
   return Number.isSafeInteger(gid) && gid >= 0 && gid <= 2_147_483_647 ? gid : null;
 }
 
+export function parseGoogleSheetsValues(payload: unknown): unknown[][] {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    throw new Error("Invalid Google Sheets response");
+  }
+  const values = (payload as { values?: unknown }).values;
+  if (values === undefined) return [];
+  if (!Array.isArray(values) || !values.every(Array.isArray)) {
+    throw new Error("Invalid Google Sheets response");
+  }
+  return values;
+}
+
 function sheetAllowlist(additionalSources: string | undefined): Map<string, Set<number>> {
   const result = defaultApprovedSheets();
   if (!additionalSources?.trim()) return result;

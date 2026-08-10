@@ -17,6 +17,7 @@ import { UserContext, authHeaders, useUser, type AuthUser, type Permission, type
 import { unparseCsv } from "@/lib/csvExport";
 import { dashboardQueryClient, clearDashboardQueryCache } from "@/lib/dashboardQueryClient";
 import { accountQueryScope, pollingDelay, queryPollingInterval } from "@/lib/queryPolicy";
+import { loadBackendStatsSheetSources, readSheetResponse } from "@/lib/sheetData";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import {
   addCalendarDays as addBusinessCalendarDays,
@@ -1398,9 +1399,7 @@ async function fetchSheetSource(id: string, gid: string): Promise<SheetData> {
     queryFn: async () => {
       const params = new URLSearchParams({ id, gid });
       const res = await apiFetch(`/api/sheet?${params.toString()}`);
-      if (!res.ok) throw new Error(`Failed to load sheet (HTTP ${res.status}).`);
-      const data = (await res.json()) as SheetData;
-      return { headers: data.headers ?? [], rows: data.rows ?? [] };
+      return readSheetResponse(res);
     },
   });
 }
@@ -11438,12 +11437,15 @@ function bstatRetentionStatus(update: string, context: string): "Retained" | "Ca
 }
 
 async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<BStatRow[]> {
-  const [retainedCancels, fixes] = await Promise.all([
-    fetchHeaderCsv(NEW_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
-    fetchHeaderCsv(NEW_NSF_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
-  ]);
-  const idpHandled = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
-  const idpCancelRetained = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
+  const { retainedCancels, fixes, idpHandled, idpCancelRetained } = await loadBackendStatsSheetSources(
+    fetchHeaderCsv,
+    {
+      retainedCancels: NEW_RETENTION_URL,
+      fixes: NEW_NSF_URL,
+      idpHandled: IDP_RETENTION_URL,
+      idpCancelRetained: IDP_CANCEL_RETAINED_URL,
+    },
+  );
 
   const out: BStatRow[] = [];
   const add = (rawAgent: string, status: string, date: string, fileId: string, source: string, fallbackTeam: TeamMode) => {
@@ -11685,7 +11687,7 @@ function BackendStatsPanel() {
       <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
         <CardContent className="flex flex-col items-center gap-3 py-16 text-zinc-400">
           <ShieldAlert className="h-8 w-8 text-rose-400/70" />
-          <p className="text-sm">Couldn't load file submissions.</p>
+          <p className="text-sm">Google Sheets data is temporarily unavailable.</p>
           <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
         </CardContent>
       </Card>

@@ -47,6 +47,7 @@ test("legitimate reads, downloads, attendance writes, and administration retain 
     assert.equal(authorizeApiRoute("GET", path, viewer).allowed, true, path);
   }
   assert.equal(authorizeApiRoute("GET", "/attendance", attendanceEditor).allowed, true);
+  assert.equal(authorizeApiRoute("PUT", "/attendance/record", viewer).allowed, false);
   assert.equal(authorizeApiRoute("PUT", "/attendance/record", attendanceEditor).allowed, true);
   assert.equal(authorizeApiRoute("POST", "/attendance/auto-mark", attendanceEditor).allowed, true);
   assert.equal(authorizeApiRoute("POST", "/attendance/members", attendanceEditor).allowed, false);

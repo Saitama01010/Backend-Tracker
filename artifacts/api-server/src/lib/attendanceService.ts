@@ -1,6 +1,7 @@
 import { attendanceMembersTable, attendanceRecordsTable, db } from "@workspace/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
+  attendanceNoteForWrite,
   canonicalAttendanceStatus,
   resolveAttendanceMember,
   type AttendanceMemberMatch,
@@ -144,19 +145,20 @@ export async function setAttendanceRecord(input: AttendanceWriteInput): Promise<
     return { kind: "saved", action: "unchanged", member, previous, record: previous };
   }
 
+  const note = attendanceNoteForWrite(input.note, previous?.note ?? null);
   await db.insert(attendanceRecordsTable).values({
     memberId: member.id,
     date: input.date,
     dateValue: input.date,
     status,
-    note: input.note ?? previous?.note ?? null,
+    note,
     coaching: input.coaching ?? previous?.coaching ?? false,
   }).onConflictDoUpdate({
     target: [attendanceRecordsTable.memberId, attendanceRecordsTable.date],
     set: {
       dateValue: input.date,
       status,
-      note: input.note ?? previous?.note ?? null,
+      note,
       coaching: input.coaching ?? previous?.coaching ?? false,
       updatedAt: new Date(),
     },
@@ -262,7 +264,7 @@ export async function setAttendanceRecords(
 
       const next: State = {
         status: input.status,
-        note: input.note ?? previous?.note ?? null,
+        note: attendanceNoteForWrite(input.note, previous?.note ?? null),
         coaching: input.coaching ?? previous?.coaching ?? false,
       };
       states.set(key, next);

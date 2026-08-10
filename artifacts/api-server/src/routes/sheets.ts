@@ -2,7 +2,7 @@ import { Router } from "express";
 import jwt from "jsonwebtoken";
 import { requireAuth } from "../middleware/auth.js";
 import { loadAuthorizationAgentDirectory, scopeSheetData } from "../lib/authorizationScope.js";
-import { isApprovedSheetSource, parseSheetGid } from "../lib/externalIntegrationPolicy.js";
+import { isApprovedSheetSource, parseGoogleSheetsValues, parseSheetGid } from "../lib/externalIntegrationPolicy.js";
 
 const router = Router();
 router.use("/sheet", requireAuth);
@@ -189,8 +189,7 @@ router.get("/sheet", async (req, res) => {
       res.status(502).json({ error: "Google Sheets values are temporarily unavailable." });
       return;
     }
-    const json = (await resp.json()) as { values?: unknown[][] };
-    const values = json.values ?? [];
+    const values = parseGoogleSheetsValues(await resp.json());
     const headerRowIndex = detectHeaderRow(values);
     const rawHeaders = (values[headerRowIndex] ?? []).map((h) => String(h ?? "").trim());
     const headers = rawHeaders.filter((h) => h.length > 0);

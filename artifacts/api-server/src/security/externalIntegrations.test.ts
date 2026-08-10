@@ -8,6 +8,7 @@ import {
   isApprovedSheetSource,
   paginateAfterAuthorization,
   parseBoundedInteger,
+  parseGoogleSheetsValues,
   parseSheetGid,
   validateIntegrationCalendarDate,
   validateIntegrationDateRange,
@@ -82,6 +83,18 @@ test("diagnostic paths and Google Sheets sources use exact allowlists", () => {
     isApprovedSheetSource("1AdditionalSpreadsheetFixture000000000000000", 42, "1AdditionalSpreadsheetFixture000000000000000=42"),
     true,
   );
+});
+
+test("Google Sheets upstream payloads distinguish empty data from malformed responses", () => {
+  assert.deepEqual(parseGoogleSheetsValues({}), []);
+  assert.deepEqual(parseGoogleSheetsValues({ values: [] }), []);
+  assert.deepEqual(parseGoogleSheetsValues({ values: [["Agent", "Status"], ["Sanitized Agent", "Fixed"]] }), [
+    ["Agent", "Status"],
+    ["Sanitized Agent", "Fixed"],
+  ]);
+  assert.throws(() => parseGoogleSheetsValues(null), /Invalid Google Sheets response/);
+  assert.throws(() => parseGoogleSheetsValues({ values: {} }), /Invalid Google Sheets response/);
+  assert.throws(() => parseGoogleSheetsValues({ values: ["not-a-row"] }), /Invalid Google Sheets response/);
 });
 
 test("Sheets, date ranges, probes, and pagination are wired through integration security policy", async () => {

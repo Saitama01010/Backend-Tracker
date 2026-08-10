@@ -13,7 +13,7 @@
     "test:webhooks:integration": "tsx --test src/security/webhooks.integration.test.ts",
     "test:jobs:integration": "tsx --test src/security/backgroundJobs.integration.test.ts",
     "test:performance": "tsx --test src/performance/databasePerformance.integration.test.ts",
-    "test:data-correctness": "tsx --test src/dataCorrectness/dataCorrectness.test.ts src/dataCorrectness/attendanceMigration.integration.test.ts",
+    "test:data-correctness": "tsx --test src/dataCorrectness/dataCorrectness.test.ts src/dataCorrectness/attendanceMigration.integration.test.ts src/dataCorrectness/attendanceNote.integration.test.ts",
     "test:smoke": "tsx --test src/baseline/smoke.test.ts",
     "baseline:serve": "tsx src/baseline/server.ts",
     "setup-admin": "node ./scripts/setup-admin.mjs",
