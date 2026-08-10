@@ -1,6 +1,7 @@
 import type { Permission } from "@workspace/db/schema";
 import type { AuthPayload } from "../middleware/auth.js";
 import { recordActionAudit } from "./actionAudit.js";
+import { validateStrictToolInput, type StrictToolJsonSchema } from "./strictToolSchema.js";
 
 export type SamiaCapabilityName =
   | "attendance_lookup_members"
@@ -17,19 +18,7 @@ export type SamiaCapabilityName =
   | "agent_contacts"
   | "dashboard_statistics";
 
-type JsonSchema = {
-  type: "object";
-  additionalProperties: false;
-  properties: Record<string, {
-    type: "string" | "number" | "boolean" | "array";
-    enum?: readonly string[];
-    description?: string;
-    items?: { type: "string" };
-    minimum?: number;
-    maximum?: number;
-  }>;
-  required: string[];
-};
+type JsonSchema = StrictToolJsonSchema;
 
 export interface CapabilityExecutionResult {
   ok: boolean;
@@ -49,6 +38,7 @@ export interface CapabilityExecutionResult {
 export interface CapabilityExecutionContext {
   user: AuthPayload;
   instructionRef?: string;
+  confirmed?: boolean;
   executors: Partial<Record<SamiaCapabilityName, (input: Record<string, unknown>) => Promise<CapabilityExecutionResult>>>;
 }
 
@@ -66,7 +56,16 @@ export interface SamiaCapabilityDefinition {
   targetResource: string;
 }
 
-const stringField = (description?: string) => ({ type: "string" as const, ...(description ? { description } : {}) });
+const stringField = (description?: string, maximum = 200, pattern?: string) => ({
+  type: "string" as const,
+  minLength: 1,
+  maxLength: maximum,
+  ...(pattern ? { pattern } : {}),
+  ...(description ? { description } : {}),
+});
+const dateField = () => ({ ...stringField("YYYY-MM-DD attendance date", 10, "^\\d{4}-\\d{2}-\\d{2}$"), format: "date" as const });
+const integerField = (minimum: number, maximum?: number) => ({ type: "number" as const, integer: true, minimum, ...(maximum === undefined ? {} : { maximum }) });
+const phoneField = () => ({ ...stringField("US phone number", 32, "^[+()\\d .-]{10,32}$"), format: "us-phone" as const });
 const emptySchema = (): JsonSchema => ({ type: "object", additionalProperties: false, properties: {}, required: [] });
 const schema = (properties: JsonSchema["properties"], required: string[] = []): JsonSchema => ({
   type: "object",
@@ -93,7 +92,7 @@ export const SAMIA_CAPABILITY_REGISTRY: Readonly<Record<SamiaCapabilityName, Sam
   attendance_get_record: {
     name: "attendance_get_record",
     description: "Read a member's persisted attendance record for one exact date in the configured attendance timezone.",
-    strictInputSchema: schema({ memberId: { type: "number", minimum: 1 }, date: stringField("YYYY-MM-DD attendance date") }, ["memberId", "date"]),
+    strictInputSchema: schema({ memberId: integerField(1), date: dateField() }, ["memberId", "date"]),
     requiredRole: null, requiredPermission: "view_attendance", classification: "read", executor: fixedExecutor("attendance_get_record"),
     auditBehavior: "none", invalidateQueryKeys: [], confirmationRequired: false, targetResource: "attendance",
   },
@@ -101,9 +100,9 @@ export const SAMIA_CAPABILITY_REGISTRY: Readonly<Record<SamiaCapabilityName, Sam
     name: "attendance_set_record",
     description: "Create or update one validated attendance record using a resolved member ID.",
     strictInputSchema: schema({
-      memberId: { type: "number", minimum: 1 }, date: stringField("YYYY-MM-DD attendance date"),
+      memberId: integerField(1), date: dateField(),
       status: { type: "string", enum: ["in", "off", "late", "pto", "absent", "nsnc"] },
-      note: stringField("Optional attendance note"), overwrite: { type: "boolean" },
+      note: stringField("Optional attendance note", 500), overwrite: { type: "boolean" },
     }, ["memberId", "date", "status", "overwrite"]),
     requiredRole: null, requiredPermission: "edit_attendance", classification: "write", executor: fixedExecutor("attendance_set_record"),
     auditBehavior: "write-attempt", invalidateQueryKeys: ["attendance", "attendance-call-logs"], confirmationRequired: false, targetResource: "attendance",
@@ -111,27 +110,27 @@ export const SAMIA_CAPABILITY_REGISTRY: Readonly<Record<SamiaCapabilityName, Sam
   attendance_set_note: {
     name: "attendance_set_note",
     description: "Update the note on one existing attendance record using a resolved member ID.",
-    strictInputSchema: schema({ memberId: { type: "number", minimum: 1 }, date: stringField(), note: stringField() }, ["memberId", "date", "note"]),
+    strictInputSchema: schema({ memberId: integerField(1), date: dateField(), note: stringField("Attendance note", 500) }, ["memberId", "date", "note"]),
     requiredRole: null, requiredPermission: "edit_attendance", classification: "write", executor: fixedExecutor("attendance_set_note"),
     auditBehavior: "write-attempt", invalidateQueryKeys: ["attendance", "attendance-call-logs"], confirmationRequired: false, targetResource: "attendance",
   },
   attendance_auto_mark: {
     name: "attendance_auto_mark",
     description: "Auto-mark eligible attendance records for one exact date.",
-    strictInputSchema: schema({ date: stringField("YYYY-MM-DD attendance date"), confirmed: { type: "boolean" } }, ["date", "confirmed"]),
+    strictInputSchema: schema({ date: dateField(), confirmed: { type: "boolean" } }, ["date", "confirmed"]),
     requiredRole: null, requiredPermission: "edit_attendance", classification: "write", executor: fixedExecutor("attendance_auto_mark"),
     auditBehavior: "write-attempt", invalidateQueryKeys: ["attendance", "attendance-call-logs"], confirmationRequired: true, targetResource: "attendance",
   },
   qa_run: {
     name: "qa_run", description: "Start the shared automatic QA service, or return the already-active run.", strictInputSchema: emptySchema(),
     requiredRole: "admin", requiredPermission: null, classification: "write", executor: fixedExecutor("qa_run"), auditBehavior: "write-attempt",
-    invalidateQueryKeys: ["qa-stats", "qa-reviews", "qa-tasks", "qa-agents", "qa-runs"], confirmationRequired: false, targetResource: "qa_run",
+    invalidateQueryKeys: ["qa-stats", "qa-reviews", "qa-tasks", "qa-agents", "qa-runs"], confirmationRequired: true, targetResource: "qa_run",
   },
   qa_evaluate_call: {
     name: "qa_evaluate_call", description: "Evaluate one exact QUO call ID using the shared QA evaluator.",
-    strictInputSchema: schema({ callId: stringField("Exact QUO call ID"), force: { type: "boolean" } }, ["callId", "force"]),
+    strictInputSchema: schema({ callId: stringField("Exact QUO call ID", 160, "^[A-Za-z0-9_-]{6,160}$"), force: { type: "boolean" } }, ["callId", "force"]),
     requiredRole: "admin", requiredPermission: null, classification: "write", executor: fixedExecutor("qa_evaluate_call"), auditBehavior: "write-attempt",
-    invalidateQueryKeys: ["qa-stats", "qa-reviews", "qa-tasks", "qa-agents", "qa-runs"], confirmationRequired: false, targetResource: "qa_review",
+    invalidateQueryKeys: ["qa-stats", "qa-reviews", "qa-tasks", "qa-agents", "qa-runs"], confirmationRequired: true, targetResource: "qa_review",
   },
   qa_get_run_status: {
     name: "qa_get_run_status", description: "Read the latest QA run status.", strictInputSchema: emptySchema(), requiredRole: "admin", requiredPermission: null,
@@ -139,23 +138,23 @@ export const SAMIA_CAPABILITY_REGISTRY: Readonly<Record<SamiaCapabilityName, Sam
   },
   qa_resolve_manager_task: {
     name: "qa_resolve_manager_task", description: "Resolve one manager QA task by exact task ID.",
-    strictInputSchema: schema({ taskId: stringField(), notes: stringField(), coachingComplete: { type: "boolean" } }, ["taskId", "coachingComplete"]),
+    strictInputSchema: schema({ taskId: stringField("Exact manager QA task ID", 160, "^[A-Za-z0-9_-]{1,160}$"), notes: stringField("Optional resolution notes", 500), coachingComplete: { type: "boolean" } }, ["taskId", "coachingComplete"]),
     requiredRole: "admin", requiredPermission: null, classification: "write", executor: fixedExecutor("qa_resolve_manager_task"), auditBehavior: "write-attempt",
-    invalidateQueryKeys: ["qa-stats", "qa-tasks", "qa-runs"], confirmationRequired: false, targetResource: "manager_qa_task",
+    invalidateQueryKeys: ["qa-stats", "qa-tasks", "qa-runs"], confirmationRequired: true, targetResource: "manager_qa_task",
   },
   call_analysis: {
     name: "call_analysis", description: "Read verified QUO summaries and transcripts for a bounded call-analysis request.",
-    strictInputSchema: schema({ agent: stringField(), callId: stringField(), participant: stringField(), date: stringField(), limit: { type: "number", minimum: 1, maximum: 3 }, minSeconds: { type: "number", minimum: 0, maximum: 3600 } }),
+    strictInputSchema: schema({ agent: stringField("Agent name", 160), callId: stringField("Exact QUO call ID", 160, "^[A-Za-z0-9_-]{6,160}$"), participant: phoneField(), date: dateField(), limit: integerField(1, 3), minSeconds: integerField(0, 3600) }),
     requiredRole: "admin", requiredPermission: null, classification: "read", executor: fixedExecutor("call_analysis"), auditBehavior: "none", invalidateQueryKeys: [], confirmationRequired: false, targetResource: "call",
   },
   number_lookup: {
     name: "number_lookup", description: "Read bounded call history for one normalized US phone number.",
-    strictInputSchema: schema({ number: stringField(), sinceDays: { type: "number", minimum: 1, maximum: 365 } }, ["number"]),
+    strictInputSchema: schema({ number: phoneField(), sinceDays: integerField(1, 365) }, ["number"]),
     requiredRole: "admin", requiredPermission: null, classification: "read", executor: fixedExecutor("number_lookup"), auditBehavior: "none", invalidateQueryKeys: [], confirmationRequired: false, targetResource: "call",
   },
   agent_contacts: {
     name: "agent_contacts", description: "Read phone contacts for one agent and optional exact attendance date.",
-    strictInputSchema: schema({ agentName: stringField(), date: stringField() }, ["agentName"]), requiredRole: "admin", requiredPermission: null,
+    strictInputSchema: schema({ agentName: stringField("Agent name", 160), date: dateField() }, ["agentName"]), requiredRole: "admin", requiredPermission: null,
     classification: "read", executor: fixedExecutor("agent_contacts"), auditBehavior: "none", invalidateQueryKeys: [], confirmationRequired: false, targetResource: "call",
   },
   dashboard_statistics: {
@@ -175,23 +174,6 @@ export function hasForbiddenCapabilityInput(value: unknown): boolean {
   return Object.entries(value as Record<string, unknown>).some(([key, item]) => FORBIDDEN_KEYS.test(key) || hasForbiddenCapabilityInput(item));
 }
 
-function validateInput(input: unknown, inputSchema: JsonSchema): input is Record<string, unknown> {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return false;
-  const value = input as Record<string, unknown>;
-  if (Object.keys(value).some((key) => !(key in inputSchema.properties))) return false;
-  if (inputSchema.required.some((key) => !(key in value))) return false;
-  for (const [key, item] of Object.entries(value)) {
-    if (item === undefined) continue;
-    const field = inputSchema.properties[key]!;
-    if (field.type === "array") {
-      if (!Array.isArray(item) || item.some((entry) => typeof entry !== field.items?.type)) return false;
-    } else if (typeof item !== field.type) return false;
-    if (field.enum && !field.enum.includes(item as string)) return false;
-    if (typeof item === "number" && (item < (field.minimum ?? -Infinity) || item > (field.maximum ?? Infinity))) return false;
-  }
-  return true;
-}
-
 function authorized(definition: SamiaCapabilityDefinition, user: AuthPayload): boolean {
   if (definition.requiredRole === "admin" && user.role !== "admin") return false;
   if (definition.requiredPermission && !user.permissions.includes(definition.requiredPermission)) return false;
@@ -204,7 +186,7 @@ export function capabilityTool(name: SamiaCapabilityName) {
   // Keep those bounds in the server-owned registry validator, while exposing
   // only the provider-supported structural schema to Claude.
   const providerProperties = Object.fromEntries(Object.entries(definition.strictInputSchema.properties).map(([key, field]) => {
-    const { minimum: _minimum, maximum: _maximum, ...providerField } = field;
+    const { minimum: _minimum, maximum: _maximum, integer: _integer, format: _format, ...providerField } = field;
     return [key, providerField];
   }));
   return {
@@ -225,8 +207,9 @@ export async function executeSamiaCapability(
 
   try {
     if (!authorized(definition, context.user)) throw new Error("Capability is not authorized");
-    if (!validateInput(input, definition.strictInputSchema)) throw new Error("Capability input failed strict validation");
+    if (!validateStrictToolInput(input, definition.strictInputSchema)) throw new Error("Capability input failed strict validation");
     if (hasForbiddenCapabilityInput(input)) throw new Error("Capability input contains a forbidden control field");
+    if (definition.confirmationRequired && context.confirmed !== true) throw new Error("Capability requires explicit user confirmation");
     const result = await definition.executor(input, context);
     const invalidations = result.ok
       ? [...new Set([...(result.invalidateQueryKeys ?? []), ...definition.invalidateQueryKeys])]

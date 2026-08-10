@@ -19,7 +19,8 @@ import {
   toolInput,
   usageFields,
 } from "../lib/anthropic.js";
-import { withDatabaseLease } from "../lib/aiRateLimit.js";
+import { AI_UNTRUSTED_DATA_SYSTEM_POLICY, wrapUntrustedAiData } from "../lib/aiPrivacy.js";
+import { AiRateLimitError, withDatabaseLease, withDurableAiLimit } from "../lib/aiRateLimit.js";
 
 const router: IRouter = Router();
 
@@ -169,6 +170,7 @@ function dialogueText(dialogue: DialogueLine[]): string {
 
 // ─── Claude classification ────────────────────────────────────────────────────
 const SYS_PROMPT = `You analyze the OPENING of an INCOMING phone call to a debt-relief company. Classify whether the call is a warm-transfer (someone handing a client off to this team), and if so, what KIND.
+${AI_UNTRUSTED_DATA_SYSTEM_POLICY}
 
 Two kinds of transfer:
 1. PARTNER — a representative from an EXTERNAL partner company warm-transfers a client to us. The partner companies are "Aspire", "Resync" (sometimes said "re-sync"), "Clarity", and "Concordia". e.g. "Hi, this is Marcus with Aspire, I have a client for you".
@@ -223,7 +225,7 @@ async function extract(transcript: string): Promise<ExtractAttempt> {
     const response = await createAnthropicToolMessage({
       model: MODEL,
       system: SYS_PROMPT,
-      prompt: `OPENING TRANSCRIPT:\n${transcript.slice(0, 4000)}`,
+      prompt: wrapUntrustedAiData("quo_opening_transcript", transcript, 4_000),
       tool: CLASSIFICATION_TOOL,
       maxTokens: 256,
     });
@@ -412,7 +414,7 @@ async function runClassifier(): Promise<void> {
             }
           }
         } catch (err) {
-          logger.warn({ err: String(err), callId: call.id }, "liveTransfers: processing error");
+          logger.warn({ errorCode: sanitizedErrorMessage(err), callId: call.id }, "liveTransfers: processing error");
         }
         done++;
         if (done % 10 === 0 || done === pending.length) await writeState({ progressDone: done });
@@ -432,8 +434,9 @@ async function runClassifier(): Promise<void> {
     logger.info({ classified: pending.length }, "liveTransfers: classify done");
     });
   } catch (err) {
-    logger.error({ err: String(err) }, "liveTransfers: classify failed");
-    await writeState({ isRunning: false, lastError: String(err) });
+    const errorCode = sanitizedErrorMessage(err);
+    logger.error({ errorCode }, "liveTransfers: classify failed");
+    await writeState({ isRunning: false, lastError: errorCode });
   } finally {
     jobRunning = false;
   }
@@ -590,8 +593,22 @@ router.get("/live-transfers/status", requireAuth, async (req, res) => {
 });
 
 // POST /api/live-transfers/refresh — classify new incoming calls in the background.
-router.post("/live-transfers/refresh", requireAuth, requireRole("admin"), async (_req, res) => {
+router.post("/live-transfers/refresh", requireAuth, requireRole("admin"), async (req, res) => {
   if (jobRunning) return res.status(409).json({ started: false, reason: "already running" });
+  try {
+    await withDurableAiLimit({
+      feature: "live_transfer_refresh",
+      userId: req.user!.userId,
+      perMinute: 1,
+      perDay: 10,
+    }, async () => undefined);
+  } catch (error) {
+    if (error instanceof AiRateLimitError) {
+      res.setHeader("Retry-After", String(error.retryAfter));
+      return res.status(429).json({ error: "Live-transfer refresh limit reached" });
+    }
+    return res.status(503).json({ error: "Live-transfer refresh controls are unavailable" });
+  }
   void runClassifier();
   return res.json({ started: true });
 });

@@ -3,6 +3,13 @@ import {
   AnthropicConfigurationError,
   createAnthropicClient as createSharedAnthropicClient,
 } from "./anthropicClient.cjs";
+import {
+  anthropicRequestTimeoutMs,
+  assertAllowedAnthropicModel,
+  boundAiInput,
+  boundedAnthropicMaxTokens,
+  safeAiErrorCode,
+} from "./aiPrivacy.js";
 
 export { AnthropicConfigurationError };
 // Client construction performs no network request. Every feature invokes the
@@ -29,8 +36,7 @@ export function isPermanentAnthropicError(error: unknown): boolean {
 }
 
 export function sanitizedErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message.slice(0, 500);
-  return String(error).slice(0, 500);
+  return safeAiErrorCode(error);
 }
 
 export type AnthropicMessageWithRequestId = Anthropic.Message & { _request_id?: string | null };
@@ -42,14 +48,15 @@ export async function createAnthropicToolMessage(options: {
   tool: Anthropic.Tool;
   maxTokens?: number;
 }): Promise<AnthropicMessageWithRequestId> {
+  const model = assertAllowedAnthropicModel(options.model);
   return createAnthropicClient().messages.create({
-    model: options.model,
-    max_tokens: options.maxTokens ?? 256,
-    system: [{ type: "text", text: options.system, cache_control: { type: "ephemeral" } }],
-    messages: [{ role: "user", content: options.prompt }],
+    model,
+    max_tokens: boundedAnthropicMaxTokens(options.maxTokens ?? 256),
+    system: [{ type: "text", text: boundAiInput(options.system), cache_control: { type: "ephemeral" } }],
+    messages: [{ role: "user", content: boundAiInput(options.prompt) }],
     tools: [{ ...options.tool, strict: true }],
     tool_choice: { type: "tool", name: options.tool.name },
-  }, { signal: AbortSignal.timeout(30_000) });
+  }, { signal: AbortSignal.timeout(anthropicRequestTimeoutMs()) });
 }
 
 export function toolInput(message: Anthropic.Message, toolName: string): unknown | null {

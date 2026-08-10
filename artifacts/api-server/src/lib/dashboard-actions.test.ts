@@ -158,13 +158,18 @@ test("attendance member resolution supports unique, ambiguous, alias, and missin
   if (alias.kind === "unique") assert.equal(alias.member.id, 7);
 });
 
-test("attendance conflict policy requires confirmation unless replacement language is explicit", () => {
+test("attendance conflict policy requires confirmation even when replacement language is explicit", () => {
   const mark = detectSamiaOperationalIntent("Mark Ahmed off tomorrow");
   const change = detectSamiaOperationalIntent("Change Ahmed to PTO tomorrow");
+  const confirmedChange = detectSamiaOperationalIntent("Confirm change Ahmed to PTO tomorrow");
   assert.equal(mark?.kind, "attendance_set");
   assert.equal(change?.kind, "attendance_set");
   if (mark?.kind === "attendance_set") assert.equal(mark.overwrite, false);
-  if (change?.kind === "attendance_set") assert.equal(change.overwrite, true);
+  if (change?.kind === "attendance_set") {
+    assert.equal(change.overwrite, true);
+    assert.equal(change.confirmed, false);
+  }
+  if (confirmedChange?.kind === "attendance_set") assert.equal(confirmedChange.confirmed, true);
 });
 
 test("attendance writes are read back before success and return mutation metadata", async () => {

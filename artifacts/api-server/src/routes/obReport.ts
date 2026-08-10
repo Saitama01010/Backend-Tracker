@@ -15,7 +15,8 @@ import {
   toolInput,
   usageFields,
 } from "../lib/anthropic.js";
-import { withDatabaseLease } from "../lib/aiRateLimit.js";
+import { AI_UNTRUSTED_DATA_SYSTEM_POLICY, wrapUntrustedAiData } from "../lib/aiPrivacy.js";
+import { AiRateLimitError, withDatabaseLease, withDurableAiLimit } from "../lib/aiRateLimit.js";
 
 const router: IRouter = Router();
 
@@ -130,6 +131,7 @@ function buildTranscript(dialogue: DialogueLine[]): string {
 }
 
 const SYS_PROMPT = `You analyze transcripts from a debt-relief company's ONBOARDING phone line (Better Lending).
+${AI_UNTRUSTED_DATA_SYSTEM_POLICY}
 On this line, a closer/sales rep usually warm-transfers a customer who just signed up, and the ONBOARDING agent enrolls them (collects file/case number, sets up the payment schedule, confirms the program, welcomes them).
 Return the result only through the provided classification tool with these fields:
 {
@@ -187,7 +189,7 @@ function validateClassifyResult(value: unknown): ClassifyResult | null {
 }
 
 async function classify(
-  agentName: string | null,
+  _agentName: string | null,
   direction: string,
   transcript: string,
 ): Promise<ClassifyAttempt> {
@@ -195,7 +197,7 @@ async function classify(
     const response = await createAnthropicToolMessage({
       model: MODEL,
       system: SYS_PROMPT,
-      prompt: `Onboarding agent who handled this call (our system): ${agentName ?? "unknown"}\nDirection: ${direction}\n\nTRANSCRIPT:\n${transcript}`,
+      prompt: `Onboarding agent identity: [AUTHORIZED_EMPLOYEE]\nDirection: ${direction}\n\n${wrapUntrustedAiData("quo_onboarding_transcript", transcript, 14_000)}`,
       tool: CLASSIFICATION_TOOL,
       maxTokens: 256,
     });
@@ -268,7 +270,7 @@ async function runReport(): Promise<void> {
     try {
       await runSync(syncFrom, new Date(), { onlyLineId: LINE_ID });
     } catch (err) {
-      logger.warn({ err: String(err) }, "obReport: recent sync failed, continuing with existing data");
+      logger.warn({ errorCode: sanitizedErrorMessage(err) }, "obReport: recent sync failed, continuing with existing data");
     }
 
     // 2) Find completed calls on the onboarding line that aren't classified yet.
@@ -352,7 +354,7 @@ async function runReport(): Promise<void> {
             }
           }
         } catch (err) {
-          logger.warn({ err: String(err), callId: call.id }, "obReport: call processing error");
+          logger.warn({ errorCode: sanitizedErrorMessage(err), callId: call.id }, "obReport: call processing error");
         }
         done++;
         if (done % 10 === 0 || done === pending.length) {
@@ -367,8 +369,9 @@ async function runReport(): Promise<void> {
     logger.info({ classified: pending.length }, "obReport: refresh done");
     });
   } catch (err) {
-    logger.error({ err: String(err) }, "obReport: refresh failed");
-    await writeState({ isRunning: false, lastError: String(err) });
+    const errorCode = sanitizedErrorMessage(err);
+    logger.error({ errorCode }, "obReport: refresh failed");
+    await writeState({ isRunning: false, lastError: errorCode });
   } finally {
     jobRunning = false;
   }
@@ -662,6 +665,20 @@ function sortByCount(rec: Record<string, number>): [string, number][] {
 router.post("/ob-report/refresh", requireAuth, requireRole("admin"), async (req, res) => {
   if (jobRunning) {
     return res.status(409).json({ error: "A refresh is already running" });
+  }
+  try {
+    await withDurableAiLimit({
+      feature: "onboarding_report_refresh",
+      userId: req.user!.userId,
+      perMinute: 1,
+      perDay: 10,
+    }, async () => undefined);
+  } catch (error) {
+    if (error instanceof AiRateLimitError) {
+      res.setHeader("Retry-After", String(error.retryAfter));
+      return res.status(429).json({ error: "Onboarding report refresh limit reached" });
+    }
+    return res.status(503).json({ error: "Onboarding refresh controls are unavailable" });
   }
   void runReport();
   return res.json({ started: true });

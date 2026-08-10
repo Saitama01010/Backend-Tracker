@@ -223,36 +223,41 @@ export function formatAttendanceDate(date: string): string {
 }
 
 export type SamiaOperationalIntent =
-  | { kind: "attendance_set"; requestedName: string; status: AttendanceStatus; dateText: string; overwrite: boolean; statement: boolean }
-  | { kind: "attendance_note"; requestedName: string; note: string; dateText: string; overwrite: true }
+  | { kind: "attendance_set"; requestedName: string; status: AttendanceStatus; dateText: string; overwrite: boolean; statement: boolean; confirmed: boolean }
+  | { kind: "attendance_note"; requestedName: string; note: string; dateText: string; overwrite: true; confirmed: boolean }
   | { kind: "attendance_auto_mark"; dateText: string; confirmed: boolean }
   | { kind: "attendance_approval" }
-  | { kind: "qa_run" }
-  | { kind: "qa_evaluate_call"; callId: string }
-  | { kind: "qa_resolve_task"; taskId: string }
+  | { kind: "qa_run"; confirmed: boolean }
+  | { kind: "qa_evaluate_call"; callId: string; confirmed: boolean }
+  | { kind: "qa_resolve_task"; taskId: string; confirmed: boolean }
   | null;
 
 export function detectSamiaOperationalIntent(message: string): SamiaOperationalIntent {
   const text = message.trim().replace(/[’]/g, "'");
-  const evaluate = text.match(/\b(?:re-?run|evaluate)\s+qa\s+(?:for\s+)?(?:this\s+)?call(?:\s+id)?\s*[:#]?\s*([A-Za-z0-9_-]{6,160})\b/i);
-  if (evaluate) return { kind: "qa_evaluate_call", callId: evaluate[1]! };
-  if (/\b(?:run|start)\s+(?:a\s+)?qa(?:\s+run)?\s*(?:now)?\b/i.test(text)) return { kind: "qa_run" };
-  const resolve = text.match(/\bresolve\s+(?:this\s+)?(?:manager\s+)?qa\s+task\s*[:#]?\s*([A-Za-z0-9_-]{1,160})\b/i);
-  if (resolve) return { kind: "qa_resolve_task", taskId: resolve[1]! };
-  const autoMark = text.match(/^(?:auto[- ]?mark|run)\s+attendance(?:\s+(.*))?$/i);
+  const confirmed = /^(?:confirm(?:ed)?|proceed)\b/i.test(text) || /\b(?:confirm(?:ed)?|proceed)\s*[.!]*$/i.test(text);
+  const commandText = text
+    .replace(/^(?:confirm(?:ed)?|proceed)\b\s*[:,-]?\s*/i, "")
+    .replace(/\s*[,;-]?\s*\b(?:confirm(?:ed)?|proceed)\s*[.!]*$/i, "")
+    .trim();
+  const evaluate = commandText.match(/^\s*(?:re-?run|evaluate)\s+qa\s+(?:for\s+)?(?:this\s+)?call(?:\s+id)?\s*[:#]?\s*([A-Za-z0-9_-]{6,160})\s*$/i);
+  if (evaluate) return { kind: "qa_evaluate_call", callId: evaluate[1]!, confirmed };
+  if (/^\s*(?:run|start)\s+(?:a\s+)?qa(?:\s+run)?\s*(?:now)?\s*$/i.test(commandText)) return { kind: "qa_run", confirmed };
+  const resolve = commandText.match(/^\s*resolve\s+(?:this\s+)?(?:manager\s+)?qa\s+task\s*[:#]?\s*([A-Za-z0-9_-]{1,160})\s*$/i);
+  if (resolve) return { kind: "qa_resolve_task", taskId: resolve[1]!, confirmed };
+  const autoMark = commandText.match(/^(?:auto[- ]?mark|run)\s+attendance(?:\s+(.*))?$/i);
   if (autoMark) {
     const suffix = autoMark[1]?.trim() || "today";
     return {
       kind: "attendance_auto_mark",
-      dateText: suffix.replace(/\b(?:confirmed?|proceed)\b/gi, "").trim() || "today",
-      confirmed: /\b(?:confirmed?|proceed)\b/i.test(suffix),
+      dateText: suffix,
+      confirmed,
     };
   }
 
   if (/^(?:can|could|may|should|is it (?:ok|okay|possible)|do we have coverage)\b/i.test(text)
     && /\b(?:off|pto|absent|day off)\b/i.test(text)) return { kind: "attendance_approval" };
 
-  const noteMatch = text.match(/^(?:add|set|update)\s+["“]([^"”]{1,500})["”]\s+(?:to|as)\s+(.+?)(?:'s)\s+attendance\s+note(?:\s+(.*))?$/i);
+  const noteMatch = commandText.match(/^(?:add|set|update)\s+["“]([^"”]{1,500})["”]\s+(?:to|as)\s+(.+?)(?:'s)\s+attendance\s+note(?:\s+(.*))?$/i);
   if (noteMatch) {
     return {
       kind: "attendance_note",
@@ -260,10 +265,11 @@ export function detectSamiaOperationalIntent(message: string): SamiaOperationalI
       requestedName: noteMatch[2]!.trim(),
       dateText: noteMatch[3]?.trim() || "today",
       overwrite: true,
+      confirmed,
     };
   }
 
-  const explicit = text.match(/^(mark|put|change|correct|update|replace|overwrite)\s+(.+?)\s+(?:attendance\s+)?(?:to\s+|as\s+|on\s+)?(in|off|pto|late|absent|nsnc)\b(?:\s+(?:on\s+|for\s+)?(.*))?$/i);
+  const explicit = commandText.match(/^(mark|put|change|correct|update|replace|overwrite)\s+(.+?)\s+(?:attendance\s+)?(?:to\s+|as\s+|on\s+)?(in|off|pto|late|absent|nsnc)\b(?:\s+(?:on\s+|for\s+)?(.*))?$/i);
   if (explicit) {
     const verb = explicit[1]!.toLowerCase();
     const requestedName = explicit[2]!.replace(/(?:'s)?\s+attendance$/i, "").replace(/'s$/i, "").trim();
@@ -274,10 +280,11 @@ export function detectSamiaOperationalIntent(message: string): SamiaOperationalI
       dateText: explicit[4]?.trim() || "today",
       overwrite: ["change", "correct", "update", "replace", "overwrite"].includes(verb),
       statement: false,
+      confirmed,
     };
   }
 
-  const statement = text.match(/^(.+?)\s+is\s+(in|off|pto|late|absent|nsnc)\b(?:\s+(?:on\s+|for\s+)?(.*))?$/i);
+  const statement = commandText.match(/^(.+?)\s+is\s+(in|off|pto|late|absent|nsnc)\b(?:\s+(?:on\s+|for\s+)?(.*))?$/i);
   if (statement) {
     return {
       kind: "attendance_set",
@@ -286,6 +293,7 @@ export function detectSamiaOperationalIntent(message: string): SamiaOperationalI
       dateText: statement[3]?.trim() || "today",
       overwrite: false,
       statement: true,
+      confirmed,
     };
   }
   return null;

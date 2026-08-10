@@ -1,4 +1,5 @@
 import { actionAuditTable, db } from "@workspace/db";
+import { sanitizeAiAuditValue } from "./aiPrivacy.js";
 
 export interface ActionAuditInput {
   userId: number;
@@ -14,10 +15,11 @@ export interface ActionAuditInput {
 }
 
 function jsonValue(value: unknown): Record<string, unknown> | unknown[] | null {
-  if (value === undefined || value === null) return null;
-  if (Array.isArray(value)) return value as unknown[];
-  if (typeof value === "object") return value as Record<string, unknown>;
-  return { value };
+  const sanitized = sanitizeAiAuditValue(value);
+  if (sanitized === undefined || sanitized === null) return null;
+  if (Array.isArray(sanitized)) return sanitized;
+  if (typeof sanitized === "object") return sanitized as Record<string, unknown>;
+  return { value: sanitized };
 }
 
 export async function recordActionAudit(input: ActionAuditInput): Promise<void> {
@@ -31,7 +33,7 @@ export async function recordActionAudit(input: ActionAuditInput): Promise<void> 
     previousValue: jsonValue(input.previousValue),
     newValue: jsonValue(input.newValue),
     success: input.success,
-    error: input.error?.slice(0, 500) ?? null,
+    error: input.error ? "AI_ACTION_FAILED" : null,
     instructionRef: input.instructionRef?.slice(0, 200) ?? null,
   });
 }

@@ -7,6 +7,7 @@ import { logger } from "../lib/logger.js";
 import { canonicalAgentName } from "./quoSync.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { anthropicErrorStatus, createAnthropicToolMessage, toolInput, usageFields } from "../lib/anthropic.js";
+import { AI_UNTRUSTED_DATA_SYSTEM_POLICY, wrapUntrustedAiData } from "../lib/aiPrivacy.js";
 import { AiRateLimitError, withDatabaseLease, withDurableAiLimit } from "../lib/aiRateLimit.js";
 import { getQuoCallArtifacts, isSafeQuoCallId, type QuoCallArtifacts } from "../lib/quoCall.js";
 import {
@@ -128,7 +129,7 @@ CRITICAL FAILS:
 };
 
 function buildSystemPrompt(dept: Department): string {
-  return `${UNIVERSAL_PREAMBLE}\n\n${DEPT_RUBRICS[dept]}`;
+  return `${UNIVERSAL_PREAMBLE}\n${AI_UNTRUSTED_DATA_SYSTEM_POLICY}\n${DEPT_RUBRICS[dept]}`;
 }
 
 
@@ -197,7 +198,7 @@ async function evaluateCall(callId: string, opts?: {
       model: QA_MODEL,
       maxTokens: 900,
       system: buildSystemPrompt(initialDept),
-      prompt: `Agent: ${agentName}\nCustomer line: ${call.lineName}\nLine-classified department: ${initialDept}\nDirection: ${call.direction}\nDuration: ${call.durationSeconds}s\nAI summary: ${td.summary || "(none)"}\nNext steps: ${td.nextSteps || "(none)"}\n\nTRANSCRIPT:\n${transcript}`,
+      prompt: `Agent identity: [AUTHORIZED_EMPLOYEE]\nLine-classified department: ${initialDept}\nDirection: ${call.direction}\nDuration: ${call.durationSeconds}s\n\n${wrapUntrustedAiData("quo_summary", `Summary: ${td.summary || "(none)"}\nNext steps: ${td.nextSteps || "(none)"}`, 4_000)}\n\n${wrapUntrustedAiData("quo_transcript", transcript, 16_000)}`,
       tool,
     });
     logger.info({
@@ -589,12 +590,19 @@ router.post("/qa/evaluate", requireAuth, requireRole("admin"), async (req, res) 
   }
 });
 
-async function runBiweeklyResponse(res: Response, trigger: "cron" | "admin") {
+async function runBiweeklyResponse(res: Response, trigger: "cron" | "admin", userId?: number) {
   try {
-    return res.json(await runBiweeklyQa(trigger));
+    const execute = () => runBiweeklyQa(trigger);
+    const result = trigger === "admin" && userId !== undefined
+      ? await withDurableAiLimit({ feature: "qa_admin_run", userId, perMinute: 1, perDay: 10 }, execute)
+      : await execute();
+    return res.json(result);
   } catch (err) {
     if (err instanceof AiRateLimitError) {
       res.setHeader("Retry-After", String(err.retryAfter));
+      if (err.reason !== "lease") {
+        return res.status(429).json({ error: "QA run limit reached" });
+      }
       const [activeRun] = await db.select().from(qaBiweeklyRunsTable)
         .where(eq(qaBiweeklyRunsTable.status, "running"))
         .orderBy(desc(qaBiweeklyRunsTable.startedAt))
@@ -608,14 +616,14 @@ async function runBiweeklyResponse(res: Response, trigger: "cron" | "admin") {
   }
 }
 
-router.post("/qa/biweekly-run", requireAuth, requireRole("admin"), async (_req, res) => {
-  return runBiweeklyResponse(res, "admin");
+router.post("/qa/biweekly-run", requireAuth, requireRole("admin"), async (req, res) => {
+  return runBiweeklyResponse(res, "admin", req.user!.userId);
 });
 
 // Backward-compatible admin button endpoint; it now runs the same idempotent
 // biweekly check and ignores the former batchSize option.
-router.post("/qa/process", requireAuth, requireRole("admin"), async (_req, res) => {
-  return runBiweeklyResponse(res, "admin");
+router.post("/qa/process", requireAuth, requireRole("admin"), async (req, res) => {
+  return runBiweeklyResponse(res, "admin", req.user!.userId);
 });
 
 router.get("/qa/runs/latest", requireAuth, requireRole("admin"), async (_req, res) => {
@@ -640,7 +648,7 @@ router.post("/qa/assign-weekly", requireAuth, requireRole("admin"), async (req, 
     return res.json(r);
   } catch (err) {
     req.log.error(err, "qa weekly assign error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Weekly QA assignment failed" });
   }
 });
 
