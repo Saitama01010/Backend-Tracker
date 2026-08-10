@@ -772,3 +772,11 @@ input[type="month"]:focus {
 [data-slot="calendar"] button[data-day][data-range-end="true"] {
   box-shadow: 0 8px 18px -12px hsl(var(--primary) / .65);
 }
+
+/* Keep all rows in the accessibility tree while skipping offscreen paint/layout work. */
+@supports (content-visibility: auto) {
+  tbody > .virtualized-table-row {
+    content-visibility: auto;
+    contain-intrinsic-block-size: auto 44px;
+  }
+}

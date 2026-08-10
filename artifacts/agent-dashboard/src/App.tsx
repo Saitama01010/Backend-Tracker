@@ -1,5 +1,7 @@
-import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
+import { AvatarIcon, AvatarName } from "@/components/AvatarName";
+import { TablePager, usePaginatedRows } from "@/components/TablePager";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +13,11 @@ import { Calendar as CalendarPicker } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { API_SESSION_RENEWED_EVENT, API_UNAUTHORIZED_EVENT, apiFetch } from "@/lib/api";
+import { UserContext, authHeaders, useUser, type AuthUser, type Permission, type TeamAccess } from "@/lib/authContext";
+import { unparseCsv } from "@/lib/csvExport";
+import { dashboardQueryClient, clearDashboardQueryCache } from "@/lib/dashboardQueryClient";
+import { accountQueryScope, pollingDelay, queryPollingInterval } from "@/lib/queryPolicy";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import {
   Table,
   TableBody,
@@ -21,7 +28,6 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import Papa from "papaparse";
 import companyLogo from "./assets/company-logo.jpeg";
 import * as React from "react";
 import { createPortal } from "react-dom";
@@ -87,22 +93,40 @@ import {
   MoreVertical,
   type LucideIcon,
 } from "lucide-react";
-import {
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  PieChart,
-  Pie,
-  Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip as RTooltip,
-  Legend as RLegend,
-} from "recharts";
-import { OnboardingPanel } from "./OnboardingPanel";
+
+const OnboardingPanel = React.lazy(() =>
+  import("./OnboardingPanel").then((module) => ({ default: module.OnboardingPanel })),
+);
+const BackendStatsCharts = React.lazy(() => import("./features/backend-stats/BackendStatsCharts"));
+
+function DeferredSamia() {
+  const [SamiaComponent, setSamiaComponent] = useState<React.ComponentType<{ initialOpen?: boolean }> | null>(null);
+  const [loading, setLoading] = useState(false);
+  if (SamiaComponent) return <SamiaComponent initialOpen />;
+
+  async function activate() {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const module = await import("./features/samia/SamiaChat");
+      setSamiaComponent(() => module.default);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => void activate()}
+      disabled={loading}
+      className="fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full bg-primary text-white shadow-lg flex items-center justify-center hover:scale-105 transition-transform"
+      aria-label={loading ? "Loading Samia" : "Open Samia"}
+    >
+      {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Sparkles className="h-5 w-5" />}
+    </button>
+  );
+}
 
 type ThemeMode = "light" | "dark";
 
@@ -190,19 +214,8 @@ function ThemeToggle({ className }: { className?: string }) {
   );
 }
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      refetchOnWindowFocus: false,
-      staleTime: 30_000,
-      gcTime: 5 * 60_000,
-    },
-  },
-});
-
 // ─── Auth Context ────────────────────────────────────────────────────────────
 
-type Permission = "view_metrics" | "view_attendance" | "edit_attendance" | "manage_members" | "view_missed_tables";
 const ALL_PERMISSIONS: { key: Permission; label: string; desc: string }[] = [
   { key: "view_metrics",      label: "View Metrics",        desc: "See Retention, NSF, CS & Quo Lines tabs" },
   { key: "view_attendance",   label: "View Attendance",     desc: "See the Attendance grid" },
@@ -536,93 +549,6 @@ function AnimatedValueSelect<T extends string>({
   );
 }
 
-const AVATAR_PALETTES = [
-  "from-rose-500 to-orange-400",
-  "from-amber-400 to-lime-500",
-  "from-emerald-400 to-teal-500",
-  "from-sky-400 to-blue-500",
-  "from-violet-400 to-fuchsia-500",
-  "from-pink-400 to-rose-500",
-  "from-cyan-400 to-indigo-500",
-  "from-stone-400 to-zinc-600",
-];
-
-function hashString(value: string) {
-  let hash = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
-  }
-  return Math.abs(hash);
-}
-
-function personInitials(name: string) {
-  const clean = name.replace(/[^a-zA-Z0-9\s-]/g, " ").trim();
-  const parts = clean.split(/[\s-]+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
-}
-
-function AvatarIcon({
-  name,
-  size = "md",
-  className,
-}: {
-  name: string;
-  size?: "xs" | "sm" | "md" | "lg";
-  className?: string;
-}) {
-  const palette = AVATAR_PALETTES[hashString(name || "user") % AVATAR_PALETTES.length];
-  const sizeClass =
-    size === "xs" ? "h-6 w-6 text-[10px]" :
-    size === "sm" ? "h-7 w-7 text-[11px]" :
-    size === "lg" ? "h-10 w-10 text-sm" :
-                    "h-8 w-8 text-xs";
-
-  return (
-    <motion.span
-      initial={{ scale: 0.82, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
-      transition={{ type: "spring", stiffness: 350, damping: 28 }}
-      className={cn(
-        "avatar-initial inline-flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br font-bold text-white shadow-sm ring-1 ring-white/15",
-        palette,
-        sizeClass,
-        className,
-      )}
-      aria-hidden="true"
-    >
-      {personInitials(name)}
-    </motion.span>
-  );
-}
-
-function AvatarName({
-  name,
-  subtitle,
-  size = "md",
-  className,
-  textClassName,
-  subtitleClassName,
-}: {
-  name: string;
-  subtitle?: React.ReactNode;
-  size?: "xs" | "sm" | "md" | "lg";
-  className?: string;
-  textClassName?: string;
-  subtitleClassName?: string;
-}) {
-  return (
-    <span className={cn("inline-flex min-w-0 items-center gap-2", className)}>
-      <AvatarIcon name={name} size={size} />
-      <span className="min-w-0">
-        <span className={cn("block truncate", textClassName)}>{name}</span>
-        {subtitle && <span className={cn("block truncate text-xs text-muted-foreground", subtitleClassName)}>{subtitle}</span>}
-      </span>
-    </span>
-  );
-}
-
 function AnimatedMetricsNav({
   tabs,
   value,
@@ -669,19 +595,6 @@ function AnimatedMetricsNav({
       </div>
     </div>
   );
-}
-
-type TeamAccess = "retention" | "nsf" | "cs";
-interface AuthUser { id: number; username: string; role: "admin" | "edit" | "view"; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; allowedSubTabs?: string[] | null; lockToToday?: boolean; hideBackendStats?: boolean; }
-interface AuthCtx { user: AuthUser; token: string; logout: () => void; can: (p: Permission) => boolean; canSeeTab: (tab: string) => boolean; }
-const UserContext = createContext<AuthCtx | null>(null);
-function useUser() {
-  const ctx = useContext(UserContext);
-  if (!ctx) throw new Error("useUser must be used inside LoginGate");
-  return ctx;
-}
-function authHeaders(token: string) {
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
 }
 
 // ─── Roster Context ──────────────────────────────────────────────────────────
@@ -968,7 +881,7 @@ function RosterProvider({ children }: { children: React.ReactNode }) {
       return r.json() as Promise<RosterAgent[]>;
     },
     staleTime: 15_000,
-    refetchInterval: 30_000, // poll every 30s so new roster entries appear within ~30s
+    refetchInterval: queryPollingInterval({ baseMs: 30_000 }), // poll while this authenticated dashboard is active
     refetchOnWindowFocus: true,
   });
   const idx = useMemo(() => buildRosterIndex(q.data ?? []), [q.data]);
@@ -1463,24 +1376,38 @@ function classifyTraceRowForPanel(
 // endpoint (/api/sheet), so the source spreadsheets can stay private. Accepts
 // any Google Sheets URL (or the legacy /api/csv-proxy?url=... wrapper) and
 // extracts the spreadsheet id + gid from it.
+function currentAccountQueryScope(): string {
+  let userId: number | null = null;
+  try {
+    const storedUser = localStorage.getItem("tracker_user");
+    userId = storedUser ? (JSON.parse(storedUser) as { id?: number }).id ?? null : null;
+  } catch {
+    userId = null;
+  }
+  return accountQueryScope(userId);
+}
+
+async function fetchSheetSource(id: string, gid: string): Promise<SheetData> {
+  const scope = currentAccountQueryScope();
+  return dashboardQueryClient.fetchQuery({
+    queryKey: ["sheet-source", scope, id, gid],
+    staleTime: SHEET_REFETCH_MS,
+    queryFn: async () => {
+      const params = new URLSearchParams({ id, gid });
+      const res = await apiFetch(`/api/sheet?${params.toString()}`);
+      if (!res.ok) throw new Error(`Failed to load sheet (HTTP ${res.status}).`);
+      const data = (await res.json()) as SheetData;
+      return { headers: data.headers ?? [], rows: data.rows ?? [] };
+    },
+  });
+}
+
 async function fetchHeaderCsv(url: string): Promise<SheetData> {
   const decoded = decodeURIComponent(url);
   const idMatch = decoded.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
   const gidMatch = decoded.match(/[?&]gid=(\d+)/);
   if (!idMatch) throw new Error("Unrecognized Google Sheets URL.");
-  const id = idMatch[1];
-  const gid = gidMatch?.[1] ?? "0";
-  const params = new URLSearchParams({ id, gid, _: String(Date.now()) });
-  const res = await apiFetch(`/api/sheet?${params.toString()}`, {
-    cache: "no-store",
-    headers: {
-      "Cache-Control": "no-cache",
-      "Pragma": "no-cache",
-    },
-  });
-  if (!res.ok) throw new Error(`Failed to load sheet (HTTP ${res.status}).`);
-  const data = (await res.json()) as SheetData;
-  return { headers: data.headers ?? [], rows: data.rows ?? [] };
+  return fetchSheetSource(idMatch[1], gidMatch?.[1] ?? "0");
 }
 
 
@@ -3560,11 +3487,12 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
   const showRate = data.mode === "retention";
   const roster = useRoster();
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [sort, setSort] = useState<SortState>({ column: "__total__", dir: "desc" });
   const [selectedAgent, setSelectedAgent] = useState<AgentBreakdown | null>(null);
 
   const visible = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = debouncedSearch.trim().toLowerCase();
     let list = data.byAgent;
     if (q) list = list.filter((a) => a.agent.toLowerCase().includes(q));
     if (sort) {
@@ -3586,7 +3514,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
       });
     }
     return list;
-  }, [data, search, sort]);
+  }, [data, debouncedSearch, sort]);
 
   function toggle(column: string) {
     setSort((prev) => {
@@ -3596,7 +3524,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
     });
   }
 
-  function exportCsv() {
+  async function exportCsv() {
     // Collect all agents: sheet agents first, then phone-only agents not in the sheet
     const sheetAgents = visible.map((a) => a.agent);
     const sheetKeys = new Set(sheetAgents.map((a) => sheetToPhoneKey(a)));
@@ -3631,7 +3559,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
       record["Talk Time"] = ph ? formatDuration(ph.seconds) : "—";
       return record;
     });
-    const csv = Papa.unparse(rows);
+    const csv = await unparseCsv(rows);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -3641,7 +3569,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
     URL.revokeObjectURL(url);
   }
 
-  function exportRawRows() {
+  async function exportRawRows() {
     if (!sheetData) return;
     const agentCol = sheetAgentColumn(sheetData.headers);
     const statusCol = findColumn(sheetData.headers, ["Status", "Result", "Outcome", "Disposition"]);
@@ -3675,7 +3603,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
       };
     });
 
-    const csv = Papa.unparse(exportRows);
+    const csv = await unparseCsv(exportRows);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -3685,7 +3613,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
     URL.revokeObjectURL(url);
   }
 
-  function exportLoadedSheetDebug() {
+  async function exportLoadedSheetDebug() {
     const rows = (sheetData?.debugRows ?? []).map((r) => {
       const d = r.parsedDate ? parseDate(r.parsedDate) : null;
       const insideDateRange = !!d && (!fromDate || d >= fromDate) && (!toDate || d <= toDate);
@@ -3715,7 +3643,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
         "skip reason": counted ? "counted" : skipReason,
       };
     });
-    const csv = Papa.unparse(rows);
+    const csv = await unparseCsv(rows);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -3726,14 +3654,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
   }
 
   async function fetchSheetSourceDirect(meta: SheetSourceMeta): Promise<SheetData> {
-    const params = new URLSearchParams({ id: meta.spreadsheetId, gid: meta.gid, _: String(Date.now()) });
-    const res = await apiFetch(`/api/sheet?${params.toString()}`, {
-      cache: "no-store",
-      headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const loaded = (await res.json()) as SheetData;
-    return { headers: loaded.headers ?? [], rows: loaded.rows ?? [] };
+    return fetchSheetSource(meta.spreadsheetId, meta.gid);
   }
 
   async function exportJeremyTrace() {
@@ -3830,7 +3751,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
 
     const rows = traceRows.length > 0 ? traceRows : summaries;
     console.warn("[sheet-agent-resolution:jeremy-trace]", rows);
-    const csv = Papa.unparse(rows);
+    const csv = await unparseCsv(rows);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -4018,7 +3939,11 @@ function useLiveCalls(): LiveCallStatus {
       if (!r.ok) return { active: [] };
       return r.json() as Promise<{ active: string[]; agentCalls?: { agentName: string; participant: string | null }[] }>;
     },
-    refetchInterval: 15 * 1000,
+    refetchInterval: queryPollingInterval({
+      baseMs: 15_000,
+      idleMs: 30_000,
+      isIdle: (data) => !data?.active?.length,
+    }),
     staleTime: 10 * 1000,
     refetchOnWindowFocus: true,
   });
@@ -4030,7 +3955,11 @@ function useLiveCalls(): LiveCallStatus {
       if (!r.ok) return { liveCalls: [], agentStatuses: [] };
       return r.json();
     },
-    refetchInterval: 15 * 1000,
+    refetchInterval: queryPollingInterval({
+      baseMs: 15_000,
+      idleMs: 30_000,
+      isIdle: (data) => !data?.liveCalls?.length && !data?.agentStatuses?.length,
+    }),
     staleTime: 10 * 1000,
     refetchOnWindowFocus: true,
   });
@@ -4104,7 +4033,7 @@ function useVosStats() {
       return r.json();
     },
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    refetchInterval: queryPollingInterval({ baseMs: 60_000 }),
     refetchOnWindowFocus: true,
   });
 }
@@ -4186,7 +4115,7 @@ function useMissedNoCB() {
       return r.json();
     },
     staleTime: 30_000,
-    refetchInterval: 30_000,
+    refetchInterval: queryPollingInterval({ baseMs: 30_000 }),
     refetchOnWindowFocus: true,
   });
 }
@@ -4207,7 +4136,7 @@ function useMissedDaily(mode: "times" | "numbers" = "times") {
       return r.json();
     },
     staleTime: 60_000,
-    refetchInterval: 5 * 60_000,
+    refetchInterval: queryPollingInterval({ baseMs: 5 * 60_000 }),
     refetchOnWindowFocus: true,
   });
 }
@@ -4230,7 +4159,7 @@ function useMissedHourly(date: string, mode: "times" | "numbers" = "times") {
       return r.json();
     },
     staleTime: isToday ? 60_000 : Infinity,
-    refetchInterval: isToday ? 5 * 60_000 : false,
+    refetchInterval: isToday ? queryPollingInterval({ baseMs: 5 * 60_000 }) : false,
     refetchOnWindowFocus: isToday,
   });
 }
@@ -4327,7 +4256,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
       return r.json();
     },
     staleTime: 10_000,
-    refetchInterval: 15_000,
+    refetchInterval: queryPollingInterval({ baseMs: 15_000 }),
   });
 
   // normalizedPbxName → live call detail (for direction + duration in pills)
@@ -4344,6 +4273,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
   }, [pbxLiveQ.data]);
 
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "__calls__", dir: "desc" });
 
   const getPhone = (agent: string) =>
@@ -4359,7 +4289,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
   };
 
   const visible = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = debouncedSearch.trim().toLowerCase();
     const list = (q ? agentList.filter((a) => a.toLowerCase().includes(q)) : agentList)
       .filter((a) => ((getPhone(a)?.calls ?? 0) + (getPbx(a)?.calls ?? 0) + (getRm(a)?.calls ?? 0)) > 0);
     return [...list].sort((a, b) => {
@@ -4381,7 +4311,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
       else if (sort.col === "__agent__") { return sort.dir === "asc" ? a.localeCompare(b) : b.localeCompare(a); }
       return sort.dir === "asc" ? av - bv : bv - av;
     });
-  }, [agentList, search, sort, phoneData, pbxData, readymodeByKey, rosterPhoneAliases]);
+  }, [agentList, debouncedSearch, sort, phoneData, pbxData, readymodeByKey, rosterPhoneAliases]);
 
   function toggle(col: string) {
     setSort((s) => s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: col === "__agent__" ? "asc" : "desc" });
@@ -4912,14 +4842,8 @@ interface PhoneStatsResponse {
 }
 
 async function fetchPhoneStats(pFrom: string, pTo: string): Promise<PhoneStatsResponse | null> {
-  const params = new URLSearchParams({ from: pFrom, to: pTo, _: String(Date.now()) });
-  const res = await apiFetch(`/api/quo/stats?${params.toString()}`, {
-    cache: "no-store",
-    headers: {
-      "Cache-Control": "no-cache",
-      "Pragma": "no-cache",
-    },
-  });
+  const params = new URLSearchParams({ from: pFrom, to: pTo });
+  const res = await apiFetch(`/api/quo/stats?${params.toString()}`);
   if (!res.ok) return null;
   return res.json() as Promise<PhoneStatsResponse>;
 }
@@ -4941,7 +4865,11 @@ function useReadymodeByKey(from: string, to: string, roster: RosterIndex): Map<s
     },
     staleTime: 1000 * 30,
     refetchOnWindowFocus: true,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({
+      baseMs: 60_000,
+      idleMs: 120_000,
+      isIdle: (data) => !data?.agents?.some((agent) => agent.dialed > 0),
+    }),
   });
   return useMemo<Map<string, { calls: number; seconds: number }>>(() => {
     const m = new Map<string, { calls: number; seconds: number }>();
@@ -4999,7 +4927,7 @@ function TeamPanel({
     queryFn: statusQueryFn ? () => statusQueryFn(roster, { includeInactive }) : (() => fetchHeaderCsv(urls.status)),
     staleTime: SHEET_STALE_MS,
     refetchOnWindowFocus: false,
-    refetchInterval: SHEET_REFETCH_MS,
+    refetchInterval: queryPollingInterval({ baseMs: SHEET_REFETCH_MS }),
   });
   const isLoading = statusQ.isLoading;
   const isFetching = statusQ.isFetching;
@@ -5010,7 +4938,7 @@ function TeamPanel({
   if (toDate) toDate.setHours(23, 59, 59, 999);
 
   const phoneQ = useQuery<PhoneStatsResponse | null>({
-    queryKey: ["phoneStats", mode, from, to],
+    queryKey: ["phoneStats", from, to],
     queryFn: async () => {
       const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
       const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
@@ -5018,7 +4946,11 @@ function TeamPanel({
     },
     staleTime: PHONE_STALE_MS,
     refetchOnWindowFocus: false,
-    refetchInterval: PHONE_REFETCH_MS,
+    refetchInterval: queryPollingInterval({
+      baseMs: PHONE_REFETCH_MS,
+      idleMs: 2 * PHONE_REFETCH_MS,
+      isIdle: (data) => !data || Object.keys(data.allAgentStats ?? {}).length === 0,
+    }),
   });
 
   const readymodeByKey = useReadymodeByKey(from, to, roster);
@@ -5265,21 +5197,23 @@ function CSPanel() {
     queryFn: () => fetchCSBackendStatsSheet(roster),
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({ baseMs: SHEET_REFETCH_MS }),
   });
 
   const phoneQ = useQuery<PhoneStatsResponse | null>({
-    queryKey: ["phoneStats", "cs", from, to],
+    queryKey: ["phoneStats", from, to],
     queryFn: async () => {
       const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
       const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
-      const res = await apiFetch(`/api/quo/stats?from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`);
-      if (!res.ok) return null;
-      return res.json() as Promise<PhoneStatsResponse>;
+      return fetchPhoneStats(pFrom, pTo);
     },
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({
+      baseMs: PHONE_REFETCH_MS,
+      idleMs: 2 * PHONE_REFETCH_MS,
+      isIdle: (data) => !data || Object.keys(data.allAgentStats ?? {}).length === 0,
+    }),
   });
 
   const readymodeByKey = useReadymodeByKey(from, to, roster);
@@ -5462,21 +5396,23 @@ function RetentionPanel() {
     queryFn: () => fetchRetentionBackendStatsSheet(roster),
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({ baseMs: SHEET_REFETCH_MS }),
   });
 
   const phoneQ = useQuery<PhoneStatsResponse | null>({
-    queryKey: ["phoneStats", "retention", from, to],
+    queryKey: ["phoneStats", from, to],
     queryFn: async () => {
       const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
       const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
-      const res = await apiFetch(`/api/quo/stats?from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`);
-      if (!res.ok) return null;
-      return res.json() as Promise<PhoneStatsResponse>;
+      return fetchPhoneStats(pFrom, pTo);
     },
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({
+      baseMs: PHONE_REFETCH_MS,
+      idleMs: 2 * PHONE_REFETCH_MS,
+      isIdle: (data) => !data || Object.keys(data.allAgentStats ?? {}).length === 0,
+    }),
   });
 
   const aggregated = useMemo(() => {
@@ -5675,20 +5611,21 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
     },
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({ baseMs: 60_000 }),
   });
 
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "createdAt", dir: "desc" });
 
   const calls = useMemo(() => {
     const raw = q.data?.data ?? [];
-    const filtered = search
+    const filtered = debouncedSearch
       ? raw.filter(
           (c) =>
-            (c.agentName ?? "").toLowerCase().includes(search.toLowerCase()) ||
-            c.participant.includes(search) ||
-            c.lineName.toLowerCase().includes(search.toLowerCase()),
+            (c.agentName ?? "").toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+            c.participant.includes(debouncedSearch) ||
+            c.lineName.toLowerCase().includes(debouncedSearch.toLowerCase()),
         )
       : raw;
     return [...filtered].sort((a, b) => {
@@ -5698,7 +5635,8 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
       const cmp = av < bv ? -1 : av > bv ? 1 : 0;
       return sort.dir === "asc" ? cmp : -cmp;
     });
-  }, [q.data, search, sort]);
+  }, [q.data, debouncedSearch, sort]);
+  const paginatedCalls = usePaginatedRows(calls, `${team}:${pFrom}:${pTo}:${debouncedSearch}:${sort.col}:${sort.dir}`);
 
   function toggleSort(col: string) {
     setSort((s) => s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: "desc" });
@@ -5753,7 +5691,7 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
                   </TableCell>
                 </TableRow>
               )}
-              {calls.map((c) => (
+              {paginatedCalls.visibleRows.map((c) => (
                 <TableRow key={c.id} className="hover-elevate text-sm">
                   <TableCell className="tabular-nums font-mono text-xs text-muted-foreground whitespace-nowrap">
                     {new Date(c.createdAt).toLocaleString("en-US", { timeZone: CA_TZ, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: true })}
@@ -5773,6 +5711,13 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
             </TableBody>
           </Table>
         </div>
+        <TablePager
+          page={paginatedCalls.page}
+          pageCount={paginatedCalls.pageCount}
+          pageSize={paginatedCalls.pageSize}
+          totalRows={paginatedCalls.totalRows}
+          onPageChange={paginatedCalls.setPage}
+        />
       </div>
     </div>
   );
@@ -6054,6 +5999,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(() => {
     void apiFetch("/api/auth/logout", { method: "POST", auth: "none" }).catch(() => undefined);
+    clearDashboardQueryCache();
     localStorage.removeItem("tracker_token");
     localStorage.removeItem("tracker_user");
     setAuth(null);
@@ -6088,6 +6034,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
       });
       if (r.ok) {
         const data = await r.json() as { token: string; user: AuthUser };
+        clearDashboardQueryCache();
         localStorage.setItem("tracker_token", data.token);
         localStorage.setItem("tracker_user", JSON.stringify(data.user));
         setAuth(data);
@@ -7524,7 +7471,7 @@ function QuoLinesPanel() {
     },
     enabled: !!selectedLine,
     staleTime: 30 * 1000,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({ baseMs: 60_000 }),
     refetchOnWindowFocus: false,
   });
 
@@ -7839,6 +7786,7 @@ interface VosStatsResponse {
 
 function VoSPanel() {
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [groupFilter, setGroupFilter] = useState("All");
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "calls", dir: "desc" });
 
@@ -7850,7 +7798,7 @@ function VoSPanel() {
       return r.json() as Promise<VosStatsResponse>;
     },
     staleTime: 15_000,
-    refetchInterval: 30_000,
+    refetchInterval: queryPollingInterval({ baseMs: 30_000 }),
     refetchOnWindowFocus: true,
   });
 
@@ -7862,7 +7810,11 @@ function VoSPanel() {
       return r.json();
     },
     staleTime: 10_000,
-    refetchInterval: 15_000,
+    refetchInterval: queryPollingInterval({
+      baseMs: 15_000,
+      idleMs: 30_000,
+      isIdle: (data) => !data?.liveCalls?.length && !data?.agentStatuses?.length,
+    }),
     refetchOnWindowFocus: true,
   });
 
@@ -7910,7 +7862,7 @@ function VoSPanel() {
 
   const visible = useMemo(() => {
     const stats = q.data?.dashboard.callsByAgent ?? [];
-    const q2 = search.trim().toLowerCase();
+    const q2 = debouncedSearch.trim().toLowerCase();
     let list = stats.filter((a) => a.calls > 0);
     if (q2) list = list.filter((a) => a.agentName.toLowerCase().includes(q2));
     if (groupFilter !== "All") {
@@ -7932,7 +7884,7 @@ function VoSPanel() {
       else if (sort.col === "name") return sort.dir === "asc" ? a.agentName.localeCompare(b.agentName) : b.agentName.localeCompare(a.agentName);
       return sort.dir === "asc" ? av - bv : bv - av;
     });
-  }, [q.data, search, groupFilter, sort, agentIdMap]);
+  }, [q.data, debouncedSearch, groupFilter, sort, agentIdMap]);
 
   const d = q.data?.dashboard;
   const isFetching = q.isFetching || liveQ.isFetching;
@@ -8324,11 +8276,15 @@ function ReadyModeKillersPanel() {
     },
     staleTime: 1000 * 30,
     refetchOnWindowFocus: true,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({
+      baseMs: 60_000,
+      idleMs: 120_000,
+      isIdle: (data) => !data?.agents?.some((agent) => agent.dialed > 0),
+    }),
   });
 
   const phoneQ = useQuery<PhoneStatsResponse | null>({
-    queryKey: ["rmkPhoneStats", from, to],
+    queryKey: ["phoneStats", from, to],
     queryFn: async () => {
       const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
       const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
@@ -8336,7 +8292,11 @@ function ReadyModeKillersPanel() {
     },
     staleTime: PHONE_STALE_MS,
     refetchOnWindowFocus: false,
-    refetchInterval: PHONE_REFETCH_MS,
+    refetchInterval: queryPollingInterval({
+      baseMs: PHONE_REFETCH_MS,
+      idleMs: 2 * PHONE_REFETCH_MS,
+      isIdle: (data) => !data || Object.keys(data.allAgentStats ?? {}).length === 0,
+    }),
   });
 
   const subsQ = useQuery<SheetData>({
@@ -8344,7 +8304,7 @@ function ReadyModeKillersPanel() {
     queryFn: () => fetchRMKSubmissionsForRoster(roster),
     staleTime: SHEET_STALE_MS,
     refetchOnWindowFocus: false,
-    refetchInterval: SHEET_REFETCH_MS,
+    refetchInterval: queryPollingInterval({ baseMs: SHEET_REFETCH_MS }),
   });
 
   const aggregated = useMemo(() => {
@@ -8568,6 +8528,7 @@ function ReadyModeKillersPanel() {
 
 function ReadyModePanel() {
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "dialed", dir: "desc" });
   const [showRaw, setShowRaw] = useState(false);
   const { token } = useUser();
@@ -8585,7 +8546,11 @@ function ReadyModePanel() {
       return r.json() as Promise<RmStatsResponse>;
     },
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    refetchInterval: queryPollingInterval({
+      baseMs: 60_000,
+      idleMs: 120_000,
+      isIdle: (data) => !data?.agents?.some((agent) => agent.dialed > 0),
+    }),
     refetchOnWindowFocus: true,
     retry: 1,
   });
@@ -8609,7 +8574,7 @@ function ReadyModePanel() {
 
   const visible = useMemo(() => {
     const agents = q.data?.agents ?? [];
-    const q2 = search.trim().toLowerCase();
+    const q2 = debouncedSearch.trim().toLowerCase();
     let list = q2 ? agents.filter((a) => a.agentName.toLowerCase().includes(q2)) : agents;
     return [...list].sort((a, b) => {
       const dir = sort.dir === "asc" ? 1 : -1;
@@ -8621,7 +8586,7 @@ function ReadyModePanel() {
       if (sort.col === "avgTalk") return dir * (a.avgTalkSecs - b.avgTalkSecs);
       return 0;
     });
-  }, [q.data, search, sort]);
+  }, [q.data, debouncedSearch, sort]);
 
   const totals = q.data?.totals;
   const isFetching = q.isFetching;
@@ -8840,6 +8805,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
   const [sourceFilter, setSourceFilter] = useState<"all" | "pbx" | "quo" | "readymode">("all");
   const [lineFilter, setLineFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [missedMode, setMissedMode] = useState<"times" | "numbers">("times");
 
   const teams = useMemo(() => {
@@ -8869,8 +8835,8 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
     }
     if (sourceFilter !== "all") list = list.filter((it) => it.source === sourceFilter);
     if (lineFilter !== "all") list = list.filter((it) => it.toNumber === lineFilter);
-    if (search.trim()) {
-      const q = search.trim().toLowerCase();
+    if (debouncedSearch.trim()) {
+      const q = debouncedSearch.trim().toLowerCase();
       list = list.filter((it) =>
         it.fromNumber.includes(q) ||
         it.ringGroupName.toLowerCase().includes(q) ||
@@ -8878,7 +8844,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
       );
     }
     return [...list].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [items, teamFilter, sourceFilter, lineFilter, lockedTeam, search]);
+  }, [items, teamFilter, sourceFilter, lineFilter, lockedTeam, debouncedSearch]);
 
   return (
     <Card>
@@ -9445,7 +9411,7 @@ function useCallbackReview(from: string, to: string) {
       return r.json();
     },
     staleTime: 5 * 60_000,
-    refetchInterval: 10 * 60_000,
+    refetchInterval: queryPollingInterval({ baseMs: 10 * 60_000 }),
     refetchOnWindowFocus: true,
   });
 }
@@ -9895,7 +9861,7 @@ function LiveTransfersCard() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json() as Promise<LTStatus>;
     },
-    refetchInterval: (q) => (q.state.data?.running ? 3000 : false),
+    refetchInterval: (query) => query.state.data?.running ? pollingDelay({ baseMs: 3_000 }) : false,
     refetchOnWindowFocus: false,
   });
 
@@ -10084,7 +10050,7 @@ function QAPanel() {
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<QAStats>;
     },
-    refetchInterval: 60_000,
+    refetchInterval: queryPollingInterval({ baseMs: 60_000 }),
   });
 
   const reviews = useQuery<{ reviews: QAReview[] }>({
@@ -10094,7 +10060,7 @@ function QAPanel() {
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<{ reviews: QAReview[] }>;
     },
-    refetchInterval: 60_000,
+    refetchInterval: queryPollingInterval({ baseMs: 60_000 }),
     enabled: sub === "reviews",
   });
 
@@ -10105,7 +10071,7 @@ function QAPanel() {
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<{ tasks: QATask[] }>;
     },
-    refetchInterval: 60_000,
+    refetchInterval: queryPollingInterval({ baseMs: 60_000 }),
     enabled: sub === "tasks",
   });
 
@@ -10179,6 +10145,8 @@ function QAPanel() {
 
   const reviewRows = reviews.data?.reviews ?? [];
   const taskRows = tasks.data?.tasks ?? [];
+  const paginatedReviews = usePaginatedRows(reviewRows, `${dept}:${range.fromISO}:${range.toISO}:reviews`);
+  const paginatedTasks = usePaginatedRows(taskRows, `${dept}:tasks`);
 
   return (
     <div className="space-y-4">
@@ -10323,7 +10291,7 @@ function QAPanel() {
                     <TableRow><TableCell colSpan={9}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
                   ) : reviewRows.length === 0 ? (
                     <TableRow><TableCell colSpan={9} className="text-center text-zinc-500 py-8">No reviews were evaluated today. Run QA to see qualifying, skipped, and error reasons.</TableCell></TableRow>
-                  ) : reviewRows.map((r) => {
+                  ) : paginatedReviews.visibleRows.map((r) => {
                     const isOpen = expanded === r.id;
                     const deptColor = r.department === "Retention" ? "border-border metric-info"
                       : r.department === "CS" ? "border-border metric-info"
@@ -10399,6 +10367,13 @@ function QAPanel() {
                   })}
                 </TableBody>
               </Table>
+              <TablePager
+                page={paginatedReviews.page}
+                pageCount={paginatedReviews.pageCount}
+                pageSize={paginatedReviews.pageSize}
+                totalRows={paginatedReviews.totalRows}
+                onPageChange={paginatedReviews.setPage}
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -10423,7 +10398,7 @@ function QAPanel() {
                     <TableRow><TableCell colSpan={7}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
                   ) : taskRows.length === 0 ? (
                     <TableRow><TableCell colSpan={7} className="text-center text-zinc-500 py-8">No open manager reviews. Nice.</TableCell></TableRow>
-                  ) : taskRows.map((t) => {
+                  ) : paginatedTasks.visibleRows.map((t) => {
                     const deptColor = t.department === "Retention" ? "border-border metric-info"
                       : t.department === "CS" ? "border-border metric-info"
                       : "border-border metric-warn";
@@ -10456,6 +10431,13 @@ function QAPanel() {
                   })}
                 </TableBody>
               </Table>
+              <TablePager
+                page={paginatedTasks.page}
+                pageCount={paginatedTasks.pageCount}
+                pageSize={paginatedTasks.pageSize}
+                totalRows={paginatedTasks.totalRows}
+                onPageChange={paginatedTasks.setPage}
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -10633,7 +10615,7 @@ function ViolationsPanel() {
       return r.json() as Promise<ViolationsData>;
     },
     staleTime: 2 * 60 * 1000,
-    refetchInterval: 5 * 60 * 1000,
+    refetchInterval: queryPollingInterval({ baseMs: 5 * 60_000 }),
     refetchOnWindowFocus: true,
   });
 
@@ -10761,7 +10743,7 @@ function ViolationsPanel() {
     return filtered;
   }, [gapRows, gapHourActive, gapHourFrom, gapHourTo, sortGaps]);
 
-  const exportGapsCsv = () => {
+  const exportGapsCsv = async () => {
     const rows: Record<string, string | number>[] = [];
     for (const r of displayGapRows) {
       for (const g of r.gaps) {
@@ -10775,7 +10757,7 @@ function ViolationsPanel() {
         });
       }
     }
-    const csv = Papa.unparse(rows);
+    const csv = await unparseCsv(rows);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -11287,7 +11269,7 @@ function ViolationsPanel() {
               variant="outline"
               size="sm"
               disabled={cancelLoading || cancelRows.length === 0}
-              onClick={() => {
+              onClick={async () => {
                 const rows = cancelRows.map((r) => ({
                   Date: r.date,
                   Agent: r.agent,
@@ -11295,7 +11277,7 @@ function ViolationsPanel() {
                   "File ID": r.fileId,
                   Status: r.rawStatus,
                 }));
-                const csv = Papa.unparse(rows);
+                const csv = await unparseCsv(rows);
                 const blob = new Blob([csv], { type: "text/csv" });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a");
@@ -11466,19 +11448,6 @@ const BSTAT_TEAM_META: Record<RosterTeam, { label: string; color: string }> = {
   cs: { label: "Internal CS", color: "#38bdf8" },
   killers: { label: "ReadyMode Killers", color: "#2dd4bf" },
 };
-const bstatChartTooltip = {
-  contentStyle: {
-    background: "rgba(24,24,27,0.95)",
-    border: "1px solid rgba(255,255,255,0.1)",
-    borderRadius: 10,
-    fontSize: 12,
-    color: "#e4e4e7",
-    boxShadow: "0 10px 40px -10px rgba(0,0,0,0.6)",
-  },
-  labelStyle: { color: "#a1a1aa" },
-  itemStyle: { color: "#e4e4e7" },
-} as const;
-
 type BStatRow = { agent: string; agentKey: string; team: RosterTeam; status: string; date: string; fileId: string; source: string; idpCancel: boolean };
 
 // Resolve a raw submission name to a single canonical agent identity. Mirrors
@@ -11731,7 +11700,7 @@ function BackendStatsPanel() {
     [stats.agents, killersOnly],
   );
 
-  function exportBackendRows() {
+  async function exportBackendRows() {
     const exportRows = filtered.map((r) => ({
       Agent: r.agent,
       Team: BSTAT_TEAM_META[r.team].label,
@@ -11740,7 +11709,7 @@ function BackendStatsPanel() {
       Date: r.date,
       "File ID": r.fileId,
     }));
-    const csv = Papa.unparse(exportRows);
+    const csv = await unparseCsv(exportRows);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -11836,90 +11805,24 @@ function BackendStatsPanel() {
         </Card>
       ) : (
         <>
-          {/* Submissions over time */}
-          <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
-                <Activity className="h-4 w-4 text-blue-300" /> Files submitted over time
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={280}>
-                <AreaChart data={stats.dayData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="bstatArea" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#a78bfa" stopOpacity={0.5} />
-                      <stop offset="100%" stopColor="#a78bfa" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fill: "#71717a", fontSize: 11 }} tickLine={false} axisLine={false} minTickGap={24} />
-                  <YAxis tick={{ fill: "#71717a", fontSize: 11 }} tickLine={false} axisLine={false} width={36} allowDecimals={false} />
-                  <RTooltip {...bstatChartTooltip} />
-                  <Area type="monotone" dataKey="count" name="Files" stroke="#c4b5fd" strokeWidth={2} fill="url(#bstatArea)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-
-          {/* Status + Team breakdowns */}
-          <div className="grid lg:grid-cols-2 gap-4">
-            <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold text-zinc-200">By status</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ResponsiveContainer width="100%" height={280}>
-                  <PieChart>
-                    <Pie data={stats.statusData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={2} stroke="none">
-                      {stats.statusData.map((s) => <Cell key={s.name} fill={s.color} />)}
-                    </Pie>
-                    <RTooltip {...bstatChartTooltip} />
-                    <RLegend wrapperStyle={{ fontSize: 12, color: "#a1a1aa" }} />
-                  </PieChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-
-            <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold text-zinc-200">By team</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ResponsiveContainer width="100%" height={280}>
-                  <BarChart data={stats.teamData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
-                    <XAxis dataKey="name" tick={{ fill: "#a1a1aa", fontSize: 12 }} tickLine={false} axisLine={false} />
-                    <YAxis tick={{ fill: "#71717a", fontSize: 11 }} tickLine={false} axisLine={false} width={36} allowDecimals={false} />
-                    <RTooltip {...bstatChartTooltip} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
-                    <Bar dataKey="value" name="Files" radius={[6, 6, 0, 0]} maxBarSize={90}>
-                      {stats.teamData.map((t) => <Cell key={t.name} fill={t.color} />)}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Top contributors */}
-          <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-semibold text-zinc-200">Top contributors</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={Math.max(220, stats.topAgents.length * 30)}>
-                <BarChart data={stats.topAgents} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 4 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} />
-                  <XAxis type="number" tick={{ fill: "#71717a", fontSize: 11 }} tickLine={false} axisLine={false} allowDecimals={false} />
-                  <YAxis type="category" dataKey="name" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickLine={false} axisLine={false} width={130} />
-                  <RTooltip {...bstatChartTooltip} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
-                  <Bar dataKey="value" name="Files" radius={[0, 6, 6, 0]} maxBarSize={20}>
-                    {stats.topAgents.map((a) => <Cell key={a.name} fill={a.color} />)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
+          <React.Suspense
+            fallback={
+              <div className="space-y-4" aria-label="Loading charts">
+                <Skeleton className="h-72 rounded-xl" />
+                <div className="grid lg:grid-cols-2 gap-4">
+                  <Skeleton className="h-72 rounded-xl" />
+                  <Skeleton className="h-72 rounded-xl" />
+                </div>
+              </div>
+            }
+          >
+            <BackendStatsCharts
+              dayData={stats.dayData}
+              statusData={stats.statusData}
+              teamData={stats.teamData}
+              topAgents={stats.topAgents}
+            />
+          </React.Suspense>
 
           {/* Full leaderboard */}
           <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
@@ -12249,7 +12152,9 @@ function Dashboard() {
             )}
             {canSeeTab("onboarding") && (
               <TabsContent value="onboarding">
-                <OnboardingPanel canRefresh={user.role === "admin"} />
+                <React.Suspense fallback={<Skeleton className="h-[420px] rounded-xl" aria-label="Loading onboarding" />}>
+                  <OnboardingPanel canRefresh={user.role === "admin"} />
+                </React.Suspense>
               </TabsContent>
             )}
           </Tabs>
@@ -12262,484 +12167,13 @@ function Dashboard() {
           </div>
         )}
       </main>
-      {user.role === "admin" && <SamiaChat />}
+      {user.role === "admin" && <DeferredSamia />}
     </div>
   );
 }
 
 
 // ─── Samia AI Chat ─────────────────────────────────────────────────────────────
-
-interface SamiaMessage { role: "user" | "assistant"; content: string; images?: string[] }
-interface HistoryGroup { key: string; label: string; preview: string; messages: SamiaMessage[] }
-interface SamiaMutation { resource: string; action: string; [key: string]: unknown }
-interface SamiaResponse {
-  reply?: string;
-  error?: string;
-  fallbackUsed?: boolean;
-  mutations?: SamiaMutation[];
-  invalidateQueryKeys?: string[];
-}
-
-type ChatSize = "normal" | "minimized" | "maximized";
-
-function SamiaChat() {
-  const [open, setOpen] = useState(false);
-  const [size, setSize] = useState<ChatSize>("normal");
-  const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<SamiaMessage[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyLoaded, setHistoryLoaded] = useState(false);
-  const [pendingImages, setPendingImages] = useState<string[]>([]);
-  // Name gate
-  const [chatName, setChatName] = useState<string>(() => localStorage.getItem("samia_display_name") ?? "");
-  const [nameInput, setNameInput] = useState("");
-  const nameRef = useRef<HTMLInputElement>(null);
-  // Admin "All chats" state
-  const [adminView, setAdminView] = useState<"chat" | "users" | "viewUser" | "history" | "viewDate">("chat");
-  const [adminUsers, setAdminUsers] = useState<{ userId: number; username: string }[]>([]);
-  const [adminViewUser, setAdminViewUser] = useState<{ userId: number; username: string } | null>(null);
-  const [adminMessages, setAdminMessages] = useState<SamiaMessage[]>([]);
-  const [adminLoading, setAdminLoading] = useState(false);
-  // Personal chat history (grouped by date)
-  const [historyGroups, setHistoryGroups] = useState<HistoryGroup[]>([]);
-  const [historyGroup, setHistoryGroup] = useState<HistoryGroup | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const { token, user } = useUser();
-  const qc = useQueryClient();
-  const isAdmin = user.role === "admin";
-  if (!isAdmin) return null;
-
-  function submitName() {
-    const n = nameInput.trim();
-    if (!n) return;
-    localStorage.setItem("samia_display_name", n);
-    setChatName(n);
-  }
-
-  useEffect(() => {
-    if (open) {
-      setTimeout(() => {
-        if (!chatName) { nameRef.current?.focus(); return; }
-        inputRef.current?.focus();
-      }, 80);
-      if (!historyLoaded) {
-        const hr = new Date().getHours();
-        const timeGreet = hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
-        const greeting = { role: "assistant" as const, content: `${timeGreet}. I'm Samia — I know every number in this dashboard cold. What do you need?` };
-        // Start each session clean — past conversations live behind the History button.
-        setMessages([greeting]);
-        setHistoryLoaded(true);
-      }
-    }
-  }, [open]);
-
-  function openAdminUsers() {
-    setAdminView("users");
-    setAdminLoading(true);
-    apiFetch("/api/samia/users", { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => r.ok ? r.json() : [])
-      .then((rows: { userId: number; username: string }[]) => setAdminUsers(rows))
-      .catch(() => setAdminUsers([]))
-      .finally(() => setAdminLoading(false));
-  }
-
-  function viewUserChat(u: { userId: number; username: string }) {
-    setAdminViewUser(u);
-    setAdminView("viewUser");
-    setAdminLoading(true);
-    apiFetch(`/api/samia/history/${u.userId}`, { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => r.ok ? r.json() : [])
-      .then((rows: Array<{ role: string; content: string; images?: string[] | null }>) =>
-        setAdminMessages(rows.map((r) => ({ role: r.role as "user" | "assistant", content: r.content, images: r.images ?? undefined })))
-      )
-      .catch(() => setAdminMessages([]))
-      .finally(() => setAdminLoading(false));
-  }
-
-  function openHistory() {
-    setAdminView("history");
-    setHistoryLoading(true);
-    apiFetch("/api/samia/history", { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => r.ok ? r.json() : [])
-      .then((rows: Array<{ role: string; content: string; images?: string[] | null; createdAt: string }>) => {
-        const byKey = new Map<string, HistoryGroup>();
-        const order: string[] = [];
-        const today = new Date().toLocaleDateString("en-CA");
-        const yesterday = new Date(Date.now() - 86400000).toLocaleDateString("en-CA");
-        for (const r of rows) {
-          const d = new Date(r.createdAt);
-          const key = d.toLocaleDateString("en-CA");
-          let g = byKey.get(key);
-          if (!g) {
-            const label = key === today ? "Today" : key === yesterday ? "Yesterday"
-              : d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
-            g = { key, label, preview: "", messages: [] };
-            byKey.set(key, g);
-            order.push(key);
-          }
-          g.messages.push({ role: r.role as "user" | "assistant", content: r.content, images: r.images ?? undefined });
-        }
-        // Preview = first user line of the day (fallback to first message)
-        for (const g of byKey.values()) {
-          const firstUser = g.messages.find((m) => m.role === "user" && m.content.trim());
-          const src = (firstUser ?? g.messages[0])?.content ?? "";
-          g.preview = src.length > 60 ? src.slice(0, 60) + "…" : src || "(image only)";
-        }
-        // Newest day first
-        setHistoryGroups(order.map((k) => byKey.get(k)!).reverse());
-      })
-      .catch(() => setHistoryGroups([]))
-      .finally(() => setHistoryLoading(false));
-  }
-
-  function viewHistoryDate(g: HistoryGroup) {
-    setHistoryGroup(g);
-    setAdminView("viewDate");
-  }
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
-
-  function readFileAsDataURL(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  }
-
-  async function addImages(files: FileList | File[]) {
-    const arr = Array.from(files).filter((f) => f.type.startsWith("image/")).slice(0, 4);
-    const urls = await Promise.all(arr.map(readFileAsDataURL));
-    setPendingImages((prev) => [...prev, ...urls].slice(0, 4));
-  }
-
-  function handlePaste(e: React.ClipboardEvent) {
-    const items = Array.from(e.clipboardData.items).filter((i) => i.type.startsWith("image/"));
-    if (items.length === 0) return;
-    e.preventDefault();
-    const files = items.map((i) => i.getAsFile()).filter(Boolean) as File[];
-    void addImages(files);
-  }
-
-  async function send() {
-    const text = input.trim();
-    if ((!text && pendingImages.length === 0) || loading) return;
-    const images = [...pendingImages];
-    setInput("");
-    setPendingImages([]);
-    setMessages((prev) => [...prev, { role: "user", content: text, images: images.length ? images : undefined }]);
-    setLoading(true);
-    try {
-      const res = await apiFetch("/api/samia/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ message: text || "What do you see in this image?", images, displayName: chatName || undefined }),
-      });
-      const data = (await res.json().catch(() => ({}))) as SamiaResponse;
-      if (res.ok && data.invalidateQueryKeys?.length) {
-        await Promise.all([...new Set(data.invalidateQueryKeys)].map((key) =>
-          qc.invalidateQueries({ queryKey: [key], refetchType: "active" })));
-        const resources = [...new Set((data.mutations ?? []).map((mutation) => mutation.resource))];
-        window.dispatchEvent(new CustomEvent<{ resources: string[]; mutations: SamiaMutation[] }>("dashboard:data-changed", {
-          detail: { resources, mutations: data.mutations ?? [] },
-        }));
-      }
-      const note = data.fallbackUsed ? "\n\nUsed backup model." : "";
-      const content = res.ok
-        ? data.reply ?? "The action completed without a response."
-        : data.error ?? data.reply ?? `Request failed with HTTP ${res.status}.`;
-      setMessages((prev) => [...prev, { role: "assistant", content: `${content}${note}` }]);
-    } catch {
-      setMessages((prev) => [...prev, { role: "assistant", content: "Network error — try again." }]);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <>
-      {/* Floating bubble */}
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full bg-primary text-white shadow-lg flex items-center justify-center hover:scale-105 transition-transform"
-        aria-label="Open Samia"
-      >
-        {open ? <X className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
-      </button>
-
-      {/* Chat panel */}
-      {open && (
-        <div className={`fixed z-50 flex flex-col rounded-2xl border border-white/10 bg-zinc-900/95 backdrop-blur-xl shadow-2xl overflow-hidden transition-all duration-200 ${
-          size === "maximized"
-            ? "bottom-4 right-4 left-4 top-4 w-auto max-h-none"
-            : size === "minimized"
-            ? "bottom-24 right-4 sm:right-6 w-[calc(100vw-32px)] sm:w-[360px] max-h-none"
-            : "bottom-24 right-4 sm:right-6 w-[calc(100vw-32px)] sm:w-[360px] max-h-[560px]"
-        }`}>
-          {/* Header */}
-          <div className="flex items-center gap-3 px-4 py-3 border-b border-white/8 bg-muted/40 flex-shrink-0">
-            {(adminView === "users" || adminView === "viewUser" || adminView === "history" || adminView === "viewDate") ? (
-              <button onClick={() => adminView === "viewUser" ? setAdminView("users") : adminView === "viewDate" ? setAdminView("history") : setAdminView("chat")} className="text-zinc-400 hover:text-white transition-colors p-1 -ml-1">
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-            ) : (
-              <div className="h-9 w-9 rounded-full bg-primary flex items-center justify-center text-white font-bold text-sm shadow-md flex-shrink-0">S</div>
-            )}
-            <div>
-              <p className="text-sm font-semibold text-white leading-none">
-                {adminView === "users" ? "All Chats" : adminView === "viewUser" ? adminViewUser?.username ?? "User" : adminView === "history" ? "Chat History" : adminView === "viewDate" ? historyGroup?.label ?? "Chat" : "Samia"}
-              </p>
-              <p className="text-[10px] metric-info mt-0.5 flex items-center gap-1">
-                {adminView === "chat" && <><span className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground animate-pulse" />AI Analyst · Live data</>}
-                {adminView === "users" && "Select a user to view their chat"}
-                {adminView === "viewUser" && "Read-only · Admin view"}
-                {adminView === "history" && "Your past conversations by date"}
-                {adminView === "viewDate" && "Read-only · Past conversation"}
-              </p>
-            </div>
-            <div className="ml-auto flex items-center gap-1">
-              {/* Personal chat history button */}
-              {adminView === "chat" && (
-                <button onClick={openHistory} title="Chat history" className="text-zinc-500 hover:metric-info transition-colors p-1">
-                  <Clock className="h-4 w-4" />
-                </button>
-              )}
-              {/* Admin all-chats button */}
-              {isAdmin && adminView === "chat" && (
-                <button onClick={openAdminUsers} title="View all user chats" className="text-zinc-500 hover:metric-info transition-colors p-1">
-                  <Users className="h-4 w-4" />
-                </button>
-              )}
-              {/* Minimize */}
-              <button
-                onClick={() => setSize((s) => s === "minimized" ? "normal" : "minimized")}
-                title={size === "minimized" ? "Restore" : "Minimize"}
-                className="text-zinc-500 hover:text-white transition-colors p-1"
-              >
-                <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${size === "minimized" ? "rotate-180" : ""}`} />
-              </button>
-              {/* Maximize */}
-              <button
-                onClick={() => setSize((s) => s === "maximized" ? "normal" : "maximized")}
-                title={size === "maximized" ? "Restore" : "Maximize"}
-                className="text-zinc-500 hover:text-white transition-colors p-1"
-              >
-                {size === "maximized" ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-              </button>
-              {/* Close */}
-              <button onClick={() => { setOpen(false); setSize("normal"); setAdminView("chat"); setHistoryGroup(null); }} className="text-zinc-500 hover:text-white transition-colors p-1">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-
-          {/* Name gate — shown if user hasn't set their display name yet */}
-          {!chatName ? (
-            <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 gap-5">
-              <div className="h-14 w-14 rounded-full bg-primary flex items-center justify-center text-white font-bold text-xl shadow-lg">S</div>
-              <div className="text-center">
-                <p className="text-sm font-semibold text-white mb-1">Hey, before we start —</p>
-                <p className="text-xs text-zinc-400">What's your name? Samia will use it to remember you.</p>
-              </div>
-              <div className="w-full flex gap-2">
-                <input
-                  ref={nameRef}
-                  value={nameInput}
-                  onChange={(e) => setNameInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") submitName(); }}
-                  placeholder="Your first name…"
-                  className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2.5 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-ring"
-                />
-                <button
-                  onClick={submitName}
-                  disabled={!nameInput.trim()}
-                  className="px-4 rounded-xl bg-primary text-white text-sm font-medium disabled:opacity-40 hover:opacity-90 transition-opacity"
-                >
-                  Go
-                </button>
-              </div>
-            </div>
-          ) : adminView === "users" ? (
-            <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1 min-h-0">
-              {adminLoading && (
-                <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-6">
-                  <div className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
-                  Loading…
-                </div>
-              )}
-              {!adminLoading && adminUsers.length === 0 && (
-                <p className="text-center text-xs text-zinc-500 py-6">No chat history yet.</p>
-              )}
-              {adminUsers.map((u) => (
-                <button
-                  key={u.userId}
-                  onClick={() => viewUserChat(u)}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white/5 transition-colors text-left"
-                >
-                  <AvatarName name={u.username} size="md" textClassName="text-sm text-white" />
-                  <ChevronRight className="h-4 w-4 text-zinc-600 ml-auto" />
-                </button>
-              ))}
-            </div>
-          ) : adminView === "viewUser" ? (
-            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
-              {adminLoading && (
-                <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-4">
-                  <div className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
-                  Loading…
-                </div>
-              )}
-              {!adminLoading && adminMessages.length === 0 && (
-                <p className="text-center text-xs text-zinc-500 py-6">No messages yet.</p>
-              )}
-              {adminMessages.map((m, i) => (
-                <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                  {m.role === "assistant" && (
-                    <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
-                  )}
-                  <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                    m.role === "user" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
-                  }`}>{m.content}</div>
-                </div>
-              ))}
-            </div>
-          ) : adminView === "history" ? (
-            <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1 min-h-0">
-              {historyLoading && (
-                <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-6">
-                  <div className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
-                  Loading…
-                </div>
-              )}
-              {!historyLoading && historyGroups.length === 0 && (
-                <p className="text-center text-xs text-zinc-500 py-6">No past conversations yet.</p>
-              )}
-              {historyGroups.map((g) => (
-                <button
-                  key={g.key}
-                  onClick={() => viewHistoryDate(g)}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white/5 transition-colors text-left"
-                >
-                  <div className="h-8 w-8 rounded-full bg-zinc-700 flex items-center justify-center metric-info flex-shrink-0">
-                    <Clock className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm text-white leading-tight">{g.label}</p>
-                    <p className="text-[11px] text-zinc-500 truncate">{g.preview}</p>
-                  </div>
-                  <span className="text-[10px] text-zinc-600 flex-shrink-0">{g.messages.length} msg</span>
-                  <ChevronRight className="h-4 w-4 text-zinc-600 flex-shrink-0" />
-                </button>
-              ))}
-            </div>
-          ) : adminView === "viewDate" ? (
-            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
-              {(historyGroup?.messages ?? []).length === 0 && (
-                <p className="text-center text-xs text-zinc-500 py-6">No messages.</p>
-              )}
-              {(historyGroup?.messages ?? []).map((m, i) => (
-                <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                  {m.role === "assistant" && (
-                    <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
-                  )}
-                  <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                    m.role === "user" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
-                  }`}>{m.content}</div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <>
-              {/* Normal chat messages */}
-              <div className={`flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0 ${size === "minimized" ? "hidden" : ""}`}>
-                {historyLoading && (
-                  <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-4">
-                    <div className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
-                    Loading memory…
-                  </div>
-                )}
-                {messages.map((m, i) => (
-                  <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                    {m.role === "assistant" && (
-                      <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
-                    )}
-                    <div className={`max-w-[80%] flex flex-col gap-1.5 ${m.role === "user" ? "items-end" : "items-start"}`}>
-                      {m.images?.map((src, idx) => (
-                        <img key={idx} src={src} alt="attachment" className="max-w-[220px] rounded-xl border border-white/10 object-cover" />
-                      ))}
-                      {m.content && (
-                        <div className={`rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                          m.role === "user" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
-                        }`}>{m.content}</div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-                {loading && (
-                  <div className="flex justify-start">
-                    <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
-                    <div className="bg-zinc-800 rounded-2xl rounded-bl-sm px-3 py-2">
-                      <div className="flex gap-1 items-center h-4">
-                        <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:0ms]" />
-                        <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:150ms]" />
-                        <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:300ms]" />
-                      </div>
-                    </div>
-                  </div>
-                )}
-                <div ref={bottomRef} />
-              </div>
-
-              {/* Input bar */}
-              <div className={`px-3 pb-3 pt-2 border-t border-white/8 flex flex-col gap-2 ${size === "minimized" ? "hidden" : ""}`}>
-                {pendingImages.length > 0 && (
-                  <div className="flex gap-2 flex-wrap">
-                    {pendingImages.map((src, idx) => (
-                      <div key={idx} className="relative group">
-                        <img src={src} alt="pending" className="h-16 w-16 rounded-lg object-cover border border-white/10" />
-                        <button
-                          onClick={() => setPendingImages((p) => p.filter((_, i) => i !== idx))}
-                          className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-zinc-700 border border-white/20 text-zinc-300 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <X className="h-2.5 w-2.5" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className="flex gap-2 items-center">
-                  <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
-                    onChange={(e) => { if (e.target.files) { void addImages(e.target.files); e.target.value = ""; } }} />
-                  <button onClick={() => fileInputRef.current?.click()} disabled={loading} title="Attach image"
-                    className="h-9 w-9 rounded-xl bg-zinc-800 border border-white/10 text-zinc-400 hover:metric-info flex items-center justify-center transition-colors disabled:opacity-40 flex-shrink-0">
-                    <Paperclip className="h-4 w-4" />
-                  </button>
-                  <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
-                    onPaste={handlePaste} placeholder="Ask Samia anything… or paste a screenshot" disabled={loading}
-                    className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50" />
-                  <button onClick={() => void send()} disabled={(!input.trim() && pendingImages.length === 0) || loading}
-                    className="h-9 w-9 rounded-xl bg-primary text-white flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity flex-shrink-0">
-                    <Send className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-    </>
-  );
-}
-
-// ─── Attendance ────────────────────────────────────────────────────────────────
 
 interface AttMember { id: number; name: string; shift: string; shiftHours: string; department: string; active: boolean; }
 
@@ -12837,7 +12271,7 @@ function AttendancePanel() {
       return r.json();
     },
     staleTime: 15_000,
-    refetchInterval: 60_000,
+    refetchInterval: queryPollingInterval({ baseMs: 60_000 }),
   });
 
   const recordMap = useMemo(() => {
@@ -13367,7 +12801,7 @@ function AttendancePanel() {
 
 function App() {
   return (
-    <QueryClientProvider client={queryClient}>
+    <QueryClientProvider client={dashboardQueryClient}>
       <ThemeProvider>
         <TooltipProvider>
           <LoginGate>
