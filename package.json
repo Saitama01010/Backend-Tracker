@@ -12,6 +12,7 @@
     "test:baseline": "pnpm --filter @workspace/api-server run test:baseline",
     "test:smoke": "pnpm --filter @workspace/api-server run test:smoke",
     "test:security": "pnpm --filter @workspace/agent-dashboard run test:security && pnpm --filter @workspace/api-server run test:security",
+    "test:performance": "pnpm --filter @workspace/api-server run test:performance",
     "baseline:serve": "pnpm --filter @workspace/api-server run baseline:serve",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"

@@ -21,6 +21,7 @@ import { setPrivateDownloadHeaders } from "../lib/sensitiveWorkflowPolicy.js";
 import type { AuthPayload } from "../middleware/authCore.js";
 import { canAccessAgent } from "../middleware/authorizationCore.js";
 import { authorizationAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
+import { planWeeklyQaAssignments } from "../lib/databasePerformance.js";
 
 const router: IRouter = Router();
 
@@ -448,64 +449,24 @@ async function runWeeklyAssignment(): Promise<{ created: number; agents: number 
     .from(qaReviewsTable)
     .where(gte(qaReviewsTable.callDate, lookback));
 
-  const byAgent = new Map<string, typeof reviews>();
-  for (const r of reviews) {
-    if (!byAgent.has(r.agentName)) byAgent.set(r.agentName, [] as typeof reviews);
-    byAgent.get(r.agentName)!.push(r);
-  }
+  const agents = [...new Set(reviews.map((review) => review.agentName))];
+  const existingTasks = agents.length > 0
+    ? await db.select({
+        id: managerQaTasksTable.id,
+        agentName: managerQaTasksTable.agentName,
+        source: managerQaTasksTable.source,
+        createdAt: managerQaTasksTable.createdAt,
+      }).from(managerQaTasksTable).where(inArray(managerQaTasksTable.agentName, agents))
+    : [];
+  const plan = planWeeklyQaAssignments(reviews, existingTasks, weekStart);
+  const inserted = plan.picks.length > 0
+    ? await db.insert(managerQaTasksTable)
+        .values(plan.picks)
+        .onConflictDoNothing()
+        .returning({ id: managerQaTasksTable.id })
+    : [];
 
-  let created = 0;
-  for (const [agent, list] of byAgent) {
-    if (list.length === 0) continue;
-
-    // Skip agents that already have weekly tasks created on/after this week's Monday LA.
-    const existingWeekly = await db
-      .select({ id: managerQaTasksTable.id })
-      .from(managerQaTasksTable)
-      .where(and(
-        eq(managerQaTasksTable.agentName, agent),
-        inArray(managerQaTasksTable.source, ["weekly_lowest", "weekly_random"]),
-        gte(managerQaTasksTable.createdAt, weekStart),
-      ));
-    if (existingWeekly.length > 0) continue;
-
-    // Exclude calls that are already manager tasks (avoid PK conflicts collapsing picks).
-    const existingIds = new Set<string>();
-    const existingForAgent = await db
-      .select({ id: managerQaTasksTable.id })
-      .from(managerQaTasksTable)
-      .where(eq(managerQaTasksTable.agentName, agent));
-    for (const e of existingForAgent) existingIds.add(e.id);
-
-    const eligible = list.filter((r) => !existingIds.has(r.id));
-    if (eligible.length === 0) continue;
-
-    const lowest = [...eligible].sort((a, b) => a.score - b.score)[0];
-    const others = eligible.filter((r) => r.id !== lowest.id);
-    const random = others.length > 0 ? others[Math.floor(Math.random() * others.length)] : null;
-
-    const picks: Array<{ row: (typeof reviews)[number]; source: string; reasonPrefix: string }> = [
-      { row: lowest, source: "weekly_lowest", reasonPrefix: "Weekly review: lowest AI score" },
-    ];
-    if (random) picks.push({ row: random, source: "weekly_random", reasonPrefix: "Weekly review: random sample" });
-
-    for (const p of picks) {
-      const result = await db.insert(managerQaTasksTable).values({
-        id: p.row.id,
-        agentName: agent,
-        department: p.row.department,
-        aiScore: p.row.score,
-        score: p.row.score,
-        reason: `${p.reasonPrefix} (${p.row.score}/100)`,
-        criticalFail: p.row.criticalFail,
-        source: p.source,
-        status: "open",
-      }).onConflictDoNothing().returning({ id: managerQaTasksTable.id });
-      if (result.length > 0) created++;
-    }
-  }
-
-  return { created, agents: byAgent.size };
+  return { created: inserted.length, agents: plan.agents };
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

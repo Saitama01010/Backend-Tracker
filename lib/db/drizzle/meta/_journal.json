@@ -57,6 +57,13 @@
       "when": 1786510800000,
       "tag": "0007_immutable_ai_action_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786597200000,
+      "tag": "0008_database_performance",
+      "breakpoints": true
     }
   ]
 }

@@ -15,6 +15,7 @@ export const pbxMissedCallsTable = pgTable(
   (t) => [
     index("pbx_missed_created").on(t.createdAt),
     index("pbx_missed_team_created").on(t.team, t.createdAt),
+    index("pbx_missed_from_created_idx").on(t.fromNumber, t.createdAt.desc()),
   ],
 );
 

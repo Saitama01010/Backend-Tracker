@@ -4,7 +4,7 @@ import {
   attendanceMembersTable,
   attendanceRecordsTable,
 } from "@workspace/db";
-import { eq, and, or, gte, lte, inArray, min, ilike, sql } from "drizzle-orm";
+import { eq, and, or, gte, lte, inArray, ilike, isNotNull, sql } from "drizzle-orm";
 import { getCallHistoryCache } from "./vos";
 import { requireAuth, requirePermission } from "../middleware/auth.js";
 import {
@@ -15,7 +15,19 @@ import {
   attendanceStartOfDay,
   type AttendanceStatus,
 } from "../lib/attendancePolicy.js";
-import { resolveActiveAttendanceMember, setAttendanceRecord } from "../lib/attendanceService.js";
+import {
+  activeAttendanceMembers,
+  resolveActiveAttendanceMember,
+  resolveActiveAttendanceMemberFromList,
+  setAttendanceRecord,
+  setAttendanceRecords,
+} from "../lib/attendanceService.js";
+import {
+  attendanceImportMemberKey,
+  buildAttendanceImportPlan,
+  buildQuoFirstCallMap,
+  type AttendanceImportCandidate,
+} from "../lib/databasePerformance.js";
 import {
   attendanceDepartmentForUser,
   canAccessAgent,
@@ -265,8 +277,7 @@ router.post("/attendance/import", requireAuth, requirePermission("manage_members
       return { rows, department };
     }));
 
-    let totalMembers = 0;
-    let totalRecords = 0;
+    const importCandidates: AttendanceImportCandidate[] = [];
 
     for (const { rows, department } of sourceRows) {
 
@@ -284,36 +295,61 @@ router.post("/attendance/import", requireAuth, requirePermission("manage_members
         const name = row[1]?.trim() ?? "";
         if (!name || !shift || shift === '"' || name.toUpperCase() === "NA" || !/^\d+$/.test(shift)) continue;
 
-        const existing = await db
-          .select()
-          .from(attendanceMembersTable)
-          .where(and(eq(attendanceMembersTable.name, name), eq(attendanceMembersTable.department, department)))
-          .limit(1);
-
-        let memberId: number;
-        if (existing.length > 0) {
-          memberId = existing[0].id;
-        } else {
-          const [inserted] = await db
-            .insert(attendanceMembersTable)
-            .values({ name, shift, department })
-            .returning();
-          memberId = inserted.id;
-          totalMembers++;
-        }
-
+        const records: Array<{ date: string; status: string }> = [];
         for (const { idx, iso } of dateIndices) {
           const rawStatus = row[idx]?.trim() ?? "";
           const status = normalizeStatus(rawStatus);
           if (!rawStatus) continue;
-          await db
-            .insert(attendanceRecordsTable)
-            .values({ memberId, date: iso, status })
-            .onConflictDoNothing();
-          totalRecords++;
+          records.push({ date: iso, status });
         }
+        importCandidates.push({ name, shift, department, records });
       }
     }
+
+    const importPlan = buildAttendanceImportPlan(importCandidates);
+    const importedMembers = new Map(importPlan.members.map((member) => [member.key, member]));
+    const totalRecords = importPlan.totalRecords;
+
+    const totalMembers = await db.transaction(async (tx) => {
+      const existingMembers = await tx.select().from(attendanceMembersTable)
+        .orderBy(attendanceMembersTable.id);
+      const memberIds = new Map<string, number>();
+      for (const member of existingMembers) {
+        const key = attendanceImportMemberKey(member.department, member.name);
+        if (!memberIds.has(key)) memberIds.set(key, member.id);
+      }
+
+      const missingMembers = [...importedMembers].filter(([key]) => !memberIds.has(key));
+      if (missingMembers.length > 0) {
+        const insertedMembers = await tx.insert(attendanceMembersTable)
+          .values(missingMembers.map(([, member]) => ({
+            name: member.name,
+            shift: member.shift,
+            department: member.department,
+          })))
+          .returning({
+            id: attendanceMembersTable.id,
+            name: attendanceMembersTable.name,
+            department: attendanceMembersTable.department,
+        });
+        for (const member of insertedMembers) {
+          memberIds.set(attendanceImportMemberKey(member.department, member.name), member.id);
+        }
+      }
+
+      const pendingRecords = [...importedMembers].flatMap(([key, member]) => {
+        const memberId = memberIds.get(key);
+        if (memberId === undefined) throw new Error("Attendance import member persistence failed");
+        return member.records.map((record) => ({ memberId, ...record }));
+      });
+      const chunkSize = 500;
+      for (let offset = 0; offset < pendingRecords.length; offset += chunkSize) {
+        await tx.insert(attendanceRecordsTable)
+          .values(pendingRecords.slice(offset, offset + chunkSize))
+          .onConflictDoNothing();
+      }
+      return missingMembers.length;
+    });
 
     res.json({ success: true, totalMembers, totalRecords });
   } catch (err) {
@@ -353,30 +389,26 @@ function parsePdt(s: string): Date {
 // Only counts valid attendance signals:
 //   - Outbound calls (agent dialed out, any status)
 //   - Inbound calls answered by the agent (direction=incoming, status=completed)
-async function buildQuoCallsMap(dayStartUtc: Date, dayEndUtc: Date): Promise<Map<string, Date[]>> {
+async function buildQuoCallsMap(dayStartUtc: Date, dayEndUtc: Date): Promise<Map<string, Date>> {
   const rows = await db
-    .select({ agentName: phoneCallsTable.agentName, createdAt: phoneCallsTable.createdAt })
+    .select({
+      agentName: phoneCallsTable.agentName,
+      firstCallAt: sql<Date | null>`min(${phoneCallsTable.createdAt})`,
+    })
     .from(phoneCallsTable)
     .where(
       and(
         gte(phoneCallsTable.createdAt, dayStartUtc),
         lte(phoneCallsTable.createdAt, dayEndUtc),
+        isNotNull(phoneCallsTable.agentName),
         or(
           eq(phoneCallsTable.direction, "outgoing"),
           and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed")),
         ),
       ),
-    );
-  const map = new Map<string, Date[]>();
-  for (const row of rows) {
-    if (row.agentName && row.createdAt) {
-      const key = row.agentName.trim().toLowerCase();
-      const d = new Date(row.createdAt);
-      const arr = map.get(key);
-      if (arr) arr.push(d); else map.set(key, [d]);
-    }
-  }
-  return map;
+    )
+    .groupBy(phoneCallsTable.agentName);
+  return buildQuoFirstCallMap(rows);
 }
 
 // Find the earliest call for a member within the LA calendar day.
@@ -388,7 +420,7 @@ function resolveFirstCall(
   dayStartUtc: Date,
   shiftStartUtc: Date | null,
   vosFirstCall: Map<string, Date>,
-  quoCalls: Map<string, Date[]>,
+  quoCalls: Map<string, Date>,
 ): Date | null {
   if (!shiftStartUtc) return null;
   const floor = dayStartUtc;
@@ -403,13 +435,9 @@ function resolveFirstCall(
     const vos = vosFirstCall.get(nameLower);
     if (vos && vos >= floor && (!firstCallAt || vos < firstCallAt)) firstCallAt = vos;
 
-    // Quo: all timestamps — find the earliest one within the valid window
-    const calls = quoCalls.get(nameLower);
-    if (calls) {
-      for (const d of calls) {
-        if (d >= floor && (!firstCallAt || d < firstCallAt)) firstCallAt = d;
-      }
-    }
+    // Quo: SQL minimum per normalized raw agent name.
+    const quo = quoCalls.get(nameLower);
+    if (quo && quo >= floor && (!firstCallAt || quo < firstCallAt)) firstCallAt = quo;
   }
   return firstCallAt;
 }
@@ -533,27 +561,30 @@ router.post("/attendance/set", requireAuth, requirePermission("edit_attendance")
       return res.status(403).json({ error: "Forbidden" });
     }
 
+    const members = await activeAttendanceMembers();
     for (const record of records) {
-      const resolved = await resolveActiveAttendanceMember(record.memberId, record.memberName);
+      const resolved = resolveActiveAttendanceMemberFromList(members, record.memberId, record.memberName);
       if (resolved.kind === "ambiguous") return res.status(409).json({ error: "Attendance member is ambiguous" });
       if (resolved.kind === "unique" && !canAccessAttendanceMember(req.user!, resolved.member)) {
         return res.status(403).json({ error: "Forbidden" });
       }
     }
 
+    const writeResults = await setAttendanceRecords(records.map((record) => ({
+      memberId: record.memberId,
+      memberName: record.memberName,
+      date: record.date,
+      status: record.status as AttendanceStatus,
+      note: record.note,
+      coaching: record.coaching,
+      overwrite: force,
+    })), members);
     type SetResult = { memberName: string; date: string; status: string; action: string };
     const results: SetResult[] = [];
 
-    for (const rec of records) {
-      const result = await setAttendanceRecord({
-        memberId: rec.memberId,
-        memberName: rec.memberName,
-        date: rec.date,
-        status: rec.status as AttendanceStatus,
-        note: rec.note,
-        coaching: rec.coaching,
-        overwrite: force,
-      });
+    for (let index = 0; index < records.length; index++) {
+      const rec = records[index]!;
+      const result = writeResults[index]!;
       const requestedName = rec.memberName ?? `member #${rec.memberId ?? "unknown"}`;
       if (result.kind === "member_missing") {
         results.push({ memberName: requestedName, date: rec.date, status: rec.status, action: "skipped: member not found" });
@@ -621,6 +652,7 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
     const existingSet = new Set(existingRecords.map((r) => r.memberId));
 
     const results: { name: string; status: string; note: string; skipped?: string }[] = [];
+    const pending: Array<typeof attendanceRecordsTable.$inferInsert> = [];
 
     for (const member of members) {
       const shiftNum = parseInt(member.shift || "0");
@@ -654,11 +686,12 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
       const status = minsLate <= GRACE_MINS ? "in" : "late";
       const note   = minsLate <= GRACE_MINS ? "" : lateNote(minsLate);
 
-      await db.insert(attendanceRecordsTable)
-        .values({ memberId: member.id, date: targetDate, status, note: note || null, coaching: false })
-        .onConflictDoNothing();
-
+      pending.push({ memberId: member.id, date: targetDate, status, note: note || null, coaching: false });
       results.push({ name: member.name, status, note });
+    }
+
+    if (pending.length > 0) {
+      await db.insert(attendanceRecordsTable).values(pending).onConflictDoNothing();
     }
 
     res.json({ success: true, date: targetDate, results });
