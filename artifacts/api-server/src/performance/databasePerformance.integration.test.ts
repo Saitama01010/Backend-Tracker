@@ -172,7 +172,7 @@ test("sanitized database benchmark proves query and batch equivalence", async (t
   let workspacePool: { end(): Promise<void> } | null = null;
   try {
     await client.query(`
-      DROP TABLE IF EXISTS attendance_import_records, attendance_import_members, attendance_records, attendance_members, manager_qa_tasks, qa_reviews, pbx_missed_calls, phone_calls CASCADE;
+      DROP TABLE IF EXISTS attendance_set_records, attendance_set_members, attendance_import_records, attendance_import_members, attendance_records, attendance_members, manager_qa_tasks, qa_reviews, pbx_missed_calls, phone_calls CASCADE;
       CREATE TABLE phone_calls (
         id text PRIMARY KEY,
         agent_name text,
@@ -236,6 +236,21 @@ test("sanitized database benchmark proves query and batch equivalence", async (t
         status text NOT NULL,
         UNIQUE(member_id, date)
       );
+      CREATE TABLE attendance_set_members (
+        id serial PRIMARY KEY,
+        name text NOT NULL,
+        active boolean NOT NULL DEFAULT true
+      );
+      CREATE TABLE attendance_set_records (
+        id serial PRIMARY KEY,
+        member_id integer NOT NULL REFERENCES attendance_set_members(id) ON DELETE CASCADE,
+        date text NOT NULL,
+        status text NOT NULL,
+        note text,
+        coaching boolean NOT NULL DEFAULT false,
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE(member_id, date)
+      );
     `);
 
     await client.query(`
@@ -272,6 +287,10 @@ test("sanitized database benchmark proves query and batch equivalence", async (t
       FROM generate_series(0, 9) AS value;
       INSERT INTO attendance_import_members(name, shift, department)
       SELECT 'Import Agent ' || value, '4', 'CS' FROM generate_series(0, 19) AS value;
+      INSERT INTO attendance_set_members(name)
+      SELECT 'Set Agent ' || value FROM generate_series(1, 200) AS value;
+      INSERT INTO attendance_set_records(member_id, date, status)
+      SELECT value, '2026-08-03', 'in' FROM generate_series(1, 100) AS value;
     `);
     await applyPerformanceMigration(client);
     // Prove rerunning the migration does not create duplicate index definitions.
@@ -492,6 +511,112 @@ test("sanitized database benchmark proves query and batch equivalence", async (t
       queryCount: newImport.value.queryCount,
     });
 
+    const setInputs = Array.from({ length: 200 }, (_, index) => ({
+      memberId: index + 1,
+      date: "2026-08-03",
+      status: "in",
+    }));
+    const oldAttendanceSet = await timed(async () => {
+      await client.query("BEGIN");
+      let queryCount = 0;
+      const actions: string[] = [];
+      try {
+        for (const input of setInputs) {
+          await client.query("SELECT id FROM attendance_set_members WHERE id = $1 AND active = true", [input.memberId]);
+          queryCount++;
+        }
+        for (const input of setInputs) {
+          const member = await client.query<{ id: number }>(
+            "SELECT id FROM attendance_set_members WHERE id = $1 AND active = true",
+            [input.memberId],
+          );
+          queryCount++;
+          const previous = await client.query<{ status: string; note: string | null; coaching: boolean }>(`
+            SELECT status, note, coaching FROM attendance_set_records
+            WHERE member_id = $1 AND date = $2 LIMIT 1
+          `, [member.rows[0]!.id, input.date]);
+          queryCount++;
+          if (previous.rows[0]?.status === input.status) {
+            actions.push("unchanged");
+            continue;
+          }
+          await client.query(`
+            INSERT INTO attendance_set_records(member_id, date, status, note, coaching)
+            VALUES ($1, $2, $3, NULL, false)
+            ON CONFLICT (member_id, date) DO UPDATE SET status = excluded.status, updated_at = now()
+          `, [input.memberId, input.date, input.status]);
+          queryCount++;
+          await client.query(`
+            SELECT status, note, coaching FROM attendance_set_records
+            WHERE member_id = $1 AND date = $2 LIMIT 1
+          `, [input.memberId, input.date]);
+          queryCount++;
+          actions.push(previous.rowCount ? "updated" : "created");
+        }
+        const persisted = await client.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM attendance_set_records",
+        );
+        queryCount++;
+        return { actions, persisted: persisted.rows[0]!.count, queryCount };
+      } finally {
+        await client.query("ROLLBACK");
+      }
+    });
+    const newAttendanceSet = await timed(async () => {
+      await client.query("BEGIN");
+      let queryCount = 0;
+      try {
+        const members = await client.query<{ id: number }>(
+          "SELECT id FROM attendance_set_members WHERE active = true ORDER BY id",
+        );
+        queryCount++;
+        const activeIds = new Set(members.rows.map((member) => member.id));
+        const existing = await client.query<{ member_id: number; status: string; note: string | null; coaching: boolean }>(`
+          SELECT member_id, status, note, coaching FROM attendance_set_records
+          WHERE member_id = ANY($1::int[]) AND date = $2
+        `, [setInputs.map((input) => input.memberId), "2026-08-03"]);
+        queryCount++;
+        const states = new Map(existing.rows.map((record) => [record.member_id, record]));
+        const actions: string[] = [];
+        const writes: typeof setInputs = [];
+        for (const input of setInputs) {
+          assert.ok(activeIds.has(input.memberId));
+          const previous = states.get(input.memberId);
+          if (previous?.status === input.status) {
+            actions.push("unchanged");
+          } else {
+            actions.push(previous ? "updated" : "created");
+            writes.push(input);
+            states.set(input.memberId, { member_id: input.memberId, status: input.status, note: null, coaching: false });
+          }
+        }
+        const parameters: unknown[] = [];
+        const values = writes.map((input, index) => {
+          const offset = index * 3;
+          parameters.push(input.memberId, input.date, input.status);
+          return `($${offset + 1}, $${offset + 2}, $${offset + 3}, NULL, false)`;
+        });
+        await client.query(`
+          INSERT INTO attendance_set_records(member_id, date, status, note, coaching)
+          VALUES ${values.join(", ")}
+          ON CONFLICT (member_id, date) DO UPDATE SET status = excluded.status, updated_at = now()
+        `, parameters);
+        queryCount++;
+        const verified = await client.query<{ member_id: number; status: string }>(`
+          SELECT member_id, status FROM attendance_set_records
+          WHERE member_id = ANY($1::int[]) AND date = $2
+        `, [setInputs.map((input) => input.memberId), "2026-08-03"]);
+        queryCount++;
+        return { actions, persisted: verified.rowCount ?? 0, queryCount };
+      } finally {
+        await client.query("ROLLBACK");
+      }
+    });
+    assert.deepEqual(newAttendanceSet.value, {
+      ...oldAttendanceSet.value,
+      queryCount: newAttendanceSet.value.queryCount,
+    });
+
     const dbModule = await import("@workspace/db");
     workspacePool = dbModule.pool;
     assert.deepEqual(
@@ -605,6 +730,23 @@ test("sanitized database benchmark proves query and batch equivalence", async (t
         actions: batch.map((result) => result.kind === "saved" ? result.action : result.kind),
         finalRecordCount: Number(attendanceTotal.rows[0]!.count),
         writeStatements: 1,
+      },
+      attendanceSet: {
+        oldResult: {
+          unchanged: oldAttendanceSet.value.actions.filter((action) => action === "unchanged").length,
+          created: oldAttendanceSet.value.actions.filter((action) => action === "created").length,
+          persisted: oldAttendanceSet.value.persisted,
+        },
+        newResult: {
+          unchanged: newAttendanceSet.value.actions.filter((action) => action === "unchanged").length,
+          created: newAttendanceSet.value.actions.filter((action) => action === "created").length,
+          persisted: newAttendanceSet.value.persisted,
+        },
+        equal: true,
+        oldQueryMs: oldAttendanceSet.ms,
+        newQueryMs: newAttendanceSet.ms,
+        oldQueryCount: oldAttendanceSet.value.queryCount,
+        newQueryCount: newAttendanceSet.value.queryCount,
       },
       attendanceImport: {
         oldResult: {

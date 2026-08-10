@@ -47,12 +47,12 @@ The opt-in integration test used PostgreSQL 16 in a temporary local Docker conta
 
 | Optimized endpoint/path | Dataset | Old result | New result | Equality | Old time | New time |
 | --- | ---: | --- | --- | --- | ---: | ---: |
-| Attendance first-call lookup used by call logs and auto-mark | 180,000 calls, one fixed UTC window corresponding to the same requested calendar range | 120 agents, digest `b9621377b60810ae`, 1,386 rows transferred | 120 agents, digest `b9621377b60810ae`, 120 rows transferred | Exact | 10.90 ms | 3.26 ms |
-| Weekly QA assignment | 12,000 reviews, 100 agents, 110 existing tasks | 100 agents, 180 picks, digest `0e83f08cca5cc5ad` | 100 agents, 180 picks, digest `0e83f08cca5cc5ad` | Exact | 390.47 ms, 371 statements | 38.01 ms, 3 statements |
-| Attendance batch conflict/write semantics | 80 members; unchanged, conflict, create, duplicate, and missing cases | `unchanged, conflict, created, unchanged, member_missing` | Same actions; final record count 3 | Exact | Record-at-a-time writes | One bulk write inside a transaction |
-| Attendance import | 100 imported members, 20 pre-existing, 1,400 populated date cells | 80 new members, 1,400 attempted records, 1,400 persisted | Same totals and persisted count | Exact | 1,411.10 ms, 1,581 statements | 155.47 ms, 6 statements |
+| Attendance first-call lookup used by call logs and auto-mark | 180,000 calls, one fixed UTC window corresponding to the same requested calendar range | 120 agents, digest `b9621377b60810ae`, 1,386 rows transferred | 120 agents, digest `b9621377b60810ae`, 120 rows transferred | Exact | 8.23 ms | 3.09 ms |
+| Weekly QA assignment | 12,000 reviews, 100 agents, 110 existing tasks | 100 agents, 180 picks, digest `0e83f08cca5cc5ad` | 100 agents, 180 picks, digest `0e83f08cca5cc5ad` | Exact | 269.76 ms, 371 statements | 38.23 ms, 3 statements |
+| Attendance set | 200 members, 100 existing records, 200 requested writes | 100 unchanged, 100 created, 200 persisted | Same actions and persisted count | Exact | 532.25 ms, 801 statements | 11.46 ms, 4 statements |
+| Attendance import | 100 imported members, 20 pre-existing, 1,400 populated date cells | 80 new members, 1,400 attempted records, 1,400 persisted | Same totals and persisted count | Exact | 1,003.06 ms, 1,581 statements | 89.33 ms, 6 statements |
 
-Timings are local single-run measurements and are evidence for this fixture, not production latency promises. The attendance timing includes query result transfer and JavaScript reduction; PostgreSQL's measured execution portion was 0.384 ms old and 0.430 ms new, while the optimized query reduced transferred rows by 91.3%. Weekly QA and attendance-import timings include reads, selection/planning, and conflict-safe writes.
+Timings are local single-run measurements and are evidence for this fixture, not production latency promises. The attendance first-call timing includes query result transfer and JavaScript reduction; PostgreSQL's measured execution portion was 0.365 ms old and 0.413 ms new, while the optimized query reduced transferred rows by 91.3%. Weekly QA, attendance-set, and attendance-import timings include reads, selection/planning, and conflict-safe writes. A separate five-input semantic fixture also preserved `unchanged, conflict, created, unchanged, member_missing` in that exact order.
 
 `EXPLAIN (ANALYZE, FORMAT JSON)` confirmed:
 
