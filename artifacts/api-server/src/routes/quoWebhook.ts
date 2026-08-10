@@ -62,7 +62,6 @@ async function getLineInfo(phoneNumberId: string): Promise<LineInfo | null> {
     try {
       const res = await fetch(`${QUO_BASE}/phone-numbers`, {
         headers: { Authorization: quoKey() },
-        signal: AbortSignal.timeout(2_500),
       });
       if (res.ok) {
         const json = await res.json() as { data: { id: string; name: string }[] };
@@ -94,7 +93,6 @@ async function getAgentName(userId: string): Promise<string | null> {
     try {
       const res = await fetch(`${QUO_BASE}/users`, {
         headers: { Authorization: quoKey() },
-        signal: AbortSignal.timeout(2_500),
       });
       if (res.ok) {
         const json = await res.json() as {
