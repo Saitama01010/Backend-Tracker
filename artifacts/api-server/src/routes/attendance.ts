@@ -5,7 +5,7 @@ import {
   attendanceRecordsTable,
 } from "@workspace/db";
 import { eq, and, or, gte, lte, inArray, ilike, isNotNull, sql } from "drizzle-orm";
-import { getCallHistoryCache } from "./vos";
+import { getCallHistoryCache, hydrateVosState } from "./vos";
 import { requireAuth, requirePermission } from "../middleware/auth.js";
 import {
   ATTENDANCE_MEMBER_ALIASES,
@@ -466,6 +466,7 @@ router.get("/attendance/call-logs", async (req, res) => {
     // VoS only has today's data; skip for historical dates.
     const vosFirstCall = new Map<string, Date>();
     if (isToday) {
+      await hydrateVosState();
       for (const stat of getCallHistoryCache()) {
         if (stat.firstCallAt) {
           const d = parsePdt(stat.firstCallAt);
@@ -629,6 +630,7 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
     // VoS only has today's live data; use it only for today.
     const vosFirstCall = new Map<string, Date>();
     if (isToday) {
+      await hydrateVosState();
       for (const stat of getCallHistoryCache()) {
         if (stat.firstCallAt) {
           const d = parsePdt(stat.firstCallAt);

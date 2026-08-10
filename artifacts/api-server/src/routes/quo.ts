@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db, phoneCallsTable } from "@workspace/db";
 import { and, eq, gte, lte, desc, ne } from "drizzle-orm";
-import { runSync, startBackgroundSync, getSyncState, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES, canonicalAgentName } from "./quoSync.js";
+import { getSyncState, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES, canonicalAgentName } from "./quoSync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { logger } from "../lib/logger.js";
 import { liveWebhookCalls } from "./quoWebhook.js";
@@ -19,6 +19,9 @@ import {
   parseBoundedInteger,
   validateIntegrationDateRange,
 } from "../lib/externalIntegrationPolicy.js";
+import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
+import { manualJobKey, scheduledJobKey } from "../lib/durableBackgroundJobs.js";
+import { getDurableRuntimeState, listDurableRuntimeState, putDurableRuntimeState } from "../lib/durableRuntimeState.js";
 
 const router: IRouter = Router();
 router.use("/quo", requireAuth);
@@ -579,11 +582,16 @@ router.post("/quo/sync", requireRole("admin"), async (req, res) => {
       res.status(400).json({ error: range.error });
       return;
     }
-    req.log.info({ from: range.from, to: range.to }, "quo sync triggered manually");
-    res.json({ success: true, message: "Sync started in background", from: range.from, to: range.to });
-    runSync(range.fromDate, range.toDate).catch((err) => {
-      req.log.error(err, "quo manual sync background error");
+    await postgresBackgroundJobStore.enqueue({
+      jobType: "quo_sync",
+      idempotencyKey: manualJobKey("quo_sync", req.user!.userId),
+      payload: { from: range.from, to: range.to },
+      requestedByUserId: req.user!.userId,
+      priority: 90,
+      maxAttempts: 4,
     });
+    req.log.info({ from: range.from, to: range.to }, "quo sync queued manually");
+    res.json({ success: true, message: "Sync started in background", from: range.from, to: range.to });
   } catch (err) {
     req.log.error(err, "quo sync error");
     res.status(500).json({ error: "Quo sync could not be started." });
@@ -615,10 +623,16 @@ const pollLiveAgents = new Set<string>();
 const pollLiveParticipants = new Map<string, string>();
 let livePollRunning = false;
 
-async function runLivePoll(): Promise<void> {
-  if (livePollRunning) return;
+export async function runLivePoll(signal?: AbortSignal): Promise<{ active: string[]; agentCalls: Array<{ agentName: string; participant: string }> }> {
+  if (livePollRunning) {
+    return {
+      active: [...pollLiveAgents],
+      agentCalls: [...pollLiveParticipants.entries()].map(([agentName, participant]) => ({ agentName, participant })),
+    };
+  }
   livePollRunning = true;
   try {
+    signal?.throwIfAborted();
     const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     const now = new Date().toISOString();
 
@@ -739,6 +753,7 @@ async function runLivePoll(): Promise<void> {
     let idx = 0;
     async function worker() {
       while (idx < tasks.length) {
+        signal?.throwIfAborted();
         const task = tasks[idx++];
         if (task) await task().catch(() => {});
       }
@@ -750,44 +765,55 @@ async function runLivePoll(): Promise<void> {
     for (const a of newLive) pollLiveAgents.add(a);
     for (const [a, p] of newParticipants) pollLiveParticipants.set(a, p);
 
+    const snapshot = {
+      active: [...newLive],
+      agentCalls: [...newParticipants.entries()].map(([agentName, participant]) => ({ agentName, participant })),
+    };
+    await putDurableRuntimeState("quo:live-poll", snapshot, 3 * 60_000);
+
     if (newLive.size > 0) {
       logger.info({ agents: [...newLive] }, "quo livePoll: in-progress calls found");
     }
+    return snapshot;
   } catch (err) {
     logger.warn({ err: String(err) }, "quo livePoll: error");
+    throw err;
   } finally {
     livePollRunning = false;
   }
 }
 
-const isVercel = process.env["VERCEL"] === "1";
-const backgroundJobsEnabled =
-  process.env["ENABLE_BACKGROUND_JOBS"] === "true" ||
-  (process.env["ENABLE_BACKGROUND_JOBS"] !== "false" && !isVercel);
-
-if (backgroundJobsEnabled) {
-  runLivePoll().catch(() => {});
-  setInterval(() => { runLivePoll().catch(() => {}); }, 60_000);
-  startBackgroundSync().catch(() => {});
-}
-
-
 router.get("/quo/live", async (req, res) => {
   try {
-    // Vercel serverless functions do not keep background timers alive, so make
-    // the live endpoint refresh itself before returning the merged live state.
-    if (!backgroundJobsEnabled) {
-      await runLivePoll();
+    const pollState = await getDurableRuntimeState<{
+      active: string[];
+      agentCalls: Array<{ agentName: string; participant: string }>;
+    }>("quo:live-poll");
+    const durableWebhookCalls = await listDurableRuntimeState<{
+      agentName: string;
+      participant: string;
+      ringingSince: string;
+    }>("quo:webhook-live:");
+    if (!pollState) {
+      const minute = new Date().toISOString().slice(0, 16).replace(/[-T:]/g, "");
+      await postgresBackgroundJobStore.enqueue({
+        jobType: "integration_live_refresh",
+        idempotencyKey: scheduledJobKey("integration_live_refresh", minute),
+        priority: 100,
+        maxAttempts: 4,
+      }).catch((error) => req.log.warn(error, "quo live refresh enqueue failed"));
     }
 
     const active = new Set<string>();
 
     // Source 1: webhook in-memory state — instant, set by quoWebhook.ts on call.ringing/answered.
     for (const { agentName } of liveWebhookCalls.values()) active.add(agentName);
+    for (const { value } of durableWebhookCalls) active.add(value.agentName);
 
     // Source 2: 60-second background poll — finds in-progress calls via conversations API.
     // Covers the gap when webhooks miss an event.
     for (const agentName of pollLiveAgents) active.add(agentName);
+    for (const agentName of pollState?.value.active ?? []) active.add(agentName);
 
     // Source 3: DB in-progress rows — catches calls synced by the 15-min background sync.
     const since2h = new Date(Date.now() - 2 * 60 * 60 * 1000);
@@ -804,9 +830,15 @@ router.get("/quo/live", async (req, res) => {
     for (const { agentName, participant } of liveWebhookCalls.values()) {
       agentParticipant.set(agentName, participant || null);
     }
+    for (const { value } of durableWebhookCalls) {
+      agentParticipant.set(value.agentName, value.participant || null);
+    }
     // Poll participant (from call record, updated each 60s)
     for (const agentName of pollLiveAgents) {
       agentParticipant.set(agentName, pollLiveParticipants.get(agentName) ?? agentParticipant.get(agentName) ?? null);
+    }
+    for (const call of pollState?.value.agentCalls ?? []) {
+      agentParticipant.set(call.agentName, call.participant ?? agentParticipant.get(call.agentName) ?? null);
     }
     // DB participant (most stable — from completed-call upsert)
     for (const r of dbRows) {
@@ -821,7 +853,7 @@ router.get("/quo/live", async (req, res) => {
       res.json({
         active: [...active],
         agentCalls: [...agentParticipant.entries()].map(([agentName, participant]) => ({ agentName, participant })),
-        webhookActive: liveWebhookCalls.size > 0,
+        webhookActive: liveWebhookCalls.size > 0 || durableWebhookCalls.length > 0,
       });
       return;
     }
@@ -830,8 +862,10 @@ router.get("/quo/live", async (req, res) => {
     const scopedCalls = [...agentParticipant.entries()]
       .filter(([agentName]) => canAccessLiveAgent(req.user!, agentName, directory))
       .map(([agentName, participant]) => ({ agentName, participant }));
-    const scopedWebhookActive = [...liveWebhookCalls.values()]
-      .some(({ agentName }) => canAccessLiveAgent(req.user!, agentName, directory));
+    const scopedWebhookActive = [
+      ...[...liveWebhookCalls.values()].map(({ agentName }) => agentName),
+      ...durableWebhookCalls.map(({ value }) => value.agentName),
+    ].some((agentName) => canAccessLiveAgent(req.user!, agentName, directory));
     res.json({ active: scopedActive, agentCalls: scopedCalls, webhookActive: scopedWebhookActive });
   } catch (err) {
     req.log.error(err, "quo live error");

@@ -5,7 +5,7 @@ import {
   agentBreaksTable,
 } from "@workspace/db";
 import { and, gte, lte, or, eq, inArray } from "drizzle-orm";
-import { vosCallSpansCache, vosCallTimestampsCache } from "./vos";
+import { hydrateVosState, vosCallSpansCache, vosCallTimestampsCache } from "./vos";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import {
   canAccessAgent,
@@ -66,6 +66,7 @@ function canAccessViolationIdentity(
 /** GET /api/violations?from=YYYY-MM-DD&to=YYYY-MM-DD */
 router.get("/violations", async (req, res) => {
   try {
+    await hydrateVosState();
     const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
     const from = (req.query["from"] as string) || new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
     const to   = (req.query["to"]   as string) || todayLA;

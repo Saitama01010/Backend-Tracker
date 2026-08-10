@@ -21,6 +21,8 @@ import {
 } from "../lib/anthropic.js";
 import { AI_UNTRUSTED_DATA_SYSTEM_POLICY, wrapUntrustedAiData } from "../lib/aiPrivacy.js";
 import { AiRateLimitError, withDatabaseLease, withDurableAiLimit } from "../lib/aiRateLimit.js";
+import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
+import { manualJobKey } from "../lib/durableBackgroundJobs.js";
 
 const router: IRouter = Router();
 
@@ -277,15 +279,12 @@ async function writeState(patch: {
 }
 
 // ─── Classifier job ───────────────────────────────────────────────────────────
-let jobRunning = false;
-
-async function runClassifier(): Promise<void> {
-  if (jobRunning) return;
-  jobRunning = true;
+export async function runLiveTransferRefresh(signal?: AbortSignal): Promise<void> {
   try {
     await withDatabaseLease("live_transfer_classifier", async () => {
-    await writeState({ isRunning: true, lastError: null, progressDone: 0, progressTotal: 0 });
-    logger.info("liveTransfers: classify started");
+      signal?.throwIfAborted();
+      await writeState({ isRunning: true, lastError: null, progressDone: 0, progressTotal: 0 });
+      logger.info("liveTransfers: classify started");
 
     // Incoming completed calls in scope, long enough to be a real conversation,
     // that have not been classified yet.
@@ -314,6 +313,7 @@ async function runClassifier(): Promise<void> {
 
     async function worker() {
       while (idx < pending.length) {
+        signal?.throwIfAborted();
         const i = idx++;
         const call = pending[i]!;
         try {
@@ -437,8 +437,7 @@ async function runClassifier(): Promise<void> {
     const errorCode = sanitizedErrorMessage(err);
     logger.error({ errorCode }, "liveTransfers: classify failed");
     await writeState({ isRunning: false, lastError: errorCode });
-  } finally {
-    jobRunning = false;
+    throw err;
   }
 }
 
@@ -569,9 +568,12 @@ router.get("/live-transfers/status", requireAuth, async (req, res) => {
       .sort((a, b) => b.count - a.count);
     const totalLive = partnerTotal + internalTotal;
 
-    const st = await readState();
+    const [st, activeJob] = await Promise.all([
+      readState(),
+      postgresBackgroundJobStore.findActive("live_transfer_refresh"),
+    ]);
     return res.json({
-      running: jobRunning,
+      running: Boolean(activeJob),
       lastRunAt: st?.lastRunAt ?? null,
       progressDone: st?.progressDone ?? 0,
       progressTotal: st?.progressTotal ?? 0,
@@ -594,7 +596,9 @@ router.get("/live-transfers/status", requireAuth, async (req, res) => {
 
 // POST /api/live-transfers/refresh — classify new incoming calls in the background.
 router.post("/live-transfers/refresh", requireAuth, requireRole("admin"), async (req, res) => {
-  if (jobRunning) return res.status(409).json({ started: false, reason: "already running" });
+  if (await postgresBackgroundJobStore.findActive("live_transfer_refresh")) {
+    return res.status(409).json({ started: false, reason: "already running" });
+  }
   try {
     await withDurableAiLimit({
       feature: "live_transfer_refresh",
@@ -609,8 +613,19 @@ router.post("/live-transfers/refresh", requireAuth, requireRole("admin"), async 
     }
     return res.status(503).json({ error: "Live-transfer refresh controls are unavailable" });
   }
-  void runClassifier();
-  return res.json({ started: true });
+  try {
+    await postgresBackgroundJobStore.enqueue({
+      jobType: "live_transfer_refresh",
+      idempotencyKey: manualJobKey("live_transfer_refresh", req.user!.userId),
+      requestedByUserId: req.user!.userId,
+      priority: 80,
+      maxAttempts: 3,
+    });
+    return res.json({ started: true });
+  } catch (error) {
+    req.log.error(error, "live-transfer refresh enqueue failed");
+    return res.status(503).json({ error: "Live-transfer refresh could not be queued" });
+  }
 });
 
 // GET /api/live-transfers/download — Excel of live transfer calls in range.

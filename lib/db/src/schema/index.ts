@@ -36,3 +36,4 @@ export * from "./actionAudit";
 export * from "./authSessions";
 export * from "./apiRateLimits";
 export * from "./webhookInbox";
+export * from "./backgroundJobs";

@@ -22,6 +22,9 @@ import type { AuthPayload } from "../middleware/authCore.js";
 import { canAccessAgent } from "../middleware/authorizationCore.js";
 import { authorizationAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
 import { planWeeklyQaAssignments } from "../lib/databasePerformance.js";
+import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
+import { manualJobKey, runNextBackgroundJob, scheduledJobKey } from "../lib/durableBackgroundJobs.js";
+import { validCronAuthorization } from "../lib/cronAuth.js";
 
 const router: IRouter = Router();
 
@@ -329,8 +332,12 @@ function agentKey(value: string | null | undefined): string {
   return (canonicalAgentName(value) ?? value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-export async function runBiweeklyQa(trigger: "cron" | "admin"): Promise<QaBiweeklyResult> {
+export async function runBiweeklyQa(
+  trigger: "cron" | "admin",
+  signal?: AbortSignal,
+): Promise<QaBiweeklyResult> {
   return withDatabaseLease("qa_auto_biweekly", async () => {
+    signal?.throwIfAborted();
     const [run] = await db.insert(qaBiweeklyRunsTable).values({ trigger }).returning({ id: qaBiweeklyRunsTable.id });
     const result: QaBiweeklyResult = { runId: run?.id ?? 0, evaluated: [], skipped: [], errors: [] };
     try {
@@ -358,6 +365,7 @@ export async function runBiweeklyQa(trigger: "cron" | "admin"): Promise<QaBiweek
       const sortedCandidates = stableEligibleCalls(candidates, reviewedCalls, QA_MIN_CALL_SECONDS);
 
       for (const rosterAgent of [...roster].sort((a, b) => a.name.localeCompare(b.name))) {
+        signal?.throwIfAborted();
         const key = agentKey(rosterAgent.name);
         if (automaticallyReviewed.has(key)) {
           result.skipped.push({ agent: rosterAgent.name, reason: `automatic review already exists within ${QA_REVIEW_INTERVAL_DAYS} days` });
@@ -373,6 +381,7 @@ export async function runBiweeklyQa(trigger: "cron" | "admin"): Promise<QaBiweek
         let selected: (typeof agentCandidates)[number] | null = null;
         let artifacts: QuoCallArtifacts | null = null;
         for (const candidate of agentCandidates) {
+          signal?.throwIfAborted();
           const candidateArtifacts = await getQuoCallArtifacts(candidate.id);
           if (candidateArtifacts.status === "ready") {
             selected = candidate;
@@ -439,7 +448,7 @@ function currentLAWeekStart(): Date {
   return new Date(mondayLA.getTime() - offsetMin);
 }
 
-async function runWeeklyAssignment(): Promise<{ created: number; agents: number }> {
+export async function runWeeklyAssignment(): Promise<{ created: number; agents: number }> {
   const weekStart = currentLAWeekStart();
   const lookback = new Date(weekStart.getTime() - 7 * 24 * 3600 * 1000);
 
@@ -551,12 +560,37 @@ router.post("/qa/evaluate", requireAuth, requireRole("admin"), async (req, res) 
   }
 });
 
-async function runBiweeklyResponse(res: Response, trigger: "cron" | "admin", userId?: number) {
+async function runBiweeklyResponse(res: Response, userId: number) {
   try {
-    const execute = () => runBiweeklyQa(trigger);
-    const result = trigger === "admin" && userId !== undefined
-      ? await withDurableAiLimit({ feature: "qa_admin_run", userId, perMinute: 1, perDay: 10 }, execute)
-      : await execute();
+    const result = await withDurableAiLimit(
+      { feature: "qa_admin_run", userId, perMinute: 1, perDay: 10 },
+      async () => {
+        const enqueued = await postgresBackgroundJobStore.enqueue({
+          jobType: "qa_biweekly",
+          idempotencyKey: manualJobKey("qa_biweekly", userId),
+          requestedByUserId: userId,
+          priority: 100,
+          maxAttempts: 3,
+        });
+        const workerId = `manual:qa:${userId}:${Date.now()}`;
+        const run = await runNextBackgroundJob(postgresBackgroundJobStore, {
+          qa_biweekly: async (_job, { signal }) => {
+            signal.throwIfAborted();
+            return { ...(await runBiweeklyQa("admin", signal)) };
+          },
+        }, {
+          workerId,
+          jobId: enqueued.job.id,
+          leaseMs: 6 * 60_000,
+          timeoutMs: 4 * 60_000,
+          retryAfterMs: 60_000,
+        });
+        const stored = await postgresBackgroundJobStore.get(enqueued.job.id);
+        if (stored?.status === "completed" && stored.result) return stored.result;
+        if (run.outcome === "idle" || stored?.status === "running") throw new AiRateLimitError("lease", 60);
+        throw new Error(stored?.lastErrorCode ?? "qa_job_failed");
+      },
+    );
     return res.json(result);
   } catch (err) {
     if (err instanceof AiRateLimitError) {
@@ -578,13 +612,13 @@ async function runBiweeklyResponse(res: Response, trigger: "cron" | "admin", use
 }
 
 router.post("/qa/biweekly-run", requireAuth, requireRole("admin"), async (req, res) => {
-  return runBiweeklyResponse(res, "admin", req.user!.userId);
+  return runBiweeklyResponse(res, req.user!.userId);
 });
 
 // Backward-compatible admin button endpoint; it now runs the same idempotent
 // biweekly check and ignores the former batchSize option.
 router.post("/qa/process", requireAuth, requireRole("admin"), async (req, res) => {
-  return runBiweeklyResponse(res, "admin", req.user!.userId);
+  return runBiweeklyResponse(res, req.user!.userId);
 });
 
 router.get("/qa/runs/latest", requireAuth, requireRole("admin"), async (_req, res) => {
@@ -596,11 +630,23 @@ router.get("/qa/runs/latest", requireAuth, requireRole("admin"), async (_req, re
 
 router.get("/qa/biweekly-run", async (req, res) => {
   const secret = process.env["CRON_SECRET"]?.trim();
-  if (!secret) return res.status(503).json({ error: "CRON_SECRET is not configured" });
-  if (req.get("authorization") !== `Bearer ${secret}`) {
+  if (!secret || secret.length < 16) return res.status(503).json({ error: "CRON_SECRET is not configured" });
+  if (!validCronAuthorization(req.get("authorization"), secret)) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-  return runBiweeklyResponse(res, "cron");
+  try {
+    const day = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const enqueued = await postgresBackgroundJobStore.enqueue({
+      jobType: "qa_biweekly",
+      idempotencyKey: scheduledJobKey("qa_biweekly", day),
+      priority: 30,
+      maxAttempts: 3,
+    });
+    return res.json({ ok: true, queued: enqueued.created, jobId: enqueued.job.id });
+  } catch (error) {
+    req.log.error(error, "QA cron enqueue failed");
+    return res.status(503).json({ error: "QA run could not be queued" });
+  }
 });
 
 router.post("/qa/assign-weekly", requireAuth, requireRole("admin"), async (req, res) => {

@@ -64,6 +64,13 @@
       "when": 1786597200000,
       "tag": "0008_database_performance",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1786683600000,
+      "tag": "0009_background_jobs",
+      "breakpoints": true
     }
   ]
 }

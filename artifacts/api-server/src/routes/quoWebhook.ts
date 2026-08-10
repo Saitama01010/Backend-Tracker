@@ -15,6 +15,7 @@ import {
 } from "../lib/openPhoneWebhook.js";
 import { hasProcessedCallCompletion, openPhoneWebhookInbox } from "../lib/webhookInboxStore.js";
 import { classifyLine, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES } from "./quoSync.js";
+import { deleteDurableRuntimeState, putDurableRuntimeState } from "../lib/durableRuntimeState.js";
 
 const router: IRouter = Router();
 
@@ -265,6 +266,11 @@ async function processOpenPhoneEvent(delivery: VerifiedWebhookEvent): Promise<We
         participant,
         ringingSince: new Date(),
       });
+      await putDurableRuntimeState(`quo:webhook-live:${call.id}`, {
+        agentName: agentName ?? call.userId,
+        participant,
+        ringingSince: new Date().toISOString(),
+      }, 2 * 60 * 60 * 1000);
       logger.info(
         { providerEventId: delivery.providerEventId, eventType: type, callId: call.id },
         "quoWebhook: agent now live",
@@ -277,6 +283,7 @@ async function processOpenPhoneEvent(delivery: VerifiedWebhookEvent): Promise<We
     const call = obj as { id?: string };
     if (call.id) {
       liveWebhookCalls.delete(call.id);
+      await deleteDurableRuntimeState(`quo:webhook-live:${call.id}`);
       logger.info(
         { providerEventId: delivery.providerEventId, eventType: type, callId: call.id },
         "quoWebhook: agent cleared",

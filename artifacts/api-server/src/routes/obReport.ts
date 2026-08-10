@@ -17,6 +17,8 @@ import {
 } from "../lib/anthropic.js";
 import { AI_UNTRUSTED_DATA_SYSTEM_POLICY, wrapUntrustedAiData } from "../lib/aiPrivacy.js";
 import { AiRateLimitError, withDatabaseLease, withDurableAiLimit } from "../lib/aiRateLimit.js";
+import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
+import { manualJobKey } from "../lib/durableBackgroundJobs.js";
 
 const router: IRouter = Router();
 
@@ -247,16 +249,12 @@ async function writeState(patch: {
 }
 
 // ─── Main refresh job ─────────────────────────────────────────────────────────
-let jobRunning = false;
-
-async function runReport(): Promise<void> {
-  if (jobRunning) return;
-  jobRunning = true;
-
+export async function runOnboardingReportRefresh(signal?: AbortSignal): Promise<void> {
   try {
     await withDatabaseLease("outbound_call_classifier", async () => {
-    await writeState({ isRunning: true, lastError: null, progressDone: 0, progressTotal: 0 });
-    logger.info("obReport: refresh started");
+      signal?.throwIfAborted();
+      await writeState({ isRunning: true, lastError: null, progressDone: 0, progressTotal: 0 });
+      logger.info("obReport: refresh started");
 
     // 1) Pull the newest calls (extend the range up to today). The background
     //    sync covers all lines on a 15-min cycle; here we only need a small
@@ -268,7 +266,7 @@ async function runReport(): Promise<void> {
     const syncHours = Number(process.env["OB_SYNC_HOURS"] ?? 6);
     const syncFrom = new Date(Date.now() - syncHours * 60 * 60 * 1000);
     try {
-      await runSync(syncFrom, new Date(), { onlyLineId: LINE_ID });
+      await runSync(syncFrom, new Date(), { onlyLineId: LINE_ID, signal });
     } catch (err) {
       logger.warn({ errorCode: sanitizedErrorMessage(err) }, "obReport: recent sync failed, continuing with existing data");
     }
@@ -298,6 +296,7 @@ async function runReport(): Promise<void> {
 
     async function worker() {
       while (idx < pending.length) {
+        signal?.throwIfAborted();
         const i = idx++;
         const call = pending[i]!;
         try {
@@ -372,8 +371,7 @@ async function runReport(): Promise<void> {
     const errorCode = sanitizedErrorMessage(err);
     logger.error({ errorCode }, "obReport: refresh failed");
     await writeState({ isRunning: false, lastError: errorCode });
-  } finally {
-    jobRunning = false;
+    throw err;
   }
 }
 
@@ -663,7 +661,7 @@ function sortByCount(rec: Record<string, number>): [string, number][] {
 
 // POST /api/ob-report/refresh — start a background refresh (sync + classify new calls)
 router.post("/ob-report/refresh", requireAuth, requireRole("admin"), async (req, res) => {
-  if (jobRunning) {
+  if (await postgresBackgroundJobStore.findActive("onboarding_report_refresh")) {
     return res.status(409).json({ error: "A refresh is already running" });
   }
   try {
@@ -680,8 +678,19 @@ router.post("/ob-report/refresh", requireAuth, requireRole("admin"), async (req,
     }
     return res.status(503).json({ error: "Onboarding refresh controls are unavailable" });
   }
-  void runReport();
-  return res.json({ started: true });
+  try {
+    await postgresBackgroundJobStore.enqueue({
+      jobType: "onboarding_report_refresh",
+      idempotencyKey: manualJobKey("onboarding_report_refresh", req.user!.userId),
+      requestedByUserId: req.user!.userId,
+      priority: 80,
+      maxAttempts: 3,
+    });
+    return res.json({ started: true });
+  } catch (error) {
+    req.log.error(error, "onboarding refresh enqueue failed");
+    return res.status(503).json({ error: "Onboarding refresh could not be queued" });
+  }
 });
 
 // GET /api/ob-report/status — current refresh + report stats
@@ -689,7 +698,10 @@ router.get("/ob-report/status", requireAuth, async (req, res) => {
   try {
     const requestedRange = validateOptionalWorkflowRange(req.query["from"], req.query["to"]);
     if (!requestedRange.ok) return res.status(400).json({ error: requestedRange.error });
-    const state = await readState();
+    const [state, activeJob] = await Promise.all([
+      readState(),
+      postgresBackgroundJobStore.findActive("onboarding_report_refresh"),
+    ]);
     const { fromDate, toDate } = rangeFromQuery(req);
     const rangeWhere = and(
       eq(phoneCallsTable.lineId, LINE_ID),
@@ -723,10 +735,7 @@ router.get("/ob-report/status", requireAuth, async (req, res) => {
     }
 
     return res.json({
-      // Derive `running` from the in-memory flag only. The DB `isRunning` can be
-      // left stale-true if the server restarts mid-job, which would otherwise pin
-      // the UI in a perpetual "refreshing" state.
-      running: jobRunning,
+      running: Boolean(activeJob),
       progressDone: state?.progressDone ?? 0,
       progressTotal: state?.progressTotal ?? 0,
       lastRunAt: state?.lastRunAt ?? null,

@@ -2,10 +2,15 @@
   "installCommand": "pnpm install --frozen-lockfile",
   "buildCommand": "pnpm run vercel-build",
   "outputDirectory": "artifacts/agent-dashboard/dist/public",
+  "functions": {
+    "api/[...path].mjs": {
+      "maxDuration": 300
+    }
+  },
   "crons": [
     {
-      "path": "/api/qa/biweekly-run",
-      "schedule": "0 9 * * *"
+      "path": "/api/jobs/cron",
+      "schedule": "* * * * *"
     }
   ],
   "rewrites": [

@@ -308,8 +308,9 @@ async function fetchCallsForParticipant(
 export async function runSync(
   fromDate: Date,
   toDate: Date,
-  opts?: { onlyLineId?: string },
+  opts?: { onlyLineId?: string; signal?: AbortSignal },
 ): Promise<{ inserted: number; errors: number }> {
+  opts?.signal?.throwIfAborted();
   const from = fromDate.toISOString();
   const to = toDate.toISOString();
   logger.info({ from, to, onlyLineId: opts?.onlyLineId ?? null }, "quoSync: starting sync");
@@ -360,6 +361,7 @@ export async function runSync(
   // which dramatically reduces the per-participant call fetches in step 3.
   const targetLineIds = opts?.onlyLineId ? new Set([opts.onlyLineId]) : knownLineIds;
   const byLine = await fetchConversationsByLine(from, to, targetLineIds);
+  opts?.signal?.throwIfAborted();
   const totalParticipants = [...byLine.values()].reduce((s, v) => s + v.size, 0);
   logger.info(
     { linesWithConversations: byLine.size, totalParticipants },
@@ -381,6 +383,7 @@ export async function runSync(
   let tasksDone = 0;
   const callsByTask = await withConcurrency(
     tasks.map(({ lineId, participant, displayParticipant }) => async () => {
+      opts?.signal?.throwIfAborted();
       const calls = await fetchCallsForParticipant(lineId, participant, from, to).catch((err) => {
         logger.error({ lineId, participant, err: String(err) }, "quoSync: call fetch error");
         return [] as Call[];
@@ -401,6 +404,7 @@ export async function runSync(
   const seenCallIds = new Set<string>();
 
   for (const result of callsByTask) {
+    opts?.signal?.throwIfAborted();
     if (!result) continue;
     const { lineId, participant: taskParticipant, calls } = result;
     const line = lineMap.get(lineId);
@@ -519,6 +523,7 @@ export async function runSync(
   if (rows.length > 0) {
     const CHUNK = 500;
     for (let i = 0; i < rows.length; i += CHUNK) {
+      opts?.signal?.throwIfAborted();
       try {
         await db
           .insert(phoneCallsTable)
@@ -557,59 +562,25 @@ export async function runSync(
   return { inserted, errors };
 }
 
-let syncRunning = false;
-let syncTimer: ReturnType<typeof setTimeout> | null = null;
-
-export async function startBackgroundSync() {
-  if (syncRunning) return;
-  syncRunning = true;
-
-  // If the DB has very few calls (fresh or incomplete deployment), wipe the sync
-  // state so the full 90-day backfill runs on the next cycle.
-  try {
-    const countRow = await db.select({ count: sql<number>`count(*)::int` }).from(phoneCallsTable);
-    const totalCalls = countRow[0]?.count ?? 0;
-    if (totalCalls < 500) {
-      await db.delete(phoneSyncStateTable);
-      logger.info({ totalCalls }, "quoSync: sparse DB detected — reset sync state for full backfill");
-    }
-  } catch (err) {
-    logger.error(err, "quoSync: startup call-count check failed");
+export async function runScheduledQuoSync(signal?: AbortSignal): Promise<{ inserted: number; errors: number }> {
+  signal?.throwIfAborted();
+  const now = new Date();
+  const [state, countRow] = await Promise.all([
+    getSyncState(),
+    db.select({ count: sql<number>`count(*)::int` }).from(phoneCallsTable),
+  ]);
+  const totalCalls = countRow[0]?.count ?? 0;
+  if (!state?.lastSyncedAt || totalCalls < 500) {
+    const from = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+    logger.info({ totalCalls }, "quoSync: durable initial 90-day backfill");
+    return runSync(from, now, { signal });
   }
 
-  // On every deploy/restart, run a 2-day backfill in the background so that
-  // today's and yesterday's calls are always correctly attributed — regardless
-  // of what the incremental window covered before the deploy.
-  const startupBackfillFrom = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
-  logger.info({ from: startupBackfillFrom }, "quoSync: startup 2-day backfill");
-  runSync(startupBackfillFrom, new Date()).catch((err) => {
-    logger.error(err, "quoSync: startup backfill error");
-  });
-
-  const doSync = async () => {
-    try {
-      const now = new Date();
-      const state = await getSyncState();
-      if (state?.lastSyncedAt) {
-        const msSinceLast = now.getTime() - state.lastSyncedAt.getTime();
-        const overlapMs = Math.max(msSinceLast + 2 * 60 * 1000, 30 * 60 * 1000);
-        const from = new Date(now.getTime() - overlapMs);
-        logger.info({ windowHours: overlapMs / 3600000 }, "quoSync: incremental sync");
-        await runSync(from, now);
-      } else {
-        // First startup — backfill 90 days of history
-        const from = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
-        logger.info("quoSync: initial 90-day backfill");
-        await runSync(from, now);
-      }
-    } catch (err) {
-      logger.error(err, "quoSync: background sync error");
-    } finally {
-      syncTimer = setTimeout(doSync, 15 * 60 * 1000); // 15 minutes
-    }
-  };
-
-  doSync();
+  const msSinceLast = now.getTime() - state.lastSyncedAt.getTime();
+  const overlapMs = Math.max(msSinceLast + 2 * 60 * 1000, 30 * 60 * 1000);
+  const from = new Date(now.getTime() - overlapMs);
+  logger.info({ windowHours: overlapMs / 3600000 }, "quoSync: durable incremental sync");
+  return runSync(from, now, { signal });
 }
 
 export async function getSyncState() {

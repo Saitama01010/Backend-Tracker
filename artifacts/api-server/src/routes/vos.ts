@@ -2,7 +2,6 @@ import { Router } from "express";
 import { db, phoneCallsTable, pbxMissedCallsTable } from "@workspace/db";
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Logger } from "pino";
-import { logger as rootLogger } from "../lib/logger";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { getActiveReadymodeItems } from "./nsfReadymode.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
@@ -13,6 +12,9 @@ import {
   validateIntegrationCalendarDate,
   validateIntegrationDateRange,
 } from "../lib/externalIntegrationPolicy.js";
+import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
+import { manualJobKey, scheduledJobKey } from "../lib/durableBackgroundJobs.js";
+import { getDurableRuntimeState, putDurableRuntimeState } from "../lib/durableRuntimeState.js";
 
 const router = Router();
 router.use("/vos", requireAuth);
@@ -573,14 +575,54 @@ let cumulativeDate = ""; // reset accumulators when date changes (midnight rollo
 // Per-hour PBX missed breakdown (LA timezone), keyed by hour 0–23.
 const cumulativeMissedByHour: Record<number, { retention: number; cs: number; nsf: number }> = {};
 
-// One-time deep backfill: on first server run, scan 100 pages to populate 14 days of PBX history.
-let pbxBackfillDone = false;
-
 // Cached set of our own phone numbers (PBX lines + OpenPhone lines), updated each refresh cycle.
 // Used to exclude internal callers from the daily/hourly missed-call SQL queries.
 let cachedInternalNumbers: string[] = [];
 
-async function refreshCallHistory(log?: Logger): Promise<void> {
+interface VosDurableSnapshot extends Record<string, unknown> {
+  callHistory: VosCallHistoryStat[];
+  fetchedAt: number;
+  ringGroupMissed: VosRingGroupMissed;
+  missedNoCallback: MissedNoCallbackItem[];
+  ringGroupNames: Array<[number, string]>;
+  internalNumbers: string[];
+  lineRingGroups: Array<[string, number]>;
+  seenMissedCallIds: number[];
+  cumulativeDate: string;
+  cumulativeMissedByHour: Record<number, { retention: number; cs: number; nsf: number }>;
+  callSpans: Array<[string, Array<{ start: number; end: number }>]>;
+  callTimestamps: Array<[string, Array<{ at: string; source: "pbx"; id: string }>]>;
+}
+
+export async function hydrateVosState(): Promise<void> {
+  const snapshot = await getDurableRuntimeState<VosDurableSnapshot>("vos:call-history");
+  if (!snapshot || snapshot.value.fetchedAt <= callHistoryFetchedAt) return;
+  const value = snapshot.value;
+  callHistoryCache = value.callHistory ?? [];
+  callHistoryFetchedAt = value.fetchedAt;
+  ringGroupMissedCache = value.ringGroupMissed ?? {};
+  for (const key of Object.keys(cumulativeRingGroupMissed)) delete cumulativeRingGroupMissed[Number(key)];
+  Object.assign(cumulativeRingGroupMissed, value.ringGroupMissed ?? {});
+  missedNoCallbackCache = value.missedNoCallback ?? [];
+  ringGroupNameCache = new Map(value.ringGroupNames ?? []);
+  cachedInternalNumbers = value.internalNumbers ?? [];
+  persistentLineRgMap.clear();
+  for (const [line, group] of value.lineRingGroups ?? []) persistentLineRgMap.set(line, group);
+  seenMissedCallIds.clear();
+  for (const id of value.seenMissedCallIds ?? []) seenMissedCallIds.add(id);
+  cumulativeDate = value.cumulativeDate ?? "";
+  for (const key of Object.keys(cumulativeMissedByHour)) delete cumulativeMissedByHour[Number(key)];
+  Object.assign(cumulativeMissedByHour, value.cumulativeMissedByHour ?? {});
+  vosCallSpansCache.clear();
+  for (const [agent, spans] of value.callSpans ?? []) vosCallSpansCache.set(agent, spans);
+  vosCallTimestampsCache.clear();
+  for (const [agent, calls] of value.callTimestamps ?? []) vosCallTimestampsCache.set(agent, calls);
+}
+
+export async function refreshCallHistory(
+  log?: Logger,
+  options: { deepBackfill?: boolean; signal?: AbortSignal } = {},
+): Promise<void> {
   if (callHistoryFetching) return;
   callHistoryFetching = true;
   // Clear the span cache before rebuilding so stale entries from previous day don't persist.
@@ -588,6 +630,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
   vosCallTimestampsCache.clear();
   const t0 = Date.now();
   try {
+    options.signal?.throwIfAborted();
     const today = new Date().toISOString().slice(0, 10);
     const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
 
@@ -596,6 +639,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       vosFetch<VosAgent[]>("/api/agents"),
       vosFetch<VosRingGroup[]>("/api/ring-groups"),
     ]);
+    options.signal?.throwIfAborted();
 
     const nameToId = new Map<string, number>();
     for (const a of agentList) nameToId.set(a.name.trim(), a.id);
@@ -625,9 +669,11 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
 
     const CONCURRENCY = 5;
     for (let i = 0; i < agents.length; i += CONCURRENCY) {
+      options.signal?.throwIfAborted();
       const batch = agents.slice(i, i + CONCURRENCY);
       const batchResults = await Promise.all(
         batch.map(async (a) => {
+          options.signal?.throwIfAborted();
           const agentId = nameToId.get(a.agentName.trim());
           if (agentId === undefined) {
             return {
@@ -756,6 +802,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       })());
     }
     if (probeTasks.length > 0) await Promise.all(probeTasks);
+    options.signal?.throwIfAborted();
 
     // Build a set of all our own internal numbers (PBX lines + OpenPhone lines).
     // Any missed call FROM one of these numbers is an internal call and should be excluded.
@@ -767,6 +814,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     cachedInternalNumbers = Array.from(internalNumbers).filter(Boolean);
 
     const scanResult = await scanRingGroupCalls(lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600, agentToRingGroups, internalNumbers);
+    options.signal?.throwIfAborted();
 
     // ── Cross-reference missed records against callbacks ──────────────────────
     // Build callback lookup: normalized phone → all times an outbound call was made today
@@ -938,6 +986,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     }
     // Persist PBX missed calls so historical dates show correct PBX counts.
     if (toUpsert.length > 0) {
+      options.signal?.throwIfAborted();
       await db.insert(pbxMissedCallsTable)
         .values(toUpsert)
         .onConflictDoNothing();
@@ -955,6 +1004,21 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     callHistoryFetchedAt = Date.now();
     ringGroupMissedCache = { ...cumulativeRingGroupMissed };
     missedNoCallbackCache = missedNoCB;
+    options.signal?.throwIfAborted();
+    await putDurableRuntimeState("vos:call-history", {
+      callHistory: callHistoryCache,
+      fetchedAt: callHistoryFetchedAt,
+      ringGroupMissed: ringGroupMissedCache,
+      missedNoCallback: missedNoCallbackCache,
+      ringGroupNames: [...ringGroupNameCache.entries()],
+      internalNumbers: cachedInternalNumbers,
+      lineRingGroups: [...persistentLineRgMap.entries()],
+      seenMissedCallIds: [...seenMissedCallIds],
+      cumulativeDate,
+      cumulativeMissedByHour,
+      callSpans: [...vosCallSpansCache.entries()],
+      callTimestamps: [...vosCallTimestampsCache.entries()],
+    } satisfies VosDurableSnapshot, 24 * 60 * 60_000);
 
     log?.info(
       {
@@ -970,64 +1034,65 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       "vos: call history refreshed"
     );
 
-    // One-time startup deep backfill: scan 100 pages to populate 14+ days of PBX missed history.
-    // Runs in background after the first successful refresh so ring group mappings are available.
-    if (!pbxBackfillDone) {
-      pbxBackfillDone = true;
-      void (async () => {
-        try {
-          log?.info("vos: pbx backfill starting (100 pages)");
-          const deep = await scanRingGroupCalls(
-            lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600,
-            agentToRingGroups, internalNumbers, 100
-          );
-          if (deep.missedRecords.length > 0) {
-            const rows = deep.missedRecords.map((rec) => ({
-              id: rec.id,
-              fromNumber: rec.fromNumber,
-              toNumber: rec.toNumber,
-              ringGroupId: rec.ringGroupId,
-              ringGroupName: rec.ringGroupName,
-              team: teamFromRingGroupName(rec.ringGroupName),
-              createdAt: new Date(rec.createdAt),
-            }));
-            await db.insert(pbxMissedCallsTable).values(rows).onConflictDoNothing();
-          }
-          log?.info({ scanned: deep.missedRecords.length }, "vos: pbx backfill complete");
-        } catch (err) {
-          log?.error(err, "vos: pbx backfill failed");
-        }
-      })();
+    if (options.deepBackfill) {
+      options.signal?.throwIfAborted();
+      log?.info("vos: durable PBX backfill starting (100 pages)");
+      const deep = await scanRingGroupCalls(
+        lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600,
+        agentToRingGroups, internalNumbers, 100,
+      );
+      if (deep.missedRecords.length > 0) {
+        const rows = deep.missedRecords.map((rec) => ({
+          id: rec.id,
+          fromNumber: rec.fromNumber,
+          toNumber: rec.toNumber,
+          ringGroupId: rec.ringGroupId,
+          ringGroupName: rec.ringGroupName,
+          team: teamFromRingGroupName(rec.ringGroupName),
+          createdAt: new Date(rec.createdAt),
+        }));
+        await db.insert(pbxMissedCallsTable).values(rows).onConflictDoNothing();
+      }
+      log?.info({ scanned: deep.missedRecords.length }, "vos: durable PBX backfill complete");
     }
   } catch (err) {
     log?.error(err, "vos: call history refresh failed");
+    throw err;
   } finally {
     callHistoryFetching = false;
   }
 }
 
-const isVercel = process.env["VERCEL"] === "1";
-const backgroundJobsEnabled =
-  process.env["ENABLE_BACKGROUND_JOBS"] === "true" ||
-  (process.env["ENABLE_BACKGROUND_JOBS"] !== "false" && !isVercel);
-
-if (backgroundJobsEnabled) {
-  void refreshCallHistory(rootLogger);
-  setInterval(() => void refreshCallHistory(rootLogger), 30 * 1000);
-}
-
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-router.post("/vos/refresh", requireRole("admin"), (_req, res) => {
-  void refreshCallHistory(rootLogger);
-  res.json({ ok: true });
+router.post("/vos/refresh", requireRole("admin"), async (req, res) => {
+  try {
+    await postgresBackgroundJobStore.enqueue({
+      jobType: "integration_live_refresh",
+      idempotencyKey: manualJobKey("integration_live_refresh", req.user!.userId, new Date(), 5_000),
+      requestedByUserId: req.user!.userId,
+      priority: 100,
+      maxAttempts: 4,
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    req.log.error(error, "PBX refresh enqueue failed");
+    res.status(503).json({ error: "PBX refresh could not be queued" });
+  }
 });
 
 router.get("/vos/stats", async (req, res) => {
   try {
+    await hydrateVosState();
     const cacheAgeMs = callHistoryFetchedAt ? Date.now() - callHistoryFetchedAt : Infinity;
     if (!callHistoryCache.length || cacheAgeMs > 2 * 60 * 1000) {
-      void refreshCallHistory(req.log);
+      const minute = new Date().toISOString().slice(0, 16).replace(/[-T:]/g, "");
+      await postgresBackgroundJobStore.enqueue({
+        jobType: "integration_live_refresh",
+        idempotencyKey: scheduledJobKey("integration_live_refresh", minute),
+        priority: 100,
+        maxAttempts: 4,
+      }).catch((error) => req.log.warn(error, "PBX refresh enqueue failed"));
     }
 
     const [agents, ringGroups, dashboard] = await Promise.all([
@@ -1114,9 +1179,16 @@ router.get("/vos/stats", async (req, res) => {
  * When the PBX scan is still warming up, returns Quo-DB-only results immediately.
  */
 router.get("/vos/missed-no-callback", async (req, res) => {
+  await hydrateVosState();
   const cacheAgeMs = callHistoryFetchedAt ? Date.now() - callHistoryFetchedAt : Infinity;
   if (cacheAgeMs > 30 * 1000) {
-    await refreshCallHistory(req.log);
+    const minute = new Date().toISOString().slice(0, 16).replace(/[-T:]/g, "");
+    await postgresBackgroundJobStore.enqueue({
+      jobType: "integration_live_refresh",
+      idempotencyKey: scheduledJobKey("integration_live_refresh", minute),
+      priority: 100,
+      maxAttempts: 4,
+    }).catch((error) => req.log.warn(error, "PBX refresh enqueue failed"));
   }
   // Fast path: full cache is ready. Merge Readymode queue live so newly added
   // items appear immediately (cache only refreshes every ~15 min).

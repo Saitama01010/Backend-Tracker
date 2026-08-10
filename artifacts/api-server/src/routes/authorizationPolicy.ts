@@ -36,6 +36,8 @@ const missedManager: Predicate = (user) => tab("missed-no-cb")(user) && hasPermi
 
 export const PRIVATE_API_AUTHORIZATION_POLICIES: readonly RoutePolicy[] = [
   { methods: ["GET"], path: /^\/auth\/me$/, requirement: "active authenticated user", allows: () => true },
+  { methods: ["GET"], path: /^\/jobs$/, requirement: "admin background-job observability", allows: admin },
+  { methods: ["GET"], path: /^\/jobs\/\d+$/, requirement: "admin background-job observability", allows: admin },
 
   { methods: ["GET", "POST"], path: /^\/users$/, requirement: "admin", allows: admin },
   { methods: ["PATCH", "DELETE"], path: /^\/users\/\d+$/, requirement: "admin", allows: admin },

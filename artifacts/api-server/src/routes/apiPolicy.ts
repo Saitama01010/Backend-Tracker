@@ -61,6 +61,12 @@ export const PUBLIC_API_ROUTES: readonly PublicApiRoute[] = [
     reason: "The scheduler authenticates with CRON_SECRET instead of a browser session.",
   },
   {
+    method: "GET",
+    path: "/jobs/cron",
+    classification: "cron/server-to-server route",
+    reason: "The durable scheduler authenticates with CRON_SECRET instead of a browser session.",
+  },
+  {
     method: "POST",
     path: "/ob-report/import",
     classification: "cron/server-to-server route",

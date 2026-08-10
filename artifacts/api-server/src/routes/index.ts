@@ -23,6 +23,7 @@ import qaRouter from "./qa";
 import obReportRouter from "./obReport";
 import obAnalyticsRouter from "./obAnalytics";
 import liveTransfersRouter from "./liveTransfers";
+import backgroundJobsRouter from "./backgroundJobs";
 
 const router: IRouter = Router();
 
@@ -77,6 +78,7 @@ router.use(qaRouter);
 router.use(obReportRouter);
 router.use(obAnalyticsRouter);
 router.use(liveTransfersRouter);
+router.use(backgroundJobsRouter);
 
 router.use(teamAgentsRouter);
 
