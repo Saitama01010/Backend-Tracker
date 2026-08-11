@@ -36,6 +36,7 @@ import {
   canAccessAttendanceDepartment,
   canAccessDateRange,
   hasPermission,
+  normalizeAgentIdentity,
 } from "../middleware/authorizationCore.js";
 import type { AuthPayload } from "../middleware/authCore.js";
 import { canAccessLiveAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
@@ -692,8 +693,13 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
 // date is YYYY-MM-DD in LA time. agent is a partial, case-insensitive name.
 router.get("/attendance/agent-contacts", async (req, res) => {
   try {
-    const agentParam = ((req.query["agent"] as string) ?? "").trim();
-    const dateParam  = ((req.query["date"]  as string) ?? "").trim();
+    const rawAgent = req.query["agent"];
+    const rawDate = req.query["date"];
+    if (typeof rawAgent !== "string" || (rawDate !== undefined && typeof rawDate !== "string")) {
+      return res.status(400).json({ error: "Invalid agent or attendance date." });
+    }
+    const agentParam = rawAgent.trim();
+    const dateParam = rawDate?.trim() ?? "";
     if (!agentParam) {
       return res.status(400).json({ error: "agent param is required" });
     }
@@ -702,6 +708,17 @@ router.get("/attendance/agent-contacts", async (req, res) => {
     }
     if (!canAccessDateRange(req.user!, [dateParam || todayLA()])) {
       return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const directory = await loadAuthorizationAgentDirectory();
+    if (req.user!.role !== "admin") {
+      const requestedIdentity = normalizeAgentIdentity(agentParam);
+      const matchingAgents = directory.agents.filter((agent) =>
+        normalizeAgentIdentity(agent.name).includes(requestedIdentity)
+        || (!!agent.arabicName && normalizeAgentIdentity(agent.arabicName).includes(requestedIdentity)));
+      if (!matchingAgents.some((agent) => canAccessLiveAgent(req.user!, agent.name, directory))) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
     }
 
     const now = new Date();
@@ -743,11 +760,7 @@ router.get("/attendance/agent-contacts", async (req, res) => {
       )
       .orderBy(sql`${phoneCallsTable.createdAt} asc`);
 
-    const directory = await loadAuthorizationAgentDirectory();
     const rows = matchingRows.filter((row) => !!row.agentName && canAccessLiveAgent(req.user!, row.agentName, directory));
-    if (matchingRows.length > 0 && rows.length === 0) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
 
     // Group by participant
     const contactMap = new Map<string, {

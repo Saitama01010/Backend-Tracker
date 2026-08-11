@@ -254,6 +254,9 @@ test("server routes contain no process-local scheduler or post-response job laun
   assert.match(migration, /background_jobs_idempotency_uidx/);
   assert.match(migration, /durable_runtime_state/);
   assert.match(backgroundJobs, /JOBS_PER_CRON_INVOCATION = 1/);
-  assert.deepEqual(JSON.parse(vercel).crons, [{ path: "/api/jobs/cron", schedule: "* * * * *" }]);
+  // Vercel Hobby rejects every-minute cron declarations at deployment time.
+  // The endpoint remains durable and externally schedulable; this daily sweep
+  // is the fastest deployable native schedule on the linked Hobby project.
+  assert.deepEqual(JSON.parse(vercel).crons, [{ path: "/api/jobs/cron", schedule: "0 8 * * *" }]);
   assert.equal(JSON.parse(vercel).functions["api/[...path].mjs"].maxDuration, 300);
 });

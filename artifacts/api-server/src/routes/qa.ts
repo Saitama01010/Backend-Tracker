@@ -2,7 +2,7 @@ import { Router, type IRouter, type Response } from "express";
 import type Anthropic from "@anthropic-ai/sdk";
 import ExcelJS from "exceljs";
 import { db, phoneCallsTable, qaReviewsTable, managerQaTasksTable, teamAgentsTable, qaBiweeklyRunsTable } from "@workspace/db";
-import { and, desc, eq, gte, lte, sql, inArray } from "drizzle-orm";
+import { and, desc, eq, gt, gte, lte, sql, inArray } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { canonicalAgentName } from "./quoSync.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
@@ -27,11 +27,21 @@ import { manualJobKey, runNextBackgroundJob, scheduledJobKey } from "../lib/dura
 import { validCronAuthorization } from "../lib/cronAuth.js";
 import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 import { addCalendarDays, calendarDateParts, formatCalendarDate, startOfBusinessDay } from "../lib/businessTime.js";
+import {
+  completeAiReservation,
+  failAiReservation,
+  hashAiIdempotencyKey,
+  hashAiRequest,
+  normalizeQaAgentKey,
+  QA_ROLLING_INTERVAL_DAYS,
+  reserveQaAgentRun,
+  type QaReservationDecision,
+} from "../lib/aiRequestReservations.js";
 
 const router: IRouter = Router();
 
 const QA_MODEL = OPERATIONAL_CONFIG.aiModels.qa;
-const QA_REVIEW_INTERVAL_DAYS = Math.max(1, Number(process.env["QA_REVIEW_INTERVAL_DAYS"] ?? 14) || 14);
+const QA_REVIEW_INTERVAL_DAYS = QA_ROLLING_INTERVAL_DAYS;
 const QA_MIN_CALL_SECONDS = Math.max(30, Number(process.env["QA_MIN_CALL_SECONDS"] ?? 90) || 90);
 
 // ── Departments ─────────────────────────────────────────────────────────────
@@ -161,7 +171,6 @@ async function evaluateCall(callId: string, opts?: {
   source?: "auto_biweekly" | "manual_call_id";
   userId?: number;
   artifacts?: QuoCallArtifacts;
-  preserveEvaluatedAt?: boolean;
 }): Promise<typeof qaReviewsTable.$inferSelect | null> {
   const [call] = await db.select().from(phoneCallsTable).where(eq(phoneCallsTable.id, callId)).limit(1);
   if (!call) return null;
@@ -297,7 +306,7 @@ async function evaluateCall(callId: string, opts?: {
       managerReviewRequired: reviewRow.managerReviewRequired,
       model: reviewRow.model,
       source: reviewRow.source,
-      ...(!opts?.preserveEvaluatedAt ? { evaluatedAt: new Date() } : {}),
+      evaluatedAt: new Date(),
     },
   });
 
@@ -331,7 +340,15 @@ export interface QaBiweeklyResult {
 }
 
 function agentKey(value: string | null | undefined): string {
-  return (canonicalAgentName(value) ?? value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  return normalizeQaAgentKey(canonicalAgentName(value) ?? value ?? "");
+}
+
+function qaReservationReason(decision: Exclude<QaReservationDecision, { kind: "reserved" }>): string {
+  if (decision.kind === "completed" || decision.kind === "cooldown") {
+    return `QA already completed within the rolling ${QA_REVIEW_INTERVAL_DAYS}-day window`;
+  }
+  if (decision.kind === "in_progress") return "QA is already reserved for this agent";
+  return "QA idempotency key conflicts with another request";
 }
 
 export async function runBiweeklyQa(
@@ -344,15 +361,13 @@ export async function runBiweeklyQa(
     const result: QaBiweeklyResult = { runId: run?.id ?? 0, evaluated: [], skipped: [], errors: [] };
     try {
       const cutoff = new Date(Date.now() - QA_REVIEW_INTERVAL_DAYS * 24 * 60 * 60 * 1000);
-      const [roster, recentAutomatic, candidates, reviewed] = await Promise.all([
+      const [roster, recentReviews, candidates, reviewed] = await Promise.all([
         db.select().from(teamAgentsTable).where(and(
           eq(teamAgentsTable.active, true),
           inArray(teamAgentsTable.team, ["retention", "cs", "nsf"]),
         )),
-        db.select({ agentName: qaReviewsTable.agentName }).from(qaReviewsTable).where(and(
-          eq(qaReviewsTable.source, "auto_biweekly"),
-          gte(qaReviewsTable.evaluatedAt, cutoff),
-        )),
+        db.select({ agentName: qaReviewsTable.agentName }).from(qaReviewsTable)
+          .where(gt(qaReviewsTable.evaluatedAt, cutoff)),
         db.select().from(phoneCallsTable).where(and(
           gte(phoneCallsTable.createdAt, cutoff),
           eq(phoneCallsTable.status, "completed"),
@@ -362,15 +377,15 @@ export async function runBiweeklyQa(
         db.select({ id: qaReviewsTable.id }).from(qaReviewsTable).where(gte(qaReviewsTable.callDate, cutoff)),
       ]);
 
-      const automaticallyReviewed = new Set(recentAutomatic.map((row) => agentKey(row.agentName)));
+      const recentlyReviewed = new Set(recentReviews.map((row) => agentKey(row.agentName)));
       const reviewedCalls = new Set(reviewed.map((row) => row.id));
       const sortedCandidates = stableEligibleCalls(candidates, reviewedCalls, QA_MIN_CALL_SECONDS);
 
       for (const rosterAgent of [...roster].sort((a, b) => a.name.localeCompare(b.name))) {
         signal?.throwIfAborted();
         const key = agentKey(rosterAgent.name);
-        if (automaticallyReviewed.has(key)) {
-          result.skipped.push({ agent: rosterAgent.name, reason: `automatic review already exists within ${QA_REVIEW_INTERVAL_DAYS} days` });
+        if (recentlyReviewed.has(key)) {
+          result.skipped.push({ agent: rosterAgent.name, reason: `QA review already exists within ${QA_REVIEW_INTERVAL_DAYS} days` });
           continue;
         }
 
@@ -396,6 +411,20 @@ export async function runBiweeklyQa(
           continue;
         }
 
+        const reservation = await reserveQaAgentRun({
+          agentKey: key,
+          agentName: rosterAgent.name,
+          callId: selected.id,
+          idempotencyKey: hashAiIdempotencyKey(`qa-call:${selected.id}`),
+          requestHash: hashAiRequest({ callId: selected.id }),
+          source: "auto_biweekly",
+          requestedByUserId: null,
+        });
+        if (reservation.kind !== "reserved") {
+          result.skipped.push({ agent: rosterAgent.name, reason: qaReservationReason(reservation) });
+          continue;
+        }
+
         try {
           const review = await evaluateCall(selected.id, {
             source: "auto_biweekly",
@@ -403,12 +432,20 @@ export async function runBiweeklyQa(
             artifacts,
           });
           if (review) {
+            await completeAiReservation(
+              reservation.id,
+              200,
+              { callId: selected.id },
+              QA_REVIEW_INTERVAL_DAYS * 24 * 60 * 60,
+            );
             result.evaluated.push({ agent: rosterAgent.name, callId: selected.id });
-            automaticallyReviewed.add(key);
+            recentlyReviewed.add(key);
           } else {
+            await failAiReservation(reservation.id, "QA_RESULT_INVALID");
             result.skipped.push({ agent: rosterAgent.name, reason: "Claude result failed server-side validation" });
           }
         } catch (error) {
+          await failAiReservation(reservation.id, "QA_EVALUATION_FAILED").catch(() => undefined);
           result.errors.push({ agent: rosterAgent.name, reason: `evaluation failed (${anthropicErrorStatus(error) ?? "internal"})` });
         }
       }
@@ -514,10 +551,15 @@ const TAX_REGEX = String.raw`\ytax(es)?\y`;
 // ── Routes ──────────────────────────────────────────────────────────────────
 
 router.post("/qa/evaluate", requireAuth, requireRole("admin"), async (req, res) => {
+  let reservationId: number | null = null;
   try {
-    const callId = String(req.body?.callId ?? "").trim();
+    const callId = typeof req.body?.callId === "string" ? req.body.callId.trim() : "";
     const force = req.body?.force === true;
     if (!isSafeQuoCallId(callId)) return res.status(400).json({ error: "A valid QUO callId is required" });
+    const rawIdempotencyKey = req.get("idempotency-key")?.trim();
+    if (rawIdempotencyKey && !/^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/.test(rawIdempotencyKey)) {
+      return res.status(400).json({ error: "Idempotency-Key is invalid" });
+    }
 
     const [existing] = await db.select().from(qaReviewsTable).where(eq(qaReviewsTable.id, callId)).limit(1);
     if (shouldReuseStoredReview(existing, force)) return res.json(existing);
@@ -532,21 +574,69 @@ router.post("/qa/evaluate", requireAuth, requireRole("admin"), async (req, res) 
       return res.status(409).json({ error: "QUO transcript is unavailable or still processing" });
     }
 
-    const existingWasAutomatic = existing?.source === "auto_biweekly";
+    const agentName = canonicalAgentName(call.agentName);
+    const key = agentKey(agentName);
+    if (!agentName || !key || key === "unknown") {
+      return res.status(422).json({ error: "Call has no authoritative QA agent identity" });
+    }
+    const reservation = await reserveQaAgentRun({
+      agentKey: key,
+      agentName,
+      callId,
+      idempotencyKey: hashAiIdempotencyKey(rawIdempotencyKey || `qa-call:${callId}`),
+      requestHash: hashAiRequest({ callId }),
+      source: "manual_call_id",
+      requestedByUserId: req.user!.userId,
+    });
+    if (reservation.kind === "completed") {
+      const [completedReview] = await db.select().from(qaReviewsTable).where(eq(qaReviewsTable.id, callId)).limit(1);
+      return completedReview
+        ? res.json(completedReview)
+        : res.status(409).json({ error: "QA was already completed for this agent" });
+    }
+    if (reservation.kind === "in_progress") {
+      res.setHeader("Retry-After", String(reservation.retryAfter));
+      return res.status(409).json({ error: "QA is already processing for this agent" });
+    }
+    if (reservation.kind === "cooldown") {
+      res.setHeader("Retry-After", String(Math.max(1, Math.ceil((reservation.eligibleAt.getTime() - Date.now()) / 1_000))));
+      return res.status(409).json({
+        error: `QA is limited to one completed or reserved run per agent in any rolling ${QA_REVIEW_INTERVAL_DAYS}-day period`,
+        eligibleAt: reservation.eligibleAt.toISOString(),
+      });
+    }
+    if (reservation.kind === "conflict") {
+      return res.status(409).json({ error: "Idempotency-Key was already used for a different QA request" });
+    }
+    reservationId = reservation.id;
+
     const review = await withDurableAiLimit({
       feature: "qa_manual",
       userId: req.user!.userId,
       perMinute: 3,
       perDay: 20,
     }, () => evaluateCall(callId, {
-      source: existingWasAutomatic ? "auto_biweekly" : "manual_call_id",
+      source: "manual_call_id",
       userId: req.user!.userId,
       artifacts,
-      preserveEvaluatedAt: existingWasAutomatic,
     }));
-    if (!review) return res.status(422).json({ error: "Call is not QA-eligible or Claude returned an invalid evaluation" });
+    if (!review) {
+      await failAiReservation(reservationId, "QA_RESULT_INVALID");
+      reservationId = null;
+      return res.status(422).json({ error: "Call is not QA-eligible or Claude returned an invalid evaluation" });
+    }
+    await completeAiReservation(
+      reservationId,
+      200,
+      { callId },
+      QA_REVIEW_INTERVAL_DAYS * 24 * 60 * 60,
+    );
+    reservationId = null;
     return res.json(review);
   } catch (err) {
+    if (reservationId !== null) {
+      await failAiReservation(reservationId, "QA_EVALUATION_FAILED").catch(() => undefined);
+    }
     if (err instanceof AiRateLimitError) {
       res.setHeader("Retry-After", String(err.retryAfter));
       return res.status(429).json({ error: "Manual QA evaluation limit reached" });

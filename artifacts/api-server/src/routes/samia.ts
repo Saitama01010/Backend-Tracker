@@ -14,6 +14,7 @@ import {
 } from "../lib/aiPrivacy.js";
 import { AiRateLimitError, getAiControlTableStatus, postgresErrorCode, withDurableAiLimit } from "../lib/aiRateLimit.js";
 import { extractQuoCallId, getQuoCallArtifacts } from "../lib/quoCall.js";
+import { requireSamiaIdempotency } from "../middleware/samiaIdempotency.js";
 import {
   appendVerifiedCallEvidenceBasis,
   assistantBlocks,
@@ -442,7 +443,6 @@ async function createSamiaMessage(
   args: {
     userId: number;
     stableSystem: string;
-    requestContext: string;
     messages: Anthropic.MessageParam[];
     tools: Anthropic.Tool[];
   },
@@ -454,7 +454,6 @@ async function createSamiaMessage(
       max_tokens: boundedAnthropicMaxTokens(800),
       system: [
         { type: "text", text: boundAiInput(args.stableSystem), cache_control: { type: "ephemeral" } },
-        { type: "text", text: boundAiInput(args.requestContext) },
       ],
       messages: args.messages,
       ...(args.tools.length ? { tools: cacheTools(args.tools) } : {}),
@@ -1238,7 +1237,7 @@ async function fetchSheetSummary(
 
 // ─── Route ────────────────────────────────────────────────────────────────────
 
-router.post("/samia/chat", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/samia/chat", requireAuth, requireRole("admin"), requireSamiaIdempotency, async (req, res) => {
   try {
     const payload = validateSamiaPayload(req.body);
     if (!payload.ok) return res.status(payload.status).json({ error: payload.error });
@@ -1762,16 +1761,14 @@ ${dataProtector.wrap("quo_phone_calls", JSON.stringify(verifiedCalls), 20_000)}`
       .map((m) => ({ role: m.role, content: dataProtector.wrap(`conversation_history_${m.role}`, m.content, 4_000) }));
 
     // Build the current user message — include images if provided
-    const userContent: Anthropic.MessageParam =
-      images.length > 0
-        ? {
-            role: "user",
-            content: toAnthropicContent([
-              ...images.map((url: string) => ({ type: "image_url" as const, image_url: { url } })),
-              { type: "text" as const, text: dataProtector.wrap("user_question", message, 4_000) },
-            ]),
-          }
-        : { role: "user", content: dataProtector.wrap("user_question", message, 4_000) };
+    const userContent: Anthropic.MessageParam = {
+      role: "user",
+      content: toAnthropicContent([
+        { type: "text" as const, text: dataProtector.wrap("authorized_request_context", statsContext, 24_000) },
+        ...images.map((url: string) => ({ type: "image_url" as const, image_url: { url } })),
+        { type: "text" as const, text: dataProtector.wrap("user_question", message, 4_000) },
+      ]),
+    };
 
     const stableSystemInstructions = SAMIA_SYSTEM + AI_UNTRUSTED_DATA_SYSTEM_POLICY + modeInstructions(mode);
     const messages: Anthropic.MessageParam[] = [
@@ -1796,7 +1793,6 @@ ${dataProtector.wrap("quo_phone_calls", JSON.stringify(verifiedCalls), 20_000)}`
       const completion = await createSamiaMessage(req, {
         userId,
         stableSystem: stableSystemInstructions,
-        requestContext: statsContext,
         messages: currentMessages,
         // After three tool rounds, make one tool-free request so Claude can
         // turn the final tool results into an answer without another tool call.

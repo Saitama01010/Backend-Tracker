@@ -85,7 +85,12 @@ function platformHarness(): Express {
     res.send(`data: ${"x".repeat(4 * 1024)}\n\n`);
   });
   app.post("/api/webhook", (req, res) => {
-    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const candidate: unknown = req.body;
+    if (!Buffer.isBuffer(candidate)) {
+      res.status(400).json({ error: "raw body required" });
+      return;
+    }
+    const body = Buffer.from(candidate);
     res.json({
       sha256: createHash("sha256").update(body).digest("hex"),
       length: body.length,

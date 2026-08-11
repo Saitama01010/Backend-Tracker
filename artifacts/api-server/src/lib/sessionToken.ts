@@ -14,7 +14,7 @@ export function refreshCookieOptions(): CookieOptions {
   return {
     httpOnly: true,
     secure: isProduction(),
-    sameSite: "lax",
+    sameSite: "strict",
     path: "/api/auth",
     maxAge: refreshLifetimeDays() * 24 * 60 * 60 * 1_000,
   };
@@ -34,6 +34,18 @@ export function clearRefreshCookie(res: Response): void {
 }
 
 export function readRefreshCookie(req: Request): string | null {
-  const value = (req.cookies as Record<string, unknown> | undefined)?.[REFRESH_COOKIE_NAME];
-  return typeof value === "string" && value.length > 0 ? value : null;
+  const header = req.headers.cookie;
+  if (typeof header !== "string" || header.length > 8_192) return null;
+  for (const segment of header.split(";")) {
+    const separator = segment.indexOf("=");
+    if (separator < 1 || segment.slice(0, separator).trim() !== REFRESH_COOKIE_NAME) continue;
+    const encoded = segment.slice(separator + 1).trim();
+    try {
+      const value = decodeURIComponent(encoded);
+      return /^[A-Za-z0-9_-]{40,128}$/.test(value) ? value : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }

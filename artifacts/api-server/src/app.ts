@@ -1,5 +1,5 @@
 import express, { type Express } from "express";
-import cookieParser from "cookie-parser";
+import { rateLimit } from "express-rate-limit";
 import pinoHttp from "pino-http";
 import path from "node:path";
 import { existsSync } from "node:fs";
@@ -53,6 +53,20 @@ app.use(
 app.use(createCorsMiddleware());
 app.use(responseCompression());
 app.use(stableErrorResponses);
+// A generous standard API ceiling complements the durable, lower per-user
+// limits on login, AI, refresh, import, and sync operations. Keeping this
+// recognized middleware at the API boundary prevents unbounded request floods
+// while preserving provider webhook retries and health probes.
+app.use("/api", rateLimit({
+  windowMs: 5 * 60 * 1_000,
+  limit: 1_200,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  skip: (req) => /^\/api\/(?:health(?:\/|$)|(?:quo|openphone)\/webhook(?:\/|$))/.test(req.originalUrl.split("?")[0] ?? ""),
+  handler: (_req, res) => {
+    res.status(429).json({ error: "Too many requests. Try again later." });
+  },
+}));
 app.use("/api", privateApiCache);
 // Samia accepts at most two screenshots; give that authenticated route enough
 // room for base64 payloads while preserving the smaller default limit elsewhere.
@@ -66,7 +80,6 @@ app.use(
 );
 app.use(express.json({ limit: BODY_LIMITS.json }));
 app.use(express.urlencoded({ extended: true, limit: BODY_LIMITS.form, parameterLimit: 1_000 }));
-app.use(cookieParser());
 
 app.use("/api", router);
 app.use("/api", apiNotFound);

@@ -25,6 +25,7 @@ export default function SamiaChat({ initialOpen = false }: { initialOpen?: boole
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<SamiaMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  const submittingRef = useRef(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [pendingImages, setPendingImages] = useState<string[]>([]);
@@ -166,7 +167,8 @@ export default function SamiaChat({ initialOpen = false }: { initialOpen?: boole
 
   async function send() {
     const text = input.trim();
-    if ((!text && pendingImages.length === 0) || loading) return;
+    if (!text || loading || submittingRef.current) return;
+    submittingRef.current = true;
     const images = [...pendingImages];
     setInput("");
     setPendingImages([]);
@@ -175,8 +177,12 @@ export default function SamiaChat({ initialOpen = false }: { initialOpen?: boole
     try {
       const res = await apiFetch("/api/samia/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ message: text || "What do you see in this image?", images, displayName: chatName || undefined }),
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          "Idempotency-Key": crypto.randomUUID(),
+        },
+        body: JSON.stringify({ message: text, images, displayName: chatName || undefined }),
       });
       const data = (await res.json().catch(() => ({}))) as SamiaResponse;
       if (res.ok && data.invalidateQueryKeys?.length) {
@@ -195,6 +201,7 @@ export default function SamiaChat({ initialOpen = false }: { initialOpen?: boole
     } catch {
       setMessages((prev) => [...prev, { role: "assistant", content: "Network error — try again." }]);
     } finally {
+      submittingRef.current = false;
       setLoading(false);
     }
   }
@@ -461,7 +468,7 @@ export default function SamiaChat({ initialOpen = false }: { initialOpen?: boole
                     onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
                     onPaste={handlePaste} placeholder="Ask Samia anything… or paste a screenshot" disabled={loading}
                     className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50" />
-                  <button onClick={() => void send()} disabled={(!input.trim() && pendingImages.length === 0) || loading}
+                  <button onClick={() => void send()} disabled={!input.trim() || loading}
                     className="h-9 w-9 rounded-xl bg-primary text-white flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity flex-shrink-0">
                     <Send className="h-4 w-4" />
                   </button>

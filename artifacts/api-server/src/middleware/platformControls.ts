@@ -113,7 +113,7 @@ export function createCorsMiddleware(
   const options: CorsOptions = {
     credentials: true,
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Authorization", "Content-Type", "X-Request-ID"],
+    allowedHeaders: ["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"],
     exposedHeaders: ["Content-Disposition", "Retry-After", "X-Request-ID"],
     maxAge: 600,
     origin(origin, callback) {

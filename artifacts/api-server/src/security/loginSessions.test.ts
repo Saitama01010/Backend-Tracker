@@ -6,7 +6,7 @@ import { signToken, verifyToken } from "../lib/accessToken.js";
 import type { AuthPayload } from "../middleware/authCore.js";
 import { protectedActionForRequest } from "../middleware/abusePolicy.js";
 import { PASSWORD_POLICY_MESSAGE, validateNewPassword } from "../lib/passwordPolicy.js";
-import { hashRefreshToken, refreshCookieOptions } from "../lib/sessionToken.js";
+import { hashRefreshToken, readRefreshCookie, refreshCookieOptions } from "../lib/sessionToken.js";
 import { isPublicApiRoute } from "../routes/apiPolicy.js";
 
 const fakeViewUser: AuthPayload = {
@@ -69,13 +69,16 @@ test("refresh cookies are HttpOnly, same-site, scoped, and raw tokens are only r
     const options = refreshCookieOptions();
     assert.equal(options.httpOnly, true);
     assert.equal(options.secure, true);
-    assert.equal(options.sameSite, "lax");
+    assert.equal(options.sameSite, "strict");
     assert.equal(options.path, "/api/auth");
     assert.equal(options.maxAge, 30 * 24 * 60 * 60 * 1_000);
     const raw = "fake-refresh-token-never-store-this-value";
     const digest = hashRefreshToken(raw);
     assert.notEqual(digest, raw);
     assert.match(digest, /^[a-f0-9]{64}$/);
+    const token = "A".repeat(43);
+    assert.equal(readRefreshCookie({ headers: { cookie: `sidebar=open; tracker_refresh=${token}` } } as Request), token);
+    assert.equal(readRefreshCookie({ headers: { cookie: "tracker_refresh[]=tampered" } } as Request), null);
   } finally {
     if (oldNodeEnv === undefined) delete process.env["NODE_ENV"]; else process.env["NODE_ENV"] = oldNodeEnv;
   }
