@@ -58,3 +58,10 @@ test("PBX request failures remain explicit instead of becoming zero-valued dashb
   assert.doesNotMatch(app, /if \(!r\.ok\) return \{ liveCalls: \[\], agentStatuses: \[\] \};/);
   assert.match(app, /PBX live status is temporarily unavailable\. Historical totals are unchanged\./);
 });
+
+test("Quo live agents remain visible before their completed-call metrics arrive", async () => {
+  const app = await readFile(path.join(srcRoot, "App.tsx"), "utf8");
+  assert.match(app, /hasCalls \|\| liveAgents\.any\.has\(liveKey\)/);
+  assert.match(app, /if \(!r\.ok\) throw new Error\("Quo live status request failed"\)/);
+  assert.match(app, /Quo live status is temporarily unavailable\. Historical totals are unchanged\./);
+});

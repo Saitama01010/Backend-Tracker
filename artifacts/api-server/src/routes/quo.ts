@@ -20,10 +20,11 @@ import {
   validateIntegrationDateRange,
 } from "../lib/externalIntegrationPolicy.js";
 import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
-import { manualJobKey, scheduledJobKey } from "../lib/durableBackgroundJobs.js";
+import { manualJobKey } from "../lib/durableBackgroundJobs.js";
 import { getDurableRuntimeState, listDurableRuntimeState, putDurableRuntimeState } from "../lib/durableRuntimeState.js";
 import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 import { businessDayWindow } from "../lib/businessTime.js";
+import { AiRateLimitError, withDatabaseLease } from "../lib/aiRateLimit.js";
 
 const router: IRouter = Router();
 router.use("/quo", requireAuth);
@@ -102,8 +103,8 @@ function quoHeaders(): Record<string, string> {
   return { Authorization: key, Accept: "application/json" };
 }
 
-async function quoFetch<T>(path: string): Promise<T> {
-  const res = await fetch(`${QUO_BASE}${path}`, { headers: quoHeaders() });
+async function quoFetch<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(`${QUO_BASE}${path}`, { headers: quoHeaders(), signal });
   if (!res.ok) {
     throw new Error(`Quo API error ${res.status}`);
   }
@@ -591,17 +592,25 @@ router.get("/quo/sync-state", async (req, res) => {
 // ─── Live-call detection ───────────────────────────────────────────────────────
 // Three sources merged in /quo/live:
 //   1. Webhook state   — instant (set by quoWebhook.ts on call.ringing / call.answered)
-//   2. Poll state      — 60-second background poll; queries conversations updated in
+//   2. Poll state      — request-driven shared poll; queries conversations updated in
 //                        the last 5 min, then fetches calls for each to find in-progress
 //   3. DB fallback     — catches calls synced by the 15-min background sync
 
-// ─── 60-second background live poller ─────────────────────────────────────────
+// ─── Request-driven live poller ────────────────────────────────────────────────
 // Finds in-progress calls by scanning conversations updated in the last 5 minutes.
 // Fills the gap between webhook events (often not configured) and the 15-min DB sync.
 const pollLiveAgents = new Set<string>();
 /** agentName → external participant number for the current in-progress call */
 const pollLiveParticipants = new Map<string, string>();
 let livePollRunning = false;
+const LIVE_POLL_STATE_KEY = "quo:live-poll";
+const LIVE_POLL_TTL_MS = 45_000;
+const LIVE_POLL_TIMEOUT_MS = 20_000;
+
+type LivePollSnapshot = {
+  active: string[];
+  agentCalls: Array<{ agentName: string; participant: string }>;
+};
 
 export async function runLivePoll(signal?: AbortSignal): Promise<{ active: string[]; agentCalls: Array<{ agentName: string; participant: string }> }> {
   if (livePollRunning) {
@@ -628,9 +637,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
       do {
         const sep = basePath.includes("?") ? "&" : "?";
         const url: string = `${basePath}${sep}maxResults=50${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`;
-        const res: { data: T[]; nextPageToken?: string | null } = await quoFetch<{ data: T[]; nextPageToken?: string | null }>(url).catch(
-          () => ({ data: [] as T[], nextPageToken: null }),
-        );
+        const res = await quoFetch<{ data: T[]; nextPageToken?: string | null }>(url, signal);
         out.push(...(res.data ?? []));
         pageToken = res.nextPageToken ?? null;
         page++;
@@ -656,8 +663,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
     // Conversations updated in last 5 minutes = potentially active calls
     const convRes = await quoFetch<{
       data: { id: string; phoneNumberId: string; participants: string[] }[];
-    }>(`/conversations?updatedAfter=${encodeURIComponent(fiveMinAgo)}&updatedBefore=${encodeURIComponent(now)}&maxResults=100`)
-      .catch(() => ({ data: [] as { id: string; phoneNumberId: string; participants: string[] }[] }));
+    }>(`/conversations?updatedAfter=${encodeURIComponent(fiveMinAgo)}&updatedBefore=${encodeURIComponent(now)}&maxResults=100`, signal);
 
     const newLive = new Set<string>();
     const newParticipants = new Map<string, string>();
@@ -683,7 +689,8 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
           `&createdAfter=${encodeURIComponent(fiveMinAgo)}` +
           `&createdBefore=${encodeURIComponent(now)}` +
           `&maxResults=5`,
-        ).catch(() => ({ data: [] as LiveCall[] }));
+          signal,
+        );
 
         for (const call of callsRes.data ?? []) {
           if (call.status !== "in-progress") continue;
@@ -735,7 +742,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
       while (idx < tasks.length) {
         signal?.throwIfAborted();
         const task = tasks[idx++];
-        if (task) await task().catch(() => {});
+        if (task) await task();
       }
     }
     await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
@@ -749,7 +756,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
       active: [...newLive],
       agentCalls: [...newParticipants.entries()].map(([agentName, participant]) => ({ agentName, participant })),
     };
-    await putDurableRuntimeState("quo:live-poll", snapshot, 3 * 60_000);
+    await putDurableRuntimeState(LIVE_POLL_STATE_KEY, snapshot, LIVE_POLL_TTL_MS);
 
     if (newLive.size > 0) {
       logger.info({ agents: [...newLive] }, "quo livePoll: in-progress calls found");
@@ -763,37 +770,50 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
   }
 }
 
+async function requestDrivenLivePoll(): Promise<LivePollSnapshot> {
+  const existing = await getDurableRuntimeState<LivePollSnapshot>(LIVE_POLL_STATE_KEY);
+  if (existing) return existing.value;
+
+  try {
+    await withDatabaseLease("quo_live_request_refresh", () =>
+      runLivePoll(AbortSignal.timeout(LIVE_POLL_TIMEOUT_MS)),
+    );
+  } catch (error) {
+    if (!(error instanceof AiRateLimitError) || error.reason !== "lease") throw error;
+
+    // Another Vercel instance is already refreshing. Give it a short window to
+    // publish the shared snapshot instead of returning a false empty state.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const refreshed = await getDurableRuntimeState<LivePollSnapshot>(LIVE_POLL_STATE_KEY);
+      if (refreshed) return refreshed.value;
+    }
+    throw error;
+  }
+
+  const refreshed = await getDurableRuntimeState<LivePollSnapshot>(LIVE_POLL_STATE_KEY);
+  if (!refreshed) throw new Error("Quo live refresh did not publish state");
+  return refreshed.value;
+}
+
 router.get("/quo/live", async (req, res) => {
   try {
-    const pollState = await getDurableRuntimeState<{
-      active: string[];
-      agentCalls: Array<{ agentName: string; participant: string }>;
-    }>("quo:live-poll");
+    const pollSnapshot = await requestDrivenLivePoll();
     const durableWebhookCalls = await listDurableRuntimeState<{
       agentName: string;
       participant: string;
       ringingSince: string;
     }>("quo:webhook-live:");
-    if (!pollState) {
-      const minute = new Date().toISOString().slice(0, 16).replace(/[-T:]/g, "");
-      await postgresBackgroundJobStore.enqueue({
-        jobType: "integration_live_refresh",
-        idempotencyKey: scheduledJobKey("integration_live_refresh", minute),
-        priority: 100,
-        maxAttempts: 4,
-      }).catch((error) => req.log.warn(error, "quo live refresh enqueue failed"));
-    }
-
     const active = new Set<string>();
 
     // Source 1: webhook in-memory state — instant, set by quoWebhook.ts on call.ringing/answered.
     for (const { agentName } of liveWebhookCalls.values()) active.add(agentName);
     for (const { value } of durableWebhookCalls) active.add(value.agentName);
 
-    // Source 2: 60-second background poll — finds in-progress calls via conversations API.
-    // Covers the gap when webhooks miss an event.
+    // Source 2: shared request-driven poll — finds in-progress calls via conversations API.
+    // Covers the gap when webhooks miss an event without relying on a Vercel cron cadence.
     for (const agentName of pollLiveAgents) active.add(agentName);
-    for (const agentName of pollState?.value.active ?? []) active.add(agentName);
+    for (const agentName of pollSnapshot.active) active.add(agentName);
 
     // Source 3: DB in-progress rows — catches calls synced by the 15-min background sync.
     const since2h = new Date(Date.now() - 2 * 60 * 60 * 1000);
@@ -817,7 +837,7 @@ router.get("/quo/live", async (req, res) => {
     for (const agentName of pollLiveAgents) {
       agentParticipant.set(agentName, pollLiveParticipants.get(agentName) ?? agentParticipant.get(agentName) ?? null);
     }
-    for (const call of pollState?.value.agentCalls ?? []) {
+    for (const call of pollSnapshot.agentCalls) {
       agentParticipant.set(call.agentName, call.participant ?? agentParticipant.get(call.agentName) ?? null);
     }
     // DB participant (most stable — from completed-call upsert)
@@ -826,7 +846,11 @@ router.get("/quo/live", async (req, res) => {
     }
 
     req.log.info(
-      { fromWebhook: liveWebhookCalls.size, fromPoll: pollLiveAgents.size, total: active.size },
+      {
+        fromWebhook: liveWebhookCalls.size,
+        fromPoll: new Set([...pollLiveAgents, ...pollSnapshot.active]).size,
+        total: active.size,
+      },
       "quo live"
     );
     if (req.user!.role === "admin") {
