@@ -119,8 +119,9 @@ test("Google Sheets upstream payloads distinguish empty data from malformed resp
 
 test("Sheets, date ranges, probes, and pagination are wired through integration security policy", async () => {
   const base = new URL("../routes/", import.meta.url);
-  const [quo, sheets, readymode] = await Promise.all([
+  const [quo, quoSync, sheets, readymode] = await Promise.all([
     readFile(new URL("quo.ts", base), "utf8"),
+    readFile(new URL("quoSync.ts", base), "utf8"),
     readFile(new URL("sheets.ts", base), "utf8"),
     readFile(new URL("readymode.ts", base), "utf8"),
   ]);
@@ -131,4 +132,5 @@ test("Sheets, date ranges, probes, and pagination are wired through integration 
   assert.match(readymode, /approvedReadyModeProbePath/);
   assert.doesNotMatch(readymode, /preview:\s*result\.body/);
   assert.doesNotMatch(readymode, /cookies:\s*cachedCookies/);
+  assert.doesNotMatch(quoSync, /logger\.(?:info|warn|error)\([^\n]*participant/);
 });

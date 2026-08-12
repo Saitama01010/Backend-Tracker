@@ -369,7 +369,7 @@ export async function runSync(
     tasks.map(({ lineId, participant, displayParticipant }) => async () => {
       opts?.signal?.throwIfAborted();
       const calls = await fetchCallsForParticipant(lineId, participant, from, to).catch((err) => {
-        logger.error({ lineId, participant, err: String(err) }, "quoSync: call fetch error");
+        logger.error({ lineId, err: String(err) }, "quoSync: call fetch error");
         return [] as Call[];
       });
       tasksDone++;
