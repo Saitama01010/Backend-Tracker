@@ -16,13 +16,18 @@ export function scopeMissedItemsForUser<T extends MissedCallScopeItem>(
   items: readonly T[],
   now = new Date(),
 ): T[] {
-  const teamScoped = user?.role === "admin" || !user?.teamAccess
-    ? items
-    : items.filter((item) => item.team === user.teamAccess);
+  const teamScoped =
+    user?.role === "admin" || !user?.teamAccess
+      ? items
+      : items.filter((item) => item.team === user.teamAccess);
   if (!user?.lockToToday || user.role === "admin") return [...teamScoped];
   const { start, endExclusive } = businessDayWindow(formatCalendarDate(now));
   return teamScoped.filter((item) => {
     const createdAt = Date.parse(item.createdAt);
-    return Number.isFinite(createdAt) && createdAt >= start.getTime() && createdAt < endExclusive.getTime();
+    return (
+      Number.isFinite(createdAt) &&
+      createdAt >= start.getTime() &&
+      createdAt < endExclusive.getTime()
+    );
   });
 }
