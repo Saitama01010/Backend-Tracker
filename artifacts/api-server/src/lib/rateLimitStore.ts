@@ -1,6 +1,6 @@
-import { createHmac } from "node:crypto";
 import type { Request } from "express";
 import { pool } from "@workspace/db";
+export { boundedAnonymousScope, privateScopeHash } from "./privateScope.js";
 
 export interface RateLimitDecision {
   allowed: boolean;
@@ -12,19 +12,6 @@ export interface RateLimitDecision {
 interface RateLimitRow {
   request_count: number | string;
   retry_after: number | string;
-}
-
-function hashingSecret(): string {
-  const value = process.env["RATE_LIMIT_HASH_SECRET"] ?? process.env["SESSION_SECRET"];
-  if (value) return value;
-  if (process.env["NODE_ENV"] === "production" || process.env["VERCEL"] === "1") {
-    throw new Error("RATE_LIMIT_HASH_SECRET or SESSION_SECRET is required in production.");
-  }
-  return "development-rate-limit-secret";
-}
-
-export function privateScopeHash(value: string): string {
-  return createHmac("sha256", hashingSecret()).update(value).digest("hex");
 }
 
 export function requestAddress(req: Request): string {

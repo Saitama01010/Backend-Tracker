@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
 
@@ -49,17 +50,33 @@ test("attendance note set, clear, read, repeat-clear, validation, and authorizat
     );
     const memberId = member.rows[0]!.id;
     const date = "2026-08-10";
+    const editorSessionId = randomUUID();
+    const viewerSessionId = randomUUID();
+    await pool.query(
+      `INSERT INTO auth_sessions (id, user_id, refresh_token_hash, expires_at)
+       VALUES ($1, $2, $3, now() + interval '1 day'), ($4, $5, $6, now() + interval '1 day')`,
+      [
+        editorSessionId,
+        editor.rows[0]!.id,
+        `sanitized-editor-refresh-hash-${process.pid}`,
+        viewerSessionId,
+        viewer.rows[0]!.id,
+        `sanitized-viewer-refresh-hash-${process.pid}`,
+      ],
+    );
     const editorToken = signToken({
       userId: editor.rows[0]!.id,
       username: `${usernamePrefix}-editor`,
       role: "edit",
       permissions: ["view_attendance", "edit_attendance"],
+      sessionId: editorSessionId,
     });
     const viewerToken = signToken({
       userId: viewer.rows[0]!.id,
       username: `${usernamePrefix}-viewer`,
       role: "view",
       permissions: ["view_attendance"],
+      sessionId: viewerSessionId,
     });
     const put = (token: string, body: Record<string, unknown>) => fetch(`${api}/attendance/record`, {
       method: "PUT",

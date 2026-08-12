@@ -7,9 +7,8 @@ import { requireAuth, signToken } from "../middleware/auth.js";
 import { authPayloadForUser, loadActivePortalUser, publicAuthUser } from "../lib/authUser.js";
 import {
   createRefreshSession,
-  findActiveRefreshSession,
+  rotateRefreshSession,
   revokeRefreshSession,
-  touchRefreshSession,
 } from "../lib/sessionStore.js";
 import {
   clearRefreshCookie,
@@ -18,9 +17,9 @@ import {
 } from "../lib/sessionToken.js";
 import {
   clearFixedWindow,
+  boundedAnonymousScope,
   consumeFixedWindow,
   inspectFixedWindow,
-  privateScopeHash,
   requestAddress,
   type RateLimitDecision,
 } from "../lib/rateLimitStore.js";
@@ -48,7 +47,7 @@ router.post("/auth/login", async (req, res) => {
   const { username, password } = req.body ?? {};
   const normalizedUsername = typeof username === "string" ? username.trim().toLowerCase() : "";
   const address = requestAddress(req);
-  const ipScope = privateScopeHash(`login-ip:${address}`);
+  const ipScope = boundedAnonymousScope(`login-ip:${address}`);
   const loginDecision = await consumeFixedWindow(ipScope, "login-request", LOGIN_IP_LIMIT, LOGIN_WINDOW_SECONDS);
   if (!loginDecision.allowed) {
     rateLimited(res, loginDecision);
@@ -62,7 +61,7 @@ router.post("/auth/login", async (req, res) => {
 
   // The IP limiter limits distributed username guessing from one source. This
   // independent account key also limits a distributed attack on one account.
-  const failureScope = privateScopeHash(`login-failure:${normalizedUsername}`);
+  const failureScope = boundedAnonymousScope(`login-failure:${normalizedUsername}`);
   const existingFailures = await inspectFixedWindow(
     failureScope,
     "login-failure",
@@ -110,7 +109,7 @@ router.post("/auth/login", async (req, res) => {
 });
 
 router.post("/auth/refresh", async (req, res) => {
-  const addressScope = privateScopeHash(`refresh-ip:${requestAddress(req)}`);
+  const addressScope = boundedAnonymousScope(`refresh-ip:${requestAddress(req)}`);
   const decision = await consumeFixedWindow(addressScope, "session-refresh", 60, 5 * 60);
   if (!decision.allowed) {
     rateLimited(res, decision);
@@ -124,16 +123,16 @@ router.post("/auth/refresh", async (req, res) => {
     return;
   }
 
-  const session = await findActiveRefreshSession(refreshToken);
+  const session = await rotateRefreshSession(refreshToken);
   const user = session ? await loadActivePortalUser(session.userId) : null;
   if (!session || !user) {
-    if (session) await revokeRefreshSession(refreshToken);
+    if (session) await revokeRefreshSession(session.token);
     clearRefreshCookie(res);
     res.status(401).json({ error: "Invalid or expired session" });
     return;
   }
 
-  await touchRefreshSession(session.id);
+  setRefreshCookie(res, session.token);
   const payload = authPayloadForUser(user, session.id);
   res.setHeader("Cache-Control", "no-store");
   res.json({ token: signToken(payload), user: publicAuthUser(payload) });
@@ -155,9 +154,12 @@ router.get("/auth/me", requireAuth, async (req, res) => {
     return;
   }
 
-  // Legacy 30-day JWTs do not have a session ID. The first /auth/me call
-  // upgrades them in place without forcing the user to sign in again.
-  const sessionId = req.user!.sessionId ?? await issueSession(user.id, res);
+  const sessionId = req.user!.sessionId;
+  if (!sessionId) {
+    clearRefreshCookie(res);
+    res.status(401).json({ error: "Invalid or expired token" });
+    return;
+  }
   const payload = authPayloadForUser(user, sessionId);
   res.setHeader("Cache-Control", "no-store");
   res.json({ token: signToken(payload), user: publicAuthUser(payload) });

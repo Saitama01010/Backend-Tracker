@@ -16,6 +16,8 @@ export interface AuthPayload {
   sessionId?: string;
 }
 
+export type SessionAuthPayload = AuthPayload & { sessionId: string };
+
 interface AuthenticatedRequest extends Request {
   user?: AuthPayload;
 }

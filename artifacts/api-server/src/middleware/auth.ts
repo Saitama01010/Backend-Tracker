@@ -20,9 +20,10 @@ export { signToken, verifyToken } from "../lib/accessToken.js";
 export const requireAuth = createRequireAuth({
   verifyToken,
   loadActiveUser: async (payload) => {
+    if (!payload.sessionId) return null;
     const user = await loadActivePortalUser(payload.userId);
     if (!user) return null;
-    if (payload.sessionId && !await isActiveAccessSession(payload.sessionId, user.id)) return null;
+    if (!await isActiveAccessSession(payload.sessionId, user.id)) return null;
     return authPayloadForUser(user, payload.sessionId);
   },
 });

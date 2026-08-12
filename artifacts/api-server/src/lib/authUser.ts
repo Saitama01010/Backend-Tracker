@@ -2,7 +2,7 @@ import { db } from "@workspace/db";
 import { ALL_PERMISSIONS, portalUsersTable } from "@workspace/db/schema";
 import type { Permission, PortalUser, TeamAccess } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
-import type { AuthPayload } from "../middleware/authCore.js";
+import type { AuthPayload, SessionAuthPayload } from "../middleware/authCore.js";
 
 function parsePermissions(raw: string | null | undefined, role: string): Permission[] {
   if (role === "admin") return [...ALL_PERMISSIONS];
@@ -35,7 +35,7 @@ function parseTeamAccess(raw: string | null | undefined): TeamAccess | null {
   return raw === "retention" || raw === "nsf" || raw === "cs" ? raw : null;
 }
 
-export function authPayloadForUser(user: PortalUser, sessionId?: string): AuthPayload {
+export function authPayloadForUser(user: PortalUser, sessionId: string): SessionAuthPayload {
   return {
     userId: user.id,
     username: user.username,
@@ -48,7 +48,7 @@ export function authPayloadForUser(user: PortalUser, sessionId?: string): AuthPa
     lockToToday: !!user.lockToToday,
     samiaCurse: !!user.samiaCurse,
     hideBackendStats: !!user.hideBackendStats,
-    ...(sessionId ? { sessionId } : {}),
+    sessionId,
   };
 }
 

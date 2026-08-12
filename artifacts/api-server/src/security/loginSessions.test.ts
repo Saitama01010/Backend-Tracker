@@ -1,22 +1,25 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import jwt from "jsonwebtoken";
 import type { Request } from "express";
 import { signToken, verifyToken } from "../lib/accessToken.js";
-import type { AuthPayload } from "../middleware/authCore.js";
+import type { AuthPayload, SessionAuthPayload } from "../middleware/authCore.js";
+import { createRequireAuth } from "../middleware/authCore.js";
 import { protectedActionForRequest } from "../middleware/abusePolicy.js";
 import { PASSWORD_POLICY_MESSAGE, validateNewPassword } from "../lib/passwordPolicy.js";
 import { hashRefreshToken, readRefreshCookie, refreshCookieOptions } from "../lib/sessionToken.js";
 import { isPublicApiRoute } from "../routes/apiPolicy.js";
+import { boundedAnonymousScope } from "../lib/privateScope.js";
 
-const fakeViewUser: AuthPayload = {
+const fakeViewUser: SessionAuthPayload = {
   userId: 7001,
   username: "fake-view-user",
   role: "view",
   permissions: ["view_metrics"],
   sessionId: "00000000-0000-4000-8000-000000000001",
 };
-const fakeAdmin: AuthPayload = {
+const fakeAdmin: SessionAuthPayload = {
   ...fakeViewUser,
   userId: 7002,
   username: "fake-admin-user",
@@ -52,6 +55,57 @@ test("expired access tokens are rejected", () => {
   } finally {
     if (oldSecret === undefined) delete process.env["SESSION_SECRET"]; else process.env["SESSION_SECRET"] = oldSecret;
     if (oldTtl === undefined) delete process.env["AUTH_ACCESS_TOKEN_TTL"]; else process.env["AUTH_ACCESS_TOKEN_TTL"] = oldTtl;
+  }
+});
+
+test("sessionless legacy, malformed, invalid-signature, and unsupported-algorithm tokens fail closed", () => {
+  const oldSecret = process.env["SESSION_SECRET"];
+  process.env["SESSION_SECRET"] = "fake-session-secret-long-enough-for-tests";
+  try {
+    const { sessionId: _sessionId, ...legacyClaims } = fakeViewUser;
+    const legacy = jwt.sign(legacyClaims, process.env["SESSION_SECRET"], { algorithm: "HS256", expiresIn: "15m" });
+    const unsupported = jwt.sign(fakeViewUser, process.env["SESSION_SECRET"], { algorithm: "HS384", expiresIn: "15m" });
+    const badSignature = jwt.sign(fakeViewUser, "different-fake-secret", { algorithm: "HS256", expiresIn: "15m" });
+    assert.throws(() => verifyToken(legacy), /claims/i);
+    assert.throws(() => verifyToken(unsupported), /algorithm/i);
+    assert.throws(() => verifyToken(badSignature), /signature/i);
+    assert.throws(() => verifyToken("not-a-jwt"));
+  } finally {
+    if (oldSecret === undefined) delete process.env["SESSION_SECRET"]; else process.env["SESSION_SECRET"] = oldSecret;
+  }
+});
+
+test("authentication uses authoritative session and user state with generic failures", async () => {
+  const acceptedClaims = { ...fakeViewUser, role: "admin" as const };
+  let nextCalled = false;
+  const response = {
+    statusCode: 200,
+    body: undefined as unknown,
+    status(code: number) { this.statusCode = code; return this; },
+    json(body: unknown) { this.body = body; return this; },
+  };
+  const request = { headers: { authorization: "Bearer fixture-token" } } as unknown as Request & { user?: AuthPayload };
+  const middleware = createRequireAuth({
+    verifyToken: () => acceptedClaims,
+    loadActiveUser: async () => ({ ...fakeViewUser, role: "view" }),
+  });
+  await middleware(request, response as never, () => { nextCalled = true; });
+  assert.equal(nextCalled, true);
+  assert.equal(request.user?.role, "view", "stale JWT roles must not override authoritative user state");
+
+  for (const reason of ["revoked", "logged-out", "administratively-invalidated"] as const) {
+    const deniedRequest = { headers: { authorization: `Bearer ${reason}` } } as unknown as Request & { user?: AuthPayload };
+    const deniedResponse = {
+      statusCode: 200,
+      body: undefined as unknown,
+      status(code: number) { this.statusCode = code; return this; },
+      json(body: unknown) { this.body = body; return this; },
+    };
+    const denied = createRequireAuth({ verifyToken: () => fakeViewUser, loadActiveUser: async () => null });
+    await denied(deniedRequest, deniedResponse as never, () => assert.fail("revoked session continued"));
+    assert.equal(deniedResponse.statusCode, 401);
+    assert.deepEqual(deniedResponse.body, { error: "Invalid or expired token" });
+    assert.doesNotMatch(JSON.stringify(deniedResponse.body), new RegExp(reason, "i"));
   }
 });
 
@@ -126,6 +180,22 @@ test("failed-login protection combines a per-IP request limit with an independen
   assert.match(authSource, /login-ip:\$\{address\}/);
   assert.match(authSource, /login-failure:\$\{normalizedUsername\}/);
   assert.doesNotMatch(authSource, /login-failure:\$\{address\}/);
+  assert.match(authSource, /boundedAnonymousScope/);
+  assert.equal(boundedAnonymousScope("login-failure:fixture-a").length, 4);
+  assert.equal(boundedAnonymousScope("login-failure:fixture-a"), boundedAnonymousScope("login-failure:fixture-a"));
+  assert.doesNotMatch(boundedAnonymousScope("login-failure:fixture-a"), /fixture/i);
+});
+
+test("refresh sessions rotate with one atomic compare-and-swap update", async () => {
+  const storeSource = await readFile(new URL("../lib/sessionStore.ts", import.meta.url), "utf8");
+  const authSource = await readFile(new URL("../routes/auth.ts", import.meta.url), "utf8");
+  assert.match(storeSource, /rotateRefreshSession/);
+  assert.match(storeSource, /refreshTokenHash:\s*hashRefreshToken\(rotatedToken\)/);
+  assert.match(storeSource, /eq\(authSessionsTable\.refreshTokenHash, hashRefreshToken\(token\)\)/);
+  assert.match(storeSource, /isNull\(authSessionsTable\.revokedAt\)/);
+  assert.match(storeSource, /\.returning\(\{ id: authSessionsTable\.id, userId: authSessionsTable\.userId \}\)/);
+  assert.doesNotMatch(authSource, /findActiveRefreshSession|touchRefreshSession/);
+  assert.match(authSource, /setRefreshCookie\(res, session\.token\)/);
 });
 
 test("session and rate-limit tables are supplied by an additive migration", async () => {
