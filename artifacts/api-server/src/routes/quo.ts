@@ -1,12 +1,32 @@
 import { Router, type IRouter } from "express";
 import { db, phoneCallsTable } from "@workspace/db";
 import { and, eq, gte, lte, desc, ne } from "drizzle-orm";
-import { runSync, startBackgroundSync, getSyncState, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES, canonicalAgentName } from "./quoSync.js";
+import { getSyncState, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES, canonicalAgentName } from "./quoSync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { logger } from "../lib/logger.js";
 import { liveWebhookCalls } from "./quoWebhook.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+import { canAccessDateRange, canAccessMetricTeam, type MetricTeam } from "../middleware/authorizationCore.js";
+import {
+  authorizationAgent,
+  canAccessLiveAgent,
+  canAccessMetricAgent,
+  loadAuthorizationAgentDirectory,
+} from "../lib/authorizationScope.js";
+import {
+  MAX_QUO_SYNC_DAYS,
+  paginateAuthorizedBatches,
+  parseBoundedInteger,
+  validateIntegrationDateRange,
+} from "../lib/externalIntegrationPolicy.js";
+import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
+import { manualJobKey, scheduledJobKey } from "../lib/durableBackgroundJobs.js";
+import { getDurableRuntimeState, listDurableRuntimeState, putDurableRuntimeState } from "../lib/durableRuntimeState.js";
+import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
+import { businessDayWindow } from "../lib/businessTime.js";
 
 const router: IRouter = Router();
+router.use("/quo", requireAuth);
 
 // ─── California date helpers ──────────────────────────────────────────────────
 // All stats are grouped and filtered by California (Pacific) date so they match
@@ -14,7 +34,7 @@ const router: IRouter = Router();
 
 /** Format a UTC Date as a YYYY-MM-DD string in California time. */
 function toCaDate(d: Date): string {
-  return d.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  return d.toLocaleDateString("en-CA", { timeZone: OPERATIONAL_CONFIG.businessTimeZone });
 }
 
 /**
@@ -23,13 +43,8 @@ function toCaDate(d: Date): string {
  * Handles PDT (UTC-7) and PST (UTC-8) automatically.
  */
 function caDateBounds(dateStr: string): { from: Date; to: Date } {
-  // Midnight PDT = 07:00 UTC; midnight PST = 08:00 UTC.
-  // Try 07:00 first; if that still lands on a different CA date, use 08:00.
-  const pdtMidnight = new Date(`${dateStr}T07:00:00Z`);
-  const fromMs = toCaDate(pdtMidnight) === dateStr
-    ? pdtMidnight.getTime()
-    : pdtMidnight.getTime() + 60 * 60 * 1000; // PST offset
-  return { from: new Date(fromMs), to: new Date(fromMs + 24 * 60 * 60 * 1000) };
+  const { start, endExclusive } = businessDayWindow(dateStr);
+  return { from: start, to: endExclusive };
 }
 
 /**
@@ -90,8 +105,7 @@ function quoHeaders(): Record<string, string> {
 async function quoFetch<T>(path: string): Promise<T> {
   const res = await fetch(`${QUO_BASE}${path}`, { headers: quoHeaders() });
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Quo API error ${res.status}: ${body}`);
+    throw new Error(`Quo API error ${res.status}`);
   }
   return res.json() as Promise<T>;
 }
@@ -105,24 +119,7 @@ interface QuoPhoneNumber {
 }
 
 // Exact line name → team (mirrors quoSync.ts LINE_TEAM_MAP)
-const LINE_TEAM_MAP: Record<string, "retention" | "nsf" | "cs"> = {
-  "ahmed ayman-levi miller":         "retention", // Ahmed Ayman → Retention
-  "youssef nady-jacob xander":       "cs",
-  "nour-michael belfort-2900":       "retention", // Michael Belfort → Retention
-  "levi ob":                         "retention", // Ahmed Ayman → Retention
-  "levi cs ob":                      "retention", // Ahmed Ayman → Retention
-  "talia nsf":                       "retention", // Talia Morgan → Retention
-  "talia morgan cs ob":              "retention", // Talia Morgan → Retention
-  "jacob ob":                        "cs",
-  "jacob cs ob":                     "retention", // Jacob Xander → Retention
-  "adam ob":                         "retention",
-  "rick ob":                         "retention",
-  "ryan ob":                         "retention",
-  "abdlrhman-jacob stephenson":      "retention",
-  "zeiad fouad-zack ford":           "retention",
-  "mohammed ayman-max francis-2268": "retention",
-  "max - ma":                        "retention",
-};
+const LINE_TEAM_MAP = OPERATIONAL_CONFIG.lineTeamMap;
 
 function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
   const n = name.toLowerCase().trim();
@@ -202,7 +199,7 @@ router.get("/quo/lines", async (req, res) => {
     res.json({ data: classified });
   } catch (err) {
     req.log.error(err, "quo lines error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo lines are temporarily unavailable." });
   }
 });
 
@@ -215,22 +212,28 @@ router.get("/quo/all-lines", async (req, res) => {
     res.json({ data: lines });
   } catch (err) {
     req.log.error(err, "quo all-lines error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo lines are temporarily unavailable." });
   }
 });
 
 router.get("/quo/line-stats", async (req, res) => {
   try {
-    const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString();
-    const to = (req.query["to"] as string) || new Date().toISOString();
-    const lineId = req.query["lineId"] as string | undefined;
+    const from = typeof req.query["from"] === "string" ? req.query["from"] : new Date(Date.now() - 30 * 86400000).toISOString();
+    const to = typeof req.query["to"] === "string" ? req.query["to"] : new Date().toISOString();
+    const lineId = typeof req.query["lineId"] === "string" ? req.query["lineId"] : undefined;
 
-    if (!lineId) {
+    if (!lineId || lineId.length > 128) {
       res.status(400).json({ error: "lineId is required" });
       return;
     }
 
-    const { fromDate, toDate } = parseDateRange(from, to);
+    const range = validateIntegrationDateRange(from, to);
+    if (!range.ok) {
+      res.status(400).json({ error: range.error });
+      return;
+    }
+
+    const { fromDate, toDate } = parseDateRange(range.from, range.to);
 
     const rows = await db
       .select({
@@ -327,16 +330,25 @@ router.get("/quo/line-stats", async (req, res) => {
     res.json({ agentStats: serializedStats, agentLastCall: serializedLastCall, lineInbounds, agentUniqueContactsAll: serializedUniqueAll });
   } catch (err) {
     req.log.error(err, "quo line-stats error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo line statistics are temporarily unavailable." });
   }
 });
 
 router.get("/quo/stats", async (req, res) => {
   try {
-    const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString();
-    const to = (req.query["to"] as string) || new Date().toISOString();
+    const from = typeof req.query["from"] === "string" ? req.query["from"] : new Date(Date.now() - 30 * 86400000).toISOString();
+    const to = typeof req.query["to"] === "string" ? req.query["to"] : new Date().toISOString();
+    if (!canAccessDateRange(req.user!, [from, to])) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
 
-    const { fromDate, toDate } = parseDateRange(from, to);
+    const range = validateIntegrationDateRange(from, to);
+    if (!range.ok) {
+      res.status(400).json({ error: range.error });
+      return;
+    }
+    const { fromDate, toDate } = parseDateRange(range.from, range.to);
 
     const rows = await db
       .select({
@@ -354,6 +366,16 @@ router.get("/quo/stats", async (req, res) => {
       })
       .from(phoneCallsTable)
       .where(and(gte(phoneCallsTable.createdAt, fromDate), lte(phoneCallsTable.createdAt, toDate), ne(phoneCallsTable.status, "in-progress")));
+
+    const directory = req.user!.role === "admin" ? null : await loadAuthorizationAgentDirectory();
+    const scopedRows = directory
+      ? rows.filter((row) => {
+          const agentName = canonicalAgentName(row.agentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
+          const rawTeam = agentTeam(agentName) ?? row.lineTeam;
+          const fallbackTeam = rawTeam === "retention" || rawTeam === "nsf" || rawTeam === "cs" ? rawTeam : null;
+          return canAccessMetricAgent(req.user!, agentName, directory, fallbackTeam);
+        })
+      : rows;
 
     const teamStats: Record<
       string,
@@ -402,7 +424,7 @@ router.get("/quo/stats", async (req, res) => {
     > = {};
 
     const blocklist = await getBlockedNumbers();
-    for (const row of rows) {
+    for (const row of scopedRows) {
       if (row.participant && blocklist.has(row.participant)) continue;
       const agentName = canonicalAgentName(row.agentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
       // Agent-based team takes priority over line-based. Calls that don't map to a
@@ -521,28 +543,38 @@ router.get("/quo/stats", async (req, res) => {
       lineInbound,
       agentLastCall: agentLastCallSerialized,
       allAgentLastCall: allAgentLastCallSerialized,
-      totalRows: rows.length,
+      totalRows: scopedRows.length,
       lastSyncedAt: syncState?.lastSyncedAt ?? null,
       isSyncing: syncState?.isSyncing ?? false,
     });
   } catch (err) {
     req.log.error(err, "quo stats error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo statistics are temporarily unavailable." });
   }
 });
 
-router.post("/quo/sync", async (req, res) => {
+router.post("/quo/sync", requireRole("admin"), async (req, res) => {
   try {
-    const from = (req.body?.from as string) || new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-    const to = (req.body?.to as string) || new Date().toISOString();
-    req.log.info({ from, to }, "quo sync triggered manually");
-    res.json({ success: true, message: "Sync started in background", from, to });
-    runSync(new Date(from), new Date(to)).catch((err) => {
-      req.log.error(err, "quo manual sync background error");
+    const from = typeof req.body?.from === "string" ? req.body.from : new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const to = typeof req.body?.to === "string" ? req.body.to : new Date().toISOString();
+    const range = validateIntegrationDateRange(from, to, MAX_QUO_SYNC_DAYS);
+    if (!range.ok) {
+      res.status(400).json({ error: range.error });
+      return;
+    }
+    await postgresBackgroundJobStore.enqueue({
+      jobType: "quo_sync",
+      idempotencyKey: manualJobKey("quo_sync", req.user!.userId),
+      payload: { from: range.from, to: range.to },
+      requestedByUserId: req.user!.userId,
+      priority: 90,
+      maxAttempts: 4,
     });
+    req.log.info({ from: range.from, to: range.to }, "quo sync queued manually");
+    res.json({ success: true, message: "Sync started in background", from: range.from, to: range.to });
   } catch (err) {
     req.log.error(err, "quo sync error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo sync could not be started." });
   }
 });
 
@@ -552,7 +584,7 @@ router.get("/quo/sync-state", async (req, res) => {
     res.json(state ?? { id: "singleton", lastSyncedAt: null, isSyncing: false });
   } catch (err) {
     req.log.error(err, "quo sync state error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo sync state is temporarily unavailable." });
   }
 });
 
@@ -571,10 +603,16 @@ const pollLiveAgents = new Set<string>();
 const pollLiveParticipants = new Map<string, string>();
 let livePollRunning = false;
 
-async function runLivePoll(): Promise<void> {
-  if (livePollRunning) return;
+export async function runLivePoll(signal?: AbortSignal): Promise<{ active: string[]; agentCalls: Array<{ agentName: string; participant: string }> }> {
+  if (livePollRunning) {
+    return {
+      active: [...pollLiveAgents],
+      agentCalls: [...pollLiveParticipants.entries()].map(([agentName, participant]) => ({ agentName, participant })),
+    };
+  }
   livePollRunning = true;
   try {
+    signal?.throwIfAborted();
     const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     const now = new Date().toISOString();
 
@@ -695,6 +733,7 @@ async function runLivePoll(): Promise<void> {
     let idx = 0;
     async function worker() {
       while (idx < tasks.length) {
+        signal?.throwIfAborted();
         const task = tasks[idx++];
         if (task) await task().catch(() => {});
       }
@@ -706,44 +745,55 @@ async function runLivePoll(): Promise<void> {
     for (const a of newLive) pollLiveAgents.add(a);
     for (const [a, p] of newParticipants) pollLiveParticipants.set(a, p);
 
+    const snapshot = {
+      active: [...newLive],
+      agentCalls: [...newParticipants.entries()].map(([agentName, participant]) => ({ agentName, participant })),
+    };
+    await putDurableRuntimeState("quo:live-poll", snapshot, 3 * 60_000);
+
     if (newLive.size > 0) {
       logger.info({ agents: [...newLive] }, "quo livePoll: in-progress calls found");
     }
+    return snapshot;
   } catch (err) {
     logger.warn({ err: String(err) }, "quo livePoll: error");
+    throw err;
   } finally {
     livePollRunning = false;
   }
 }
 
-const isVercel = process.env["VERCEL"] === "1";
-const backgroundJobsEnabled =
-  process.env["ENABLE_BACKGROUND_JOBS"] === "true" ||
-  (process.env["ENABLE_BACKGROUND_JOBS"] !== "false" && !isVercel);
-
-if (backgroundJobsEnabled) {
-  runLivePoll().catch(() => {});
-  setInterval(() => { runLivePoll().catch(() => {}); }, 60_000);
-  startBackgroundSync().catch(() => {});
-}
-
-
 router.get("/quo/live", async (req, res) => {
   try {
-    // Vercel serverless functions do not keep background timers alive, so make
-    // the live endpoint refresh itself before returning the merged live state.
-    if (!backgroundJobsEnabled) {
-      await runLivePoll();
+    const pollState = await getDurableRuntimeState<{
+      active: string[];
+      agentCalls: Array<{ agentName: string; participant: string }>;
+    }>("quo:live-poll");
+    const durableWebhookCalls = await listDurableRuntimeState<{
+      agentName: string;
+      participant: string;
+      ringingSince: string;
+    }>("quo:webhook-live:");
+    if (!pollState) {
+      const minute = new Date().toISOString().slice(0, 16).replace(/[-T:]/g, "");
+      await postgresBackgroundJobStore.enqueue({
+        jobType: "integration_live_refresh",
+        idempotencyKey: scheduledJobKey("integration_live_refresh", minute),
+        priority: 100,
+        maxAttempts: 4,
+      }).catch((error) => req.log.warn(error, "quo live refresh enqueue failed"));
     }
 
     const active = new Set<string>();
 
     // Source 1: webhook in-memory state — instant, set by quoWebhook.ts on call.ringing/answered.
     for (const { agentName } of liveWebhookCalls.values()) active.add(agentName);
+    for (const { value } of durableWebhookCalls) active.add(value.agentName);
 
     // Source 2: 60-second background poll — finds in-progress calls via conversations API.
     // Covers the gap when webhooks miss an event.
     for (const agentName of pollLiveAgents) active.add(agentName);
+    for (const agentName of pollState?.value.active ?? []) active.add(agentName);
 
     // Source 3: DB in-progress rows — catches calls synced by the 15-min background sync.
     const since2h = new Date(Date.now() - 2 * 60 * 60 * 1000);
@@ -760,9 +810,15 @@ router.get("/quo/live", async (req, res) => {
     for (const { agentName, participant } of liveWebhookCalls.values()) {
       agentParticipant.set(agentName, participant || null);
     }
+    for (const { value } of durableWebhookCalls) {
+      agentParticipant.set(value.agentName, value.participant || null);
+    }
     // Poll participant (from call record, updated each 60s)
     for (const agentName of pollLiveAgents) {
       agentParticipant.set(agentName, pollLiveParticipants.get(agentName) ?? agentParticipant.get(agentName) ?? null);
+    }
+    for (const call of pollState?.value.agentCalls ?? []) {
+      agentParticipant.set(call.agentName, call.participant ?? agentParticipant.get(call.agentName) ?? null);
     }
     // DB participant (most stable — from completed-call upsert)
     for (const r of dbRows) {
@@ -773,29 +829,83 @@ router.get("/quo/live", async (req, res) => {
       { fromWebhook: liveWebhookCalls.size, fromPoll: pollLiveAgents.size, total: active.size },
       "quo live"
     );
-    res.json({
-      active: [...active],
-      agentCalls: [...agentParticipant.entries()].map(([agentName, participant]) => ({ agentName, participant })),
-      webhookActive: liveWebhookCalls.size > 0,
-    });
+    if (req.user!.role === "admin") {
+      res.json({
+        active: [...active],
+        agentCalls: [...agentParticipant.entries()].map(([agentName, participant]) => ({ agentName, participant })),
+        webhookActive: liveWebhookCalls.size > 0 || durableWebhookCalls.length > 0,
+      });
+      return;
+    }
+    const directory = await loadAuthorizationAgentDirectory();
+    const scopedActive = [...active].filter((agentName) => canAccessLiveAgent(req.user!, agentName, directory));
+    const scopedCalls = [...agentParticipant.entries()]
+      .filter(([agentName]) => canAccessLiveAgent(req.user!, agentName, directory))
+      .map(([agentName, participant]) => ({ agentName, participant }));
+    const scopedWebhookActive = [
+      ...[...liveWebhookCalls.values()].map(({ agentName }) => agentName),
+      ...durableWebhookCalls.map(({ value }) => value.agentName),
+    ].some((agentName) => canAccessLiveAgent(req.user!, agentName, directory));
+    res.json({ active: scopedActive, agentCalls: scopedCalls, webhookActive: scopedWebhookActive });
   } catch (err) {
     req.log.error(err, "quo live error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo live calls are temporarily unavailable." });
   }
 });
 
 
 router.get("/quo/calls", async (req, res) => {
   try {
-    const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString();
-    const to = (req.query["to"] as string) || new Date().toISOString();
-    const team = (req.query["team"] as string) || undefined;
-    const limitParam = Math.min(Number(req.query["limit"] ?? 500), 1000);
-    const offsetParam = Number(req.query["offset"] ?? 0);
+    const from = typeof req.query["from"] === "string" ? req.query["from"] : new Date(Date.now() - 30 * 86400000).toISOString();
+    const to = typeof req.query["to"] === "string" ? req.query["to"] : new Date().toISOString();
+    const team = typeof req.query["team"] === "string" ? req.query["team"] : undefined;
+    const limitParam = parseBoundedInteger(req.query["limit"], 500, { min: 1, max: 1_000 });
+    const offsetParam = parseBoundedInteger(req.query["offset"], 0, { min: 0, max: 1_000_000 });
+    if (limitParam === null || offsetParam === null) {
+      res.status(400).json({ error: "Invalid pagination parameters." });
+      return;
+    }
 
-    const { fromDate, toDate } = parseDateRange(from, to);
+    if (!canAccessDateRange(req.user!, [from, to])) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+    const requestedTeam = team as MetricTeam | undefined;
+    if (requestedTeam && !["retention", "nsf", "cs", "killers"].includes(requestedTeam)) {
+      res.status(400).json({ error: "Invalid team." });
+      return;
+    }
+    if (req.user!.role !== "admin" && (
+      !requestedTeam
+      || !["retention", "nsf", "cs", "killers"].includes(requestedTeam)
+      || !canAccessMetricTeam(req.user!, requestedTeam)
+    )) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
 
-    const rows = await db
+    const range = validateIntegrationDateRange(from, to);
+    if (!range.ok) {
+      res.status(400).json({ error: range.error });
+      return;
+    }
+    const { fromDate, toDate } = parseDateRange(range.from, range.to);
+
+    const directory = req.user!.role === "admin" ? null : await loadAuthorizationAgentDirectory();
+    const isAuthorized = (row: {
+      lineTeam: string;
+      lineName: string;
+      agentName: string | null;
+    }) => {
+      const agentName = canonicalAgentName(row.agentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
+      const rawTeam = agentTeam(agentName) ?? row.lineTeam;
+      const fallbackTeam = rawTeam === "retention" || rawTeam === "nsf" || rawTeam === "cs" ? rawTeam : null;
+      if (!directory) return !team || rawTeam === team;
+      const resolvedTeam = authorizationAgent(directory, agentName)?.team ?? fallbackTeam;
+      return (!requestedTeam || resolvedTeam === requestedTeam)
+        && canAccessMetricAgent(req.user!, agentName, directory, fallbackTeam);
+    };
+    const paged = await paginateAuthorizedBatches(async (databaseOffset, batchSize) => db
       .select({
         id: phoneCallsTable.id,
         lineTeam: phoneCallsTable.lineTeam,
@@ -809,21 +919,14 @@ router.get("/quo/calls", async (req, res) => {
       })
       .from(phoneCallsTable)
       .where(and(gte(phoneCallsTable.createdAt, fromDate), lte(phoneCallsTable.createdAt, toDate)))
-      .orderBy(desc(phoneCallsTable.createdAt))
-      .limit(limitParam)
-      .offset(offsetParam);
+      .orderBy(desc(phoneCallsTable.createdAt), desc(phoneCallsTable.id))
+      .limit(batchSize)
+      .offset(databaseOffset), isAuthorized, offsetParam, limitParam);
 
-    const filtered = team
-      ? rows.filter((r) => {
-          const effectiveTeam = (r.agentName ? agentTeam(r.agentName) : null) ?? r.lineTeam;
-          return effectiveTeam === team;
-        })
-      : rows;
-
-    res.json({ data: filtered, total: filtered.length });
+    res.json(paged);
   } catch (err) {
     req.log.error(err, "quo calls error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Quo calls are temporarily unavailable." });
   }
 });
 

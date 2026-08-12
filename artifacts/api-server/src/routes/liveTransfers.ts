@@ -8,7 +8,8 @@ import {
 } from "@workspace/db";
 import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+import { setPrivateDownloadHeaders, validateOptionalWorkflowRange } from "../lib/sensitiveWorkflowPolicy.js";
 import {
   anthropicErrorStatus,
   anthropicRequestId,
@@ -18,7 +19,12 @@ import {
   toolInput,
   usageFields,
 } from "../lib/anthropic.js";
-import { withDatabaseLease } from "../lib/aiRateLimit.js";
+import { AI_UNTRUSTED_DATA_SYSTEM_POLICY, wrapUntrustedAiData } from "../lib/aiPrivacy.js";
+import { AiRateLimitError, withDatabaseLease, withDurableAiLimit } from "../lib/aiRateLimit.js";
+import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
+import { manualJobKey } from "../lib/durableBackgroundJobs.js";
+import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
+import { businessDayWindow } from "../lib/businessTime.js";
 
 const router: IRouter = Router();
 
@@ -26,9 +32,9 @@ const router: IRouter = Router();
 // Inbound live transfers must land on the Retention MAIN line only —
 // "Retention" (669) 333-7644, line id PN0uO5PSsk. Any call on any other line is
 // ignored. We only classify INCOMING completed calls >= MIN_SECONDS on this line.
-const RETENTION_MAIN_LINE_ID = "PN0uO5PSsk";
+const RETENTION_MAIN_LINE_ID = OPERATIONAL_CONFIG.lineIds.retentionMain;
 const MIN_SECONDS = Number(process.env["LT_MIN_SECONDS"] ?? 20);
-const MODEL = process.env["ANTHROPIC_LT_MODEL"]?.trim() || "claude-haiku-4-5";
+const MODEL = OPERATIONAL_CONFIG.aiModels.liveTransfers;
 const CONCURRENCY = Math.max(1, Math.min(4, Number(process.env["LT_CONC"] ?? 2) || 2));
 
 const ASPIRE_RE = /\baspire\b/i;
@@ -84,16 +90,11 @@ function scopeFilter() {
 }
 
 // ─── Date range helpers (LA timezone, mirrors obReport) ───────────────────────
-const TZ = "America/Los_Angeles";
+const TZ = OPERATIONAL_CONFIG.businessTimeZone;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-function caDate(d: Date): string {
-  return d.toLocaleDateString("en-CA", { timeZone: TZ });
-}
 function caDateBounds(dateStr: string): { from: Date; to: Date } {
-  const pdtMidnight = new Date(`${dateStr}T07:00:00Z`);
-  const fromMs =
-    caDate(pdtMidnight) === dateStr ? pdtMidnight.getTime() : pdtMidnight.getTime() + 60 * 60 * 1000;
-  return { from: new Date(fromMs), to: new Date(fromMs + 24 * 60 * 60 * 1000) };
+  const { start, endExclusive } = businessDayWindow(dateStr);
+  return { from: start, to: endExclusive };
 }
 function parseRange(from?: string, to?: string): { fromDate: Date; toDate: Date } {
   let fromDate = !from
@@ -168,6 +169,7 @@ function dialogueText(dialogue: DialogueLine[]): string {
 
 // ─── Claude classification ────────────────────────────────────────────────────
 const SYS_PROMPT = `You analyze the OPENING of an INCOMING phone call to a debt-relief company. Classify whether the call is a warm-transfer (someone handing a client off to this team), and if so, what KIND.
+${AI_UNTRUSTED_DATA_SYSTEM_POLICY}
 
 Two kinds of transfer:
 1. PARTNER — a representative from an EXTERNAL partner company warm-transfers a client to us. The partner companies are "Aspire", "Resync" (sometimes said "re-sync"), "Clarity", and "Concordia". e.g. "Hi, this is Marcus with Aspire, I have a client for you".
@@ -222,7 +224,7 @@ async function extract(transcript: string): Promise<ExtractAttempt> {
     const response = await createAnthropicToolMessage({
       model: MODEL,
       system: SYS_PROMPT,
-      prompt: `OPENING TRANSCRIPT:\n${transcript.slice(0, 4000)}`,
+      prompt: wrapUntrustedAiData("quo_opening_transcript", transcript, 4_000),
       tool: CLASSIFICATION_TOOL,
       maxTokens: 256,
     });
@@ -274,15 +276,12 @@ async function writeState(patch: {
 }
 
 // ─── Classifier job ───────────────────────────────────────────────────────────
-let jobRunning = false;
-
-async function runClassifier(): Promise<void> {
-  if (jobRunning) return;
-  jobRunning = true;
+export async function runLiveTransferRefresh(signal?: AbortSignal): Promise<void> {
   try {
     await withDatabaseLease("live_transfer_classifier", async () => {
-    await writeState({ isRunning: true, lastError: null, progressDone: 0, progressTotal: 0 });
-    logger.info("liveTransfers: classify started");
+      signal?.throwIfAborted();
+      await writeState({ isRunning: true, lastError: null, progressDone: 0, progressTotal: 0 });
+      logger.info("liveTransfers: classify started");
 
     // Incoming completed calls in scope, long enough to be a real conversation,
     // that have not been classified yet.
@@ -311,6 +310,7 @@ async function runClassifier(): Promise<void> {
 
     async function worker() {
       while (idx < pending.length) {
+        signal?.throwIfAborted();
         const i = idx++;
         const call = pending[i]!;
         try {
@@ -411,7 +411,7 @@ async function runClassifier(): Promise<void> {
             }
           }
         } catch (err) {
-          logger.warn({ err: String(err), callId: call.id }, "liveTransfers: processing error");
+          logger.warn({ errorCode: sanitizedErrorMessage(err), callId: call.id }, "liveTransfers: processing error");
         }
         done++;
         if (done % 10 === 0 || done === pending.length) await writeState({ progressDone: done });
@@ -431,10 +431,10 @@ async function runClassifier(): Promise<void> {
     logger.info({ classified: pending.length }, "liveTransfers: classify done");
     });
   } catch (err) {
-    logger.error({ err: String(err) }, "liveTransfers: classify failed");
-    await writeState({ isRunning: false, lastError: String(err) });
-  } finally {
-    jobRunning = false;
+    const errorCode = sanitizedErrorMessage(err);
+    logger.error({ errorCode }, "liveTransfers: classify failed");
+    await writeState({ isRunning: false, lastError: errorCode });
+    throw err;
   }
 }
 
@@ -503,6 +503,8 @@ async function loadLiveRows(from?: string, to?: string): Promise<LiveRow[]> {
 // GET /api/live-transfers/status — counts + refresh progress for a date range.
 router.get("/live-transfers/status", requireAuth, async (req, res) => {
   try {
+    const requestedRange = validateOptionalWorkflowRange(req.query["from"], req.query["to"]);
+    if (!requestedRange.ok) return res.status(400).json({ error: requestedRange.error });
     const { fromDate, toDate } = rangeFromQuery(req);
     const inRange = and(
       gte(phoneCallsTable.createdAt, fromDate),
@@ -563,9 +565,12 @@ router.get("/live-transfers/status", requireAuth, async (req, res) => {
       .sort((a, b) => b.count - a.count);
     const totalLive = partnerTotal + internalTotal;
 
-    const st = await readState();
+    const [st, activeJob] = await Promise.all([
+      readState(),
+      postgresBackgroundJobStore.findActive("live_transfer_refresh"),
+    ]);
     return res.json({
-      running: jobRunning,
+      running: Boolean(activeJob),
       lastRunAt: st?.lastRunAt ?? null,
       progressDone: st?.progressDone ?? 0,
       progressTotal: st?.progressTotal ?? 0,
@@ -582,15 +587,42 @@ router.get("/live-transfers/status", requireAuth, async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "live-transfers status error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Unable to load live transfers." });
   }
 });
 
 // POST /api/live-transfers/refresh — classify new incoming calls in the background.
-router.post("/live-transfers/refresh", requireAuth, async (_req, res) => {
-  if (jobRunning) return res.status(409).json({ started: false, reason: "already running" });
-  void runClassifier();
-  return res.json({ started: true });
+router.post("/live-transfers/refresh", requireAuth, requireRole("admin"), async (req, res) => {
+  if (await postgresBackgroundJobStore.findActive("live_transfer_refresh")) {
+    return res.status(409).json({ started: false, reason: "already running" });
+  }
+  try {
+    await withDurableAiLimit({
+      feature: "live_transfer_refresh",
+      userId: req.user!.userId,
+      perMinute: 1,
+      perDay: 10,
+    }, async () => undefined);
+  } catch (error) {
+    if (error instanceof AiRateLimitError) {
+      res.setHeader("Retry-After", String(error.retryAfter));
+      return res.status(429).json({ error: "Live-transfer refresh limit reached" });
+    }
+    return res.status(503).json({ error: "Live-transfer refresh controls are unavailable" });
+  }
+  try {
+    await postgresBackgroundJobStore.enqueue({
+      jobType: "live_transfer_refresh",
+      idempotencyKey: manualJobKey("live_transfer_refresh", req.user!.userId),
+      requestedByUserId: req.user!.userId,
+      priority: 80,
+      maxAttempts: 3,
+    });
+    return res.json({ started: true });
+  } catch (error) {
+    req.log.error(error, "live-transfer refresh enqueue failed");
+    return res.status(503).json({ error: "Live-transfer refresh could not be queued" });
+  }
 });
 
 // GET /api/live-transfers/download — Excel of live transfer calls in range.
@@ -598,19 +630,17 @@ router.get("/live-transfers/download", requireAuth, async (req, res) => {
   try {
     const from = typeof req.query["from"] === "string" ? req.query["from"] : undefined;
     const to = typeof req.query["to"] === "string" ? req.query["to"] : undefined;
+    const requestedRange = validateOptionalWorkflowRange(from, to);
+    if (!requestedRange.ok) return res.status(400).json({ error: requestedRange.error });
     const rows = await loadLiveRows(from, to);
     const wb = await buildWorkbook(rows);
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    );
-    res.setHeader("Content-Disposition", `attachment; filename="Live_Transfers.xlsx"`);
+    setPrivateDownloadHeaders(res, "Live_Transfers.xlsx");
     await wb.xlsx.write(res);
     res.end();
     return;
   } catch (err) {
     req.log.error(err, "live-transfers download error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to generate live transfers report." });
     return;
   }
 });

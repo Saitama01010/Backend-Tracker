@@ -1,32 +1,44 @@
+import {
+  addCalendarDays,
+  calendarDateParts,
+  formatCalendarDate,
+  startOfBusinessDay,
+} from "./businessTime.js";
+import { OPERATIONAL_CONFIG } from "./operationalConfig.js";
+
 export const DEFAULT_ATTENDANCE_TIMEZONE = "America/Los_Angeles";
+export const ATTENDANCE_TIMEZONE = OPERATIONAL_CONFIG.businessTimeZone;
 
-function validTimeZone(value: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date());
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-const configuredTimezone = process.env["ATTENDANCE_TIMEZONE"]?.trim() || DEFAULT_ATTENDANCE_TIMEZONE;
-export const ATTENDANCE_TIMEZONE = validTimeZone(configuredTimezone)
-  ? configuredTimezone
-  : DEFAULT_ATTENDANCE_TIMEZONE;
-
-export const ATTENDANCE_STATUSES = ["in", "off", "late", "pto", "absent", "nsnc"] as const;
+export const ATTENDANCE_STATUSES = ["in", "off", "late", "pto", "absent", "nsnc", "conf"] as const;
 export type AttendanceStatus = typeof ATTENDANCE_STATUSES[number];
 
-export const ATTENDANCE_MEMBER_ALIASES: Record<string, string[]> = {
-  "Levi Miller": ["Levi Miller", "Ahmed Ayman"],
-  "Rick Miller": ["Rick Miller", "Zeiad Fouad"],
-  "Jacob Stephenson": ["Jacob Stephenson", "Abdulrhman Isawi", "Adam Maxwell"],
-  "Michael Belfort": ["Michael Belfort", "Nouralden"],
-  "Ryan Henderson": ["Ryan Henderson", "Jacob Ahmed"],
-  "Henry Hart": ["Henry Hart", "Max Francis"],
-  "Jacob Xander": ["Jacob Xander", "Youssef Nady"],
-  "John Marcus": ["John Marcus", "Youssef Nasser", "Youssef-John Marcus"],
+export const ATTENDANCE_MEMBER_ALIASES = OPERATIONAL_CONFIG.attendanceMemberAliases;
+
+const ATTENDANCE_STATUS_VARIANTS: Readonly<Record<string, AttendanceStatus>> = {
+  in: "in",
+  off: "off",
+  "day off": "off",
+  late: "late",
+  pto: "pto",
+  absent: "absent",
+  nsnc: "nsnc",
+  "no show no call": "nsnc",
+  conf: "conf",
+  confirmed: "conf",
 };
+
+export function canonicalAttendanceStatus(value: unknown): AttendanceStatus | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase().replace(/[-_]+/g, " ").replace(/\s+/g, " ");
+  return ATTENDANCE_STATUS_VARIANTS[normalized] ?? null;
+}
+
+export function attendanceNoteForWrite(
+  requested: string | null | undefined,
+  previous: string | null,
+): string | null {
+  return requested === undefined ? previous : requested;
+}
 
 export interface AttendanceMemberCandidate {
   id: number;
@@ -129,18 +141,12 @@ function datePartsInTimezone(now: Date, timeZone = ATTENDANCE_TIMEZONE) {
   return { year: Number(parts.year), month: Number(parts.month), day: Number(parts.day), weekday: parts.weekday };
 }
 
-function isoFromParts(year: number, month: number, day: number): string {
-  return new Date(Date.UTC(year, month - 1, day)).toISOString().slice(0, 10);
-}
-
 export function attendanceDate(now = new Date()): string {
-  const parts = datePartsInTimezone(now);
-  return isoFromParts(parts.year, parts.month, parts.day);
+  return formatCalendarDate(now, ATTENDANCE_TIMEZONE);
 }
 
 export function addAttendanceCalendarDays(date: string, days: number): string {
-  const [year, month, day] = date.split("-").map(Number);
-  return isoFromParts(year!, month!, day! + days);
+  return addCalendarDays(date, days);
 }
 
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
@@ -164,10 +170,12 @@ export function resolveAttendanceDate(value: string, now = new Date()): Attendan
 
   const isoMatch = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
   if (isoMatch) {
-    const date = isoFromParts(Number(isoMatch[1]), Number(isoMatch[2]), Number(isoMatch[3]));
-    return date === isoMatch[0]
-      ? { kind: "resolved", date }
-      : { kind: "invalid", reason: "That calendar date is invalid." };
+    try {
+      calendarDateParts(isoMatch[0]);
+      return { kind: "resolved", date: isoMatch[0] };
+    } catch {
+      return { kind: "invalid", reason: "That calendar date is invalid." };
+    }
   }
 
   const monthMatch = text.match(/\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sept|sep|october|oct|november|nov|december|dec)\s+(\d{1,2})(?:\s+(\d{4}))?\b/);
@@ -176,7 +184,7 @@ export function resolveAttendanceDate(value: string, now = new Date()): Attendan
     const year = Number(monthMatch[3] ?? parts.year);
     const month = MONTHS[monthMatch[1]!]!;
     const day = Number(monthMatch[2]);
-    const date = isoFromParts(year, month, day);
+    const date = new Date(Date.UTC(year, month - 1, day)).toISOString().slice(0, 10);
     const [actualYear, actualMonth, actualDay] = date.split("-").map(Number);
     return actualYear === year && actualMonth === month && actualDay === day
       ? { kind: "resolved", date }
@@ -197,23 +205,7 @@ export function resolveAttendanceDate(value: string, now = new Date()): Attendan
 }
 
 export function attendanceStartOfDay(date: string, timeZone = ATTENDANCE_TIMEZONE): Date {
-  const [year, month, day] = date.split("-").map(Number);
-  const desiredWallTime = Date.UTC(year!, month! - 1, day!, 0, 0, 0);
-  let instant = desiredWallTime;
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
-  });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const parts = Object.fromEntries(formatter.formatToParts(new Date(instant)).map((part) => [part.type, part.value]));
-    const observed = Date.UTC(
-      Number(parts.year), Number(parts.month) - 1, Number(parts.day),
-      Number(parts.hour), Number(parts.minute), Number(parts.second),
-    );
-    instant += desiredWallTime - observed;
-  }
-  return new Date(instant);
+  return startOfBusinessDay(date, timeZone);
 }
 
 export function formatAttendanceDate(date: string): string {
@@ -223,36 +215,41 @@ export function formatAttendanceDate(date: string): string {
 }
 
 export type SamiaOperationalIntent =
-  | { kind: "attendance_set"; requestedName: string; status: AttendanceStatus; dateText: string; overwrite: boolean; statement: boolean }
-  | { kind: "attendance_note"; requestedName: string; note: string; dateText: string; overwrite: true }
+  | { kind: "attendance_set"; requestedName: string; status: AttendanceStatus; dateText: string; overwrite: boolean; statement: boolean; confirmed: boolean }
+  | { kind: "attendance_note"; requestedName: string; note: string; dateText: string; overwrite: true; confirmed: boolean }
   | { kind: "attendance_auto_mark"; dateText: string; confirmed: boolean }
   | { kind: "attendance_approval" }
-  | { kind: "qa_run" }
-  | { kind: "qa_evaluate_call"; callId: string }
-  | { kind: "qa_resolve_task"; taskId: string }
+  | { kind: "qa_run"; confirmed: boolean }
+  | { kind: "qa_evaluate_call"; callId: string; confirmed: boolean }
+  | { kind: "qa_resolve_task"; taskId: string; confirmed: boolean }
   | null;
 
 export function detectSamiaOperationalIntent(message: string): SamiaOperationalIntent {
   const text = message.trim().replace(/[’]/g, "'");
-  const evaluate = text.match(/\b(?:re-?run|evaluate)\s+qa\s+(?:for\s+)?(?:this\s+)?call(?:\s+id)?\s*[:#]?\s*([A-Za-z0-9_-]{6,160})\b/i);
-  if (evaluate) return { kind: "qa_evaluate_call", callId: evaluate[1]! };
-  if (/\b(?:run|start)\s+(?:a\s+)?qa(?:\s+run)?\s*(?:now)?\b/i.test(text)) return { kind: "qa_run" };
-  const resolve = text.match(/\bresolve\s+(?:this\s+)?(?:manager\s+)?qa\s+task\s*[:#]?\s*([A-Za-z0-9_-]{1,160})\b/i);
-  if (resolve) return { kind: "qa_resolve_task", taskId: resolve[1]! };
-  const autoMark = text.match(/^(?:auto[- ]?mark|run)\s+attendance(?:\s+(.*))?$/i);
+  const confirmed = /^(?:confirm(?:ed)?|proceed)\b/i.test(text) || /\b(?:confirm(?:ed)?|proceed)\s*[.!]*$/i.test(text);
+  const commandText = text
+    .replace(/^(?:confirm(?:ed)?|proceed)\b\s*[:,-]?\s*/i, "")
+    .replace(/\s*[,;-]?\s*\b(?:confirm(?:ed)?|proceed)\s*[.!]*$/i, "")
+    .trim();
+  const evaluate = commandText.match(/^\s*(?:re-?run|evaluate)\s+qa\s+(?:for\s+)?(?:this\s+)?call(?:\s+id)?\s*[:#]?\s*([A-Za-z0-9_-]{6,160})\s*$/i);
+  if (evaluate) return { kind: "qa_evaluate_call", callId: evaluate[1]!, confirmed };
+  if (/^\s*(?:run|start)\s+(?:a\s+)?qa(?:\s+run)?\s*(?:now)?\s*$/i.test(commandText)) return { kind: "qa_run", confirmed };
+  const resolve = commandText.match(/^\s*resolve\s+(?:this\s+)?(?:manager\s+)?qa\s+task\s*[:#]?\s*([A-Za-z0-9_-]{1,160})\s*$/i);
+  if (resolve) return { kind: "qa_resolve_task", taskId: resolve[1]!, confirmed };
+  const autoMark = commandText.match(/^(?:auto[- ]?mark|run)\s+attendance(?:\s+(.*))?$/i);
   if (autoMark) {
     const suffix = autoMark[1]?.trim() || "today";
     return {
       kind: "attendance_auto_mark",
-      dateText: suffix.replace(/\b(?:confirmed?|proceed)\b/gi, "").trim() || "today",
-      confirmed: /\b(?:confirmed?|proceed)\b/i.test(suffix),
+      dateText: suffix,
+      confirmed,
     };
   }
 
   if (/^(?:can|could|may|should|is it (?:ok|okay|possible)|do we have coverage)\b/i.test(text)
     && /\b(?:off|pto|absent|day off)\b/i.test(text)) return { kind: "attendance_approval" };
 
-  const noteMatch = text.match(/^(?:add|set|update)\s+["“]([^"”]{1,500})["”]\s+(?:to|as)\s+(.+?)(?:'s)\s+attendance\s+note(?:\s+(.*))?$/i);
+  const noteMatch = commandText.match(/^(?:add|set|update)\s+["“]([^"”]{1,500})["”]\s+(?:to|as)\s+(.+?)(?:'s)\s+attendance\s+note(?:\s+(.*))?$/i);
   if (noteMatch) {
     return {
       kind: "attendance_note",
@@ -260,10 +257,11 @@ export function detectSamiaOperationalIntent(message: string): SamiaOperationalI
       requestedName: noteMatch[2]!.trim(),
       dateText: noteMatch[3]?.trim() || "today",
       overwrite: true,
+      confirmed,
     };
   }
 
-  const explicit = text.match(/^(mark|put|change|correct|update|replace|overwrite)\s+(.+?)\s+(?:attendance\s+)?(?:to\s+|as\s+|on\s+)?(in|off|pto|late|absent|nsnc)\b(?:\s+(?:on\s+|for\s+)?(.*))?$/i);
+  const explicit = commandText.match(/^(mark|put|change|correct|update|replace|overwrite)\s+(.+?)\s+(?:attendance\s+)?(?:to\s+|as\s+|on\s+)?(in|off|pto|late|absent|nsnc)\b(?:\s+(?:on\s+|for\s+)?(.*))?$/i);
   if (explicit) {
     const verb = explicit[1]!.toLowerCase();
     const requestedName = explicit[2]!.replace(/(?:'s)?\s+attendance$/i, "").replace(/'s$/i, "").trim();
@@ -274,10 +272,11 @@ export function detectSamiaOperationalIntent(message: string): SamiaOperationalI
       dateText: explicit[4]?.trim() || "today",
       overwrite: ["change", "correct", "update", "replace", "overwrite"].includes(verb),
       statement: false,
+      confirmed,
     };
   }
 
-  const statement = text.match(/^(.+?)\s+is\s+(in|off|pto|late|absent|nsnc)\b(?:\s+(?:on\s+|for\s+)?(.*))?$/i);
+  const statement = commandText.match(/^(.+?)\s+is\s+(in|off|pto|late|absent|nsnc)\b(?:\s+(?:on\s+|for\s+)?(.*))?$/i);
   if (statement) {
     return {
       kind: "attendance_set",
@@ -286,6 +285,7 @@ export function detectSamiaOperationalIntent(message: string): SamiaOperationalI
       dateText: statement[3]?.trim() || "today",
       overwrite: false,
       statement: true,
+      confirmed,
     };
   }
   return null;

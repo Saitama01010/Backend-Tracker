@@ -4,12 +4,17 @@ import { db, phoneCallsTable, onboardingClassificationsTable } from "@workspace/
 import { and, eq, gte, lte, ne } from "drizzle-orm";
 import { canonicalAgentName } from "./quoSync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
+import { requireAuth } from "../middleware/auth.js";
+import { setPrivateDownloadHeaders, validateOptionalWorkflowRange } from "../lib/sensitiveWorkflowPolicy.js";
+import { businessDayWindow } from "../lib/businessTime.js";
+import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 
 const router: IRouter = Router();
+router.use("/ob-analytics", requireAuth);
 
 // ─── Onboarding line ──────────────────────────────────────────────────────────
-const LINE_ID = "PNdcJ0UEu5";
-const LINE_LABEL = "(949) 315-7441";
+const LINE_ID = OPERATIONAL_CONFIG.lineIds.onboarding;
+const LINE_LABEL = OPERATIONAL_CONFIG.lineIds.onboardingLabel;
 const CASSIE = "Cassie Lynn";
 
 // Gaps between consecutive calls longer than this (seconds) are treated as
@@ -20,7 +25,7 @@ const MAX_GAP_SEC = 60 * 60;
 // a single answered/missed call can't put someone at the top or bottom.
 const MIN_RANK_INBOUND = 10;
 
-const TZ = "America/Los_Angeles";
+const TZ = OPERATIONAL_CONFIG.businessTimeZone;
 
 /** YYYY-MM-DD in California time. */
 function caDate(d: Date): string {
@@ -35,21 +40,14 @@ function caHour(d: Date): number {
 }
 
 /** Midnight (California) for a YYYY-MM-DD string → UTC bounds for that CA day. */
-function caDateBounds(dateStr: string): { from: Date; to: Date } {
-  const pdtMidnight = new Date(`${dateStr}T07:00:00Z`);
-  const fromMs =
-    caDate(pdtMidnight) === dateStr ? pdtMidnight.getTime() : pdtMidnight.getTime() + 60 * 60 * 1000;
-  return { from: new Date(fromMs), to: new Date(fromMs + 24 * 60 * 60 * 1000) };
-}
-
 function parseRange(from?: string, to?: string): { fromDate: Date; toDate: Date } {
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
   const fromDate = !from
     ? new Date("2000-01-01T00:00:00Z")
     : DATE_RE.test(from)
-      ? caDateBounds(from).from
+      ? businessDayWindow(from).start
       : new Date(from);
-  const toDate = !to ? new Date() : DATE_RE.test(to) ? caDateBounds(to).to : new Date(to);
+  const toDate = !to ? new Date() : DATE_RE.test(to) ? businessDayWindow(to).endExclusive : new Date(to);
   return { fromDate, toDate };
 }
 
@@ -626,11 +624,16 @@ router.get("/ob-analytics", async (req, res) => {
   try {
     const from = req.query["from"] as string | undefined;
     const to = req.query["to"] as string | undefined;
+    const requestedRange = validateOptionalWorkflowRange(from, to);
+    if (!requestedRange.ok) {
+      res.status(400).json({ error: requestedRange.error });
+      return;
+    }
     const data = await computeAnalytics(from, to);
     res.json(data);
   } catch (err) {
     req.log.error(err, "ob-analytics error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to load onboarding analytics." });
   }
 });
 
@@ -639,15 +642,19 @@ router.get("/ob-analytics/download", async (req, res) => {
   try {
     const from = req.query["from"] as string | undefined;
     const to = req.query["to"] as string | undefined;
+    const requestedRange = validateOptionalWorkflowRange(from, to);
+    if (!requestedRange.ok) {
+      res.status(400).json({ error: requestedRange.error });
+      return;
+    }
     const data = await computeAnalytics(from, to);
     const wb = await buildAnalyticsWorkbook(data);
     const buf = await wb.xlsx.writeBuffer();
-    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", `attachment; filename="Onboarding_Team_Analysis.xlsx"`);
+    setPrivateDownloadHeaders(res, "Onboarding_Team_Analysis.xlsx");
     res.end(Buffer.from(buf));
   } catch (err) {
     req.log.error(err, "ob-analytics download error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to generate onboarding analytics." });
   }
 });
 

@@ -1,7 +1,11 @@
 import { Router } from "express";
 import jwt from "jsonwebtoken";
+import { requireAuth } from "../middleware/auth.js";
+import { loadAuthorizationAgentDirectory, scopeSheetData } from "../lib/authorizationScope.js";
+import { isApprovedSheetSource, parseGoogleSheetsValues, parseSheetGid } from "../lib/externalIntegrationPolicy.js";
 
 const router = Router();
+router.use("/sheet", requireAuth);
 
 type SheetData = { headers: string[]; rows: Record<string, string>[] };
 
@@ -96,8 +100,7 @@ async function getAccessToken(): Promise<string> {
     }),
   });
   if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    throw new Error(`token HTTP ${resp.status} ${body.slice(0, 200)}`);
+    throw new Error(`Google OAuth token request failed with status ${resp.status}`);
   }
   const json = (await resp.json()) as { access_token?: string; expires_in?: number };
   if (!json.access_token) throw new Error("no access_token in token response");
@@ -123,8 +126,7 @@ async function loadTitles(spreadsheetId: string): Promise<Map<number, string>> {
     `/${spreadsheetId}?fields=sheets.properties(sheetId,title)`,
   );
   if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    throw new Error(`metadata HTTP ${resp.status} ${body.slice(0, 200)}`);
+    throw new Error(`Google Sheets metadata request failed with status ${resp.status}`);
   }
   const json = (await resp.json()) as {
     sheets?: { properties?: { sheetId?: number; title?: string } }[];
@@ -154,13 +156,23 @@ async function titleForGid(spreadsheetId: string, gid: number): Promise<string |
 // public CSV export. This lets the source spreadsheets stay private.
 router.get("/sheet", async (req, res) => {
   const spreadsheetId = String(req.query.id ?? "").trim();
-  const gid = Number(req.query.gid ?? 0);
+  const gid = parseSheetGid(String(req.query.gid ?? "0"));
   if (!spreadsheetId || !/^[a-zA-Z0-9_-]+$/.test(spreadsheetId)) {
     res.status(400).json({ error: "missing or invalid id" });
     return;
   }
-  if (!Number.isFinite(gid)) {
+  if (gid === null) {
     res.status(400).json({ error: "invalid gid" });
+    return;
+  }
+  try {
+    if (!isApprovedSheetSource(spreadsheetId, gid)) {
+      res.status(403).json({ error: "Spreadsheet source is not approved." });
+      return;
+    }
+  } catch {
+    req.log.error("Google Sheets source allowlist configuration is invalid");
+    res.status(500).json({ error: "Google Sheets source policy is not configured correctly." });
     return;
   }
 
@@ -173,13 +185,11 @@ router.get("/sheet", async (req, res) => {
     const range = encodeURIComponent(title);
     const resp = await sheetsApi(`/${spreadsheetId}/values/${range}`);
     if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
       req.log.warn({ status: resp.status, spreadsheetId, gid }, "sheets values error");
-      res.status(502).json({ error: `values HTTP ${resp.status} ${body.slice(0, 200)}` });
+      res.status(502).json({ error: "Google Sheets values are temporarily unavailable." });
       return;
     }
-    const json = (await resp.json()) as { values?: unknown[][] };
-    const values = json.values ?? [];
+    const values = parseGoogleSheetsValues(await resp.json());
     const headerRowIndex = detectHeaderRow(values);
     const rawHeaders = (values[headerRowIndex] ?? []).map((h) => String(h ?? "").trim());
     const headers = rawHeaders.filter((h) => h.length > 0);
@@ -200,8 +210,13 @@ router.get("/sheet", async (req, res) => {
       if (hasData) rows.push(obj);
     }
     const payload: SheetData = { headers, rows };
+    const scoped = scopeSheetData(req.user!, payload, await loadAuthorizationAgentDirectory());
+    if (!scoped.ok) {
+      res.status(403).json({ error: "Forbidden", reason: scoped.reason });
+      return;
+    }
     res.set("Cache-Control", "no-cache, no-store, max-age=0");
-    res.json(payload);
+    res.json(scoped.data);
   } catch (err) {
     req.log.error({ err, spreadsheetId, gid }, "sheet fetch failed");
     res.status(502).json({ error: "Fetch failed" });

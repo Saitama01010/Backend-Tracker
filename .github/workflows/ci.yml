@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint, test, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: backend_tracker_test
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d backend_tracker_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      CI: "true"
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:54329/backend_tracker_test
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10
+        with:
+          version: 10.23.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Bootstrap disposable database and apply migrations
+        env:
+          DATABASE_ENVIRONMENT: test
+          EMPTY_DATABASE_BOOTSTRAP_ACK: I_ACKNOWLEDGE_THIS_IS_EMPTY_AND_NON_PRODUCTION
+        run: pnpm run db:bootstrap-empty -- --apply-migrations
+
+      - name: Verify bootstrap refuses a non-empty database
+        shell: bash
+        env:
+          DATABASE_ENVIRONMENT: test
+          EMPTY_DATABASE_BOOTSTRAP_ACK: I_ACKNOWLEDGE_THIS_IS_EMPTY_AND_NON_PRODUCTION
+        run: |
+          if pnpm run db:bootstrap-empty -- --apply-migrations; then
+            echo "Bootstrap unexpectedly accepted a non-empty database."
+            exit 1
+          fi
+          echo "Non-empty database refusal passed."
+
+      - name: Verify migration-owned schema contract
+        run: pnpm run db:verify-schema-contract
+
+      - name: Run release-readiness database tests
+        env:
+          RELEASE_READINESS_DATABASE_URL: postgresql://ci:ci@127.0.0.1:54329/backend_tracker_test
+        run: pnpm run test:release-readiness
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Type check
+        run: pnpm run typecheck
+
+      - name: Verify security CI policy
+        run: pnpm run test:security-ci
+
+      - name: Run unit tests
+        run: pnpm run test
+
+      - name: Run baseline regression tests
+        run: pnpm run test:baseline
+
+      - name: Run security regression tests
+        run: pnpm run test:security
+
+      - name: Run login and session integration test
+        env:
+          RUN_LOGIN_SESSION_INTEGRATION_TEST: "1"
+        run: pnpm --filter @workspace/api-server exec tsx --test src/security/loginSessions.integration.test.ts
+
+      - name: Run AI reservation integration tests
+        env:
+          NODE_ENV: test
+          AI_RESERVATION_TEST_DATABASE_URL: postgresql://ci:ci@127.0.0.1:54329/backend_tracker_test
+        run: |
+          pnpm --filter @workspace/api-server run test:ai-reservations:integration
+          pnpm --filter @workspace/api-server run test:ai-cleanup:integration
+
+      - name: Run durable background-job integration test
+        env:
+          NODE_ENV: test
+          BACKGROUND_JOBS_TEST_DATABASE_URL: postgresql://ci:ci@127.0.0.1:54329/backend_tracker_test
+        run: pnpm --filter @workspace/api-server run test:jobs:integration
+
+      - name: Run webhook inbox integration test
+        env:
+          RUN_WEBHOOK_INTEGRATION_TEST: "1"
+        run: pnpm --filter @workspace/api-server run test:webhooks:integration
+
+      - name: Run frontend performance tests
+        run: pnpm run test:frontend-performance
+
+      - name: Run database performance tests
+        env:
+          PERFORMANCE_DATABASE_URL: postgresql://ci:ci@127.0.0.1:54329/backend_tracker_performance_test
+        run: |
+          pnpm --filter @workspace/db exec node --input-type=module -e "import pg from 'pg'; const client = new pg.Client({ connectionString: process.env.DATABASE_URL }); await client.connect(); await client.query('CREATE DATABASE backend_tracker_performance_test'); await client.end();"
+          pnpm run test:performance
+
+      - name: Run data-correctness tests
+        env:
+          DATA_CORRECTNESS_DATABASE_URL: postgresql://ci:ci@127.0.0.1:54329/backend_tracker_test
+          RUN_ATTENDANCE_NOTE_INTEGRATION_TEST: "1"
+        run: pnpm run test:data-correctness
+
+      - name: Run guarded live smoke tests
+        run: pnpm run test:smoke
+
+      - name: Build production bundles
+        run: pnpm run build
+
+      - name: Enforce frontend bundle budget
+        run: pnpm run check:frontend-bundle

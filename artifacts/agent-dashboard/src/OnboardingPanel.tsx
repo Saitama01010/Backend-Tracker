@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { apiFetch } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -194,7 +195,7 @@ function StatPill({
 }
 
 // ─── Raw report card (Connection vs Onboarded) ────────────────────────────────
-function OnboardingReportCard() {
+function OnboardingReportCard({ canRefresh }: { canRefresh: boolean }) {
   const today = laToday();
   const thisMonth = today.slice(0, 7);
   const [gran, setGran] = useState<Granularity>("all");
@@ -215,7 +216,7 @@ function OnboardingReportCard() {
   const { data: status, refetch } = useQuery<ObStatus>({
     queryKey: ["obReportStatus", from, to],
     queryFn: async () => {
-      const res = await fetch(`${BASE}/api/ob-report/status${qs}`);
+      const res = await apiFetch(`${BASE}/api/ob-report/status${qs}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     },
@@ -225,7 +226,7 @@ function OnboardingReportCard() {
 
   const refreshMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch(`${BASE}/api/ob-report/refresh`, { method: "POST" });
+      const res = await apiFetch(`${BASE}/api/ob-report/refresh`, { method: "POST" });
       if (!res.ok && res.status !== 409) throw new Error(`HTTP ${res.status}`);
       return res.json().catch(() => ({}));
     },
@@ -235,7 +236,7 @@ function OnboardingReportCard() {
   const download = async () => {
     setDownloading(true);
     try {
-      const res = await fetch(`${BASE}/api/ob-report/download${qs}`);
+      const res = await apiFetch(`${BASE}/api/ob-report/download${qs}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
@@ -317,11 +318,13 @@ function OnboardingReportCard() {
                 className="bg-transparent text-xs outline-none" />
             </div>
           )}
-          <Button size="sm" variant="outline" onClick={() => refreshMutation.mutate()} disabled={running}>
-            {running
-              ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Refreshing…</>
-              : <><RefreshCw className="h-4 w-4 mr-1" />Refresh</>}
-          </Button>
+          {canRefresh && (
+            <Button size="sm" variant="outline" onClick={() => refreshMutation.mutate()} disabled={running}>
+              {running
+                ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Refreshing…</>
+                : <><RefreshCw className="h-4 w-4 mr-1" />Refresh</>}
+            </Button>
+          )}
           <Button size="sm" onClick={download} disabled={downloading || !status || status.totalCalls === 0}>
             {downloading
               ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Preparing…</>
@@ -373,7 +376,7 @@ function laToday(): string {
   }).format(new Date());
 }
 
-export function OnboardingPanel() {
+export function OnboardingPanel({ canRefresh }: { canRefresh: boolean }) {
   const today = laToday();
   const thisMonth = today.slice(0, 7);
   const [gran, setGran] = useState<Granularity>("all");
@@ -404,7 +407,7 @@ export function OnboardingPanel() {
   const { data, isLoading, isError, refetch, isFetching } = useQuery<Analytics>({
     queryKey: ["obAnalytics", from, to],
     queryFn: async () => {
-      const res = await fetch(`${BASE}/api/ob-analytics${qs}`);
+      const res = await apiFetch(`${BASE}/api/ob-analytics${qs}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     },
@@ -414,7 +417,7 @@ export function OnboardingPanel() {
   const downloadExcel = async () => {
     setDownloading(true);
     try {
-      const res = await fetch(`${BASE}/api/ob-analytics/download${qs}`);
+      const res = await apiFetch(`${BASE}/api/ob-analytics/download${qs}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
@@ -495,7 +498,7 @@ export function OnboardingPanel() {
 
   return (
     <div className="space-y-6">
-      <OnboardingReportCard />
+      <OnboardingReportCard canRefresh={canRefresh} />
 
       {/* Controls */}
       <div className="rounded-xl border border-border bg-card backdrop-blur p-5 space-y-4">

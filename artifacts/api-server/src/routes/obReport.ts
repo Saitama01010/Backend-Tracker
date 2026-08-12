@@ -4,7 +4,8 @@ import { db, phoneCallsTable, onboardingClassificationsTable, onboardingReportSt
 import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { runSync } from "./quoSync.js";
 import { logger } from "../lib/logger.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+import { setPrivateDownloadHeaders, validateOptionalWorkflowRange } from "../lib/sensitiveWorkflowPolicy.js";
 import {
   anthropicErrorStatus,
   anthropicRequestId,
@@ -14,30 +15,29 @@ import {
   toolInput,
   usageFields,
 } from "../lib/anthropic.js";
-import { withDatabaseLease } from "../lib/aiRateLimit.js";
+import { AI_UNTRUSTED_DATA_SYSTEM_POLICY, wrapUntrustedAiData } from "../lib/aiPrivacy.js";
+import { AiRateLimitError, withDatabaseLease, withDurableAiLimit } from "../lib/aiRateLimit.js";
+import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
+import { manualJobKey } from "../lib/durableBackgroundJobs.js";
+import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
+import { businessDayWindow } from "../lib/businessTime.js";
 
 const router: IRouter = Router();
 
 // ─── Onboarding line constants ────────────────────────────────────────────────
-const LINE_ID = "PNdcJ0UEu5";
-const LINE_NUMBER = "+19493157441";
-const LINE_LABEL = "(949) 315-7441";
-const MODEL = process.env["ANTHROPIC_OB_MODEL"]?.trim() || "claude-haiku-4-5";
+const LINE_ID = OPERATIONAL_CONFIG.lineIds.onboarding;
+const LINE_NUMBER = OPERATIONAL_CONFIG.lineIds.onboardingNumber;
+const LINE_LABEL = OPERATIONAL_CONFIG.lineIds.onboardingLabel;
+const MODEL = OPERATIONAL_CONFIG.aiModels.onboarding;
 const CONCURRENCY = Math.max(1, Math.min(4, Number(process.env["OB_CONC"] ?? 2) || 2));
 const TAX_RE = /\btaxes?\b/i;
 
 // ─── Date range helpers (LA timezone, mirrors obAnalytics) ────────────────────
-const TZ = "America/Los_Angeles";
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-function caDate(d: Date): string {
-  return d.toLocaleDateString("en-CA", { timeZone: TZ });
-}
 /** Midnight (California) for a YYYY-MM-DD string → UTC bounds for that CA day. */
 function caDateBounds(dateStr: string): { from: Date; to: Date } {
-  const pdtMidnight = new Date(`${dateStr}T07:00:00Z`);
-  const fromMs =
-    caDate(pdtMidnight) === dateStr ? pdtMidnight.getTime() : pdtMidnight.getTime() + 60 * 60 * 1000;
-  return { from: new Date(fromMs), to: new Date(fromMs + 24 * 60 * 60 * 1000) };
+  const { start, endExclusive } = businessDayWindow(dateStr);
+  return { from: start, to: endExclusive };
 }
 function parseRange(from?: string, to?: string): { fromDate: Date; toDate: Date } {
   let fromDate = !from
@@ -129,6 +129,7 @@ function buildTranscript(dialogue: DialogueLine[]): string {
 }
 
 const SYS_PROMPT = `You analyze transcripts from a debt-relief company's ONBOARDING phone line (Better Lending).
+${AI_UNTRUSTED_DATA_SYSTEM_POLICY}
 On this line, a closer/sales rep usually warm-transfers a customer who just signed up, and the ONBOARDING agent enrolls them (collects file/case number, sets up the payment schedule, confirms the program, welcomes them).
 Return the result only through the provided classification tool with these fields:
 {
@@ -186,7 +187,7 @@ function validateClassifyResult(value: unknown): ClassifyResult | null {
 }
 
 async function classify(
-  agentName: string | null,
+  _agentName: string | null,
   direction: string,
   transcript: string,
 ): Promise<ClassifyAttempt> {
@@ -194,7 +195,7 @@ async function classify(
     const response = await createAnthropicToolMessage({
       model: MODEL,
       system: SYS_PROMPT,
-      prompt: `Onboarding agent who handled this call (our system): ${agentName ?? "unknown"}\nDirection: ${direction}\n\nTRANSCRIPT:\n${transcript}`,
+      prompt: `Onboarding agent identity: [AUTHORIZED_EMPLOYEE]\nDirection: ${direction}\n\n${wrapUntrustedAiData("quo_onboarding_transcript", transcript, 14_000)}`,
       tool: CLASSIFICATION_TOOL,
       maxTokens: 256,
     });
@@ -244,16 +245,12 @@ async function writeState(patch: {
 }
 
 // ─── Main refresh job ─────────────────────────────────────────────────────────
-let jobRunning = false;
-
-async function runReport(): Promise<void> {
-  if (jobRunning) return;
-  jobRunning = true;
-
+export async function runOnboardingReportRefresh(signal?: AbortSignal): Promise<void> {
   try {
     await withDatabaseLease("outbound_call_classifier", async () => {
-    await writeState({ isRunning: true, lastError: null, progressDone: 0, progressTotal: 0 });
-    logger.info("obReport: refresh started");
+      signal?.throwIfAborted();
+      await writeState({ isRunning: true, lastError: null, progressDone: 0, progressTotal: 0 });
+      logger.info("obReport: refresh started");
 
     // 1) Pull the newest calls (extend the range up to today). The background
     //    sync covers all lines on a 15-min cycle; here we only need a small
@@ -265,9 +262,9 @@ async function runReport(): Promise<void> {
     const syncHours = Number(process.env["OB_SYNC_HOURS"] ?? 6);
     const syncFrom = new Date(Date.now() - syncHours * 60 * 60 * 1000);
     try {
-      await runSync(syncFrom, new Date(), { onlyLineId: LINE_ID });
+      await runSync(syncFrom, new Date(), { onlyLineId: LINE_ID, signal });
     } catch (err) {
-      logger.warn({ err: String(err) }, "obReport: recent sync failed, continuing with existing data");
+      logger.warn({ errorCode: sanitizedErrorMessage(err) }, "obReport: recent sync failed, continuing with existing data");
     }
 
     // 2) Find completed calls on the onboarding line that aren't classified yet.
@@ -295,6 +292,7 @@ async function runReport(): Promise<void> {
 
     async function worker() {
       while (idx < pending.length) {
+        signal?.throwIfAborted();
         const i = idx++;
         const call = pending[i]!;
         try {
@@ -351,7 +349,7 @@ async function runReport(): Promise<void> {
             }
           }
         } catch (err) {
-          logger.warn({ err: String(err), callId: call.id }, "obReport: call processing error");
+          logger.warn({ errorCode: sanitizedErrorMessage(err), callId: call.id }, "obReport: call processing error");
         }
         done++;
         if (done % 10 === 0 || done === pending.length) {
@@ -366,10 +364,10 @@ async function runReport(): Promise<void> {
     logger.info({ classified: pending.length }, "obReport: refresh done");
     });
   } catch (err) {
-    logger.error({ err: String(err) }, "obReport: refresh failed");
-    await writeState({ isRunning: false, lastError: String(err) });
-  } finally {
-    jobRunning = false;
+    const errorCode = sanitizedErrorMessage(err);
+    logger.error({ errorCode }, "obReport: refresh failed");
+    await writeState({ isRunning: false, lastError: errorCode });
+    throw err;
   }
 }
 
@@ -658,18 +656,48 @@ function sortByCount(rec: Record<string, number>): [string, number][] {
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 // POST /api/ob-report/refresh — start a background refresh (sync + classify new calls)
-router.post("/ob-report/refresh", requireAuth, async (req, res) => {
-  if (jobRunning) {
+router.post("/ob-report/refresh", requireAuth, requireRole("admin"), async (req, res) => {
+  if (await postgresBackgroundJobStore.findActive("onboarding_report_refresh")) {
     return res.status(409).json({ error: "A refresh is already running" });
   }
-  void runReport();
-  return res.json({ started: true });
+  try {
+    await withDurableAiLimit({
+      feature: "onboarding_report_refresh",
+      userId: req.user!.userId,
+      perMinute: 1,
+      perDay: 10,
+    }, async () => undefined);
+  } catch (error) {
+    if (error instanceof AiRateLimitError) {
+      res.setHeader("Retry-After", String(error.retryAfter));
+      return res.status(429).json({ error: "Onboarding report refresh limit reached" });
+    }
+    return res.status(503).json({ error: "Onboarding refresh controls are unavailable" });
+  }
+  try {
+    await postgresBackgroundJobStore.enqueue({
+      jobType: "onboarding_report_refresh",
+      idempotencyKey: manualJobKey("onboarding_report_refresh", req.user!.userId),
+      requestedByUserId: req.user!.userId,
+      priority: 80,
+      maxAttempts: 3,
+    });
+    return res.json({ started: true });
+  } catch (error) {
+    req.log.error(error, "onboarding refresh enqueue failed");
+    return res.status(503).json({ error: "Onboarding refresh could not be queued" });
+  }
 });
 
 // GET /api/ob-report/status — current refresh + report stats
-router.get("/ob-report/status", async (req, res) => {
+router.get("/ob-report/status", requireAuth, async (req, res) => {
   try {
-    const state = await readState();
+    const requestedRange = validateOptionalWorkflowRange(req.query["from"], req.query["to"]);
+    if (!requestedRange.ok) return res.status(400).json({ error: requestedRange.error });
+    const [state, activeJob] = await Promise.all([
+      readState(),
+      postgresBackgroundJobStore.findActive("onboarding_report_refresh"),
+    ]);
     const { fromDate, toDate } = rangeFromQuery(req);
     const rangeWhere = and(
       eq(phoneCallsTable.lineId, LINE_ID),
@@ -703,10 +731,7 @@ router.get("/ob-report/status", async (req, res) => {
     }
 
     return res.json({
-      // Derive `running` from the in-memory flag only. The DB `isRunning` can be
-      // left stale-true if the server restarts mid-job, which would otherwise pin
-      // the UI in a perpetual "refreshing" state.
-      running: jobRunning,
+      running: Boolean(activeJob),
       progressDone: state?.progressDone ?? 0,
       progressTotal: state?.progressTotal ?? 0,
       lastRunAt: state?.lastRunAt ?? null,
@@ -724,18 +749,16 @@ router.get("/ob-report/status", async (req, res) => {
 });
 
 // GET /api/ob-report/download — stream the latest Excel workbook
-router.get("/ob-report/download", async (req, res) => {
+router.get("/ob-report/download", requireAuth, async (req, res) => {
   try {
     const from = typeof req.query["from"] === "string" ? req.query["from"] : undefined;
     const to = typeof req.query["to"] === "string" ? req.query["to"] : undefined;
+    const requestedRange = validateOptionalWorkflowRange(from, to);
+    if (!requestedRange.ok) return res.status(400).json({ error: requestedRange.error });
     const rows = await loadReportRows(from, to);
     const wb = await buildWorkbook(rows);
     const stamp = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    );
-    res.setHeader("Content-Disposition", `attachment; filename="Onboarding_Line_Report_${stamp}.xlsx"`);
+    setPrivateDownloadHeaders(res, `Onboarding_Line_Report_${stamp}.xlsx`);
     await wb.xlsx.write(res);
     res.end();
     return;

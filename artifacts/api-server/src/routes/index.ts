@@ -1,4 +1,8 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
+import { requireAuth } from "../middleware/auth.js";
+import { authorizeApiDateParameters, authorizeApiRoute } from "./authorizationPolicy.js";
+import { isPublicApiRoute } from "./apiPolicy.js";
+import { rateLimitExpensiveActions } from "../middleware/abuseProtection.js";
 import healthRouter from "./health";
 import quoRouter from "./quo";
 import quoWebhookRouter from "./quoWebhook";
@@ -19,8 +23,41 @@ import qaRouter from "./qa";
 import obReportRouter from "./obReport";
 import obAnalyticsRouter from "./obAnalytics";
 import liveTransfersRouter from "./liveTransfers";
+import backgroundJobsRouter from "./backgroundJobs";
 
 const router: IRouter = Router();
+
+function defaultPrivateApiAuthentication(req: Request, res: Response, next: NextFunction) {
+  if (isPublicApiRoute(req.method, req.path)) {
+    next();
+    return;
+  }
+  void requireAuth(req, res, next);
+}
+
+function defaultPrivateApiAuthorization(req: Request, res: Response, next: NextFunction) {
+  const decision = authorizeApiRoute(req.method, req.path, req.user);
+  const datesAllowed = authorizeApiDateParameters(
+    req.method,
+    req.path,
+    req.user,
+    req.query as Record<string, unknown>,
+    (req.body ?? {}) as Record<string, unknown>,
+  );
+  if (decision.allowed && datesAllowed) {
+    next();
+    return;
+  }
+  if (!req.user) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  res.status(403).json({ error: "Forbidden" });
+}
+
+router.use(defaultPrivateApiAuthentication);
+router.use(defaultPrivateApiAuthorization);
+router.use(rateLimitExpensiveActions);
 
 router.use(healthRouter);
 router.use(authRouter);
@@ -41,6 +78,7 @@ router.use(qaRouter);
 router.use(obReportRouter);
 router.use(obAnalyticsRouter);
 router.use(liveTransfersRouter);
+router.use(backgroundJobsRouter);
 
 router.use(teamAgentsRouter);
 

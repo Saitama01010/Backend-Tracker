@@ -4,16 +4,34 @@
   "license": "MIT",
   "packageManager": "pnpm@10.23.0",
   "scripts": {
+    "audit:dependencies": "node ./scripts/security/run-pnpm-audit.mjs",
     "preinstall": "node ./scripts/preinstall.mjs",
     "build": "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/agent-dashboard run build",
     "build:full": "pnpm run typecheck && pnpm -r --if-present run build",
     "vercel-build": "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/agent-dashboard run build",
     "test": "pnpm --filter @workspace/api-server run test",
+    "test:baseline": "pnpm --filter @workspace/api-server run test:baseline",
+    "test:smoke": "pnpm --filter @workspace/api-server run test:smoke",
+    "test:security": "pnpm --filter @workspace/agent-dashboard run test:security && pnpm --filter @workspace/api-server run test:security",
+    "test:performance": "pnpm --filter @workspace/api-server run test:performance",
+    "test:frontend-performance": "pnpm --filter @workspace/agent-dashboard run test:performance",
+    "test:data-correctness": "pnpm --filter @workspace/agent-dashboard run test:data-correctness && pnpm --filter @workspace/api-server run test:data-correctness",
+    "test:security-ci": "node --test ./scripts/security/security-ci.test.mjs",
+    "test:release-readiness": "pnpm --filter @workspace/db run test:release-readiness",
+    "check:frontend-bundle": "node ./scripts/check-frontend-bundle.mjs",
+    "db:bootstrap-empty": "pnpm --filter @workspace/db run bootstrap-empty",
+    "db:preflight": "pnpm --filter @workspace/db run preflight",
+    "db:verify-schema-contract": "pnpm --filter @workspace/db run verify-schema-contract",
+    "baseline:serve": "pnpm --filter @workspace/api-server run baseline:serve",
     "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
+    "lint": "eslint . --max-warnings=0"
   },
   "private": true,
   "devDependencies": {
+    "eslint": "10.8.1",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "typescript-eslint": "8.66.0",
     "typescript": "~5.9.2",
     "prettier": "^3.8.1"
   }

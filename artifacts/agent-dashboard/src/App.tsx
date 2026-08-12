@@ -1,5 +1,7 @@
-import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
+import { AvatarIcon, AvatarName } from "@/components/AvatarName";
+import { TablePager, usePaginatedRows } from "@/components/TablePager";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,6 +12,20 @@ import { Label } from "@/components/ui/label";
 import { Calendar as CalendarPicker } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { API_SESSION_RENEWED_EVENT, API_UNAUTHORIZED_EVENT, apiFetch } from "@/lib/api";
+import { UserContext, authHeaders, useUser, type AuthUser, type Permission, type TeamAccess } from "@/lib/authContext";
+import { unparseCsv } from "@/lib/csvExport";
+import { dashboardQueryClient, clearDashboardQueryCache } from "@/lib/dashboardQueryClient";
+import { accountQueryScope, pollingDelay, queryPollingInterval } from "@/lib/queryPolicy";
+import { loadBackendStatsSheetSources, readSheetResponse } from "@/lib/sheetData";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import {
+  addCalendarDays as addBusinessCalendarDays,
+  businessDateApiRange,
+  formatBusinessDate,
+  parseStaffTimestamp,
+} from "@/lib/businessDate";
+import { DASHBOARD_OPERATIONAL_CONFIG, googleCsvUrl } from "@/lib/dashboardConfig";
 import {
   Table,
   TableBody,
@@ -20,7 +36,6 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import Papa from "papaparse";
 import companyLogo from "./assets/company-logo.jpeg";
 import * as React from "react";
 import { createPortal } from "react-dom";
@@ -86,22 +101,40 @@ import {
   MoreVertical,
   type LucideIcon,
 } from "lucide-react";
-import {
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  PieChart,
-  Pie,
-  Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip as RTooltip,
-  Legend as RLegend,
-} from "recharts";
-import { OnboardingPanel } from "./OnboardingPanel";
+
+const OnboardingPanel = React.lazy(() =>
+  import("./OnboardingPanel").then((module) => ({ default: module.OnboardingPanel })),
+);
+const BackendStatsCharts = React.lazy(() => import("./features/backend-stats/BackendStatsCharts"));
+
+function DeferredSamia() {
+  const [SamiaComponent, setSamiaComponent] = useState<React.ComponentType<{ initialOpen?: boolean }> | null>(null);
+  const [loading, setLoading] = useState(false);
+  if (SamiaComponent) return <SamiaComponent initialOpen />;
+
+  async function activate() {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const module = await import("./features/samia/SamiaChat");
+      setSamiaComponent(() => module.default);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => void activate()}
+      disabled={loading}
+      className="fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full bg-primary text-white shadow-lg flex items-center justify-center hover:scale-105 transition-transform"
+      aria-label={loading ? "Loading Samia" : "Open Samia"}
+    >
+      {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Sparkles className="h-5 w-5" />}
+    </button>
+  );
+}
 
 type ThemeMode = "light" | "dark";
 
@@ -189,19 +222,8 @@ function ThemeToggle({ className }: { className?: string }) {
   );
 }
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      refetchOnWindowFocus: false,
-      staleTime: 30_000,
-      gcTime: 5 * 60_000,
-    },
-  },
-});
-
 // ─── Auth Context ────────────────────────────────────────────────────────────
 
-type Permission = "view_metrics" | "view_attendance" | "edit_attendance" | "manage_members" | "view_missed_tables";
 const ALL_PERMISSIONS: { key: Permission; label: string; desc: string }[] = [
   { key: "view_metrics",      label: "View Metrics",        desc: "See Retention, NSF, CS & Quo Lines tabs" },
   { key: "view_attendance",   label: "View Attendance",     desc: "See the Attendance grid" },
@@ -535,93 +557,6 @@ function AnimatedValueSelect<T extends string>({
   );
 }
 
-const AVATAR_PALETTES = [
-  "from-rose-500 to-orange-400",
-  "from-amber-400 to-lime-500",
-  "from-emerald-400 to-teal-500",
-  "from-sky-400 to-blue-500",
-  "from-violet-400 to-fuchsia-500",
-  "from-pink-400 to-rose-500",
-  "from-cyan-400 to-indigo-500",
-  "from-stone-400 to-zinc-600",
-];
-
-function hashString(value: string) {
-  let hash = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
-  }
-  return Math.abs(hash);
-}
-
-function personInitials(name: string) {
-  const clean = name.replace(/[^a-zA-Z0-9\s-]/g, " ").trim();
-  const parts = clean.split(/[\s-]+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
-}
-
-function AvatarIcon({
-  name,
-  size = "md",
-  className,
-}: {
-  name: string;
-  size?: "xs" | "sm" | "md" | "lg";
-  className?: string;
-}) {
-  const palette = AVATAR_PALETTES[hashString(name || "user") % AVATAR_PALETTES.length];
-  const sizeClass =
-    size === "xs" ? "h-6 w-6 text-[10px]" :
-    size === "sm" ? "h-7 w-7 text-[11px]" :
-    size === "lg" ? "h-10 w-10 text-sm" :
-                    "h-8 w-8 text-xs";
-
-  return (
-    <motion.span
-      initial={{ scale: 0.82, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
-      transition={{ type: "spring", stiffness: 350, damping: 28 }}
-      className={cn(
-        "avatar-initial inline-flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br font-bold text-white shadow-sm ring-1 ring-white/15",
-        palette,
-        sizeClass,
-        className,
-      )}
-      aria-hidden="true"
-    >
-      {personInitials(name)}
-    </motion.span>
-  );
-}
-
-function AvatarName({
-  name,
-  subtitle,
-  size = "md",
-  className,
-  textClassName,
-  subtitleClassName,
-}: {
-  name: string;
-  subtitle?: React.ReactNode;
-  size?: "xs" | "sm" | "md" | "lg";
-  className?: string;
-  textClassName?: string;
-  subtitleClassName?: string;
-}) {
-  return (
-    <span className={cn("inline-flex min-w-0 items-center gap-2", className)}>
-      <AvatarIcon name={name} size={size} />
-      <span className="min-w-0">
-        <span className={cn("block truncate", textClassName)}>{name}</span>
-        {subtitle && <span className={cn("block truncate text-xs text-muted-foreground", subtitleClassName)}>{subtitle}</span>}
-      </span>
-    </span>
-  );
-}
-
 function AnimatedMetricsNav({
   tabs,
   value,
@@ -668,19 +603,6 @@ function AnimatedMetricsNav({
       </div>
     </div>
   );
-}
-
-type TeamAccess = "retention" | "nsf" | "cs";
-interface AuthUser { id: number; username: string; role: "admin" | "edit" | "view"; permissions: Permission[]; teamAccess?: TeamAccess | null; allowedTabs?: string[] | null; allowedAgents?: string[] | null; allowedSubTabs?: string[] | null; lockToToday?: boolean; hideBackendStats?: boolean; }
-interface AuthCtx { user: AuthUser; token: string; logout: () => void; can: (p: Permission) => boolean; canSeeTab: (tab: string) => boolean; }
-const UserContext = createContext<AuthCtx | null>(null);
-function useUser() {
-  const ctx = useContext(UserContext);
-  if (!ctx) throw new Error("useUser must be used inside LoginGate");
-  return ctx;
-}
-function authHeaders(token: string) {
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
 }
 
 // ─── Roster Context ──────────────────────────────────────────────────────────
@@ -962,12 +884,12 @@ function RosterProvider({ children }: { children: React.ReactNode }) {
   const q = useQuery<RosterAgent[]>({
     queryKey: ["roster"],
     queryFn: async () => {
-      const r = await fetch("/api/team-agents", { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch("/api/team-agents", { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) return [];
       return r.json() as Promise<RosterAgent[]>;
     },
     staleTime: 15_000,
-    refetchInterval: 30_000, // poll every 30s so new roster entries appear within ~30s
+    refetchInterval: queryPollingInterval({ baseMs: 30_000 }), // poll while this authenticated dashboard is active
     refetchOnWindowFocus: true,
   });
   const idx = useMemo(() => buildRosterIndex(q.data ?? []), [q.data]);
@@ -1033,25 +955,25 @@ function rosterDrivesTeam(roster: RosterIndex | null | undefined, team: RosterTe
 }
 
 const RETENTION = {
-  status: "https://docs.google.com/spreadsheets/d/1qF5Dc5quGrAywf5Rtx4q7DrX91VlNIFOfKr-REoSkII/export?format=csv&gid=0",
+  status: googleCsvUrl(DASHBOARD_OPERATIONAL_CONFIG.sheets.oldRetention),
 };
 const NEW_RETENTION_URL =
-  "https://docs.google.com/spreadsheets/d/1Eje6BABFbmRGHa6D1ET2sMvlE8o61iJ71yOvydD-R3o/export?format=csv&gid=837339339";
+  googleCsvUrl(DASHBOARD_OPERATIONAL_CONFIG.sheets.newRetention);
 const NEW_NSF_URL =
-  "https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=0";
+  googleCsvUrl(DASHBOARD_OPERATIONAL_CONFIG.sheets.newNsf);
 // IDP-Handled submissions tab in the same Discord-bot spreadsheet — all rows count as IDP-Handled.
 // Browser fetches of this tab fail silently when fetched concurrently with gid=0 (same spreadsheet).
 // Route through the API server proxy so the server fetches it without browser CORS constraints.
 const IDP_RETENTION_URL =
-  `/api/csv-proxy?url=${encodeURIComponent("https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=871007220")}`;
+  `/api/csv-proxy?url=${encodeURIComponent(googleCsvUrl(DASHBOARD_OPERATIONAL_CONFIG.sheets.idpHandled))}`;
 // IDP Cancel Retained tab — same spreadsheet, fetched sequentially to avoid silent drops.
 // Every row counts as "Retained" (file was ultimately retained via the IDP cancel path).
 const IDP_CANCEL_RETAINED_URL =
-  `/api/csv-proxy?url=${encodeURIComponent("https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=1018337469")}`;
+  `/api/csv-proxy?url=${encodeURIComponent(googleCsvUrl(DASHBOARD_OPERATIONAL_CONFIG.sheets.idpCancelRetained))}`;
 // Records on/after this date come from the new Discord-bot sheets; older records from the old sheets.
-const RETENTION_CUTOVER = new Date("2026-05-04T00:00:00");
+const RETENTION_CUTOVER = DASHBOARD_OPERATIONAL_CONFIG.retentionCutoverDate;
 const NSF = {
-  status: "https://docs.google.com/spreadsheets/d/16qoZESE0gGQPdOXQUSh2JsadWDmUE7OyCajRwBy0E38/export?format=csv&gid=0",
+  status: googleCsvUrl(DASHBOARD_OPERATIONAL_CONFIG.sheets.oldNsf),
 };
 
 type Row = Record<string, string>;
@@ -1225,26 +1147,22 @@ type SheetSourceMeta = {
 const SHEET_SOURCES = {
   retentionSubmission: {
     sourceName: "Cancelation Requests Updates",
-    spreadsheetId: "1Eje6BABFbmRGHa6D1ET2sMvlE8o61iJ71yOvydD-R3o",
-    gid: "837339339",
+    ...DASHBOARD_OPERATIONAL_CONFIG.sheets.newRetention,
     tabName: "Retention Submission",
   },
   backend: {
     sourceName: "Back-end submissions",
-    spreadsheetId: "11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc",
-    gid: "0",
+    ...DASHBOARD_OPERATIONAL_CONFIG.sheets.newNsf,
     tabName: "backend",
   },
   idpHandled: {
     sourceName: "Back-end submissions",
-    spreadsheetId: "11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc",
-    gid: "871007220",
+    ...DASHBOARD_OPERATIONAL_CONFIG.sheets.idpHandled,
     tabName: "idp-handled",
   },
   idpCancelRetained: {
     sourceName: "Back-end submissions",
-    spreadsheetId: "11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc",
-    gid: "1018337469",
+    ...DASHBOARD_OPERATIONAL_CONFIG.sheets.idpCancelRetained,
     tabName: "idp-cancel-retained",
   },
 } as const satisfies Record<string, SheetSourceMeta>;
@@ -1462,24 +1380,36 @@ function classifyTraceRowForPanel(
 // endpoint (/api/sheet), so the source spreadsheets can stay private. Accepts
 // any Google Sheets URL (or the legacy /api/csv-proxy?url=... wrapper) and
 // extracts the spreadsheet id + gid from it.
+function currentAccountQueryScope(): string {
+  let userId: number | null = null;
+  try {
+    const storedUser = localStorage.getItem("tracker_user");
+    userId = storedUser ? (JSON.parse(storedUser) as { id?: number }).id ?? null : null;
+  } catch {
+    userId = null;
+  }
+  return accountQueryScope(userId);
+}
+
+async function fetchSheetSource(id: string, gid: string): Promise<SheetData> {
+  const scope = currentAccountQueryScope();
+  return dashboardQueryClient.fetchQuery({
+    queryKey: ["sheet-source", scope, id, gid],
+    staleTime: SHEET_REFETCH_MS,
+    queryFn: async () => {
+      const params = new URLSearchParams({ id, gid });
+      const res = await apiFetch(`/api/sheet?${params.toString()}`);
+      return readSheetResponse(res);
+    },
+  });
+}
+
 async function fetchHeaderCsv(url: string): Promise<SheetData> {
   const decoded = decodeURIComponent(url);
   const idMatch = decoded.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
   const gidMatch = decoded.match(/[?&]gid=(\d+)/);
   if (!idMatch) throw new Error("Unrecognized Google Sheets URL.");
-  const id = idMatch[1];
-  const gid = gidMatch?.[1] ?? "0";
-  const params = new URLSearchParams({ id, gid, _: String(Date.now()) });
-  const res = await fetch(`/api/sheet?${params.toString()}`, {
-    cache: "no-store",
-    headers: {
-      "Cache-Control": "no-cache",
-      "Pragma": "no-cache",
-    },
-  });
-  if (!res.ok) throw new Error(`Failed to load sheet (HTTP ${res.status}).`);
-  const data = (await res.json()) as SheetData;
-  return { headers: data.headers ?? [], rows: data.rows ?? [] };
+  return fetchSheetSource(idMatch[1], gidMatch?.[1] ?? "0");
 }
 
 
@@ -1632,7 +1562,7 @@ async function fetchRetentionCombinedSheet(
     const d = parseEgyptTimestamp(tsRaw);
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
-    if (caDate < "2026-05-04") continue;
+    if (caDate < RETENTION_CUTOVER) continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
     if (!includeForRetention(agentRaw, "retention:new", r, "Agent Name")) continue;
     const kw = detectKeywordStatus(r);
@@ -1651,7 +1581,7 @@ async function fetchRetentionCombinedSheet(
     const d = parseEgyptTimestamp(tsRaw);
     if (!d) continue;
     const caDate = toCaliforniaDateStr(d);
-    if (caDate < "2026-05-04") continue;
+    if (caDate < RETENTION_CUTOVER) continue;
     const agentRaw = (r["Agent Name"] ?? "").trim();
     // Roster-aware team gate: respects rosterDrives + inactive hide + segment lookup.
     if (!includeForRetention(agentRaw, "retention:discord", r, "Agent Name")) {
@@ -2558,14 +2488,11 @@ function toIsoDate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-const CA_TZ = "America/Los_Angeles";
+const CA_TZ = DASHBOARD_OPERATIONAL_CONFIG.businessTimeZone;
 
 /** Returns today's date as "YYYY-MM-DD" in PDT, regardless of device timezone. */
 function todayPDT(): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: CA_TZ,
-    year: "numeric", month: "2-digit", day: "2-digit",
-  }).format(new Date());
+  return formatBusinessDate();
 }
 
 /** Returns current year/month(0-indexed)/date components in PDT. */
@@ -2590,41 +2517,19 @@ function formatPDTDate(d: Date): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: CA_TZ });
 }
 
-// Discord-bot sheets record timestamps in Egypt local time (EET = UTC+2, no DST since 2011).
-// This parses those timestamps and returns a proper UTC Date so the California date can be derived.
+// Discord-bot sheets record timestamps in Egypt local time. Resolve them with
+// Africa/Cairo IANA data so Egypt's current DST rules are applied by date.
 // Google Forms timestamp format is typically "M/D/YYYY HH:MM:SS".
 function parseEgyptTimestamp(s: string): Date | null {
   if (!s) return null;
   const trimmed = s.trim();
-
-  let year: number, month: number, day: number, hour = 0, minute = 0, second = 0;
-
-  // "M/D/YYYY HH:MM:SS" (Google Forms default)
-  const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(trimmed);
-  // "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS"
-  const iso = /^(\d{4})-(\d{2})-(\d{2})[T\s](\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(trimmed);
-
-  if (us) {
-    month  = Number(us[1]); day    = Number(us[2]); year   = Number(us[3]);
-    hour   = Number(us[4]); minute = Number(us[5]); second = Number(us[6] ?? 0);
-  } else if (iso) {
-    year   = Number(iso[1]); month  = Number(iso[2]); day    = Number(iso[3]);
-    hour   = Number(iso[4]); minute = Number(iso[5]); second = Number(iso[6] ?? 0);
-  } else {
-    // Date-only string — no time means no timezone conversion needed
-    return parseDate(trimmed);
-  }
-
-  // Egypt is permanently UTC+2 → subtract 2 h to get UTC
-  const utcMs = Date.UTC(year, month - 1, day, hour - 2, minute, second);
-  const d = new Date(utcMs);
-  return isNaN(d.getTime()) ? null : d;
+  return parseStaffTimestamp(trimmed) ?? parseDate(trimmed);
 }
 
 // Given a UTC Date, return the YYYY-MM-DD date string in California time (America/Los_Angeles).
 // This correctly handles Pacific Standard Time (UTC-8) and Pacific Daylight Time (UTC-7).
 const _caFmt = new Intl.DateTimeFormat("en-CA", {
-  timeZone: "America/Los_Angeles",
+  timeZone: CA_TZ,
   year: "numeric", month: "2-digit", day: "2-digit",
 });
 function toCaliforniaDateStr(d: Date): string {
@@ -2979,10 +2884,7 @@ function aggregate(
     // Use California time (America/Los_Angeles) — sheet dates are stored in CA time.
     // Do NOT use browser local time here: some browsers may be in non-LA timezones,
     // always derive "today" explicitly in LA time.
-    const todayIso = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "America/Los_Angeles",
-      year: "numeric", month: "2-digit", day: "2-digit",
-    }).format(new Date()); // "YYYY-MM-DD"
+    const todayIso = todayPDT();
     const thisMonthStr = todayIso.slice(0, 7); // "YYYY-MM"
     for (const r of status.rows) {
       const d = parseSheetDate(sheetDateValue(r, dateColumn), dateColumn);
@@ -3167,7 +3069,7 @@ function RosterAgentDetailsDialog({
     if (!hit || !agentName.trim()) return;
     setSaving(true);
     try {
-      await fetch(`/api/team-agents/${hit.id}`, {
+      await apiFetch(`/api/team-agents/${hit.id}`, {
         method: "PATCH",
         headers: authHeaders(token),
         body: JSON.stringify({
@@ -3254,12 +3156,11 @@ function SortHeader({
   );
 }
 
-function startOfWeek(d: Date): Date {
+function startOfWeek(date: string): string {
   // Group week as Monday–Sunday (Sunday is the closing day, like the old sheet)
-  const day = d.getDay(); // 0=Sun..6=Sat
+  const day = new Date(`${date}T12:00:00Z`).getUTCDay(); // 0=Sun..6=Sat
   const offset = day === 0 ? -6 : 1 - day; // back to Monday
-  const start = new Date(d.getFullYear(), d.getMonth(), d.getDate() + offset);
-  return start;
+  return addBusinessCalendarDays(date, offset);
 }
 
 function sumRetained(byStatus: Map<string, number>, retained: Set<string>): number {
@@ -3299,13 +3200,12 @@ function ByDayView({ data }: { data: Aggregated }) {
       ? data.byAgentDay.get(agentFilter)!
       : data.byDay;
   // Group days into weeks (Mon–Sun) and emit a subtotal row at the end of each week
-  type WeekGroup = { weekStart: Date; days: DayBreakdown[] };
+  type WeekGroup = { weekStart: string; days: DayBreakdown[] };
   const weeks: WeekGroup[] = [];
   for (const day of sourceDays) {
-    const ws = startOfWeek(day.date);
-    const wsTime = ws.getTime();
+    const ws = startOfWeek(day.iso);
     let group = weeks[weeks.length - 1];
-    if (!group || group.weekStart.getTime() !== wsTime) {
+    if (!group || group.weekStart !== ws) {
       group = { weekStart: ws, days: [] };
       weeks.push(group);
     }
@@ -3417,17 +3317,17 @@ function ByDayView({ data }: { data: Aggregated }) {
                   byStatus: new Map<string, number>(),
                 },
               );
-              const weekEnd = new Date(week.weekStart);
-              weekEnd.setDate(weekEnd.getDate() + 6);
+              const weekStart = new Date(`${week.weekStart}T12:00:00Z`);
+              const weekEnd = new Date(`${addBusinessCalendarDays(week.weekStart, 6)}T12:00:00Z`);
               return (
                 <Fragment key={`week-frag-${wi}`}>
                   {week.days.map((d) => (
                     <TableRow key={d.iso} className="hover-elevate">
                       <TableCell className="font-medium whitespace-nowrap">
-                        {DAY_NAMES[d.date.getDay()]}
+                        {DAY_NAMES[new Date(`${d.iso}T12:00:00Z`).getUTCDay()]}
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-muted-foreground tabular-nums">
-                        {d.date.toLocaleDateString("en-US", { timeZone: CA_TZ, month: "short", day: "numeric" })}
+                        {new Date(`${d.iso}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" })}
                       </TableCell>
                       <TableCell className="text-right tabular-nums font-mono">
                         {d.calls || ""}
@@ -3459,7 +3359,7 @@ function ByDayView({ data }: { data: Aggregated }) {
                   <TableRow key={`week-${wi}`} className="bg-accent/40 font-semibold">
                     <TableCell className="whitespace-nowrap">Week of</TableCell>
                     <TableCell className="whitespace-nowrap text-muted-foreground tabular-nums">
-                      {week.weekStart.toLocaleDateString("en-US", { timeZone: CA_TZ, month: "short", day: "numeric" })} – {weekEnd.toLocaleDateString("en-US", { timeZone: CA_TZ, month: "short", day: "numeric" })}
+                      {weekStart.toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" })} – {weekEnd.toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" })}
                     </TableCell>
                     <TableCell className="text-right tabular-nums font-mono">
                       {subtotal.calls || ""}
@@ -3559,11 +3459,12 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
   const showRate = data.mode === "retention";
   const roster = useRoster();
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [sort, setSort] = useState<SortState>({ column: "__total__", dir: "desc" });
   const [selectedAgent, setSelectedAgent] = useState<AgentBreakdown | null>(null);
 
   const visible = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = debouncedSearch.trim().toLowerCase();
     let list = data.byAgent;
     if (q) list = list.filter((a) => a.agent.toLowerCase().includes(q));
     if (sort) {
@@ -3585,7 +3486,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
       });
     }
     return list;
-  }, [data, search, sort]);
+  }, [data, debouncedSearch, sort]);
 
   function toggle(column: string) {
     setSort((prev) => {
@@ -3595,7 +3496,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
     });
   }
 
-  function exportCsv() {
+  async function exportCsv() {
     // Collect all agents: sheet agents first, then phone-only agents not in the sheet
     const sheetAgents = visible.map((a) => a.agent);
     const sheetKeys = new Set(sheetAgents.map((a) => sheetToPhoneKey(a)));
@@ -3630,7 +3531,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
       record["Talk Time"] = ph ? formatDuration(ph.seconds) : "—";
       return record;
     });
-    const csv = Papa.unparse(rows);
+    const csv = await unparseCsv(rows);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -3640,7 +3541,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
     URL.revokeObjectURL(url);
   }
 
-  function exportRawRows() {
+  async function exportRawRows() {
     if (!sheetData) return;
     const agentCol = sheetAgentColumn(sheetData.headers);
     const statusCol = findColumn(sheetData.headers, ["Status", "Result", "Outcome", "Disposition"]);
@@ -3674,7 +3575,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
       };
     });
 
-    const csv = Papa.unparse(exportRows);
+    const csv = await unparseCsv(exportRows);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -3684,7 +3585,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
     URL.revokeObjectURL(url);
   }
 
-  function exportLoadedSheetDebug() {
+  async function exportLoadedSheetDebug() {
     const rows = (sheetData?.debugRows ?? []).map((r) => {
       const d = r.parsedDate ? parseDate(r.parsedDate) : null;
       const insideDateRange = !!d && (!fromDate || d >= fromDate) && (!toDate || d <= toDate);
@@ -3714,7 +3615,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
         "skip reason": counted ? "counted" : skipReason,
       };
     });
-    const csv = Papa.unparse(rows);
+    const csv = await unparseCsv(rows);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -3725,14 +3626,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
   }
 
   async function fetchSheetSourceDirect(meta: SheetSourceMeta): Promise<SheetData> {
-    const params = new URLSearchParams({ id: meta.spreadsheetId, gid: meta.gid, _: String(Date.now()) });
-    const res = await fetch(`/api/sheet?${params.toString()}`, {
-      cache: "no-store",
-      headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const loaded = (await res.json()) as SheetData;
-    return { headers: loaded.headers ?? [], rows: loaded.rows ?? [] };
+    return fetchSheetSource(meta.spreadsheetId, meta.gid);
   }
 
   async function exportJeremyTrace() {
@@ -3829,7 +3723,7 @@ function ByFilesView({ data, hideTeamRow, phoneData, sheetData, fromDate, toDate
 
     const rows = traceRows.length > 0 ? traceRows : summaries;
     console.warn("[sheet-agent-resolution:jeremy-trace]", rows);
-    const csv = Papa.unparse(rows);
+    const csv = await unparseCsv(rows);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -4013,11 +3907,15 @@ function useLiveCalls(): LiveCallStatus {
   const quoQ = useQuery<{ active: string[]; agentCalls?: { agentName: string; participant: string | null }[] }>({
     queryKey: ["liveCalls"],
     queryFn: async () => {
-      const r = await fetch("/api/quo/live");
+      const r = await apiFetch("/api/quo/live");
       if (!r.ok) return { active: [] };
       return r.json() as Promise<{ active: string[]; agentCalls?: { agentName: string; participant: string | null }[] }>;
     },
-    refetchInterval: 15 * 1000,
+    refetchInterval: queryPollingInterval({
+      baseMs: 15_000,
+      idleMs: 30_000,
+      isIdle: (data) => !data?.active?.length,
+    }),
     staleTime: 10 * 1000,
     refetchOnWindowFocus: true,
   });
@@ -4025,11 +3923,15 @@ function useLiveCalls(): LiveCallStatus {
   const vosQ = useQuery<{ liveCalls: { agentName: string | null }[]; agentStatuses: { name: string; status: string }[] }>({
     queryKey: ["vosLive"],
     queryFn: async () => {
-      const r = await fetch("/api/vos/live");
-      if (!r.ok) return { liveCalls: [], agentStatuses: [] };
+      const r = await apiFetch("/api/vos/live");
+      if (!r.ok) throw new Error("PBX live status request failed");
       return r.json();
     },
-    refetchInterval: 15 * 1000,
+    refetchInterval: queryPollingInterval({
+      baseMs: 15_000,
+      idleMs: 30_000,
+      isIdle: (data) => !data?.liveCalls?.length && !data?.agentStatuses?.length,
+    }),
     staleTime: 10 * 1000,
     refetchOnWindowFocus: true,
   });
@@ -4098,12 +4000,12 @@ function useVosStats() {
   return useQuery<LegacyVosStatsResponse>({
     queryKey: ["vosStats"],
     queryFn: async () => {
-      const r = await fetch("/api/vos/stats");
-      if (!r.ok) return { dashboard: { callsByAgent: [] }, agents: [], ringGroups: [], callHistory: [], ringGroupMissed: {} };
+      const r = await apiFetch("/api/vos/stats");
+      if (!r.ok) throw new Error("Failed to load VoSLogic stats");
       return r.json();
     },
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    refetchInterval: queryPollingInterval({ baseMs: 60_000 }),
     refetchOnWindowFocus: true,
   });
 }
@@ -4180,12 +4082,12 @@ function useMissedNoCB() {
   return useQuery<{ items: MissedNoCallbackItem[]; fetchedAt: number }>({
     queryKey: ["missedNoCB"],
     queryFn: async () => {
-      const r = await fetch("/api/vos/missed-no-callback");
+      const r = await apiFetch("/api/vos/missed-no-callback");
       if (!r.ok) return { items: [], fetchedAt: 0 };
       return r.json();
     },
     staleTime: 30_000,
-    refetchInterval: 30_000,
+    refetchInterval: queryPollingInterval({ baseMs: 30_000 }),
     refetchOnWindowFocus: true,
   });
 }
@@ -4201,12 +4103,12 @@ function useMissedDaily(mode: "times" | "numbers" = "times") {
   return useQuery<{ days: DailyMissedDay[] }>({
     queryKey: ["missedDaily", mode],
     queryFn: async () => {
-      const r = await fetch(`/api/vos/missed-daily?mode=${mode}`);
+      const r = await apiFetch(`/api/vos/missed-daily?mode=${mode}`);
       if (!r.ok) return { days: [] };
       return r.json();
     },
     staleTime: 60_000,
-    refetchInterval: 5 * 60_000,
+    refetchInterval: queryPollingInterval({ baseMs: 5 * 60_000 }),
     refetchOnWindowFocus: true,
   });
 }
@@ -4224,12 +4126,12 @@ function useMissedHourly(date: string, mode: "times" | "numbers" = "times") {
   return useQuery<{ hours: HourlyMissedHour[] }>({
     queryKey: ["missedHourly", date, mode],
     queryFn: async () => {
-      const r = await fetch(`/api/vos/missed-hourly?date=${date}&mode=${mode}`);
+      const r = await apiFetch(`/api/vos/missed-hourly?date=${date}&mode=${mode}`);
       if (!r.ok) return { hours: [] };
       return r.json();
     },
     staleTime: isToday ? 60_000 : Infinity,
-    refetchInterval: isToday ? 5 * 60_000 : false,
+    refetchInterval: isToday ? queryPollingInterval({ baseMs: 5 * 60_000 }) : false,
     refetchOnWindowFocus: isToday,
   });
 }
@@ -4321,12 +4223,12 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
   const pbxLiveQ = useQuery<{ liveCalls: VosLiveCall[]; agentStatuses: VosAgentStatus[] }>({
     queryKey: ["vosLive"],
     queryFn: async () => {
-      const r = await fetch("/api/vos/live");
-      if (!r.ok) return { liveCalls: [], agentStatuses: [] };
+      const r = await apiFetch("/api/vos/live");
+      if (!r.ok) throw new Error("PBX live status request failed");
       return r.json();
     },
     staleTime: 10_000,
-    refetchInterval: 15_000,
+    refetchInterval: queryPollingInterval({ baseMs: 15_000 }),
   });
 
   // normalizedPbxName → live call detail (for direction + duration in pills)
@@ -4343,6 +4245,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
   }, [pbxLiveQ.data]);
 
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "__calls__", dir: "desc" });
 
   const getPhone = (agent: string) =>
@@ -4358,7 +4261,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
   };
 
   const visible = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = debouncedSearch.trim().toLowerCase();
     const list = (q ? agentList.filter((a) => a.toLowerCase().includes(q)) : agentList)
       .filter((a) => ((getPhone(a)?.calls ?? 0) + (getPbx(a)?.calls ?? 0) + (getRm(a)?.calls ?? 0)) > 0);
     return [...list].sort((a, b) => {
@@ -4380,7 +4283,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
       else if (sort.col === "__agent__") { return sort.dir === "asc" ? a.localeCompare(b) : b.localeCompare(a); }
       return sort.dir === "asc" ? av - bv : bv - av;
     });
-  }, [agentList, search, sort, phoneData, pbxData, readymodeByKey, rosterPhoneAliases]);
+  }, [agentList, debouncedSearch, sort, phoneData, pbxData, readymodeByKey, rosterPhoneAliases]);
 
   function toggle(col: string) {
     setSort((s) => s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: col === "__agent__" ? "asc" : "desc" });
@@ -4430,6 +4333,12 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
 
   return (
     <div className="space-y-4">
+      {pbxLiveQ.isError && (
+        <div role="status" className="ops-card flex flex-wrap items-center justify-between gap-3 border-destructive/30 px-4 py-3 text-sm">
+          <span className="text-destructive">PBX live status is temporarily unavailable. Historical totals are unchanged.</span>
+          <Button variant="outline" size="sm" onClick={() => void pbxLiveQ.refetch()}>Retry</Button>
+        </div>
+      )}
       {liveInView.length > 0 && (
         <div className="space-y-2">
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Live calls right now</p>
@@ -4911,14 +4820,8 @@ interface PhoneStatsResponse {
 }
 
 async function fetchPhoneStats(pFrom: string, pTo: string): Promise<PhoneStatsResponse | null> {
-  const params = new URLSearchParams({ from: pFrom, to: pTo, _: String(Date.now()) });
-  const res = await fetch(`/api/quo/stats?${params.toString()}`, {
-    cache: "no-store",
-    headers: {
-      "Cache-Control": "no-cache",
-      "Pragma": "no-cache",
-    },
-  });
+  const params = new URLSearchParams({ from: pFrom, to: pTo });
+  const res = await apiFetch(`/api/quo/stats?${params.toString()}`);
   if (!res.ok) return null;
   return res.json() as Promise<PhoneStatsResponse>;
 }
@@ -4934,13 +4837,17 @@ function useReadymodeByKey(from: string, to: string, roster: RosterIndex): Map<s
     queryKey: ["readymodeStats", from, to],
     queryFn: async () => {
       const qs = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-      const res = await fetch(`/api/readymode/stats${qs}`);
+      const res = await apiFetch(`/api/readymode/stats${qs}`);
       if (!res.ok) return null;
       return res.json();
     },
     staleTime: 1000 * 30,
     refetchOnWindowFocus: true,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({
+      baseMs: 60_000,
+      idleMs: 120_000,
+      isIdle: (data) => !data?.agents?.some((agent) => agent.dialed > 0),
+    }),
   });
   return useMemo<Map<string, { calls: number; seconds: number }>>(() => {
     const m = new Map<string, { calls: number; seconds: number }>();
@@ -4998,7 +4905,7 @@ function TeamPanel({
     queryFn: statusQueryFn ? () => statusQueryFn(roster, { includeInactive }) : (() => fetchHeaderCsv(urls.status)),
     staleTime: SHEET_STALE_MS,
     refetchOnWindowFocus: false,
-    refetchInterval: SHEET_REFETCH_MS,
+    refetchInterval: queryPollingInterval({ baseMs: SHEET_REFETCH_MS }),
   });
   const isLoading = statusQ.isLoading;
   const isFetching = statusQ.isFetching;
@@ -5009,15 +4916,20 @@ function TeamPanel({
   if (toDate) toDate.setHours(23, 59, 59, 999);
 
   const phoneQ = useQuery<PhoneStatsResponse | null>({
-    queryKey: ["phoneStats", mode, from, to],
+    queryKey: ["phoneStats", from, to],
     queryFn: async () => {
-      const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
-      const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
+      const range = businessDateApiRange(from || addBusinessCalendarDays(todayPDT(), -30), to || todayPDT());
+      const pFrom = range.from;
+      const pTo = range.to;
       return fetchPhoneStats(pFrom, pTo);
     },
     staleTime: PHONE_STALE_MS,
     refetchOnWindowFocus: false,
-    refetchInterval: PHONE_REFETCH_MS,
+    refetchInterval: queryPollingInterval({
+      baseMs: PHONE_REFETCH_MS,
+      idleMs: 2 * PHONE_REFETCH_MS,
+      isIdle: (data) => !data || Object.keys(data.allAgentStats ?? {}).length === 0,
+    }),
   });
 
   const readymodeByKey = useReadymodeByKey(from, to, roster);
@@ -5264,21 +5176,24 @@ function CSPanel() {
     queryFn: () => fetchCSBackendStatsSheet(roster),
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({ baseMs: SHEET_REFETCH_MS }),
   });
 
   const phoneQ = useQuery<PhoneStatsResponse | null>({
-    queryKey: ["phoneStats", "cs", from, to],
+    queryKey: ["phoneStats", from, to],
     queryFn: async () => {
-      const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
-      const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
-      const res = await fetch(`/api/quo/stats?from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`);
-      if (!res.ok) return null;
-      return res.json() as Promise<PhoneStatsResponse>;
+      const range = businessDateApiRange(from || addBusinessCalendarDays(todayPDT(), -30), to || todayPDT());
+      const pFrom = range.from;
+      const pTo = range.to;
+      return fetchPhoneStats(pFrom, pTo);
     },
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({
+      baseMs: PHONE_REFETCH_MS,
+      idleMs: 2 * PHONE_REFETCH_MS,
+      isIdle: (data) => !data || Object.keys(data.allAgentStats ?? {}).length === 0,
+    }),
   });
 
   const readymodeByKey = useReadymodeByKey(from, to, roster);
@@ -5461,21 +5376,24 @@ function RetentionPanel() {
     queryFn: () => fetchRetentionBackendStatsSheet(roster),
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({ baseMs: SHEET_REFETCH_MS }),
   });
 
   const phoneQ = useQuery<PhoneStatsResponse | null>({
-    queryKey: ["phoneStats", "retention", from, to],
+    queryKey: ["phoneStats", from, to],
     queryFn: async () => {
-      const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
-      const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
-      const res = await fetch(`/api/quo/stats?from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`);
-      if (!res.ok) return null;
-      return res.json() as Promise<PhoneStatsResponse>;
+      const range = businessDateApiRange(from || addBusinessCalendarDays(todayPDT(), -30), to || todayPDT());
+      const pFrom = range.from;
+      const pTo = range.to;
+      return fetchPhoneStats(pFrom, pTo);
     },
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({
+      baseMs: PHONE_REFETCH_MS,
+      idleMs: 2 * PHONE_REFETCH_MS,
+      isIdle: (data) => !data || Object.keys(data.allAgentStats ?? {}).length === 0,
+    }),
   });
 
   const aggregated = useMemo(() => {
@@ -5661,33 +5579,35 @@ function statusIcon(status: string) {
 }
 
 function ByCallView({ team, from, to }: { team: string; from: string; to: string }) {
-  const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
-  const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
+  const range = businessDateApiRange(from || addBusinessCalendarDays(todayPDT(), -30), to || todayPDT());
+  const pFrom = range.from;
+  const pTo = range.to;
 
   const q = useQuery<{ data: CallRecord[] } | null>({
     queryKey: ["calls", team, pFrom, pTo],
     queryFn: async () => {
       const url = `/api/quo/calls?team=${team}&from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}&limit=500`;
-      const r = await fetch(url);
+      const r = await apiFetch(url);
       if (!r.ok) return null;
       return r.json() as Promise<{ data: CallRecord[] }>;
     },
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({ baseMs: 60_000 }),
   });
 
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "createdAt", dir: "desc" });
 
   const calls = useMemo(() => {
     const raw = q.data?.data ?? [];
-    const filtered = search
+    const filtered = debouncedSearch
       ? raw.filter(
           (c) =>
-            (c.agentName ?? "").toLowerCase().includes(search.toLowerCase()) ||
-            c.participant.includes(search) ||
-            c.lineName.toLowerCase().includes(search.toLowerCase()),
+            (c.agentName ?? "").toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+            c.participant.includes(debouncedSearch) ||
+            c.lineName.toLowerCase().includes(debouncedSearch.toLowerCase()),
         )
       : raw;
     return [...filtered].sort((a, b) => {
@@ -5697,7 +5617,8 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
       const cmp = av < bv ? -1 : av > bv ? 1 : 0;
       return sort.dir === "asc" ? cmp : -cmp;
     });
-  }, [q.data, search, sort]);
+  }, [q.data, debouncedSearch, sort]);
+  const paginatedCalls = usePaginatedRows(calls, `${team}:${pFrom}:${pTo}:${debouncedSearch}:${sort.col}:${sort.dir}`);
 
   function toggleSort(col: string) {
     setSort((s) => s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: "desc" });
@@ -5752,7 +5673,7 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
                   </TableCell>
                 </TableRow>
               )}
-              {calls.map((c) => (
+              {paginatedCalls.visibleRows.map((c) => (
                 <TableRow key={c.id} className="hover-elevate text-sm">
                   <TableCell className="tabular-nums font-mono text-xs text-muted-foreground whitespace-nowrap">
                     {new Date(c.createdAt).toLocaleString("en-US", { timeZone: CA_TZ, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: true })}
@@ -5772,6 +5693,13 @@ function ByCallView({ team, from, to }: { team: string; from: string; to: string
             </TableBody>
           </Table>
         </div>
+        <TablePager
+          page={paginatedCalls.page}
+          pageCount={paginatedCalls.pageCount}
+          pageSize={paginatedCalls.pageSize}
+          totalRows={paginatedCalls.totalRows}
+          onPageChange={paginatedCalls.setPage}
+        />
       </div>
     </div>
   );
@@ -6036,7 +5964,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const token = localStorage.getItem("tracker_token");
     if (!token) return;
-    fetch("/api/auth/me", { headers: { Authorization: `Bearer ${token}` } })
+    apiFetch("/api/auth/me")
       .then((r) => {
         if (!r.ok) { logout(); return; }
         return r.json() as Promise<{ token: string; user: AuthUser }>;
@@ -6052,9 +5980,27 @@ function LoginGate({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
+    void apiFetch("/api/auth/logout", { method: "POST", auth: "none" }).catch(() => undefined);
+    clearDashboardQueryCache();
     localStorage.removeItem("tracker_token");
     localStorage.removeItem("tracker_user");
     setAuth(null);
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener(API_UNAUTHORIZED_EVENT, logout);
+    return () => window.removeEventListener(API_UNAUTHORIZED_EVENT, logout);
+  }, [logout]);
+
+  useEffect(() => {
+    const applyRenewedSession = () => {
+      const token = localStorage.getItem("tracker_token");
+      const rawUser = localStorage.getItem("tracker_user");
+      if (!token || !rawUser) return;
+      try { setAuth({ token, user: JSON.parse(rawUser) as AuthUser }); } catch { /* Ignore invalid local state. */ }
+    };
+    window.addEventListener(API_SESSION_RENEWED_EVENT, applyRenewedSession);
+    return () => window.removeEventListener(API_SESSION_RENEWED_EVENT, applyRenewedSession);
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -6062,13 +6008,15 @@ function LoginGate({ children }: { children: React.ReactNode }) {
     setLoading(true);
     setError("");
     try {
-      const r = await fetch("/api/auth/login", {
+      const r = await apiFetch("/api/auth/login", {
         method: "POST",
+        auth: "none",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: username.trim(), password: password.trim() }),
+        body: JSON.stringify({ username: username.trim(), password }),
       });
       if (r.ok) {
         const data = await r.json() as { token: string; user: AuthUser };
+        clearDashboardQueryCache();
         localStorage.setItem("tracker_token", data.token);
         localStorage.setItem("tracker_user", JSON.stringify(data.user));
         setAuth(data);
@@ -6446,7 +6394,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetch("/api/team-agents", { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch("/api/team-agents", { headers: { Authorization: `Bearer ${token}` } });
       if (r.ok) {
         setAgents(await r.json() as TeamAgent[]);
         setDrafts({});
@@ -6466,7 +6414,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
     if (!newName.trim()) return;
     setSaving(true); setError("");
     try {
-      const r = await fetch("/api/team-agents", {
+      const r = await apiFetch("/api/team-agents", {
         method: "POST",
         headers: authHeaders(token),
         body: JSON.stringify({
@@ -6494,7 +6442,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   async function patchAgent(id: number, body: Record<string, unknown>) {
     setBusyId(id); setError("");
     try {
-      const r = await fetch(`/api/team-agents/${id}`, {
+      const r = await apiFetch(`/api/team-agents/${id}`, {
         method: "PATCH",
         headers: authHeaders(token),
         body: JSON.stringify(body),
@@ -6517,7 +6465,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   async function removeAgent(id: number) {
     setBusyId(id); setError("");
     try {
-      const r = await fetch(`/api/team-agents/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch(`/api/team-agents/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) {
         setError(await readTeamAgentError(r, "Failed to delete"));
         return;
@@ -6873,7 +6821,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetch("/api/users", { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch("/api/users", { headers: { Authorization: `Bearer ${token}` } });
       if (r.ok) setUsers(await r.json() as PortalUser[]);
     } finally { setLoading(false); }
   }, [token]);
@@ -6886,12 +6834,12 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   }
 
   async function addUser() {
-    if (!newUsername.trim() || !newPassword.trim()) return;
+    if (!newUsername.trim() || !newPassword) return;
     setSaving(true); setError("");
     const perms = newRole === "admin" ? DEFAULT_PERMS["admin"] : newPerms;
     const body = {
       username: newUsername.trim(),
-      password: newPassword.trim(),
+      password: newPassword,
       role: newRole,
       permissions: perms,
       teamAccess: newTeamAccess || null,
@@ -6902,7 +6850,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
       samiaCurse: newSamiaCurse,
       hideBackendStats: newHideBackendStats,
     };
-    const r = await fetch("/api/users", { method: "POST", headers: authHeaders(token), body: JSON.stringify(body) });
+    const r = await apiFetch("/api/users", { method: "POST", headers: authHeaders(token), body: JSON.stringify(body) });
     if (r.ok) {
       setNewUsername(""); setNewPassword(""); setNewRole("view");
       setNewPerms(DEFAULT_PERMS["view"]); setNewTeamAccess("");
@@ -6914,13 +6862,21 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
   }
 
   async function patchUser(id: number, updates: Record<string, unknown>) {
-    await fetch(`/api/users/${id}`, { method: "PATCH", headers: authHeaders(token), body: JSON.stringify(updates) });
-    setEditingId(null); await load();
+    setError("");
+    const response = await apiFetch(`/api/users/${id}`, { method: "PATCH", headers: authHeaders(token), body: JSON.stringify(updates) });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({})) as { error?: string };
+      setError(data.error ?? "Failed to update user");
+      return;
+    }
+    setEditingId(null);
+    setEditPw("");
+    await load();
   }
 
   async function deleteUser(u: PortalUser) {
     if (!confirm(`Permanently delete user "${u.username}"? This cannot be undone.`)) return;
-    const r = await fetch(`/api/users/${u.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+    const r = await apiFetch(`/api/users/${u.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
     if (!r.ok) { const d = await r.json().catch(() => ({})) as { error?: string }; setError(d.error ?? "Failed to delete user"); return; }
     setEditingId(null); await load();
   }
@@ -7036,7 +6992,7 @@ function UserManagementPanel({ onClose }: { onClose: () => void }) {
               <input type="checkbox" checked={newHideBackendStats} onChange={(e) => setNewHideBackendStats(e.target.checked)} className="h-3.5 w-3.5 accent-amber-500" />
               Hide Backend Statistics tab
             </label>
-            <Button size="sm" className="bg-primary hover:bg-primary/90 text-primary-foreground w-full" onClick={addUser} disabled={saving || !newUsername.trim() || !newPassword.trim()}>
+            <Button size="sm" className="bg-primary hover:bg-primary/90 text-primary-foreground w-full" onClick={addUser} disabled={saving || !newUsername.trim() || !newPassword}>
               <Plus className="h-3.5 w-3.5 mr-1" />Add User
             </Button>
             {error && <p className="text-xs metric-bad">{error}</p>}
@@ -7195,7 +7151,7 @@ function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetch("/api/blocked-numbers", { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch("/api/blocked-numbers", { headers: { Authorization: `Bearer ${token}` } });
       if (r.ok) setItems((await r.json() as { data: { number: string; note: string | null; createdAt: string }[] }).data);
     } finally { setLoading(false); }
   }, [token]);
@@ -7212,7 +7168,7 @@ function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
     const num = newNumber.trim();
     if (!num) return;
     setSaving(true); setError("");
-    const r = await fetch("/api/blocked-numbers", {
+    const r = await apiFetch("/api/blocked-numbers", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ number: num, note: newNote.trim() || null }),
@@ -7223,7 +7179,7 @@ function BlockedNumbersPanel({ onClose }: { onClose: () => void }) {
   }
 
   async function removeNumber(num: string) {
-    await fetch(`/api/blocked-numbers/${encodeURIComponent(num)}`, {
+    await apiFetch(`/api/blocked-numbers/${encodeURIComponent(num)}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -7475,7 +7431,7 @@ function QuoLinesPanel() {
   const linesQ = useQuery<{ data: QuoLine[] }>({
     queryKey: ["allLines"],
     queryFn: async () => {
-      const r = await fetch("/api/quo/all-lines");
+      const r = await apiFetch("/api/quo/all-lines");
       if (!r.ok) throw new Error("Failed to load lines");
       return r.json() as Promise<{ data: QuoLine[] }>;
     },
@@ -7487,9 +7443,10 @@ function QuoLinesPanel() {
     queryKey: ["lineStats", selectedLine?.id, from, to],
     queryFn: async () => {
       if (!selectedLine) return null;
-      const pFrom = new Date(`${from}T00:00:00`).toISOString();
-      const pTo = new Date(`${to}T23:59:59`).toISOString();
-      const r = await fetch(
+      const range = businessDateApiRange(from, to);
+      const pFrom = range.from;
+      const pTo = range.to;
+      const r = await apiFetch(
         `/api/quo/line-stats?lineId=${encodeURIComponent(selectedLine.id)}&from=${encodeURIComponent(pFrom)}&to=${encodeURIComponent(pTo)}`
       );
       if (!r.ok) return null;
@@ -7497,7 +7454,7 @@ function QuoLinesPanel() {
     },
     enabled: !!selectedLine,
     staleTime: 30 * 1000,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({ baseMs: 60_000 }),
     refetchOnWindowFocus: false,
   });
 
@@ -7812,30 +7769,35 @@ interface VosStatsResponse {
 
 function VoSPanel() {
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [groupFilter, setGroupFilter] = useState("All");
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "calls", dir: "desc" });
 
   const q = useQuery<VosStatsResponse>({
     queryKey: ["vosStats"],
     queryFn: async () => {
-      const r = await fetch("/api/vos/stats");
+      const r = await apiFetch("/api/vos/stats");
       if (!r.ok) throw new Error("Failed to load VoSLogic stats");
       return r.json() as Promise<VosStatsResponse>;
     },
     staleTime: 15_000,
-    refetchInterval: 30_000,
+    refetchInterval: queryPollingInterval({ baseMs: 30_000 }),
     refetchOnWindowFocus: true,
   });
 
   const liveQ = useQuery<{ liveCalls: VosLiveCall[]; agentStatuses: VosAgentStatus[] }>({
     queryKey: ["vosLive"],
     queryFn: async () => {
-      const r = await fetch("/api/vos/live");
-      if (!r.ok) return { liveCalls: [], agentStatuses: [] };
+      const r = await apiFetch("/api/vos/live");
+      if (!r.ok) throw new Error("Failed to load VoSLogic live state");
       return r.json();
     },
     staleTime: 10_000,
-    refetchInterval: 15_000,
+    refetchInterval: queryPollingInterval({
+      baseMs: 15_000,
+      idleMs: 30_000,
+      isIdle: (data) => !data?.liveCalls?.length && !data?.agentStatuses?.length,
+    }),
     refetchOnWindowFocus: true,
   });
 
@@ -7883,7 +7845,7 @@ function VoSPanel() {
 
   const visible = useMemo(() => {
     const stats = q.data?.dashboard.callsByAgent ?? [];
-    const q2 = search.trim().toLowerCase();
+    const q2 = debouncedSearch.trim().toLowerCase();
     let list = stats.filter((a) => a.calls > 0);
     if (q2) list = list.filter((a) => a.agentName.toLowerCase().includes(q2));
     if (groupFilter !== "All") {
@@ -7905,7 +7867,7 @@ function VoSPanel() {
       else if (sort.col === "name") return sort.dir === "asc" ? a.agentName.localeCompare(b.agentName) : b.agentName.localeCompare(a.agentName);
       return sort.dir === "asc" ? av - bv : bv - av;
     });
-  }, [q.data, search, groupFilter, sort, agentIdMap]);
+  }, [q.data, debouncedSearch, groupFilter, sort, agentIdMap]);
 
   const d = q.data?.dashboard;
   const isFetching = q.isFetching || liveQ.isFetching;
@@ -7936,10 +7898,11 @@ function VoSPanel() {
       </CardHeader>
       <CardContent className="space-y-5">
         {q.isLoading && <Skeleton className="h-40 w-full" />}
-        {q.error && (
-          <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
-            {String(q.error)}
-          </div>
+        {(q.error || liveQ.error) && (
+          <ErrorState
+            message="PBX data is temporarily unavailable."
+            onRetry={() => { q.refetch(); liveQ.refetch(); }}
+          />
         )}
         {d && (
           <>
@@ -8291,25 +8254,34 @@ function ReadyModeKillersPanel() {
     queryKey: ["rmkReadymodeStats", from, to],
     queryFn: async () => {
       const qs = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-      const res = await fetch(`/api/readymode/stats${qs}`);
+      const res = await apiFetch(`/api/readymode/stats${qs}`);
       if (!res.ok) return null;
       return res.json() as Promise<RmStatsResponse>;
     },
     staleTime: 1000 * 30,
     refetchOnWindowFocus: true,
-    refetchInterval: 60 * 1000,
+    refetchInterval: queryPollingInterval({
+      baseMs: 60_000,
+      idleMs: 120_000,
+      isIdle: (data) => !data?.agents?.some((agent) => agent.dialed > 0),
+    }),
   });
 
   const phoneQ = useQuery<PhoneStatsResponse | null>({
-    queryKey: ["rmkPhoneStats", from, to],
+    queryKey: ["phoneStats", from, to],
     queryFn: async () => {
-      const pFrom = from ? new Date(`${from}T00:00:00`).toISOString() : new Date(Date.now() - 30 * 86400000).toISOString();
-      const pTo = to ? new Date(`${to}T23:59:59`).toISOString() : new Date().toISOString();
+      const range = businessDateApiRange(from || addBusinessCalendarDays(todayPDT(), -30), to || todayPDT());
+      const pFrom = range.from;
+      const pTo = range.to;
       return fetchPhoneStats(pFrom, pTo);
     },
     staleTime: PHONE_STALE_MS,
     refetchOnWindowFocus: false,
-    refetchInterval: PHONE_REFETCH_MS,
+    refetchInterval: queryPollingInterval({
+      baseMs: PHONE_REFETCH_MS,
+      idleMs: 2 * PHONE_REFETCH_MS,
+      isIdle: (data) => !data || Object.keys(data.allAgentStats ?? {}).length === 0,
+    }),
   });
 
   const subsQ = useQuery<SheetData>({
@@ -8317,7 +8289,7 @@ function ReadyModeKillersPanel() {
     queryFn: () => fetchRMKSubmissionsForRoster(roster),
     staleTime: SHEET_STALE_MS,
     refetchOnWindowFocus: false,
-    refetchInterval: SHEET_REFETCH_MS,
+    refetchInterval: queryPollingInterval({ baseMs: SHEET_REFETCH_MS }),
   });
 
   const aggregated = useMemo(() => {
@@ -8541,6 +8513,7 @@ function ReadyModeKillersPanel() {
 
 function ReadyModePanel() {
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [sort, setSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "dialed", dir: "desc" });
   const [showRaw, setShowRaw] = useState(false);
   const { token } = useUser();
@@ -8548,7 +8521,7 @@ function ReadyModePanel() {
   const q = useQuery<RmStatsResponse>({
     queryKey: ["readymodeStats"],
     queryFn: async () => {
-      const r = await fetch("/api/readymode/stats", {
+      const r = await apiFetch("/api/readymode/stats", {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!r.ok) {
@@ -8558,7 +8531,11 @@ function ReadyModePanel() {
       return r.json() as Promise<RmStatsResponse>;
     },
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    refetchInterval: queryPollingInterval({
+      baseMs: 60_000,
+      idleMs: 120_000,
+      isIdle: (data) => !data?.agents?.some((agent) => agent.dialed > 0),
+    }),
     refetchOnWindowFocus: true,
     retry: 1,
   });
@@ -8582,7 +8559,7 @@ function ReadyModePanel() {
 
   const visible = useMemo(() => {
     const agents = q.data?.agents ?? [];
-    const q2 = search.trim().toLowerCase();
+    const q2 = debouncedSearch.trim().toLowerCase();
     let list = q2 ? agents.filter((a) => a.agentName.toLowerCase().includes(q2)) : agents;
     return [...list].sort((a, b) => {
       const dir = sort.dir === "asc" ? 1 : -1;
@@ -8594,7 +8571,7 @@ function ReadyModePanel() {
       if (sort.col === "avgTalk") return dir * (a.avgTalkSecs - b.avgTalkSecs);
       return 0;
     });
-  }, [q.data, search, sort]);
+  }, [q.data, debouncedSearch, sort]);
 
   const totals = q.data?.totals;
   const isFetching = q.isFetching;
@@ -8634,15 +8611,15 @@ function ReadyModePanel() {
             <p className="font-medium text-destructive">Could not load ReadyMode data</p>
             <p className="text-muted-foreground">{String(q.error)}</p>
             <p className="text-xs text-muted-foreground">
-              The ReadyMode portal uses session-based authentication. If the error persists, the login credentials may
-              have changed or the session probe path needs updating.
+              The ReadyMode portal uses session-based authentication. If the error persists, an administrator should
+              verify the configured integration.
             </p>
           </div>
         )}
 
         {showRaw && q.data?.raw && (
           <div className="rounded-lg border bg-muted/30 p-3">
-            <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wide">Raw page preview (first 3000 chars) — use to identify API paths</p>
+            <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wide">ReadyMode source summary</p>
             <pre className="text-[10px] text-zinc-400 whitespace-pre-wrap break-all overflow-auto max-h-64">{q.data.raw}</pre>
           </div>
         )}
@@ -8661,10 +8638,11 @@ function ReadyModePanel() {
             <p className="font-medium metric-warn">Session active — no parseable agent table found yet</p>
             <p className="text-muted-foreground text-xs">
               ReadyMode returned a page but no agent call table could be parsed. This is normal during initial setup.
-              Use the "Show raw" button above to inspect the HTML and identify the correct report path.
+              Use the "Show raw" button above to inspect the sanitized source summary.
             </p>
             <p className="text-muted-foreground text-xs">
-              You can also call <code className="bg-muted px-1 rounded">/api/readymode/probe?path=/supervisor/</code> from the browser to inspect other paths.
+              Administrators can check approved ReadyMode paths with <code className="bg-muted px-1 rounded">/api/readymode/probe?path=/supervisor/</code>.
+              Arbitrary paths and response-body previews are not available.
             </p>
           </div>
         )}
@@ -8812,6 +8790,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
   const [sourceFilter, setSourceFilter] = useState<"all" | "pbx" | "quo" | "readymode">("all");
   const [lineFilter, setLineFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [missedMode, setMissedMode] = useState<"times" | "numbers">("times");
 
   const teams = useMemo(() => {
@@ -8841,8 +8820,8 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
     }
     if (sourceFilter !== "all") list = list.filter((it) => it.source === sourceFilter);
     if (lineFilter !== "all") list = list.filter((it) => it.toNumber === lineFilter);
-    if (search.trim()) {
-      const q = search.trim().toLowerCase();
+    if (debouncedSearch.trim()) {
+      const q = debouncedSearch.trim().toLowerCase();
       list = list.filter((it) =>
         it.fromNumber.includes(q) ||
         it.ringGroupName.toLowerCase().includes(q) ||
@@ -8850,7 +8829,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
       );
     }
     return [...list].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [items, teamFilter, sourceFilter, lineFilter, lockedTeam, search]);
+  }, [items, teamFilter, sourceFilter, lineFilter, lockedTeam, debouncedSearch]);
 
   return (
     <Card>
@@ -8862,12 +8841,14 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             {fetchedAt > 0 && <span>Updated {new Date(fetchedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/Los_Angeles" })} PDT</span>}
-            <Button size="sm" variant="ghost" className="h-7 px-2 gap-1" onClick={async () => {
-              await fetch("/api/vos/refresh", { method: "POST" });
-              await qc.invalidateQueries({ queryKey: ["missedNoCB"] });
-            }}>
-              <RefreshCw className="h-3 w-3" /> Refresh
-            </Button>
+            {user.role === "admin" && (
+              <Button size="sm" variant="ghost" className="h-7 px-2 gap-1" onClick={async () => {
+                await apiFetch("/api/vos/refresh", { method: "POST" });
+                await qc.invalidateQueries({ queryKey: ["missedNoCB"] });
+              }}>
+                <RefreshCw className="h-3 w-3" /> Refresh
+              </Button>
+            )}
           </div>
         </div>
         <p className="text-xs text-muted-foreground mt-1">
@@ -9051,7 +9032,7 @@ function MissedNoCBPanel({ lockedTeam }: { lockedTeam?: TeamAccess | null }) {
                           variant="ghost"
                           className="h-6 px-2 text-[10px] metric-good hover:metric-good hover:bg-muted/60"
                           onClick={async () => {
-                            await fetch("/api/nsf/readymode-queue/done-by-number", {
+                            await apiFetch("/api/nsf/readymode-queue/done-by-number", {
                               method: "POST",
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({ number: it.fromNumber }),
@@ -9102,16 +9083,14 @@ function HourlyMissedRecord({ mode = "times" }: { mode?: "times" | "numbers" }) 
   const hours = data?.hours ?? [];
 
   const shift = (days: number) => {
-    const d = new Date(date + "T12:00:00");
-    d.setDate(d.getDate() + days);
-    const next = d.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+    const next = addBusinessCalendarDays(date, days);
     if (next <= todayStr) setDate(next);
   };
 
   const fmtDate = (d: string) => {
     if (d === todayStr) return "Today";
-    const dt = new Date(d + "T12:00:00");
-    return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+    const dt = new Date(d + "T12:00:00Z");
+    return dt.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
   };
 
   const fmt = (h: number) => {
@@ -9214,7 +9193,7 @@ function DailyMissedBreakdown({ date }: { date: string }) {
   const q = useQuery<{ date: string; numbers: NumberBreakdown[]; stats: { total: number; withCallback: number; connected: number; callbackRate: number; connectRate: number } }>({
     queryKey: ["missedBreakdown", date],
     queryFn: async () => {
-      const r = await fetch(`/api/vos/missed-breakdown?date=${date}`);
+      const r = await apiFetch(`/api/vos/missed-breakdown?date=${date}`);
       if (!r.ok) return { date, numbers: [], stats: { total: 0, withCallback: 0, connected: 0, callbackRate: 0, connectRate: 0 } };
       return r.json();
     },
@@ -9410,12 +9389,12 @@ function useCallbackReview(from: string, to: string) {
   return useQuery<{ items: CallbackReviewItem[]; stats: CallbackReviewStats }>({
     queryKey: ["callbackReview", from, to],
     queryFn: async () => {
-      const r = await fetch(`/api/vos/callback-review?from=${from}&to=${to}`);
+      const r = await apiFetch(`/api/vos/callback-review?from=${from}&to=${to}`);
       if (!r.ok) return { items: [], stats: { total: 0, withCallback: 0, connected: 0, rate: 0, connectRate: 0, avgResponseMinutes: 0, days: 0 } };
       return r.json();
     },
     staleTime: 5 * 60_000,
-    refetchInterval: 10 * 60_000,
+    refetchInterval: queryPollingInterval({ baseMs: 10 * 60_000 }),
     refetchOnWindowFocus: true,
   });
 }
@@ -9430,11 +9409,9 @@ function CallbackReviewPanel() {
   const { from, to } = useMemo((): { from: string; to: string } => {
     if (preset === "today") return { from: todayStr, to: todayStr };
     if (preset === "week") {
-      const laDate = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
-      const dow = laDate.getDay();
+      const dow = new Date(`${todayStr}T12:00:00Z`).getUTCDay();
       const daysToMon = dow === 0 ? 6 : dow - 1;
-      laDate.setDate(laDate.getDate() - daysToMon);
-      return { from: laDate.toLocaleDateString("en-CA"), to: todayStr };
+      return { from: addBusinessCalendarDays(todayStr, -daysToMon), to: todayStr };
     }
     if (preset === "month") return { from: todayStr.slice(0, 7) + "-01", to: todayStr };
     return { from: customFrom || todayStr, to: customTo || todayStr };
@@ -9805,51 +9782,16 @@ interface LTStatus {
 }
 
 function ltLaToday(): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Los_Angeles",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
+  return formatBusinessDate();
 }
 function ltLastDayOfMonth(ym: string): string {
   const [y, m] = ym.split("-").map(Number);
-  const d = new Date(y!, m!, 0).getDate();
+  const d = new Date(Date.UTC(y!, m!, 0)).getUTCDate();
   return `${ym}-${String(d).padStart(2, "0")}`;
 }
 
-function zonedMidnightUtc(date: string, timeZone: string): Date {
-  const [year, month, day] = date.split("-").map(Number);
-  const desiredWallTime = Date.UTC(year!, month! - 1, day!, 0, 0, 0);
-  let instant = desiredWallTime;
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const parts = Object.fromEntries(formatter.formatToParts(new Date(instant)).map((part) => [part.type, part.value]));
-    const observedWallTime = Date.UTC(
-      Number(parts.year), Number(parts.month) - 1, Number(parts.day),
-      Number(parts.hour), Number(parts.minute), Number(parts.second),
-    );
-    instant += desiredWallTime - observedWallTime;
-  }
-  return new Date(instant);
-}
-
-function nextCalendarDate(date: string): string {
-  const [year, month, day] = date.split("-").map(Number);
-  return new Date(Date.UTC(year!, month! - 1, day! + 1)).toISOString().slice(0, 10);
-}
-
 function LiveTransfersCard() {
-  const { token } = useUser();
+  const { token, user } = useUser();
   const today = ltLaToday();
   const [downloading, setDownloading] = useState(false);
 
@@ -9861,17 +9803,17 @@ function LiveTransfersCard() {
   const { data: status, refetch } = useQuery<LTStatus>({
     queryKey: ["liveTransfersStatus", from, to, token],
     queryFn: async () => {
-      const res = await fetch(`/api/live-transfers/status${qs}`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await apiFetch(`/api/live-transfers/status${qs}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json() as Promise<LTStatus>;
     },
-    refetchInterval: (q) => (q.state.data?.running ? 3000 : false),
+    refetchInterval: (query) => query.state.data?.running ? pollingDelay({ baseMs: 3_000 }) : false,
     refetchOnWindowFocus: false,
   });
 
   const refreshMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch(`/api/live-transfers/refresh`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+      const res = await apiFetch(`/api/live-transfers/refresh`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok && res.status !== 409) throw new Error(`HTTP ${res.status}`);
       return res.json().catch(() => ({}));
     },
@@ -9881,7 +9823,7 @@ function LiveTransfersCard() {
   const download = async () => {
     setDownloading(true);
     try {
-      const res = await fetch(`/api/live-transfers/download${qs}`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await apiFetch(`/api/live-transfers/download${qs}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
@@ -9928,11 +9870,13 @@ function LiveTransfersCard() {
           <span className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-muted-foreground/10 px-3 py-1.5 text-xs font-medium metric-info">
             <CalendarDays className="h-3.5 w-3.5" />Today
           </span>
-          <Button size="sm" variant="outline" onClick={() => refreshMutation.mutate()} disabled={running}>
-            {running
-              ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Refreshing…</>
-              : <><RefreshCw className="h-4 w-4 mr-1" />Refresh</>}
-          </Button>
+          {user.role === "admin" && (
+            <Button size="sm" variant="outline" onClick={() => refreshMutation.mutate()} disabled={running}>
+              {running
+                ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Refreshing…</>
+                : <><RefreshCw className="h-4 w-4 mr-1" />Refresh</>}
+            </Button>
+          )}
           <Button size="sm" onClick={download} disabled={downloading || !status || status.totalLive === 0}>
             {downloading
               ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />Preparing…</>
@@ -10024,7 +9968,7 @@ function QAPanel() {
   const { token, user } = useUser();
   const qaRoster = useRoster();
   const qc = useQueryClient();
-  const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  const todayLA = formatBusinessDate();
   // QA filter is locked to today.
   const from = todayLA;
   const to = todayLA;
@@ -10038,9 +9982,8 @@ function QAPanel() {
   const dateBasis = "evaluated" as const;
 
   const range = useMemo(() => {
-    const fromISO = zonedMidnightUtc(from, "America/Los_Angeles").toISOString();
-    const toISO = new Date(zonedMidnightUtc(nextCalendarDate(to), "America/Los_Angeles").getTime() - 1).toISOString();
-    return { fromISO, toISO };
+    const resolved = businessDateApiRange(from, to);
+    return { fromISO: resolved.from, toISO: resolved.to };
   }, [from, to]);
 
   const deptParam = dept === "all" ? "" : `&department=${dept}`;
@@ -10048,39 +9991,39 @@ function QAPanel() {
   const stats = useQuery<QAStats>({
     queryKey: ["qa-stats", dateBasis, range.fromISO, range.toISO, dept, token],
     queryFn: async () => {
-      const r = await fetch(`/api/qa/stats?from=${range.fromISO}&to=${range.toISO}&dateBasis=${dateBasis}${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch(`/api/qa/stats?from=${range.fromISO}&to=${range.toISO}&dateBasis=${dateBasis}${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<QAStats>;
     },
-    refetchInterval: 60_000,
+    refetchInterval: queryPollingInterval({ baseMs: 60_000 }),
   });
 
   const reviews = useQuery<{ reviews: QAReview[] }>({
     queryKey: ["qa-reviews", dateBasis, range.fromISO, range.toISO, dept, token],
     queryFn: async () => {
-      const r = await fetch(`/api/qa/reviews?from=${range.fromISO}&to=${range.toISO}&dateBasis=${dateBasis}&limit=200${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch(`/api/qa/reviews?from=${range.fromISO}&to=${range.toISO}&dateBasis=${dateBasis}&limit=200${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<{ reviews: QAReview[] }>;
     },
-    refetchInterval: 60_000,
+    refetchInterval: queryPollingInterval({ baseMs: 60_000 }),
     enabled: sub === "reviews",
   });
 
   const tasks = useQuery<{ tasks: QATask[] }>({
     queryKey: ["qa-tasks", dept, token],
     queryFn: async () => {
-      const r = await fetch(`/api/qa/tasks?status=open&limit=200${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch(`/api/qa/tasks?status=open&limit=200${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<{ tasks: QATask[] }>;
     },
-    refetchInterval: 60_000,
+    refetchInterval: queryPollingInterval({ baseMs: 60_000 }),
     enabled: sub === "tasks",
   });
 
   const latestRun = useQuery<{ run: QARunRecord | null }>({
     queryKey: ["qa-runs", token],
     queryFn: async () => {
-      const r = await fetch("/api/qa/runs/latest", { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch("/api/qa/runs/latest", { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<{ run: QARunRecord | null }>;
     },
@@ -10090,7 +10033,7 @@ function QAPanel() {
     setProcessing(true);
     setRunError(null);
     try {
-      const response = await fetch("/api/qa/process", {
+      const response = await apiFetch("/api/qa/process", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       });
@@ -10116,7 +10059,7 @@ function QAPanel() {
     id: string,
     body: { managerScore?: number | null; comments?: string; coachingComplete?: boolean } = {},
   ) => {
-    await fetch(`/api/qa/tasks/${id}/resolve`, {
+    await apiFetch(`/api/qa/tasks/${id}/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ resolvedBy: user.username, ...body }),
@@ -10129,7 +10072,7 @@ function QAPanel() {
   const downloadQa = useCallback(async () => {
     setDownloadingQa(true);
     try {
-      const res = await fetch(`/api/qa/download?from=${range.fromISO}&to=${range.toISO}&dateBasis=${dateBasis}${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await apiFetch(`/api/qa/download?from=${range.fromISO}&to=${range.toISO}&dateBasis=${dateBasis}${deptParam}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
@@ -10147,6 +10090,8 @@ function QAPanel() {
 
   const reviewRows = reviews.data?.reviews ?? [];
   const taskRows = tasks.data?.tasks ?? [];
+  const paginatedReviews = usePaginatedRows(reviewRows, `${dept}:${range.fromISO}:${range.toISO}:reviews`);
+  const paginatedTasks = usePaginatedRows(taskRows, `${dept}:tasks`);
 
   return (
     <div className="space-y-4">
@@ -10291,7 +10236,7 @@ function QAPanel() {
                     <TableRow><TableCell colSpan={9}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
                   ) : reviewRows.length === 0 ? (
                     <TableRow><TableCell colSpan={9} className="text-center text-zinc-500 py-8">No reviews were evaluated today. Run QA to see qualifying, skipped, and error reasons.</TableCell></TableRow>
-                  ) : reviewRows.map((r) => {
+                  ) : paginatedReviews.visibleRows.map((r) => {
                     const isOpen = expanded === r.id;
                     const deptColor = r.department === "Retention" ? "border-border metric-info"
                       : r.department === "CS" ? "border-border metric-info"
@@ -10367,6 +10312,13 @@ function QAPanel() {
                   })}
                 </TableBody>
               </Table>
+              <TablePager
+                page={paginatedReviews.page}
+                pageCount={paginatedReviews.pageCount}
+                pageSize={paginatedReviews.pageSize}
+                totalRows={paginatedReviews.totalRows}
+                onPageChange={paginatedReviews.setPage}
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -10391,7 +10343,7 @@ function QAPanel() {
                     <TableRow><TableCell colSpan={7}><Skeleton className="h-6 w-full" /></TableCell></TableRow>
                   ) : taskRows.length === 0 ? (
                     <TableRow><TableCell colSpan={7} className="text-center text-zinc-500 py-8">No open manager reviews. Nice.</TableCell></TableRow>
-                  ) : taskRows.map((t) => {
+                  ) : paginatedTasks.visibleRows.map((t) => {
                     const deptColor = t.department === "Retention" ? "border-border metric-info"
                       : t.department === "CS" ? "border-border metric-info"
                       : "border-border metric-warn";
@@ -10424,6 +10376,13 @@ function QAPanel() {
                   })}
                 </TableBody>
               </Table>
+              <TablePager
+                page={paginatedTasks.page}
+                pageCount={paginatedTasks.pageCount}
+                pageSize={paginatedTasks.pageSize}
+                totalRows={paginatedTasks.totalRows}
+                onPageChange={paginatedTasks.setPage}
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -10457,7 +10416,7 @@ function ManagerReviewDialog({
   const review = useQuery<QAReview>({
     queryKey: ["qa-review-detail", task.id, token],
     queryFn: async () => {
-      const r = await fetch(`/api/qa/reviews/${task.id}`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch(`/api/qa/reviews/${task.id}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<QAReview>;
     },
@@ -10572,7 +10531,7 @@ function QATile({ label, value, accent }: { label: string; value: number | strin
 function ViolationsPanel() {
   const { token, user } = useUser();
   const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-  const sevenAgo = new Date(Date.now() - 6 * 86400000).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  const sevenAgo = addBusinessCalendarDays(formatBusinessDate(), -6);
 
   const [from, setFrom] = useState(todayLA);
   const [to, setTo]     = useState(todayLA);
@@ -10594,21 +10553,21 @@ function ViolationsPanel() {
   const { data, isLoading, isError, refetch } = useQuery<ViolationsData>({
     queryKey: ["violations", from, to, token],
     queryFn: async () => {
-      const r = await fetch(`/api/violations?from=${from}&to=${to}`, {
+      const r = await apiFetch(`/api/violations?from=${from}&to=${to}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<ViolationsData>;
     },
     staleTime: 2 * 60 * 1000,
-    refetchInterval: 5 * 60 * 1000,
+    refetchInterval: queryPollingInterval({ baseMs: 5 * 60_000 }),
     refetchOnWindowFocus: true,
   });
 
   const { data: verifiedData, refetch: refetchVerified } = useQuery<{ items: VerifiedItem[] }>({
     queryKey: ["violations-verified", token],
     queryFn: async () => {
-      const r = await fetch("/api/violations/verified", { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch("/api/violations/verified", { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error(await r.text());
       return r.json() as Promise<{ items: VerifiedItem[] }>;
     },
@@ -10630,26 +10589,35 @@ function ViolationsPanel() {
     key: string, type: string, member: string, department: string, date: string, details: object,
   ) => {
     const isNowVerified = !localVerified.has(key);
+    if (!isNowVerified && user.role !== "admin") return;
     setLocalVerified(prev => { const s = new Set(prev); isNowVerified ? s.add(key) : s.delete(key); return s; });
     setPending(prev => new Set(prev).add(key));
     try {
       if (isNowVerified) {
-        await fetch("/api/violations/verify", {
+        const response = await apiFetch("/api/violations/verify", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ key, type, member, department, date, details: JSON.stringify(details), verifiedBy: user.username }),
+          body: JSON.stringify({ key, type, member, department, date, details: JSON.stringify(details) }),
         });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
       } else {
-        await fetch("/api/violations/verify", {
+        const response = await apiFetch("/api/violations/verify", {
           method: "DELETE",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ key }),
         });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
       }
       void refetchVerified();
-    } catch { /* optimistic — keep local state */ }
+    } catch {
+      setLocalVerified(prev => {
+        const restored = new Set(prev);
+        isNowVerified ? restored.delete(key) : restored.add(key);
+        return restored;
+      });
+    }
     finally { setPending(prev => { const s = new Set(prev); s.delete(key); return s; }); }
-  }, [localVerified, token, user.username, refetchVerified]);
+  }, [localVerified, token, user.role, refetchVerified]);
 
   const dismissViolation = useCallback((key: string) => {
     setLocalDismissed(prev => {
@@ -10720,7 +10688,7 @@ function ViolationsPanel() {
     return filtered;
   }, [gapRows, gapHourActive, gapHourFrom, gapHourTo, sortGaps]);
 
-  const exportGapsCsv = () => {
+  const exportGapsCsv = async () => {
     const rows: Record<string, string | number>[] = [];
     for (const r of displayGapRows) {
       for (const g of r.gaps) {
@@ -10734,7 +10702,7 @@ function ViolationsPanel() {
         });
       }
     }
-    const csv = Papa.unparse(rows);
+    const csv = await unparseCsv(rows);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -10876,14 +10844,15 @@ function ViolationsPanel() {
   }) => {
     const checked = localVerified.has(vkey);
     const busy    = pending.has(vkey);
+    const canToggle = !checked || user.role === "admin";
     return (
       <button
         onClick={() => void toggleVerify(vkey, type, member, department, date, details)}
-        disabled={busy}
-        className={`flex-shrink-0 h-4 w-4 rounded border transition-all ${busy ? "opacity-40 cursor-wait" : "cursor-pointer"} ${
+        disabled={busy || !canToggle}
+        className={`flex-shrink-0 h-4 w-4 rounded border transition-all ${busy ? "opacity-40 cursor-wait" : canToggle ? "cursor-pointer" : "cursor-default"} ${
           checked ? "bg-muted-foreground border-border" : "bg-transparent border-zinc-600 hover:border-zinc-400"
         }`}
-        title={checked ? "Unmark verified" : "Mark as verified"}
+        title={checked ? (canToggle ? "Unmark verified" : "Verified; only administrators can remove this record") : "Mark as verified"}
       >
         {checked && <svg viewBox="0 0 10 8" className="w-full h-full p-0.5 text-white fill-none stroke-current stroke-2"><polyline points="1,4 4,7 9,1"/></svg>}
       </button>
@@ -11245,7 +11214,7 @@ function ViolationsPanel() {
               variant="outline"
               size="sm"
               disabled={cancelLoading || cancelRows.length === 0}
-              onClick={() => {
+              onClick={async () => {
                 const rows = cancelRows.map((r) => ({
                   Date: r.date,
                   Agent: r.agent,
@@ -11253,7 +11222,7 @@ function ViolationsPanel() {
                   "File ID": r.fileId,
                   Status: r.rawStatus,
                 }));
-                const csv = Papa.unparse(rows);
+                const csv = await unparseCsv(rows);
                 const blob = new Blob([csv], { type: "text/csv" });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a");
@@ -11384,14 +11353,16 @@ function ViolationsPanel() {
                         <TableCell className="text-xs text-zinc-400 tabular-nums">{fmtDate(it.date)}</TableCell>
                         <TableCell className="text-xs text-right text-zinc-500">{it.verifiedBy}</TableCell>
                         <TableCell className="pr-3">
-                          <button
-                            onClick={() => void toggleVerify(it.key, it.type, it.member, it.department, it.date, {})}
-                            disabled={pending.has(it.key)}
-                            title="Remove flag"
-                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-zinc-600 hover:text-red-400 hover:bg-red-500/10 disabled:cursor-wait"
-                          >
-                            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-current"><path d="M6.5 1h3a.5.5 0 0 1 .5.5v1H6v-1a.5.5 0 0 1 .5-.5M11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3A1.5 1.5 0 0 0 5 1.5v1H1.5a.5.5 0 0 0 0 1h.538l.853 10.66A2 2 0 0 0 4.885 16h6.23a2 2 0 0 0 1.994-1.84l.853-10.66h.538a.5.5 0 0 0 0-1zm1.958 1-.846 10.58a1 1 0 0 1-.997.92h-6.23a1 1 0 0 1-.997-.92L3.042 3.5zm-7.487 1a.5.5 0 0 1 .528.47l.5 8.5a.5.5 0 0 1-1 .06L5 5.03a.5.5 0 0 1 .47-.53Zm5.058 0a.5.5 0 0 1 .47.53l-.5 8.5a.5.5 0 1 1-1-.06l.5-8.5a.5.5 0 0 1 .53-.47M8 4.5a.5.5 0 0 1 .5.5v8.5a.5.5 0 0 1-1 0V5a.5.5 0 0 1 .5-.5"/></svg>
-                          </button>
+                          {user.role === "admin" && (
+                            <button
+                              onClick={() => void toggleVerify(it.key, it.type, it.member, it.department, it.date, {})}
+                              disabled={pending.has(it.key)}
+                              title="Remove flag"
+                              className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-zinc-600 hover:text-red-400 hover:bg-red-500/10 disabled:cursor-wait"
+                            >
+                              <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-current"><path d="M6.5 1h3a.5.5 0 0 1 .5.5v1H6v-1a.5.5 0 0 1 .5-.5M11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3A1.5 1.5 0 0 0 5 1.5v1H1.5a.5.5 0 0 0 0 1h.538l.853 10.66A2 2 0 0 0 4.885 16h6.23a2 2 0 0 0 1.994-1.84l.853-10.66h.538a.5.5 0 0 0 0-1zm1.958 1-.846 10.58a1 1 0 0 1-.997.92h-6.23a1 1 0 0 1-.997-.92L3.042 3.5zm-7.487 1a.5.5 0 0 1 .528.47l.5 8.5a.5.5 0 0 1-1 .06L5 5.03a.5.5 0 0 1 .47-.53Zm5.058 0a.5.5 0 0 1 .47.53l-.5 8.5a.5.5 0 1 1-1-.06l.5-8.5a.5.5 0 0 1 .53-.47M8 4.5a.5.5 0 0 1 .5.5v8.5a.5.5 0 0 1-1 0V5a.5.5 0 0 1 .5-.5"/></svg>
+                            </button>
+                          )}
                         </TableCell>
                       </TableRow>
                     );
@@ -11422,19 +11393,6 @@ const BSTAT_TEAM_META: Record<RosterTeam, { label: string; color: string }> = {
   cs: { label: "Internal CS", color: "#38bdf8" },
   killers: { label: "ReadyMode Killers", color: "#2dd4bf" },
 };
-const bstatChartTooltip = {
-  contentStyle: {
-    background: "rgba(24,24,27,0.95)",
-    border: "1px solid rgba(255,255,255,0.1)",
-    borderRadius: 10,
-    fontSize: 12,
-    color: "#e4e4e7",
-    boxShadow: "0 10px 40px -10px rgba(0,0,0,0.6)",
-  },
-  labelStyle: { color: "#a1a1aa" },
-  itemStyle: { color: "#e4e4e7" },
-} as const;
-
 type BStatRow = { agent: string; agentKey: string; team: RosterTeam; status: string; date: string; fileId: string; source: string; idpCancel: boolean };
 
 // Resolve a raw submission name to a single canonical agent identity. Mirrors
@@ -11479,12 +11437,15 @@ function bstatRetentionStatus(update: string, context: string): "Retained" | "Ca
 }
 
 async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<BStatRow[]> {
-  const [retainedCancels, fixes] = await Promise.all([
-    fetchHeaderCsv(NEW_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
-    fetchHeaderCsv(NEW_NSF_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] })),
-  ]);
-  const idpHandled = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
-  const idpCancelRetained = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
+  const { retainedCancels, fixes, idpHandled, idpCancelRetained } = await loadBackendStatsSheetSources(
+    fetchHeaderCsv,
+    {
+      retainedCancels: NEW_RETENTION_URL,
+      fixes: NEW_NSF_URL,
+      idpHandled: IDP_RETENTION_URL,
+      idpCancelRetained: IDP_CANCEL_RETAINED_URL,
+    },
+  );
 
   const out: BStatRow[] = [];
   const add = (rawAgent: string, status: string, date: string, fileId: string, source: string, fallbackTeam: TeamMode) => {
@@ -11687,7 +11648,7 @@ function BackendStatsPanel() {
     [stats.agents, killersOnly],
   );
 
-  function exportBackendRows() {
+  async function exportBackendRows() {
     const exportRows = filtered.map((r) => ({
       Agent: r.agent,
       Team: BSTAT_TEAM_META[r.team].label,
@@ -11696,7 +11657,7 @@ function BackendStatsPanel() {
       Date: r.date,
       "File ID": r.fileId,
     }));
-    const csv = Papa.unparse(exportRows);
+    const csv = await unparseCsv(exportRows);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -11726,7 +11687,7 @@ function BackendStatsPanel() {
       <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
         <CardContent className="flex flex-col items-center gap-3 py-16 text-zinc-400">
           <ShieldAlert className="h-8 w-8 text-rose-400/70" />
-          <p className="text-sm">Couldn't load file submissions.</p>
+          <p className="text-sm">Google Sheets data is temporarily unavailable.</p>
           <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
         </CardContent>
       </Card>
@@ -11792,90 +11753,24 @@ function BackendStatsPanel() {
         </Card>
       ) : (
         <>
-          {/* Submissions over time */}
-          <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
-                <Activity className="h-4 w-4 text-blue-300" /> Files submitted over time
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={280}>
-                <AreaChart data={stats.dayData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="bstatArea" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#a78bfa" stopOpacity={0.5} />
-                      <stop offset="100%" stopColor="#a78bfa" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fill: "#71717a", fontSize: 11 }} tickLine={false} axisLine={false} minTickGap={24} />
-                  <YAxis tick={{ fill: "#71717a", fontSize: 11 }} tickLine={false} axisLine={false} width={36} allowDecimals={false} />
-                  <RTooltip {...bstatChartTooltip} />
-                  <Area type="monotone" dataKey="count" name="Files" stroke="#c4b5fd" strokeWidth={2} fill="url(#bstatArea)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-
-          {/* Status + Team breakdowns */}
-          <div className="grid lg:grid-cols-2 gap-4">
-            <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold text-zinc-200">By status</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ResponsiveContainer width="100%" height={280}>
-                  <PieChart>
-                    <Pie data={stats.statusData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={2} stroke="none">
-                      {stats.statusData.map((s) => <Cell key={s.name} fill={s.color} />)}
-                    </Pie>
-                    <RTooltip {...bstatChartTooltip} />
-                    <RLegend wrapperStyle={{ fontSize: 12, color: "#a1a1aa" }} />
-                  </PieChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-
-            <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold text-zinc-200">By team</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ResponsiveContainer width="100%" height={280}>
-                  <BarChart data={stats.teamData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
-                    <XAxis dataKey="name" tick={{ fill: "#a1a1aa", fontSize: 12 }} tickLine={false} axisLine={false} />
-                    <YAxis tick={{ fill: "#71717a", fontSize: 11 }} tickLine={false} axisLine={false} width={36} allowDecimals={false} />
-                    <RTooltip {...bstatChartTooltip} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
-                    <Bar dataKey="value" name="Files" radius={[6, 6, 0, 0]} maxBarSize={90}>
-                      {stats.teamData.map((t) => <Cell key={t.name} fill={t.color} />)}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Top contributors */}
-          <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-semibold text-zinc-200">Top contributors</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={Math.max(220, stats.topAgents.length * 30)}>
-                <BarChart data={stats.topAgents} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 4 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} />
-                  <XAxis type="number" tick={{ fill: "#71717a", fontSize: 11 }} tickLine={false} axisLine={false} allowDecimals={false} />
-                  <YAxis type="category" dataKey="name" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickLine={false} axisLine={false} width={130} />
-                  <RTooltip {...bstatChartTooltip} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
-                  <Bar dataKey="value" name="Files" radius={[0, 6, 6, 0]} maxBarSize={20}>
-                    {stats.topAgents.map((a) => <Cell key={a.name} fill={a.color} />)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
+          <React.Suspense
+            fallback={
+              <div className="space-y-4" aria-label="Loading charts">
+                <Skeleton className="h-72 rounded-xl" />
+                <div className="grid lg:grid-cols-2 gap-4">
+                  <Skeleton className="h-72 rounded-xl" />
+                  <Skeleton className="h-72 rounded-xl" />
+                </div>
+              </div>
+            }
+          >
+            <BackendStatsCharts
+              dayData={stats.dayData}
+              statusData={stats.statusData}
+              teamData={stats.teamData}
+              topAgents={stats.topAgents}
+            />
+          </React.Suspense>
 
           {/* Full leaderboard */}
           <Card className="border-white/5 bg-card/60 backdrop-blur-xl">
@@ -11954,9 +11849,7 @@ function Dashboard() {
   async function handleRmUpload(file: File) {
     // Daily reports label the day as a weekday ("Thursday"), not a calendar
     // date, so ask which day this report covers. Default to yesterday.
-    const y = new Date();
-    y.setDate(y.getDate() - 1);
-    const yIso = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, "0")}-${String(y.getDate()).padStart(2, "0")}`;
+    const yIso = addBusinessCalendarDays(formatBusinessDate(), -1);
     const date = window.prompt(
       "Which day does this report cover? (YYYY-MM-DD)",
       yIso,
@@ -11969,7 +11862,7 @@ function Dashboard() {
     setRmUploading(true);
     try {
       const csv = await file.text();
-      const r = await fetch("/api/readymode/upload", {
+      const r = await apiFetch("/api/readymode/upload", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ csv, filename: file.name, date: date.trim() }),
@@ -12205,7 +12098,9 @@ function Dashboard() {
             )}
             {canSeeTab("onboarding") && (
               <TabsContent value="onboarding">
-                <OnboardingPanel />
+                <React.Suspense fallback={<Skeleton className="h-[420px] rounded-xl" aria-label="Loading onboarding" />}>
+                  <OnboardingPanel canRefresh={user.role === "admin"} />
+                </React.Suspense>
               </TabsContent>
             )}
           </Tabs>
@@ -12218,484 +12113,13 @@ function Dashboard() {
           </div>
         )}
       </main>
-      {user.role === "admin" && <SamiaChat />}
+      {user.role === "admin" && <DeferredSamia />}
     </div>
   );
 }
 
 
 // ─── Samia AI Chat ─────────────────────────────────────────────────────────────
-
-interface SamiaMessage { role: "user" | "assistant"; content: string; images?: string[] }
-interface HistoryGroup { key: string; label: string; preview: string; messages: SamiaMessage[] }
-interface SamiaMutation { resource: string; action: string; [key: string]: unknown }
-interface SamiaResponse {
-  reply?: string;
-  error?: string;
-  fallbackUsed?: boolean;
-  mutations?: SamiaMutation[];
-  invalidateQueryKeys?: string[];
-}
-
-type ChatSize = "normal" | "minimized" | "maximized";
-
-function SamiaChat() {
-  const [open, setOpen] = useState(false);
-  const [size, setSize] = useState<ChatSize>("normal");
-  const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<SamiaMessage[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyLoaded, setHistoryLoaded] = useState(false);
-  const [pendingImages, setPendingImages] = useState<string[]>([]);
-  // Name gate
-  const [chatName, setChatName] = useState<string>(() => localStorage.getItem("samia_display_name") ?? "");
-  const [nameInput, setNameInput] = useState("");
-  const nameRef = useRef<HTMLInputElement>(null);
-  // Admin "All chats" state
-  const [adminView, setAdminView] = useState<"chat" | "users" | "viewUser" | "history" | "viewDate">("chat");
-  const [adminUsers, setAdminUsers] = useState<{ userId: number; username: string }[]>([]);
-  const [adminViewUser, setAdminViewUser] = useState<{ userId: number; username: string } | null>(null);
-  const [adminMessages, setAdminMessages] = useState<SamiaMessage[]>([]);
-  const [adminLoading, setAdminLoading] = useState(false);
-  // Personal chat history (grouped by date)
-  const [historyGroups, setHistoryGroups] = useState<HistoryGroup[]>([]);
-  const [historyGroup, setHistoryGroup] = useState<HistoryGroup | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const { token, user } = useUser();
-  const qc = useQueryClient();
-  const isAdmin = user.role === "admin";
-  if (!isAdmin) return null;
-
-  function submitName() {
-    const n = nameInput.trim();
-    if (!n) return;
-    localStorage.setItem("samia_display_name", n);
-    setChatName(n);
-  }
-
-  useEffect(() => {
-    if (open) {
-      setTimeout(() => {
-        if (!chatName) { nameRef.current?.focus(); return; }
-        inputRef.current?.focus();
-      }, 80);
-      if (!historyLoaded) {
-        const hr = new Date().getHours();
-        const timeGreet = hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
-        const greeting = { role: "assistant" as const, content: `${timeGreet}. I'm Samia — I know every number in this dashboard cold. What do you need?` };
-        // Start each session clean — past conversations live behind the History button.
-        setMessages([greeting]);
-        setHistoryLoaded(true);
-      }
-    }
-  }, [open]);
-
-  function openAdminUsers() {
-    setAdminView("users");
-    setAdminLoading(true);
-    fetch("/api/samia/users", { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => r.ok ? r.json() : [])
-      .then((rows: { userId: number; username: string }[]) => setAdminUsers(rows))
-      .catch(() => setAdminUsers([]))
-      .finally(() => setAdminLoading(false));
-  }
-
-  function viewUserChat(u: { userId: number; username: string }) {
-    setAdminViewUser(u);
-    setAdminView("viewUser");
-    setAdminLoading(true);
-    fetch(`/api/samia/history/${u.userId}`, { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => r.ok ? r.json() : [])
-      .then((rows: Array<{ role: string; content: string; images?: string[] | null }>) =>
-        setAdminMessages(rows.map((r) => ({ role: r.role as "user" | "assistant", content: r.content, images: r.images ?? undefined })))
-      )
-      .catch(() => setAdminMessages([]))
-      .finally(() => setAdminLoading(false));
-  }
-
-  function openHistory() {
-    setAdminView("history");
-    setHistoryLoading(true);
-    fetch("/api/samia/history", { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => r.ok ? r.json() : [])
-      .then((rows: Array<{ role: string; content: string; images?: string[] | null; createdAt: string }>) => {
-        const byKey = new Map<string, HistoryGroup>();
-        const order: string[] = [];
-        const today = new Date().toLocaleDateString("en-CA");
-        const yesterday = new Date(Date.now() - 86400000).toLocaleDateString("en-CA");
-        for (const r of rows) {
-          const d = new Date(r.createdAt);
-          const key = d.toLocaleDateString("en-CA");
-          let g = byKey.get(key);
-          if (!g) {
-            const label = key === today ? "Today" : key === yesterday ? "Yesterday"
-              : d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
-            g = { key, label, preview: "", messages: [] };
-            byKey.set(key, g);
-            order.push(key);
-          }
-          g.messages.push({ role: r.role as "user" | "assistant", content: r.content, images: r.images ?? undefined });
-        }
-        // Preview = first user line of the day (fallback to first message)
-        for (const g of byKey.values()) {
-          const firstUser = g.messages.find((m) => m.role === "user" && m.content.trim());
-          const src = (firstUser ?? g.messages[0])?.content ?? "";
-          g.preview = src.length > 60 ? src.slice(0, 60) + "…" : src || "(image only)";
-        }
-        // Newest day first
-        setHistoryGroups(order.map((k) => byKey.get(k)!).reverse());
-      })
-      .catch(() => setHistoryGroups([]))
-      .finally(() => setHistoryLoading(false));
-  }
-
-  function viewHistoryDate(g: HistoryGroup) {
-    setHistoryGroup(g);
-    setAdminView("viewDate");
-  }
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
-
-  function readFileAsDataURL(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  }
-
-  async function addImages(files: FileList | File[]) {
-    const arr = Array.from(files).filter((f) => f.type.startsWith("image/")).slice(0, 4);
-    const urls = await Promise.all(arr.map(readFileAsDataURL));
-    setPendingImages((prev) => [...prev, ...urls].slice(0, 4));
-  }
-
-  function handlePaste(e: React.ClipboardEvent) {
-    const items = Array.from(e.clipboardData.items).filter((i) => i.type.startsWith("image/"));
-    if (items.length === 0) return;
-    e.preventDefault();
-    const files = items.map((i) => i.getAsFile()).filter(Boolean) as File[];
-    void addImages(files);
-  }
-
-  async function send() {
-    const text = input.trim();
-    if ((!text && pendingImages.length === 0) || loading) return;
-    const images = [...pendingImages];
-    setInput("");
-    setPendingImages([]);
-    setMessages((prev) => [...prev, { role: "user", content: text, images: images.length ? images : undefined }]);
-    setLoading(true);
-    try {
-      const res = await fetch("/api/samia/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ message: text || "What do you see in this image?", images, displayName: chatName || undefined }),
-      });
-      const data = (await res.json().catch(() => ({}))) as SamiaResponse;
-      if (res.ok && data.invalidateQueryKeys?.length) {
-        await Promise.all([...new Set(data.invalidateQueryKeys)].map((key) =>
-          qc.invalidateQueries({ queryKey: [key], refetchType: "active" })));
-        const resources = [...new Set((data.mutations ?? []).map((mutation) => mutation.resource))];
-        window.dispatchEvent(new CustomEvent<{ resources: string[]; mutations: SamiaMutation[] }>("dashboard:data-changed", {
-          detail: { resources, mutations: data.mutations ?? [] },
-        }));
-      }
-      const note = data.fallbackUsed ? "\n\nUsed backup model." : "";
-      const content = res.ok
-        ? data.reply ?? "The action completed without a response."
-        : data.error ?? data.reply ?? `Request failed with HTTP ${res.status}.`;
-      setMessages((prev) => [...prev, { role: "assistant", content: `${content}${note}` }]);
-    } catch {
-      setMessages((prev) => [...prev, { role: "assistant", content: "Network error — try again." }]);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <>
-      {/* Floating bubble */}
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full bg-primary text-white shadow-lg flex items-center justify-center hover:scale-105 transition-transform"
-        aria-label="Open Samia"
-      >
-        {open ? <X className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
-      </button>
-
-      {/* Chat panel */}
-      {open && (
-        <div className={`fixed z-50 flex flex-col rounded-2xl border border-white/10 bg-zinc-900/95 backdrop-blur-xl shadow-2xl overflow-hidden transition-all duration-200 ${
-          size === "maximized"
-            ? "bottom-4 right-4 left-4 top-4 w-auto max-h-none"
-            : size === "minimized"
-            ? "bottom-24 right-4 sm:right-6 w-[calc(100vw-32px)] sm:w-[360px] max-h-none"
-            : "bottom-24 right-4 sm:right-6 w-[calc(100vw-32px)] sm:w-[360px] max-h-[560px]"
-        }`}>
-          {/* Header */}
-          <div className="flex items-center gap-3 px-4 py-3 border-b border-white/8 bg-muted/40 flex-shrink-0">
-            {(adminView === "users" || adminView === "viewUser" || adminView === "history" || adminView === "viewDate") ? (
-              <button onClick={() => adminView === "viewUser" ? setAdminView("users") : adminView === "viewDate" ? setAdminView("history") : setAdminView("chat")} className="text-zinc-400 hover:text-white transition-colors p-1 -ml-1">
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-            ) : (
-              <div className="h-9 w-9 rounded-full bg-primary flex items-center justify-center text-white font-bold text-sm shadow-md flex-shrink-0">S</div>
-            )}
-            <div>
-              <p className="text-sm font-semibold text-white leading-none">
-                {adminView === "users" ? "All Chats" : adminView === "viewUser" ? adminViewUser?.username ?? "User" : adminView === "history" ? "Chat History" : adminView === "viewDate" ? historyGroup?.label ?? "Chat" : "Samia"}
-              </p>
-              <p className="text-[10px] metric-info mt-0.5 flex items-center gap-1">
-                {adminView === "chat" && <><span className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground animate-pulse" />AI Analyst · Live data</>}
-                {adminView === "users" && "Select a user to view their chat"}
-                {adminView === "viewUser" && "Read-only · Admin view"}
-                {adminView === "history" && "Your past conversations by date"}
-                {adminView === "viewDate" && "Read-only · Past conversation"}
-              </p>
-            </div>
-            <div className="ml-auto flex items-center gap-1">
-              {/* Personal chat history button */}
-              {adminView === "chat" && (
-                <button onClick={openHistory} title="Chat history" className="text-zinc-500 hover:metric-info transition-colors p-1">
-                  <Clock className="h-4 w-4" />
-                </button>
-              )}
-              {/* Admin all-chats button */}
-              {isAdmin && adminView === "chat" && (
-                <button onClick={openAdminUsers} title="View all user chats" className="text-zinc-500 hover:metric-info transition-colors p-1">
-                  <Users className="h-4 w-4" />
-                </button>
-              )}
-              {/* Minimize */}
-              <button
-                onClick={() => setSize((s) => s === "minimized" ? "normal" : "minimized")}
-                title={size === "minimized" ? "Restore" : "Minimize"}
-                className="text-zinc-500 hover:text-white transition-colors p-1"
-              >
-                <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${size === "minimized" ? "rotate-180" : ""}`} />
-              </button>
-              {/* Maximize */}
-              <button
-                onClick={() => setSize((s) => s === "maximized" ? "normal" : "maximized")}
-                title={size === "maximized" ? "Restore" : "Maximize"}
-                className="text-zinc-500 hover:text-white transition-colors p-1"
-              >
-                {size === "maximized" ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-              </button>
-              {/* Close */}
-              <button onClick={() => { setOpen(false); setSize("normal"); setAdminView("chat"); setHistoryGroup(null); }} className="text-zinc-500 hover:text-white transition-colors p-1">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-
-          {/* Name gate — shown if user hasn't set their display name yet */}
-          {!chatName ? (
-            <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 gap-5">
-              <div className="h-14 w-14 rounded-full bg-primary flex items-center justify-center text-white font-bold text-xl shadow-lg">S</div>
-              <div className="text-center">
-                <p className="text-sm font-semibold text-white mb-1">Hey, before we start —</p>
-                <p className="text-xs text-zinc-400">What's your name? Samia will use it to remember you.</p>
-              </div>
-              <div className="w-full flex gap-2">
-                <input
-                  ref={nameRef}
-                  value={nameInput}
-                  onChange={(e) => setNameInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") submitName(); }}
-                  placeholder="Your first name…"
-                  className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2.5 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-ring"
-                />
-                <button
-                  onClick={submitName}
-                  disabled={!nameInput.trim()}
-                  className="px-4 rounded-xl bg-primary text-white text-sm font-medium disabled:opacity-40 hover:opacity-90 transition-opacity"
-                >
-                  Go
-                </button>
-              </div>
-            </div>
-          ) : adminView === "users" ? (
-            <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1 min-h-0">
-              {adminLoading && (
-                <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-6">
-                  <div className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
-                  Loading…
-                </div>
-              )}
-              {!adminLoading && adminUsers.length === 0 && (
-                <p className="text-center text-xs text-zinc-500 py-6">No chat history yet.</p>
-              )}
-              {adminUsers.map((u) => (
-                <button
-                  key={u.userId}
-                  onClick={() => viewUserChat(u)}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white/5 transition-colors text-left"
-                >
-                  <AvatarName name={u.username} size="md" textClassName="text-sm text-white" />
-                  <ChevronRight className="h-4 w-4 text-zinc-600 ml-auto" />
-                </button>
-              ))}
-            </div>
-          ) : adminView === "viewUser" ? (
-            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
-              {adminLoading && (
-                <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-4">
-                  <div className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
-                  Loading…
-                </div>
-              )}
-              {!adminLoading && adminMessages.length === 0 && (
-                <p className="text-center text-xs text-zinc-500 py-6">No messages yet.</p>
-              )}
-              {adminMessages.map((m, i) => (
-                <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                  {m.role === "assistant" && (
-                    <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
-                  )}
-                  <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                    m.role === "user" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
-                  }`}>{m.content}</div>
-                </div>
-              ))}
-            </div>
-          ) : adminView === "history" ? (
-            <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1 min-h-0">
-              {historyLoading && (
-                <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-6">
-                  <div className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
-                  Loading…
-                </div>
-              )}
-              {!historyLoading && historyGroups.length === 0 && (
-                <p className="text-center text-xs text-zinc-500 py-6">No past conversations yet.</p>
-              )}
-              {historyGroups.map((g) => (
-                <button
-                  key={g.key}
-                  onClick={() => viewHistoryDate(g)}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white/5 transition-colors text-left"
-                >
-                  <div className="h-8 w-8 rounded-full bg-zinc-700 flex items-center justify-center metric-info flex-shrink-0">
-                    <Clock className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm text-white leading-tight">{g.label}</p>
-                    <p className="text-[11px] text-zinc-500 truncate">{g.preview}</p>
-                  </div>
-                  <span className="text-[10px] text-zinc-600 flex-shrink-0">{g.messages.length} msg</span>
-                  <ChevronRight className="h-4 w-4 text-zinc-600 flex-shrink-0" />
-                </button>
-              ))}
-            </div>
-          ) : adminView === "viewDate" ? (
-            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
-              {(historyGroup?.messages ?? []).length === 0 && (
-                <p className="text-center text-xs text-zinc-500 py-6">No messages.</p>
-              )}
-              {(historyGroup?.messages ?? []).map((m, i) => (
-                <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                  {m.role === "assistant" && (
-                    <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
-                  )}
-                  <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                    m.role === "user" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
-                  }`}>{m.content}</div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <>
-              {/* Normal chat messages */}
-              <div className={`flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0 ${size === "minimized" ? "hidden" : ""}`}>
-                {historyLoading && (
-                  <div className="flex items-center justify-center gap-2 text-muted-foreground text-xs py-4">
-                    <div className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
-                    Loading memory…
-                  </div>
-                )}
-                {messages.map((m, i) => (
-                  <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                    {m.role === "assistant" && (
-                      <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
-                    )}
-                    <div className={`max-w-[80%] flex flex-col gap-1.5 ${m.role === "user" ? "items-end" : "items-start"}`}>
-                      {m.images?.map((src, idx) => (
-                        <img key={idx} src={src} alt="attachment" className="max-w-[220px] rounded-xl border border-white/10 object-cover" />
-                      ))}
-                      {m.content && (
-                        <div className={`rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                          m.role === "user" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-zinc-800 text-zinc-100 rounded-bl-sm"
-                        }`}>{m.content}</div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-                {loading && (
-                  <div className="flex justify-start">
-                    <div className="h-6 w-6 rounded-full bg-primary flex items-center justify-center text-white text-[10px] font-bold mr-2 mt-0.5 flex-shrink-0">S</div>
-                    <div className="bg-zinc-800 rounded-2xl rounded-bl-sm px-3 py-2">
-                      <div className="flex gap-1 items-center h-4">
-                        <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:0ms]" />
-                        <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:150ms]" />
-                        <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-bounce [animation-delay:300ms]" />
-                      </div>
-                    </div>
-                  </div>
-                )}
-                <div ref={bottomRef} />
-              </div>
-
-              {/* Input bar */}
-              <div className={`px-3 pb-3 pt-2 border-t border-white/8 flex flex-col gap-2 ${size === "minimized" ? "hidden" : ""}`}>
-                {pendingImages.length > 0 && (
-                  <div className="flex gap-2 flex-wrap">
-                    {pendingImages.map((src, idx) => (
-                      <div key={idx} className="relative group">
-                        <img src={src} alt="pending" className="h-16 w-16 rounded-lg object-cover border border-white/10" />
-                        <button
-                          onClick={() => setPendingImages((p) => p.filter((_, i) => i !== idx))}
-                          className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-zinc-700 border border-white/20 text-zinc-300 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <X className="h-2.5 w-2.5" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className="flex gap-2 items-center">
-                  <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
-                    onChange={(e) => { if (e.target.files) { void addImages(e.target.files); e.target.value = ""; } }} />
-                  <button onClick={() => fileInputRef.current?.click()} disabled={loading} title="Attach image"
-                    className="h-9 w-9 rounded-xl bg-zinc-800 border border-white/10 text-zinc-400 hover:metric-info flex items-center justify-center transition-colors disabled:opacity-40 flex-shrink-0">
-                    <Paperclip className="h-4 w-4" />
-                  </button>
-                  <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
-                    onPaste={handlePaste} placeholder="Ask Samia anything… or paste a screenshot" disabled={loading}
-                    className="flex-1 text-sm rounded-xl bg-zinc-800 border border-white/10 px-3 py-2 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50" />
-                  <button onClick={() => void send()} disabled={(!input.trim() && pendingImages.length === 0) || loading}
-                    className="h-9 w-9 rounded-xl bg-primary text-white flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity flex-shrink-0">
-                    <Send className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-    </>
-  );
-}
-
-// ─── Attendance ────────────────────────────────────────────────────────────────
 
 interface AttMember { id: number; name: string; shift: string; shiftHours: string; department: string; active: boolean; }
 
@@ -12715,6 +12139,7 @@ const ATT_STATUS = [
   { s: "off",  label: "Off",       cell: "bg-muted metric-warn",     badge: "metric-warn" },
   { s: "late", label: "Late",      cell: "bg-yellow-400/25 text-yellow-300",   badge: "text-yellow-400" },
   { s: "pto",  label: "PTO",       cell: "bg-muted-foreground/25 metric-info",       badge: "metric-info" },
+  { s: "absent", label: "Absent",  cell: "bg-red-900/30 text-red-300",         badge: "text-red-300" },
   { s: "nsnc", label: "NSNC",      cell: "bg-red-700/30 text-red-400",         badge: "text-red-400" },
   { s: "conf", label: "Confirmed", cell: "bg-teal-500/25 text-teal-300",       badge: "text-teal-400" },
   { s: "",     label: "Clear",     cell: "",                                    badge: "text-zinc-500" },
@@ -12725,7 +12150,7 @@ function AttCell({ status, note, coaching, weekend }: { status: string; note?: s
   if (!status) return weekend
     ? <span className="text-zinc-800 text-xs font-medium select-none">—</span>
     : <span className="text-zinc-700 text-base leading-none">·</span>;
-  const label = status === "in" ? "In" : status === "off" ? "Off" : status === "late" ? "Late" : status === "pto" ? "PTO" : status === "nsnc" ? "NSNC" : "Conf";
+  const label = cfg?.label ?? status;
   return (
     <span className={`relative inline-flex items-center justify-center px-1.5 h-5 rounded text-[10px] font-bold whitespace-nowrap ${cfg?.cell ?? ""}`}>
       {label}
@@ -12746,7 +12171,7 @@ function AttendancePanel() {
   const TEAM_TO_DEPT: Record<string, string> = { retention: "Retention", nsf: "NSF", cs: "CS" };
   const lockedDept = user.teamAccess ? TEAM_TO_DEPT[user.teamAccess] : null;
   const todayStr = ltLaToday();
-  const tomorrowStr = nextCalendarDate(todayStr);
+  const tomorrowStr = addBusinessCalendarDays(todayStr, 1);
   const [todayYear, todayMonth] = todayStr.split("-").map(Number);
   const [monthOff, setMonthOff] = useState(0);
   const [deptFilter, setDeptFilter] = useState<string>(lockedDept ?? "All");
@@ -12788,12 +12213,12 @@ function AttendancePanel() {
     queryFn: async () => {
       const params = new URLSearchParams({ from: fromStr, to: toStr });
       if (showInactive) params.set("includeInactive", "true");
-      const r = await fetch(`/api/attendance?${params}`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await apiFetch(`/api/attendance?${params}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error("fetch failed");
       return r.json();
     },
     staleTime: 15_000,
-    refetchInterval: 60_000,
+    refetchInterval: queryPollingInterval({ baseMs: 60_000 }),
   });
 
   const recordMap = useMemo(() => {
@@ -12857,7 +12282,7 @@ function AttendancePanel() {
   }, [scopedMembers, recordMap, todayStr]);
 
   async function upsert(memberId: number, date: string, status: string, note: string, coaching: boolean) {
-    await fetch("/api/attendance/record", {
+    await apiFetch("/api/attendance/record", {
       method: "PUT", headers: authHeaders(token),
       body: JSON.stringify({ memberId, date, status, note: note || null, coaching }),
     });
@@ -12880,7 +12305,7 @@ function AttendancePanel() {
 
   async function addMember() {
     if (!newName.trim()) return;
-    await fetch("/api/attendance/members", {
+    await apiFetch("/api/attendance/members", {
       method: "POST", headers: authHeaders(token),
       body: JSON.stringify({ name: newName.trim(), shift: newShift.trim(), shiftHours: newShiftHours.trim() || "8", department: newDept.trim() }),
     });
@@ -12890,7 +12315,7 @@ function AttendancePanel() {
 
   async function saveMember() {
     if (!editingMember) return;
-    await fetch(`/api/attendance/members/${editingMember.id}`, {
+    await apiFetch(`/api/attendance/members/${editingMember.id}`, {
       method: "PATCH", headers: authHeaders(token),
       body: JSON.stringify({ name: editingMember.name, shift: editingMember.shift, shiftHours: editingMember.shiftHours, department: editingMember.department }),
     });
@@ -12899,7 +12324,7 @@ function AttendancePanel() {
   }
 
   async function setMemberActive(id: number, active: boolean) {
-    await fetch(`/api/attendance/members/${id}`, {
+    await apiFetch(`/api/attendance/members/${id}`, {
       method: "PATCH", headers: authHeaders(token),
       body: JSON.stringify({ active }),
     });
@@ -12908,7 +12333,7 @@ function AttendancePanel() {
 
   async function doImport() {
     setImporting(true);
-    await fetch("/api/attendance/import", { method: "POST", headers: authHeaders(token) });
+    await apiFetch("/api/attendance/import", { method: "POST", headers: authHeaders(token) });
     qc.invalidateQueries({ queryKey: ["attendance"] });
     setImporting(false);
   }
@@ -12917,7 +12342,7 @@ function AttendancePanel() {
     setAutoMarking(true);
     setAutoMarkResult(null);
     try {
-      const r = await fetch("/api/attendance/auto-mark", { method: "POST", headers: authHeaders(token) });
+      const r = await apiFetch("/api/attendance/auto-mark", { method: "POST", headers: authHeaders(token) });
       const data = await r.json() as { success: boolean; results?: { name: string; status: string; note: string; skipped?: string }[] };
       if (data.success && data.results) {
         const marked = data.results.filter((x) => x.status);
@@ -12979,7 +12404,7 @@ function AttendancePanel() {
             </div>
             <div className="w-24">
               <Label className="text-xs text-muted-foreground mb-1 block">Shift start</Label>
-              <Input value={newShift} onChange={(e) => setNewShift(e.target.value)} placeholder="e.g. 8 (8 AM)" className="h-8" />
+              <Input value={newShift} onChange={(e) => setNewShift(e.target.value)} placeholder="e.g. 8 (8 PM Egypt)" className="h-8" />
             </div>
             <div className="w-20">
               <Label className="text-xs text-muted-foreground mb-1 block">Hours</Label>
@@ -13110,7 +12535,7 @@ function AttendancePanel() {
                   if (s === "in") cIn++; else if (s === "off") cOff++;
                   else if (s === "late") cLate++; else if (s === "pto") cPto++;
                   else if (s === "nsnc") cNsnc++;
-                  if ((s === "in" || s === "late") && new Date(d + "T12:00:00").getDay() === 6) cSat++;
+                  if ((s === "in" || s === "late") && new Date(d + "T12:00:00Z").getUTCDay() === 6) cSat++;
                 }
                 const rowBg = mi % 2 === 0 ? "bg-zinc-900/20" : "bg-zinc-900/50";
                 const parts = agentNameParts(member.name, roster);
@@ -13120,7 +12545,7 @@ function AttendancePanel() {
                       <AvatarName name={parts.agentName} size="sm" textClassName={member.active ? "text-white" : "text-zinc-400 line-through"} />
                       {!member.active && <span className="ml-1.5 no-underline text-[10px] font-normal text-amber-500/70 bg-muted/50 px-1 rounded" style={{textDecoration:"none"}}>inactive</span>}
                     </td>
-                    <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`} title={`Shift ${member.shift} (LA time) · ${member.shiftHours || "8"}h shift`}>
+                    <td className={`sticky left-[160px] z-10 ${mi % 2 === 0 ? "bg-zinc-950" : "bg-zinc-900"} text-center text-xs text-zinc-500 px-1 border-b border-white/5`} title={`Shift ${member.shift} (Egypt time) · ${member.shiftHours || "8"}h shift`}>
                       <div>{shiftLabel(member.shift)}</div>
                       {member.shiftHours && member.shiftHours !== "8" && (
                         <span className="text-[9px] font-semibold metric-warn bg-muted/60 rounded px-1">{member.shiftHours}h</span>
@@ -13136,8 +12561,8 @@ function AttendancePanel() {
                       const isTomorrow = d === tomorrowStr;
                       const isFuture = d > tomorrowStr;
                       const isToday = d === todayStr;
-                      const dt = new Date(d + "T12:00:00");
-                      const isWknd = dt.getDay() === 0 || dt.getDay() === 6;
+                      const dt = new Date(d + "T12:00:00Z");
+                      const isWknd = dt.getUTCDay() === 0 || dt.getUTCDay() === 6;
                       return (
                         <td
                           key={d}
@@ -13323,7 +12748,7 @@ function AttendancePanel() {
 
 function App() {
   return (
-    <QueryClientProvider client={queryClient}>
+    <QueryClientProvider client={dashboardQueryClient}>
       <ThemeProvider>
         <TooltipProvider>
           <LoginGate>

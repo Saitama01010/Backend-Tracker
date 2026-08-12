@@ -1,8 +1,10 @@
 import { Router } from "express";
 import { and, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { db, nsfReadymodeQueueTable, phoneCallsTable } from "@workspace/db";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
+router.use("/nsf", requireAuth);
 
 export interface ReadymodeItem {
   id: string;
@@ -105,7 +107,7 @@ export async function getActiveReadymodeItems(): Promise<ReadymodeItem[]> {
  * Adds NSF Readymode missed-call numbers to the queue.
  * Duplicate active entries for the same normalized number are skipped.
  */
-router.post("/nsf/readymode-queue", async (req, res) => {
+router.post("/nsf/readymode-queue", requireRole("admin"), async (req, res) => {
   try {
     const body = req.body as { numbers?: unknown; addedBy?: unknown };
     const raw = Array.isArray(body.numbers) ? body.numbers : [];
@@ -159,7 +161,7 @@ router.post("/nsf/readymode-queue", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "nsf readymode add error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "ReadyMode queue update failed." });
   }
 });
 
@@ -178,7 +180,7 @@ router.get("/nsf/readymode-queue", async (_req, res) => {
  */
 router.post("/nsf/readymode-queue/:id/done", async (req, res) => {
   const id = Number(req.params["id"]);
-  if (!Number.isFinite(id)) return res.status(400).json({ error: "Invalid id" });
+  if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: "Invalid id" });
   const doneBy =
     (req as { user?: { username?: string } }).user?.username ?? "manual";
   await db

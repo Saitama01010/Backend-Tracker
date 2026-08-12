@@ -12,7 +12,7 @@ export const violationVerificationsTable = pgTable(
     department: text("department").notNull(),
     date: text("date").notNull(),
     details: text("details").notNull(),     // JSON stringified full row data
-    verifiedBy: text("verified_by").notNull().default("admin"),
+    verifiedBy: text("verified_by").notNull(),
     verifiedAt: timestamp("verified_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [unique("violation_verifications_key_unique").on(t.key)],

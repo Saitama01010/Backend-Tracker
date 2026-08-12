@@ -27,6 +27,7 @@ const apiDir = path.resolve(libDir, "..");
 const repoRoot = path.resolve(apiDir, "../../..");
 const routeSource = (name: string) => readFile(path.join(apiDir, "routes", name), "utf8");
 const dashboardSource = () => readFile(path.join(repoRoot, "artifacts/agent-dashboard/src/App.tsx"), "utf8");
+const samiaUiSource = () => readFile(path.join(repoRoot, "artifacts/agent-dashboard/src/features/samia/SamiaChat.tsx"), "utf8");
 
 const validCsEvaluation = {
   department: "CS",
@@ -158,13 +159,18 @@ test("attendance member resolution supports unique, ambiguous, alias, and missin
   if (alias.kind === "unique") assert.equal(alias.member.id, 7);
 });
 
-test("attendance conflict policy requires confirmation unless replacement language is explicit", () => {
+test("attendance conflict policy requires confirmation even when replacement language is explicit", () => {
   const mark = detectSamiaOperationalIntent("Mark Ahmed off tomorrow");
   const change = detectSamiaOperationalIntent("Change Ahmed to PTO tomorrow");
+  const confirmedChange = detectSamiaOperationalIntent("Confirm change Ahmed to PTO tomorrow");
   assert.equal(mark?.kind, "attendance_set");
   assert.equal(change?.kind, "attendance_set");
   if (mark?.kind === "attendance_set") assert.equal(mark.overwrite, false);
-  if (change?.kind === "attendance_set") assert.equal(change.overwrite, true);
+  if (change?.kind === "attendance_set") {
+    assert.equal(change.overwrite, true);
+    assert.equal(change.confirmed, false);
+  }
+  if (confirmedChange?.kind === "attendance_set") assert.equal(confirmedChange.confirmed, true);
 });
 
 test("attendance writes are read back before success and return mutation metadata", async () => {
@@ -226,7 +232,7 @@ test("Samia QA action uses the shared service route and returns all QA invalidat
 });
 
 test("Samia frontend invalidates stable prefixes and emits dashboard:data-changed", async () => {
-  const source = await dashboardSource();
+  const source = await samiaUiSource();
   const start = source.indexOf("interface SamiaResponse");
   const end = source.indexOf("return (", source.indexOf("async function send", start));
   const section = source.slice(start, end);
@@ -238,10 +244,11 @@ test("Samia frontend invalidates stable prefixes and emits dashboard:data-change
 
 test("intermediate tool calls are hidden and opening Samia makes no Anthropic request", async () => {
   const api = await routeSource("samia.ts");
-  const ui = await dashboardSource();
+  const ui = await samiaUiSource();
   assert.match(api, /safeVisibleSamiaReply\(finalReply\)/);
   assert.match(api, /toolResultMessage\(toolResults\)/);
-  const openSection = ui.slice(ui.indexOf("function SamiaChat()"), ui.indexOf("async function send()", ui.indexOf("function SamiaChat()")));
+  const samiaStart = ui.indexOf("function SamiaChat");
+  const openSection = ui.slice(samiaStart, ui.indexOf("async function send()", samiaStart));
   assert.doesNotMatch(openSection, /\/api\/samia\/chat/);
   assert.doesNotMatch(openSection, /Anthropic/);
 });
@@ -252,7 +259,7 @@ test("dashboard attendance dates and API descriptions use the canonical LA timez
   const ui = await dashboardSource();
   assert.match(attendance, /ATTENDANCE_TIMEZONE/);
   assert.match(ui, /const todayStr = ltLaToday\(\)/);
-  assert.match(ui, /const tomorrowStr = nextCalendarDate\(todayStr\)/);
+  assert.match(ui, /const tomorrowStr = addBusinessCalendarDays\(todayStr, 1\)/);
   const prompt = samia.slice(samia.indexOf("## Attendance actions"), samia.indexOf("## Phone contact lookup"));
   assert.doesNotMatch(prompt, /Egypt|ALWAYS REFUSE/);
   assert.match(prompt, /America\/Los_Angeles/);

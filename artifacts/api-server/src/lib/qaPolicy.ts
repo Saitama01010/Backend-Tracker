@@ -217,14 +217,13 @@ export function validateQaResult(value: unknown, expectedDepartment: QaDepartmen
   return validateQaResultWithReason(value, expectedDepartment).result;
 }
 
-export function hasRecentAutomaticReview(
+export function hasRecentQaReview(
   reviews: QaPolicyReview[],
   now: Date,
   intervalDays: number,
 ): boolean {
   const cutoff = now.getTime() - intervalDays * 24 * 60 * 60 * 1000;
-  return reviews.some((review) =>
-    review.source === "auto_biweekly" && review.evaluatedAt.getTime() >= cutoff);
+  return reviews.some((review) => review.evaluatedAt.getTime() > cutoff);
 }
 
 export function stableEligibleCalls<T extends QaPolicyCall>(

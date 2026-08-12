@@ -4,8 +4,8 @@ import {
   attendanceMembersTable,
   attendanceRecordsTable,
 } from "@workspace/db";
-import { eq, and, or, gte, lte, inArray, min, ilike, sql } from "drizzle-orm";
-import { getCallHistoryCache } from "./vos";
+import { eq, and, or, gte, lte, inArray, ilike, isNotNull, sql } from "drizzle-orm";
+import { getCallHistoryCache, hydrateVosState } from "./vos";
 import { requireAuth, requirePermission } from "../middleware/auth.js";
 import {
   ATTENDANCE_MEMBER_ALIASES,
@@ -13,24 +13,59 @@ import {
   addAttendanceCalendarDays,
   attendanceDate,
   attendanceStartOfDay,
-  type AttendanceStatus,
+  canonicalAttendanceStatus,
 } from "../lib/attendancePolicy.js";
-import { setAttendanceRecord } from "../lib/attendanceService.js";
+import {
+  activeAttendanceMembers,
+  attendanceRecordDate,
+  attendanceRecordSelection,
+  resolveActiveAttendanceMember,
+  resolveActiveAttendanceMemberFromList,
+  setAttendanceRecord,
+  setAttendanceRecords,
+} from "../lib/attendanceService.js";
+import {
+  attendanceImportMemberKey,
+  buildAttendanceImportPlan,
+  buildQuoFirstCallMap,
+  type AttendanceImportCandidate,
+} from "../lib/databasePerformance.js";
+import {
+  attendanceDepartmentForUser,
+  canAccessAgent,
+  canAccessAttendanceDepartment,
+  canAccessDateRange,
+  hasPermission,
+  normalizeAgentIdentity,
+} from "../middleware/authorizationCore.js";
+import type { AuthPayload } from "../middleware/authCore.js";
+import { canAccessLiveAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
+import {
+  escapeLikePattern,
+  validateOptionalWorkflowRange,
+  validateWorkflowCalendarDate,
+} from "../lib/sensitiveWorkflowPolicy.js";
+import { attendanceShiftStart, parseBusinessTimestampCompatibility } from "../lib/businessTime.js";
+import { googleCsvUrl, OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 
 const router = Router();
+router.use("/attendance", requireAuth);
+
+class AttendanceImportSourceError extends Error {}
 
 const MONTH_MAP: Record<string, string> = {
   Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",
   Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12",
 };
 
-function parseSheetDate(raw: string): string | null {
+export function parseAttendanceImportDate(raw: string, year = OPERATIONAL_CONFIG.attendanceImportYear): string | null {
   const m = raw.trim().match(/^(\d{1,2})-([A-Za-z]{3})$/);
   if (!m) return null;
   const mon = MONTH_MAP[m[2]];
   if (!mon) return null;
   const day = m[1].padStart(2, "0");
-  return `2026-${mon}-${day}`;
+  const date = `${year}-${mon}-${day}`;
+  return validateWorkflowCalendarDate(date) ? date : null;
 }
 
 function parseCSV(text: string): string[][] {
@@ -51,24 +86,14 @@ function parseCSV(text: string): string[][] {
   return rows;
 }
 
-function normalizeStatus(raw: string): string {
-  const s = raw.trim().toLowerCase();
-  if (s === "in") return "in";
-  if (s === "off") return "off";
-  if (s === "late") return "late";
-  if (s === "pto") return "pto";
-  if (s === "absent") return "absent";
-  if (s === "nsnc") return "nsnc";
-  return "";
-}
-
 // ─── Timezone helpers ─────────────────────────────────────────────────────────
 //
-// All attendance dates and shift times are in America/Los_Angeles (PDT/PST).
-// Shift N = N:00 LA time (24-hour). E.g. shift 15 = 3:00 PM PDT.
+// Attendance calendar dates use the configured business timezone. Historical
+// shift instants retain the legacy offset formula through the configured
+// cutover; new dates resolve the stored shift as an Africa/Cairo wall time.
 //
-// Quo DB timestamps are UTC (TIMESTAMPTZ). VoS/PBX timestamps are PDT (no TZ
-// indicator, parsePdt appends -07:00). Both are compared against UTC windows.
+// Quo DB timestamps are UTC (TIMESTAMPTZ). Zoneless VoS/PBX timestamps are
+// resolved with the business timezone rules that apply on the record date.
 
 // Returns the UTC instant corresponding to midnight (00:00:00) in LA time
 // for the given YYYY-MM-DD date string. Handles PDT (UTC-7) and PST (UTC-8).
@@ -79,28 +104,46 @@ function todayLA(): string {
   return attendanceDate();
 }
 
+function canAccessAttendanceMember(
+  user: AuthPayload,
+  member: { name: string; department: string },
+): boolean {
+  return canAccessAttendanceDepartment(user, member.department)
+    && canAccessAgent(user, member.name, ATTENDANCE_MEMBER_ALIASES[member.name] ?? []);
+}
+
 router.get("/attendance", async (req, res) => {
   try {
-    const from = (req.query["from"] as string) || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-    const to = (req.query["to"] as string) || new Date().toISOString().slice(0, 10);
+    const to = (req.query["to"] as string) || attendanceDate();
+    const from = (req.query["from"] as string) || addAttendanceCalendarDays(to, -30);
+    const requestedRange = validateOptionalWorkflowRange(from, to);
+    if (!requestedRange.ok) {
+      res.status(400).json({ error: requestedRange.error });
+      return;
+    }
     const includeInactive = req.query["includeInactive"] === "true";
+    if (!canAccessDateRange(req.user!, [from, to]) || (includeInactive && !hasPermission(req.user!, "manage_members"))) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
 
-    const members = await db
+    const allMembers = await db
       .select()
       .from(attendanceMembersTable)
       .where(includeInactive ? undefined : eq(attendanceMembersTable.active, true))
       .orderBy(attendanceMembersTable.department, attendanceMembersTable.name);
 
+    const members = allMembers.filter((member) => canAccessAttendanceMember(req.user!, member));
     const records =
       members.length > 0
         ? await db
-            .select()
+            .select(attendanceRecordSelection)
             .from(attendanceRecordsTable)
             .where(
               and(
                 inArray(attendanceRecordsTable.memberId, members.map((m) => m.id)),
-                gte(attendanceRecordsTable.date, from),
-                lte(attendanceRecordsTable.date, to),
+                gte(attendanceRecordDate, from),
+                lte(attendanceRecordDate, to),
               ),
             )
         : [];
@@ -108,7 +151,7 @@ router.get("/attendance", async (req, res) => {
     res.json({ members, records, timezone: ATTENDANCE_TIMEZONE });
   } catch (err) {
     req.log.error(err, "attendance GET error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to load attendance." });
   }
 });
 
@@ -119,6 +162,10 @@ router.post("/attendance/members", requireAuth, requirePermission("manage_member
       res.status(400).json({ error: "name required" });
       return;
     }
+    if (!canAccessAttendanceMember(req.user!, { name: name.trim(), department: department?.trim() ?? "" })) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
     const [member] = await db
       .insert(attendanceMembersTable)
       .values({ name: name.trim(), shift: shift?.trim() ?? "", shiftHours: shiftHours?.trim() ?? "8", department: department?.trim() ?? "" })
@@ -126,14 +173,30 @@ router.post("/attendance/members", requireAuth, requirePermission("manage_member
     res.json(member);
   } catch (err) {
     req.log.error(err, "attendance POST member error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to create attendance member." });
   }
 });
 
 router.patch("/attendance/members/:id", requireAuth, requirePermission("manage_members"), async (req, res) => {
   try {
     const id = Number(req.params["id"]);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      res.status(400).json({ error: "Invalid attendance member id." });
+      return;
+    }
     const body = req.body as Partial<{ name: string; shift: string; shiftHours: string; department: string; active: boolean }>;
+    const [existing] = await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.id, id)).limit(1);
+    if (!existing) {
+      res.status(404).json({ error: "Attendance member not found" });
+      return;
+    }
+    const finalDepartment = body.department?.trim() ?? existing.department;
+    const finalName = body.name?.trim() ?? existing.name;
+    if (!canAccessAttendanceMember(req.user!, existing)
+      || !canAccessAttendanceMember(req.user!, { name: finalName, department: finalDepartment })) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
     const upd: Partial<{ name: string; shift: string; shiftHours: string; department: string; active: boolean }> = {};
     if (body.name !== undefined) upd.name = body.name.trim();
     if (body.shift !== undefined) upd.shift = body.shift.trim();
@@ -144,24 +207,33 @@ router.patch("/attendance/members/:id", requireAuth, requirePermission("manage_m
     res.json(member);
   } catch (err) {
     req.log.error(err, "attendance PATCH member error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to update attendance member." });
   }
 });
 
 router.put("/attendance/record", requireAuth, requirePermission("edit_attendance"), async (req, res) => {
   try {
     const { memberId, date, status, note, coaching } = req.body as {
-      memberId: number; date: string; status: string; note?: string; coaching?: boolean;
+      memberId: number; date: string; status: string; note?: string | null; coaching?: boolean;
     };
-    if (!memberId || !date) {
+    if (!memberId || !validateWorkflowCalendarDate(date)) {
       res.status(400).json({ error: "memberId and date required" });
       return;
+    }
+    if (!canAccessDateRange(req.user!, [date])) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const resolved = await resolveActiveAttendanceMember(memberId);
+    if (resolved.kind === "missing") return res.status(404).json({ error: "Attendance member not found" });
+    if (resolved.kind === "ambiguous") return res.status(409).json({ error: "Attendance member is ambiguous" });
+    if (!canAccessAttendanceMember(req.user!, resolved.member)) {
+      return res.status(403).json({ error: "Forbidden" });
     }
     const result = await setAttendanceRecord({
       memberId,
       date,
-      status: status as AttendanceStatus,
-      note: note ?? null,
+      status,
+      note,
       coaching: coaching ?? false,
       overwrite: true,
     });
@@ -171,37 +243,41 @@ router.put("/attendance/record", requireAuth, requirePermission("edit_attendance
     return res.json(result.record);
   } catch (err) {
     req.log.error(err, "attendance PUT record error");
-    return res.status((err as Error).message.includes("invalid") ? 400 : 500).json({ error: (err as Error).message });
+    const invalid = (err as Error).message.includes("invalid");
+    return res.status(invalid ? 400 : 500).json({ error: invalid ? "Invalid attendance record." : "Unable to update attendance." });
   }
 });
 
 router.post("/attendance/import", requireAuth, requirePermission("manage_members"), async (req, res) => {
   try {
-    const SHEETS = [
-      {
-        url: "https://docs.google.com/spreadsheets/d/16qoZESE0gGQPdOXQUSh2JsadWDmUE7OyCajRwBy0E38/export?format=csv&gid=2116872008",
-        department: "CS",
-      },
-      {
-        url: "https://docs.google.com/spreadsheets/d/1qF5Dc5quGrAywf5Rtx4q7DrX91VlNIFOfKr-REoSkII/export?format=csv&gid=655352634",
-        department: "Backend",
-      },
-    ];
+    if (attendanceDepartmentForUser(req.user!) || req.user!.allowedAgents?.length) {
+      res.status(403).json({ error: "Forbidden", reason: "The attendance import spans multiple departments." });
+      return;
+    }
+    const SHEETS = OPERATIONAL_CONFIG.attendanceImportSources.map((source) => ({
+      url: googleCsvUrl(source),
+      department: source.department,
+    }));
 
-    let totalMembers = 0;
-    let totalRecords = 0;
+    const sourceRows = await Promise.all(SHEETS.map(async ({ url, department }) => {
+      const response = await fetch(url);
+      if (!response.ok) throw new AttendanceImportSourceError();
+      const rows = parseCSV(await response.text());
+      if (rows.length < 2 || rows[0].length < 3) throw new AttendanceImportSourceError();
+      return { rows, department };
+    }));
 
-    for (const { url, department } of SHEETS) {
-      const text = await (await fetch(url)).text();
-      const rows = parseCSV(text);
-      if (rows.length < 2) continue;
+    const importCandidates: AttendanceImportCandidate[] = [];
+
+    for (const { rows, department } of sourceRows) {
 
       const header = rows[0];
       const dateIndices: { idx: number; iso: string }[] = [];
       for (let i = 2; i < header.length; i++) {
-        const iso = parseSheetDate(header[i] ?? "");
+        const iso = parseAttendanceImportDate(header[i] ?? "");
         if (iso) dateIndices.push({ idx: i, iso });
       }
+      if (dateIndices.length === 0) throw new AttendanceImportSourceError();
 
       for (let r = 1; r < rows.length; r++) {
         const row = rows[r];
@@ -209,41 +285,70 @@ router.post("/attendance/import", requireAuth, requirePermission("manage_members
         const name = row[1]?.trim() ?? "";
         if (!name || !shift || shift === '"' || name.toUpperCase() === "NA" || !/^\d+$/.test(shift)) continue;
 
-        const existing = await db
-          .select()
-          .from(attendanceMembersTable)
-          .where(and(eq(attendanceMembersTable.name, name), eq(attendanceMembersTable.department, department)))
-          .limit(1);
-
-        let memberId: number;
-        if (existing.length > 0) {
-          memberId = existing[0].id;
-        } else {
-          const [inserted] = await db
-            .insert(attendanceMembersTable)
-            .values({ name, shift, department })
-            .returning();
-          memberId = inserted.id;
-          totalMembers++;
-        }
-
+        const records: Array<{ date: string; status: string }> = [];
         for (const { idx, iso } of dateIndices) {
           const rawStatus = row[idx]?.trim() ?? "";
-          const status = normalizeStatus(rawStatus);
           if (!rawStatus) continue;
-          await db
-            .insert(attendanceRecordsTable)
-            .values({ memberId, date: iso, status })
-            .onConflictDoNothing();
-          totalRecords++;
+          const status = canonicalAttendanceStatus(rawStatus);
+          if (!status) throw new AttendanceImportSourceError();
+          records.push({ date: iso, status });
         }
+        importCandidates.push({ name, shift, department, records });
       }
     }
+
+    const importPlan = buildAttendanceImportPlan(importCandidates);
+    const importedMembers = new Map(importPlan.members.map((member) => [member.key, member]));
+    const totalRecords = importPlan.totalRecords;
+
+    const totalMembers = await db.transaction(async (tx) => {
+      const existingMembers = await tx.select().from(attendanceMembersTable)
+        .orderBy(attendanceMembersTable.id);
+      const memberIds = new Map<string, number>();
+      for (const member of existingMembers) {
+        const key = attendanceImportMemberKey(member.department, member.name);
+        if (!memberIds.has(key)) memberIds.set(key, member.id);
+      }
+
+      const missingMembers = [...importedMembers].filter(([key]) => !memberIds.has(key));
+      if (missingMembers.length > 0) {
+        const insertedMembers = await tx.insert(attendanceMembersTable)
+          .values(missingMembers.map(([, member]) => ({
+            name: member.name,
+            shift: member.shift,
+            department: member.department,
+          })))
+          .returning({
+            id: attendanceMembersTable.id,
+            name: attendanceMembersTable.name,
+            department: attendanceMembersTable.department,
+        });
+        for (const member of insertedMembers) {
+          memberIds.set(attendanceImportMemberKey(member.department, member.name), member.id);
+        }
+      }
+
+      const pendingRecords = [...importedMembers].flatMap(([key, member]) => {
+        const memberId = memberIds.get(key);
+        if (memberId === undefined) throw new Error("Attendance import member persistence failed");
+        return member.records.map((record) => ({ memberId, ...record, dateValue: record.date }));
+      });
+      const chunkSize = 500;
+      for (let offset = 0; offset < pendingRecords.length; offset += chunkSize) {
+        await tx.insert(attendanceRecordsTable)
+          .values(pendingRecords.slice(offset, offset + chunkSize))
+          .onConflictDoNothing();
+      }
+      return missingMembers.length;
+    });
 
     res.json({ success: true, totalMembers, totalRecords });
   } catch (err) {
     req.log.error(err, "attendance import error");
-    res.status(500).json({ error: String(err) });
+    const upstreamFailure = err instanceof AttendanceImportSourceError;
+    res.status(upstreamFailure ? 502 : 500).json({
+      error: upstreamFailure ? "Attendance import source is unavailable or invalid." : "Unable to import attendance.",
+    });
   }
 });
 
@@ -266,39 +371,33 @@ function lateNote(minsLate: number): string {
 // VoS/PBX timestamps have no timezone indicator and are in PDT (UTC-7).
 // Quo DB timestamps are stored as UTC (TIMESTAMPTZ from OpenPhone API).
 function parsePdt(s: string): Date {
-  // If the string already has a timezone (+, -, or Z) treat it as-is.
-  if (/[Z+]/.test(s) || (s.includes('-') && s.lastIndexOf('-') > 7)) return new Date(s);
-  return new Date(s + '-07:00');
+  return parseBusinessTimestampCompatibility(s);
 }
 
 // Build a Quo calls map: agentName (lowercase) → all call timestamps within the day window.
 // Only counts valid attendance signals:
 //   - Outbound calls (agent dialed out, any status)
 //   - Inbound calls answered by the agent (direction=incoming, status=completed)
-async function buildQuoCallsMap(dayStartUtc: Date, dayEndUtc: Date): Promise<Map<string, Date[]>> {
+async function buildQuoCallsMap(dayStartUtc: Date, dayEndUtc: Date): Promise<Map<string, Date>> {
   const rows = await db
-    .select({ agentName: phoneCallsTable.agentName, createdAt: phoneCallsTable.createdAt })
+    .select({
+      agentName: phoneCallsTable.agentName,
+      firstCallAt: sql<Date | null>`min(${phoneCallsTable.createdAt})`,
+    })
     .from(phoneCallsTable)
     .where(
       and(
         gte(phoneCallsTable.createdAt, dayStartUtc),
         lte(phoneCallsTable.createdAt, dayEndUtc),
+        isNotNull(phoneCallsTable.agentName),
         or(
           eq(phoneCallsTable.direction, "outgoing"),
           and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed")),
         ),
       ),
-    );
-  const map = new Map<string, Date[]>();
-  for (const row of rows) {
-    if (row.agentName && row.createdAt) {
-      const key = row.agentName.trim().toLowerCase();
-      const d = new Date(row.createdAt);
-      const arr = map.get(key);
-      if (arr) arr.push(d); else map.set(key, [d]);
-    }
-  }
-  return map;
+    )
+    .groupBy(phoneCallsTable.agentName);
+  return buildQuoFirstCallMap(rows);
 }
 
 // Find the earliest call for a member within the LA calendar day.
@@ -310,12 +409,12 @@ function resolveFirstCall(
   dayStartUtc: Date,
   shiftStartUtc: Date | null,
   vosFirstCall: Map<string, Date>,
-  quoCalls: Map<string, Date[]>,
+  quoCalls: Map<string, Date>,
 ): Date | null {
   if (!shiftStartUtc) return null;
   const floor = dayStartUtc;
 
-  const agentNames: string[] = MEMBER_TO_AGENT_NAMES[member.name]
+  const agentNames: readonly string[] = MEMBER_TO_AGENT_NAMES[member.name]
     ?? [member.name.split("-")[0].trim(), member.name];
 
   let firstCallAt: Date | null = null;
@@ -325,13 +424,9 @@ function resolveFirstCall(
     const vos = vosFirstCall.get(nameLower);
     if (vos && vos >= floor && (!firstCallAt || vos < firstCallAt)) firstCallAt = vos;
 
-    // Quo: all timestamps — find the earliest one within the valid window
-    const calls = quoCalls.get(nameLower);
-    if (calls) {
-      for (const d of calls) {
-        if (d >= floor && (!firstCallAt || d < firstCallAt)) firstCallAt = d;
-      }
-    }
+    // Quo: SQL minimum per normalized raw agent name.
+    const quo = quoCalls.get(nameLower);
+    if (quo && quo >= floor && (!firstCallAt || quo < firstCallAt)) firstCallAt = quo;
   }
   return firstCallAt;
 }
@@ -343,7 +438,15 @@ router.get("/attendance/call-logs", async (req, res) => {
   try {
     const nowUtc = new Date();
     const defaultDate = todayLA();
-    const date = ((req.query["date"] as string) || defaultDate).trim().slice(0, 10);
+    const date = ((req.query["date"] as string) || defaultDate).trim();
+    if (!validateWorkflowCalendarDate(date)) {
+      res.status(400).json({ error: "Invalid attendance date." });
+      return;
+    }
+    if (!canAccessDateRange(req.user!, [date])) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
 
     const dayStartUtc = laStartOfDay(date);
     const dayEndUtc = new Date(laStartOfDay(addAttendanceCalendarDays(date, 1)).getTime() - 1);
@@ -352,6 +455,7 @@ router.get("/attendance/call-logs", async (req, res) => {
     // VoS only has today's data; skip for historical dates.
     const vosFirstCall = new Map<string, Date>();
     if (isToday) {
+      await hydrateVosState();
       for (const stat of getCallHistoryCache()) {
         if (stat.firstCallAt) {
           const d = parsePdt(stat.firstCallAt);
@@ -366,26 +470,24 @@ router.get("/attendance/call-logs", async (req, res) => {
 
     const quoCalls = await buildQuoCallsMap(dayStartUtc, dayEndUtc);
 
-    const members = await db
+    const members = (await db
       .select()
       .from(attendanceMembersTable)
       .where(eq(attendanceMembersTable.active, true))
-      .orderBy(attendanceMembersTable.department, attendanceMembersTable.name);
+      .orderBy(attendanceMembersTable.department, attendanceMembersTable.name))
+      .filter((member) => canAccessAttendanceMember(req.user!, member));
 
     const existingRecords = members.length > 0
-      ? await db.select().from(attendanceRecordsTable)
-          .where(and(inArray(attendanceRecordsTable.memberId, members.map((m) => m.id)), eq(attendanceRecordsTable.date, date)))
+      ? await db.select(attendanceRecordSelection).from(attendanceRecordsTable)
+          .where(and(inArray(attendanceRecordsTable.memberId, members.map((m) => m.id)), eq(attendanceRecordDate, date)))
       : [];
     const existingMap = new Map(existingRecords.map((r) => [r.memberId, r]));
 
     const agents = members.map((member) => {
       const shiftNum = parseInt(member.shift || "0");
-      // Shift N = N PM Egypt time. Egypt = UTC+2, PDT = UTC-7 → subtract 9h → PDT hour = shiftNum + 3
-      // e.g. shift 4 (4 PM EGY = 16:00 EGY) → 7:00 PDT; shift 8 → 11:00 PDT
-      const pdtHour = shiftNum ? shiftNum + 3 : 0;
-      const shiftStartUtc = pdtHour
-        ? new Date(dayStartUtc.getTime() + pdtHour * 3600 * 1000)
-        : null;
+      // Shift N is an Egypt wall-clock PM hour. The shared policy preserves the
+      // legacy offset before the configured cutover and uses IANA timezone data after it.
+      const shiftStartUtc = shiftNum ? attendanceShiftStart(date, shiftNum) : null;
       // ISO string of shift start (for AI/display use)
       const shiftStartLA = shiftStartUtc ? shiftStartUtc.toISOString() : null;
 
@@ -418,7 +520,7 @@ router.get("/attendance/call-logs", async (req, res) => {
     res.json({ date, agents });
   } catch (err) {
     req.log.error(err, "attendance call-logs error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to load attendance call logs." });
   }
 });
 
@@ -439,25 +541,42 @@ router.post("/attendance/set", requireAuth, requirePermission("edit_attendance")
     if (records.length > 1 && !confirmed) {
       return res.status(409).json({ error: "Bulk attendance changes require confirmed=true" });
     }
+    if (records.some((record) => !validateWorkflowCalendarDate(record.date))) {
+      return res.status(400).json({ error: "Invalid attendance date." });
+    }
+    if (!canAccessDateRange(req.user!, records.map((record) => record.date))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
+    const members = await activeAttendanceMembers();
+    for (const record of records) {
+      const resolved = resolveActiveAttendanceMemberFromList(members, record.memberId, record.memberName);
+      if (resolved.kind === "ambiguous") return res.status(409).json({ error: "Attendance member is ambiguous" });
+      if (resolved.kind === "unique" && !canAccessAttendanceMember(req.user!, resolved.member)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    }
+
+    const writeResults = await setAttendanceRecords(records.map((record) => ({
+      memberId: record.memberId,
+      memberName: record.memberName,
+      date: record.date,
+      status: record.status,
+      note: record.note,
+      coaching: record.coaching,
+      overwrite: force,
+    })), members);
     type SetResult = { memberName: string; date: string; status: string; action: string };
     const results: SetResult[] = [];
 
-    for (const rec of records) {
-      const result = await setAttendanceRecord({
-        memberId: rec.memberId,
-        memberName: rec.memberName,
-        date: rec.date,
-        status: rec.status as AttendanceStatus,
-        note: rec.note,
-        coaching: rec.coaching,
-        overwrite: force,
-      });
+    for (let index = 0; index < records.length; index++) {
+      const rec = records[index]!;
+      const result = writeResults[index]!;
       const requestedName = rec.memberName ?? `member #${rec.memberId ?? "unknown"}`;
       if (result.kind === "member_missing") {
         results.push({ memberName: requestedName, date: rec.date, status: rec.status, action: "skipped: member not found" });
       } else if (result.kind === "member_ambiguous") {
-        results.push({ memberName: requestedName, date: rec.date, status: rec.status, action: `skipped: ambiguous (${result.match.members.map((member) => member.name).join(", ")})` });
+        return res.status(409).json({ error: "Attendance member is ambiguous" });
       } else if (result.kind === "conflict") {
         results.push({ memberName: result.member.name, date: rec.date, status: rec.status, action: `skipped: already ${result.existing.status} (use force=true to overwrite)` });
       } else {
@@ -468,7 +587,8 @@ router.post("/attendance/set", requireAuth, requirePermission("edit_attendance")
     return res.json({ success: true, results, timezone: ATTENDANCE_TIMEZONE });
   } catch (err) {
     req.log.error(err, "attendance set error");
-    return res.status((err as Error).message.includes("invalid") ? 400 : 500).json({ error: (err as Error).message });
+    const invalid = (err as Error).message.includes("invalid");
+    return res.status(invalid ? 400 : 500).json({ error: invalid ? "Invalid attendance record." : "Unable to set attendance." });
   }
 });
 
@@ -479,8 +599,16 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
   try {
     const nowUtc = new Date();
     const defaultLADate = todayLA();
-    const targetDate: string = ((req.body as { date?: string })?.date ?? defaultLADate).trim().slice(0, 10);
+    const targetDate: string = ((req.body as { date?: string })?.date ?? defaultLADate).trim();
+    if (!validateWorkflowCalendarDate(targetDate)) {
+      res.status(400).json({ error: "Invalid attendance date." });
+      return;
+    }
     const isToday = targetDate === defaultLADate;
+    if (!canAccessDateRange(req.user!, [targetDate])) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
 
     const dayStartUtc = laStartOfDay(targetDate);
     const dayEndUtc = new Date(laStartOfDay(addAttendanceCalendarDays(targetDate, 1)).getTime() - 1);
@@ -488,6 +616,7 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
     // VoS only has today's live data; use it only for today.
     const vosFirstCall = new Map<string, Date>();
     if (isToday) {
+      await hydrateVosState();
       for (const stat of getCallHistoryCache()) {
         if (stat.firstCallAt) {
           const d = parsePdt(stat.firstCallAt);
@@ -502,23 +631,24 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
 
     const quoCalls = await buildQuoCallsMap(dayStartUtc, dayEndUtc);
 
-    const members = await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true));
+    const members = (await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true)))
+      .filter((member) => canAccessAttendanceMember(req.user!, member));
 
-    const existingRecords = await db.select()
+    const existingRecords = await db.select({ memberId: attendanceRecordsTable.memberId })
       .from(attendanceRecordsTable)
-      .where(eq(attendanceRecordsTable.date, targetDate));
+      .where(eq(attendanceRecordDate, targetDate));
     const existingSet = new Set(existingRecords.map((r) => r.memberId));
 
     const results: { name: string; status: string; note: string; skipped?: string }[] = [];
+    const pending: Array<typeof attendanceRecordsTable.$inferInsert> = [];
 
     for (const member of members) {
       const shiftNum = parseInt(member.shift || "0");
       if (!shiftNum) { results.push({ name: member.name, status: "", note: "", skipped: "no shift" }); continue; }
 
-      // Shift N = N PM Egypt time. Egypt = UTC+2, PDT = UTC-7 → pdtHour = shiftNum + 3
-      // e.g. shift 4 (4 PM EGY) → 7 AM PDT; shift 8 (8 PM EGY) → 11 AM PDT
-      const pdtHour = shiftNum + 3;
-      const shiftStartUtc = new Date(dayStartUtc.getTime() + pdtHour * 3600 * 1000);
+      // Resolve the Egypt wall-clock shift through the compatibility cutover.
+      const shiftStartUtc = attendanceShiftStart(targetDate, shiftNum);
+      if (!shiftStartUtc) { results.push({ name: member.name, status: "", note: "", skipped: "invalid shift" }); continue; }
 
       // For today: skip if shift hasn't started. For past dates: always process.
       if (isToday && nowUtc < shiftStartUtc) {
@@ -543,17 +673,18 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
       const status = minsLate <= GRACE_MINS ? "in" : "late";
       const note   = minsLate <= GRACE_MINS ? "" : lateNote(minsLate);
 
-      await db.insert(attendanceRecordsTable)
-        .values({ memberId: member.id, date: targetDate, status, note: note || null, coaching: false })
-        .onConflictDoNothing();
-
+      pending.push({ memberId: member.id, date: targetDate, dateValue: targetDate, status, note: note || null, coaching: false });
       results.push({ name: member.name, status, note });
+    }
+
+    if (pending.length > 0) {
+      await db.insert(attendanceRecordsTable).values(pending).onConflictDoNothing();
     }
 
     res.json({ success: true, date: targetDate, results });
   } catch (err) {
     req.log.error(err, "attendance auto-mark error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Unable to auto-mark attendance." });
   }
 });
 
@@ -562,10 +693,32 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
 // date is YYYY-MM-DD in LA time. agent is a partial, case-insensitive name.
 router.get("/attendance/agent-contacts", async (req, res) => {
   try {
-    const agentParam = ((req.query["agent"] as string) ?? "").trim();
-    const dateParam  = ((req.query["date"]  as string) ?? "").trim();
+    const rawAgent = req.query["agent"];
+    const rawDate = req.query["date"];
+    if (typeof rawAgent !== "string" || (rawDate !== undefined && typeof rawDate !== "string")) {
+      return res.status(400).json({ error: "Invalid agent or attendance date." });
+    }
+    const agentParam = rawAgent.trim();
+    const dateParam = rawDate?.trim() ?? "";
     if (!agentParam) {
       return res.status(400).json({ error: "agent param is required" });
+    }
+    if (agentParam.length > 128 || (dateParam && !validateWorkflowCalendarDate(dateParam))) {
+      return res.status(400).json({ error: "Invalid agent or attendance date." });
+    }
+    if (!canAccessDateRange(req.user!, [dateParam || todayLA()])) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const directory = await loadAuthorizationAgentDirectory();
+    if (req.user!.role !== "admin") {
+      const requestedIdentity = normalizeAgentIdentity(agentParam);
+      const matchingAgents = directory.agents.filter((agent) =>
+        normalizeAgentIdentity(agent.name).includes(requestedIdentity)
+        || (!!agent.arabicName && normalizeAgentIdentity(agent.arabicName).includes(requestedIdentity)));
+      if (!matchingAgents.some((agent) => canAccessLiveAgent(req.user!, agent.name, directory))) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
     }
 
     const now = new Date();
@@ -588,7 +741,7 @@ router.get("/attendance/agent-contacts", async (req, res) => {
     }
 
     // Fetch all matching rows from phone_calls
-    const rows = await db
+    const matchingRows = await db
       .select({
         participant:     phoneCallsTable.participant,
         direction:       phoneCallsTable.direction,
@@ -600,12 +753,14 @@ router.get("/attendance/agent-contacts", async (req, res) => {
       .from(phoneCallsTable)
       .where(
         and(
-          ilike(phoneCallsTable.agentName, `%${agentParam}%`),
+          ilike(phoneCallsTable.agentName, `%${escapeLikePattern(agentParam)}%`),
           gte(phoneCallsTable.createdAt, dayStartUtc),
           lte(phoneCallsTable.createdAt, dayEndUtc),
         ),
       )
       .orderBy(sql`${phoneCallsTable.createdAt} asc`);
+
+    const rows = matchingRows.filter((row) => !!row.agentName && canAccessLiveAgent(req.user!, row.agentName, directory));
 
     // Group by participant
     const contactMap = new Map<string, {
@@ -679,7 +834,7 @@ router.get("/attendance/agent-contacts", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "agent-contacts error");
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: "Unable to load agent contacts." });
   }
 });
 

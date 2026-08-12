@@ -1,9 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
+import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
+import express from "express";
+import {
+  createSamiaIdempotencyMiddleware,
+  type SamiaIdempotencyDependencies,
+} from "../middleware/samiaIdempotency.js";
 import { extractQuoCallId, getQuoCallArtifacts } from "./quoCall.js";
 import {
   appendVerifiedCallEvidenceBasis,
@@ -21,7 +27,7 @@ import {
   validateSamiaPayload,
 } from "./samiaPolicy.js";
 import {
-  hasRecentAutomaticReview,
+  hasRecentQaReview,
   shouldReuseStoredReview,
   stableEligibleCalls,
   validateQaResult,
@@ -35,6 +41,8 @@ test("Samia accepts a valid request only after payload validation", () => {
   assert.equal(valid.ok, true);
   const invalid = validateSamiaPayload({ message: " ", images: [] });
   assert.deepEqual(invalid, { ok: false, status: 400, error: "message is required" });
+  const imageOnly = validateSamiaPayload({ message: " ", images: ["data:image/png;base64,AA=="] });
+  assert.deepEqual(imageOnly, { ok: false, status: 400, error: "message is required" });
   const invalidImage = validateSamiaPayload({ message: "hello", images: ["data:text/plain;base64,AA=="] });
   assert.equal(invalidImage.ok, false);
 });
@@ -211,7 +219,7 @@ test("Anthropic failures map to explicit HTTP responses", () => {
 
 test("Samia route invokes Claude only inside the authenticated chat handler", async () => {
   const source = await readFile(path.join(routesDir, "samia.ts"), "utf8");
-  const routeStart = source.indexOf('router.post("/samia/chat", requireAuth, requireRole("admin")');
+  const routeStart = source.indexOf('router.post("/samia/chat", requireAuth, requireRole("admin"), requireSamiaIdempotency');
   assert.ok(routeStart > 0);
   const identityStart = source.indexOf("if (isModelIdentityQuestion(message))", routeStart);
   const limiterStart = source.indexOf("withDurableAiLimit", routeStart);
@@ -223,6 +231,10 @@ test("Samia route invokes Claude only inside the authenticated chat handler", as
   assert.ok(source.indexOf("detectSamiaOperationalIntent(message)", routeStart) < limiterStart);
   assert.match(source.slice(routeStart), /isStaleModelIdentityMessage\(item\.role, item\.content\)/);
   assert.match(source, /safeStoredMessages\(rows\.reverse\(\)\)/);
+  assert.match(source.slice(routeStart), /authorized_request_context/);
+  const requestStart = source.indexOf("createSamiaMessage({", routeStart);
+  const requestEnd = source.indexOf("});", requestStart);
+  assert.doesNotMatch(source.slice(requestStart, requestEnd), /args\.requestContext/);
   const systemPrompt = source.slice(source.indexOf("const SAMIA_SYSTEM"), source.indexOf("interface ChatMessage"));
   assert.doesNotMatch(systemPrompt, /analyze_calls|lookup_number/);
   assert.equal(source.includes("claude-test"), false);
@@ -400,22 +412,24 @@ test("two Vercel instances cannot hold the same QA scheduler lease", async () =>
   await first;
 });
 
-test("one automatic review blocks another within 14 days", () => {
+test("automatic and manual reviews both consume the rolling 14-day allowance", () => {
   const now = new Date("2026-07-15T00:00:00Z");
-  assert.equal(hasRecentAutomaticReview([{ source: "auto_biweekly", evaluatedAt: new Date("2026-07-10T00:00:00Z") }], now, 14), true);
+  assert.equal(hasRecentQaReview([{ source: "auto_biweekly", evaluatedAt: new Date("2026-07-10T00:00:00Z") }], now, 14), true);
+  assert.equal(hasRecentQaReview([{ source: "manual_call_id", evaluatedAt: new Date("2026-07-14T00:00:00Z") }], now, 14), true);
 });
 
 test("repeated scheduler eligibility checks remain idempotent", () => {
   const now = new Date("2026-07-15T00:00:00Z");
   const reviews: Array<{ source: string; evaluatedAt: Date }> = [];
-  assert.equal(hasRecentAutomaticReview(reviews, now, 14), false);
+  assert.equal(hasRecentQaReview(reviews, now, 14), false);
   reviews.push({ source: "auto_biweekly", evaluatedAt: now });
-  assert.equal(hasRecentAutomaticReview(reviews, now, 14), true);
+  assert.equal(hasRecentQaReview(reviews, now, 14), true);
 });
 
-test("manual call-ID reviews do not consume automatic allowance", () => {
+test("the exact rolling 14-day boundary is eligible", () => {
   const now = new Date("2026-07-15T00:00:00Z");
-  assert.equal(hasRecentAutomaticReview([{ source: "manual_call_id", evaluatedAt: new Date("2026-07-14T00:00:00Z") }], now, 14), false);
+  assert.equal(hasRecentQaReview([{ source: "manual_call_id", evaluatedAt: new Date("2026-07-01T00:00:00Z") }], now, 14), false);
+  assert.equal(hasRecentQaReview([{ source: "auto_biweekly", evaluatedAt: new Date("2026-06-30T23:59:59Z") }], now, 14), false);
 });
 
 test("scheduler selection is deterministic and excludes already-reviewed calls", () => {
@@ -427,19 +441,33 @@ test("scheduler selection is deterministic and excludes already-reviewed calls",
   assert.deepEqual(stableEligibleCalls(calls, new Set(["C"]), 90).map((call) => call.id), ["B", "A"]);
 });
 
-test("existing reviews are reused unless an admin explicitly forces reevaluation", async () => {
+test("force can skip response reuse but cannot bypass the per-agent reservation", async () => {
   assert.equal(shouldReuseStoredReview({ id: "call" }, false), true);
   assert.equal(shouldReuseStoredReview({ id: "call" }, true), false);
   const source = await readFile(path.join(routesDir, "qa.ts"), "utf8");
   assert.match(source, /router\.post\("\/qa\/evaluate", requireAuth, requireRole\("admin"\)/);
-  assert.match(source, /existingWasAutomatic \? "auto_biweekly" : "manual_call_id"/);
+  assert.match(source, /reserveQaAgentRun\(/);
+  assert.match(source, /reservation\.kind === "cooldown"/);
   assert.match(source, /evaluateCall\(callId/);
+});
+
+test("AI reservation schema is additive and protects Samia and QA concurrency", async () => {
+  const migration = await readFile(path.resolve(routesDir, "../../../../lib/db/drizzle/0011_ai_request_reservations.sql"), "utf8");
+  const reservations = await readFile(path.resolve(routesDir, "../lib/aiRequestReservations.ts"), "utf8");
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS "ai_request_reservations"/);
+  assert.match(migration, /CREATE UNIQUE INDEX IF NOT EXISTS "ai_request_reservations_feature_scope_key_uidx"/);
+  assert.doesNotMatch(migration, /DROP|TRUNCATE|DELETE FROM|ALTER COLUMN/i);
+  assert.match(reservations, /pg_advisory_xact_lock/);
+  assert.match(reservations, /evaluated_at > \$1/);
+  assert.match(reservations, /QA_INTERVAL_MS = 14 \* 24 \* 60 \* 60 \* 1_000/);
 });
 
 test("Live Transfer classification uses strict Anthropic tools and has no startup job", async () => {
   const source = await readFile(path.join(routesDir, "liveTransfers.ts"), "utf8");
+  const configSource = await readFile(path.resolve(routesDir, "../lib/operationalConfig.ts"), "utf8");
   const indexSource = await readFile(path.join(routesDir, "index.ts"), "utf8");
-  assert.match(source, /ANTHROPIC_LT_MODEL/);
+  assert.match(source, /OPERATIONAL_CONFIG\.aiModels\.liveTransfers/);
+  assert.match(configSource, /ANTHROPIC_LT_MODEL/);
   assert.match(source, /createAnthropicToolMessage/);
   assert.match(source, /record_live_transfer_classification/);
   assert.equal(indexSource.includes("startLiveTransfersBackground"), false);
@@ -521,4 +549,96 @@ test("existing Samia frontend response fields remain present", async () => {
   assert.match(source, /reply: finalReply/);
   assert.match(source, /attendanceMarked/);
   assert.match(source, /fallbackUsed: false/);
+});
+
+test("Samia frontend requires an explicit question and supplies an idempotency key", async () => {
+  const source = await readFile(
+    path.resolve(routesDir, "../../../agent-dashboard/src/features/samia/SamiaChat.tsx"),
+    "utf8",
+  );
+  assert.match(source, /if \(!text \|\| loading \|\| submittingRef\.current\) return/);
+  assert.match(source, /"Idempotency-Key": crypto\.randomUUID\(\)/);
+  assert.doesNotMatch(source, /What do you see in this image/);
+  assert.doesNotMatch(source, /useEffect\([^)]*send/s);
+});
+
+test("Samia middleware serializes concurrent requests and replays the durable result", async () => {
+  type Stored = {
+    requestHash: string;
+    status: "reserved" | "completed" | "failed";
+    responseStatus?: number;
+    responseBody?: Record<string, unknown>;
+  };
+  let stored: Stored | null = null;
+  const reserve: SamiaIdempotencyDependencies["reserve"] = async (input) => {
+    if (!stored || stored.status === "failed") {
+      stored = { requestHash: input.requestHash, status: "reserved" };
+      return { kind: "reserved", id: 1 };
+    }
+    if (stored.requestHash !== input.requestHash) return { kind: "conflict", id: 1 };
+    if (stored.status === "reserved") return { kind: "in_progress", id: 1, retryAfter: 1 };
+    return {
+      kind: "completed",
+      id: 1,
+      responseStatus: stored.responseStatus ?? 200,
+      responseBody: stored.responseBody ?? {},
+    };
+  };
+  const complete: SamiaIdempotencyDependencies["complete"] = async (_id, status, body) => {
+    stored = { requestHash: stored!.requestHash, status: "completed", responseStatus: status, responseBody: body };
+  };
+  const fail: SamiaIdempotencyDependencies["fail"] = async () => {
+    stored = { requestHash: stored!.requestHash, status: "failed" };
+  };
+
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as unknown as { user: { userId: number } }).user = { userId: 7 };
+    next();
+  });
+  let releaseHandler: (() => void) | null = null;
+  let handlerCalls = 0;
+  app.post(
+    "/api/samia/chat",
+    createSamiaIdempotencyMiddleware({ reserve, complete, fail }),
+    async (_req, res) => {
+      handlerCalls += 1;
+      await new Promise<void>((resolve) => { releaseHandler = resolve; });
+      res.json({ reply: "verified" });
+    },
+  );
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  const address = server.address() as AddressInfo;
+  const url = `http://127.0.0.1:${address.port}/api/samia/chat`;
+  const request = (message: string, key = "samia-request-key-0001") => fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", "idempotency-key": key },
+    body: JSON.stringify({ message }),
+  });
+
+  try {
+    const firstPromise = request("How many calls?");
+    while (!releaseHandler) await new Promise((resolve) => setImmediate(resolve));
+    const concurrent = await request("How many calls?");
+    assert.equal(concurrent.status, 409);
+    const release = releaseHandler as (() => void) | null;
+    assert.ok(release);
+    release();
+    const first = await firstPromise;
+    assert.equal(first.status, 200);
+    assert.deepEqual(await first.json(), { reply: "verified" });
+
+    const replay = await request("How many calls?");
+    assert.equal(replay.status, 200);
+    assert.deepEqual(await replay.json(), { reply: "verified" });
+    const conflict = await request("Different question");
+    assert.equal(conflict.status, 409);
+    const invalid = await request("Question", "short");
+    assert.equal(invalid.status, 400);
+    assert.equal(handlerCalls, 1);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });

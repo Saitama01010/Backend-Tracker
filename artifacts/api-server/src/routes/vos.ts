@@ -1,12 +1,27 @@
 import { Router } from "express";
 import { db, phoneCallsTable, pbxMissedCallsTable } from "@workspace/db";
-import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import type { Logger } from "pino";
-import { logger as rootLogger } from "../lib/logger";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { getActiveReadymodeItems } from "./nsfReadymode.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+import { canAccessLiveAgent, canAccessMetricAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
+import {
+  approvedVosDebugPath,
+  parseBoundedInteger,
+  validateIntegrationCalendarDate,
+  validateIntegrationDateRange,
+} from "../lib/externalIntegrationPolicy.js";
+import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
+import { manualJobKey, scheduledJobKey } from "../lib/durableBackgroundJobs.js";
+import { getDurableRuntimeState, putDurableRuntimeState } from "../lib/durableRuntimeState.js";
+import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
+import { businessDayWindow, formatCalendarDate } from "../lib/businessTime.js";
+import type { AuthPayload } from "../middleware/authCore.js";
+import { scopeMissedItemsForUser } from "../lib/missedCallScope.js";
 
 const router = Router();
+router.use("/vos", requireAuth);
 
 const VOS_BASE = "https://phonesystem.voslogic.com";
 
@@ -122,6 +137,10 @@ export interface MissedNoCallbackItem {
   callbackFound?: boolean;
   callbackId?: string | null;
   debugReason?: string;
+}
+
+function scopeMissedItems(req: { user?: AuthPayload }, items: MissedNoCallbackItem[]): MissedNoCallbackItem[] {
+  return scopeMissedItemsForUser(req.user, items);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -292,7 +311,7 @@ async function fetchQuoLineNumbers(): Promise<Set<string>> {
 
 // Only these Quo/OpenPhone line names are team-shared lines.
 // Personal agent lines (e.g. "Rick Miller RT OB", "Jenny NSF") are excluded.
-const TEAM_QUO_LINES = ["Retention", "CS Team", "Main NSF"];
+const TEAM_QUO_LINES = [...OPERATIONAL_CONFIG.trackedTeamLines];
 
 function teamFromRingGroupName(name: string): "retention" | "nsf" | "cs" | "other" {
   const n = name.toLowerCase();
@@ -559,14 +578,54 @@ let cumulativeDate = ""; // reset accumulators when date changes (midnight rollo
 // Per-hour PBX missed breakdown (LA timezone), keyed by hour 0–23.
 const cumulativeMissedByHour: Record<number, { retention: number; cs: number; nsf: number }> = {};
 
-// One-time deep backfill: on first server run, scan 100 pages to populate 14 days of PBX history.
-let pbxBackfillDone = false;
-
 // Cached set of our own phone numbers (PBX lines + OpenPhone lines), updated each refresh cycle.
 // Used to exclude internal callers from the daily/hourly missed-call SQL queries.
 let cachedInternalNumbers: string[] = [];
 
-async function refreshCallHistory(log?: Logger): Promise<void> {
+interface VosDurableSnapshot extends Record<string, unknown> {
+  callHistory: VosCallHistoryStat[];
+  fetchedAt: number;
+  ringGroupMissed: VosRingGroupMissed;
+  missedNoCallback: MissedNoCallbackItem[];
+  ringGroupNames: Array<[number, string]>;
+  internalNumbers: string[];
+  lineRingGroups: Array<[string, number]>;
+  seenMissedCallIds: number[];
+  cumulativeDate: string;
+  cumulativeMissedByHour: Record<number, { retention: number; cs: number; nsf: number }>;
+  callSpans: Array<[string, Array<{ start: number; end: number }>]>;
+  callTimestamps: Array<[string, Array<{ at: string; source: "pbx"; id: string }>]>;
+}
+
+export async function hydrateVosState(): Promise<void> {
+  const snapshot = await getDurableRuntimeState<VosDurableSnapshot>("vos:call-history");
+  if (!snapshot || snapshot.value.fetchedAt <= callHistoryFetchedAt) return;
+  const value = snapshot.value;
+  callHistoryCache = value.callHistory ?? [];
+  callHistoryFetchedAt = value.fetchedAt;
+  ringGroupMissedCache = value.ringGroupMissed ?? {};
+  for (const key of Object.keys(cumulativeRingGroupMissed)) delete cumulativeRingGroupMissed[Number(key)];
+  Object.assign(cumulativeRingGroupMissed, value.ringGroupMissed ?? {});
+  missedNoCallbackCache = value.missedNoCallback ?? [];
+  ringGroupNameCache = new Map(value.ringGroupNames ?? []);
+  cachedInternalNumbers = value.internalNumbers ?? [];
+  persistentLineRgMap.clear();
+  for (const [line, group] of value.lineRingGroups ?? []) persistentLineRgMap.set(line, group);
+  seenMissedCallIds.clear();
+  for (const id of value.seenMissedCallIds ?? []) seenMissedCallIds.add(id);
+  cumulativeDate = value.cumulativeDate ?? "";
+  for (const key of Object.keys(cumulativeMissedByHour)) delete cumulativeMissedByHour[Number(key)];
+  Object.assign(cumulativeMissedByHour, value.cumulativeMissedByHour ?? {});
+  vosCallSpansCache.clear();
+  for (const [agent, spans] of value.callSpans ?? []) vosCallSpansCache.set(agent, spans);
+  vosCallTimestampsCache.clear();
+  for (const [agent, calls] of value.callTimestamps ?? []) vosCallTimestampsCache.set(agent, calls);
+}
+
+export async function refreshCallHistory(
+  log?: Logger,
+  options: { deepBackfill?: boolean; signal?: AbortSignal } = {},
+): Promise<void> {
   if (callHistoryFetching) return;
   callHistoryFetching = true;
   // Clear the span cache before rebuilding so stale entries from previous day don't persist.
@@ -574,6 +633,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
   vosCallTimestampsCache.clear();
   const t0 = Date.now();
   try {
+    options.signal?.throwIfAborted();
     const today = new Date().toISOString().slice(0, 10);
     const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
 
@@ -582,6 +642,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       vosFetch<VosAgent[]>("/api/agents"),
       vosFetch<VosRingGroup[]>("/api/ring-groups"),
     ]);
+    options.signal?.throwIfAborted();
 
     const nameToId = new Map<string, number>();
     for (const a of agentList) nameToId.set(a.name.trim(), a.id);
@@ -611,9 +672,11 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
 
     const CONCURRENCY = 5;
     for (let i = 0; i < agents.length; i += CONCURRENCY) {
+      options.signal?.throwIfAborted();
       const batch = agents.slice(i, i + CONCURRENCY);
       const batchResults = await Promise.all(
         batch.map(async (a) => {
+          options.signal?.throwIfAborted();
           const agentId = nameToId.get(a.agentName.trim());
           if (agentId === undefined) {
             return {
@@ -742,6 +805,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       })());
     }
     if (probeTasks.length > 0) await Promise.all(probeTasks);
+    options.signal?.throwIfAborted();
 
     // Build a set of all our own internal numbers (PBX lines + OpenPhone lines).
     // Any missed call FROM one of these numbers is an internal call and should be excluded.
@@ -753,6 +817,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     cachedInternalNumbers = Array.from(internalNumbers).filter(Boolean);
 
     const scanResult = await scanRingGroupCalls(lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600, agentToRingGroups, internalNumbers);
+    options.signal?.throwIfAborted();
 
     // ── Cross-reference missed records against callbacks ──────────────────────
     // Build callback lookup: normalized phone → all times an outbound call was made today
@@ -924,6 +989,7 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     }
     // Persist PBX missed calls so historical dates show correct PBX counts.
     if (toUpsert.length > 0) {
+      options.signal?.throwIfAborted();
       await db.insert(pbxMissedCallsTable)
         .values(toUpsert)
         .onConflictDoNothing();
@@ -941,6 +1007,21 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
     callHistoryFetchedAt = Date.now();
     ringGroupMissedCache = { ...cumulativeRingGroupMissed };
     missedNoCallbackCache = missedNoCB;
+    options.signal?.throwIfAborted();
+    await putDurableRuntimeState("vos:call-history", {
+      callHistory: callHistoryCache,
+      fetchedAt: callHistoryFetchedAt,
+      ringGroupMissed: ringGroupMissedCache,
+      missedNoCallback: missedNoCallbackCache,
+      ringGroupNames: [...ringGroupNameCache.entries()],
+      internalNumbers: cachedInternalNumbers,
+      lineRingGroups: [...persistentLineRgMap.entries()],
+      seenMissedCallIds: [...seenMissedCallIds],
+      cumulativeDate,
+      cumulativeMissedByHour,
+      callSpans: [...vosCallSpansCache.entries()],
+      callTimestamps: [...vosCallTimestampsCache.entries()],
+    } satisfies VosDurableSnapshot, 24 * 60 * 60_000);
 
     log?.info(
       {
@@ -956,64 +1037,65 @@ async function refreshCallHistory(log?: Logger): Promise<void> {
       "vos: call history refreshed"
     );
 
-    // One-time startup deep backfill: scan 100 pages to populate 14+ days of PBX missed history.
-    // Runs in background after the first successful refresh so ring group mappings are available.
-    if (!pbxBackfillDone) {
-      pbxBackfillDone = true;
-      void (async () => {
-        try {
-          log?.info("vos: pbx backfill starting (100 pages)");
-          const deep = await scanRingGroupCalls(
-            lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600,
-            agentToRingGroups, internalNumbers, 100
-          );
-          if (deep.missedRecords.length > 0) {
-            const rows = deep.missedRecords.map((rec) => ({
-              id: rec.id,
-              fromNumber: rec.fromNumber,
-              toNumber: rec.toNumber,
-              ringGroupId: rec.ringGroupId,
-              ringGroupName: rec.ringGroupName,
-              team: teamFromRingGroupName(rec.ringGroupName),
-              createdAt: new Date(rec.createdAt),
-            }));
-            await db.insert(pbxMissedCallsTable).values(rows).onConflictDoNothing();
-          }
-          log?.info({ scanned: deep.missedRecords.length }, "vos: pbx backfill complete");
-        } catch (err) {
-          log?.error(err, "vos: pbx backfill failed");
-        }
-      })();
+    if (options.deepBackfill) {
+      options.signal?.throwIfAborted();
+      log?.info("vos: durable PBX backfill starting (100 pages)");
+      const deep = await scanRingGroupCalls(
+        lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600,
+        agentToRingGroups, internalNumbers, 100,
+      );
+      if (deep.missedRecords.length > 0) {
+        const rows = deep.missedRecords.map((rec) => ({
+          id: rec.id,
+          fromNumber: rec.fromNumber,
+          toNumber: rec.toNumber,
+          ringGroupId: rec.ringGroupId,
+          ringGroupName: rec.ringGroupName,
+          team: teamFromRingGroupName(rec.ringGroupName),
+          createdAt: new Date(rec.createdAt),
+        }));
+        await db.insert(pbxMissedCallsTable).values(rows).onConflictDoNothing();
+      }
+      log?.info({ scanned: deep.missedRecords.length }, "vos: durable PBX backfill complete");
     }
   } catch (err) {
     log?.error(err, "vos: call history refresh failed");
+    throw err;
   } finally {
     callHistoryFetching = false;
   }
 }
 
-const isVercel = process.env["VERCEL"] === "1";
-const backgroundJobsEnabled =
-  process.env["ENABLE_BACKGROUND_JOBS"] === "true" ||
-  (process.env["ENABLE_BACKGROUND_JOBS"] !== "false" && !isVercel);
-
-if (backgroundJobsEnabled) {
-  void refreshCallHistory(rootLogger);
-  setInterval(() => void refreshCallHistory(rootLogger), 30 * 1000);
-}
-
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-router.post("/vos/refresh", (_req, res) => {
-  void refreshCallHistory(rootLogger);
-  res.json({ ok: true });
+router.post("/vos/refresh", requireRole("admin"), async (req, res) => {
+  try {
+    await postgresBackgroundJobStore.enqueue({
+      jobType: "integration_live_refresh",
+      idempotencyKey: manualJobKey("integration_live_refresh", req.user!.userId, new Date(), 5_000),
+      requestedByUserId: req.user!.userId,
+      priority: 100,
+      maxAttempts: 4,
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    req.log.error(error, "PBX refresh enqueue failed");
+    res.status(503).json({ error: "PBX refresh could not be queued" });
+  }
 });
 
 router.get("/vos/stats", async (req, res) => {
   try {
+    await hydrateVosState();
     const cacheAgeMs = callHistoryFetchedAt ? Date.now() - callHistoryFetchedAt : Infinity;
     if (!callHistoryCache.length || cacheAgeMs > 2 * 60 * 1000) {
-      void refreshCallHistory(req.log);
+      const minute = new Date().toISOString().slice(0, 16).replace(/[-T:]/g, "");
+      await postgresBackgroundJobStore.enqueue({
+        jobType: "integration_live_refresh",
+        idempotencyKey: scheduledJobKey("integration_live_refresh", minute),
+        priority: 100,
+        maxAttempts: 4,
+      }).catch((error) => req.log.warn(error, "PBX refresh enqueue failed"));
     }
 
     const [agents, ringGroups, dashboard] = await Promise.all([
@@ -1038,17 +1120,56 @@ router.get("/vos/stats", async (req, res) => {
             firstCallAt: null,
           }));
 
+    if (req.user!.role === "admin") {
+      res.json({ dashboard, agents, ringGroups, callHistory, callHistoryFetchedAt, ringGroupMissed: ringGroupMissedCache });
+      return;
+    }
+
+    const directory = await loadAuthorizationAgentDirectory();
+    const scopedAgents = agents.filter((agent) => canAccessMetricAgent(req.user!, agent.name, directory));
+    const allowedIds = new Set(scopedAgents.map((agent) => agent.id));
+    const scopedHistory = callHistory.filter((agent) => canAccessMetricAgent(req.user!, agent.agentName, directory));
+    const scopedCallsByAgent = (dashboard.callsByAgent ?? [])
+      .filter((agent) => canAccessMetricAgent(req.user!, agent.agentName, directory));
+    const scopedLiveCalls = (dashboard.liveCalls ?? [])
+      .filter((call) => !!call.agentName && canAccessMetricAgent(req.user!, call.agentName, directory));
+    const scopedStatuses = (dashboard.agentStatuses ?? [])
+      .filter((agent) => canAccessMetricAgent(req.user!, agent.name, directory));
+    const scopedRingGroups = ringGroups
+      .map((group) => ({ ...group, agentIds: group.agentIds.filter((id) => allowedIds.has(id)) }))
+      .filter((group) => group.agentIds.length > 0);
+    const allowedRingGroupIds = new Set(scopedRingGroups.map((group) => group.id));
+    const scopedRingGroupMissed = Object.fromEntries(
+      Object.entries(ringGroupMissedCache).filter(([id]) => allowedRingGroupIds.has(Number(id))),
+    );
+    const totalCalls = scopedHistory.reduce((sum, agent) => sum + agent.calls, 0);
+    const totalDuration = scopedHistory.reduce((sum, agent) => sum + agent.durationSeconds, 0);
+    const scopedDashboard: VosDashboard = {
+      ...dashboard,
+      activeCalls: scopedLiveCalls.length,
+      totalAgents: scopedAgents.length,
+      onlineAgents: scopedStatuses.filter((agent) => agent.status !== "offline").length,
+      availableAgents: scopedStatuses.filter((agent) => agent.status === "available").length,
+      totalCallsToday: totalCalls,
+      avgDurationToday: totalCalls > 0 ? Math.round(totalDuration / totalCalls) : 0,
+      totalInboundToday: scopedHistory.reduce((sum, agent) => sum + agent.inbound, 0),
+      totalOutboundToday: scopedHistory.reduce((sum, agent) => sum + agent.outbound, 0),
+      missedCallsToday: scopedHistory.reduce((sum, agent) => sum + agent.missed, 0),
+      callsByAgent: scopedCallsByAgent,
+      liveCalls: scopedLiveCalls,
+      agentStatuses: scopedStatuses,
+    };
     res.json({
-      dashboard,
-      agents,
-      ringGroups,
-      callHistory,
+      dashboard: scopedDashboard,
+      agents: scopedAgents,
+      ringGroups: scopedRingGroups,
+      callHistory: scopedHistory,
       callHistoryFetchedAt,
-      ringGroupMissed: ringGroupMissedCache,
+      ringGroupMissed: scopedRingGroupMissed,
     });
   } catch (err) {
     req.log.error(err, "vos stats error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX statistics are temporarily unavailable." });
   }
 });
 
@@ -1061,9 +1182,16 @@ router.get("/vos/stats", async (req, res) => {
  * When the PBX scan is still warming up, returns Quo-DB-only results immediately.
  */
 router.get("/vos/missed-no-callback", async (req, res) => {
+  await hydrateVosState();
   const cacheAgeMs = callHistoryFetchedAt ? Date.now() - callHistoryFetchedAt : Infinity;
   if (cacheAgeMs > 30 * 1000) {
-    await refreshCallHistory(req.log);
+    const minute = new Date().toISOString().slice(0, 16).replace(/[-T:]/g, "");
+    await postgresBackgroundJobStore.enqueue({
+      jobType: "integration_live_refresh",
+      idempotencyKey: scheduledJobKey("integration_live_refresh", minute),
+      priority: 100,
+      maxAttempts: 4,
+    }).catch((error) => req.log.warn(error, "PBX refresh enqueue failed"));
   }
   // Fast path: full cache is ready. Merge Readymode queue live so newly added
   // items appear immediately (cache only refreshes every ~15 min).
@@ -1077,11 +1205,21 @@ router.get("/vos/missed-no-callback", async (req, res) => {
       (i) => i.source !== "readymode",
     );
     const merged = [...cacheWithoutReadymode, ...extra];
-    return res.json({ items: merged, fetchedAt: callHistoryFetchedAt });
+    return res.json({ items: scopeMissedItems(req, merged), fetchedAt: callHistoryFetchedAt });
   }
   // PBX scan still in progress — serve Quo DB-only results so the page isn't empty
   try {
-    const window36h = new Date(Date.now() - 36 * 60 * 60 * 1000);
+    const now = new Date();
+    const todayWindow = businessDayWindow(formatCalendarDate(now));
+    const windowStart = req.user!.lockToToday && req.user!.role !== "admin"
+      ? todayWindow.start
+      : new Date(now.getTime() - 36 * 60 * 60 * 1000);
+    const phoneDateConditions = req.user!.lockToToday && req.user!.role !== "admin"
+      ? [gte(phoneCallsTable.createdAt, windowStart), lt(phoneCallsTable.createdAt, todayWindow.endExclusive)]
+      : [gte(phoneCallsTable.createdAt, windowStart)];
+    const pbxDateConditions = req.user!.lockToToday && req.user!.role !== "admin"
+      ? [gte(pbxMissedCallsTable.createdAt, windowStart), lt(pbxMissedCallsTable.createdAt, todayWindow.endExclusive)]
+      : [gte(pbxMissedCallsTable.createdAt, windowStart)];
     const [quoMissed, quoOutbound, quoInboundAnswered, persistedPbxMissed] = await Promise.all([
       db
         .select({
@@ -1100,18 +1238,18 @@ router.get("/vos/missed-no-callback", async (req, res) => {
           and(
             eq(phoneCallsTable.direction, "incoming"),
             inArray(phoneCallsTable.status, ["no-answer", "voicemail", "missed", "voicemail-brief"]),
-            gte(phoneCallsTable.createdAt, window36h),
+            ...phoneDateConditions,
             inArray(phoneCallsTable.lineName, TEAM_QUO_LINES)
           )
         ),
       db
         .select({ id: phoneCallsTable.id, participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
         .from(phoneCallsTable)
-        .where(and(eq(phoneCallsTable.direction, "outgoing"), gte(phoneCallsTable.createdAt, window36h))),
+        .where(and(eq(phoneCallsTable.direction, "outgoing"), ...phoneDateConditions)),
       db
         .select({ id: phoneCallsTable.id, participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
         .from(phoneCallsTable)
-        .where(and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed"), gte(phoneCallsTable.createdAt, window36h))),
+        .where(and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed"), ...phoneDateConditions)),
       db
         .select({
           id: pbxMissedCallsTable.id,
@@ -1123,7 +1261,7 @@ router.get("/vos/missed-no-callback", async (req, res) => {
           team: pbxMissedCallsTable.team,
         })
         .from(pbxMissedCallsTable)
-        .where(gte(pbxMissedCallsTable.createdAt, window36h)),
+        .where(and(...pbxDateConditions)),
     ]);
 
     const callbackTimes = new Map<string, CallbackEntry[]>();
@@ -1184,10 +1322,10 @@ router.get("/vos/missed-no-callback", async (req, res) => {
       req.log.warn({ err: e }, "readymode queue merge failed (fallback)");
     }
 
-    return res.json({ items, fetchedAt: 0 });
+    return res.json({ items: scopeMissedItems(req, items), fetchedAt: 0 });
   } catch (err) {
     req.log.error(err, "vos missed-no-callback fallback error");
-    return res.json({ items: missedNoCallbackCache, fetchedAt: callHistoryFetchedAt });
+    return res.json({ items: scopeMissedItems(req, missedNoCallbackCache), fetchedAt: callHistoryFetchedAt });
   }
 });
 
@@ -1196,6 +1334,10 @@ router.get("/vos/missed-hourly", async (req, res) => {
     const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
     // Accept optional ?date=YYYY-MM-DD; fall back to today.
     const dateParam = typeof req.query["date"] === "string" ? req.query["date"] : todayLA;
+    if (!validateIntegrationCalendarDate(dateParam)) {
+      res.status(400).json({ error: "Invalid date; expected YYYY-MM-DD." });
+      return;
+    }
     const isToday = dateParam === todayLA;
     const mode = req.query["mode"] === "numbers" ? "numbers" : "times";
 
@@ -1307,7 +1449,7 @@ router.get("/vos/missed-hourly", async (req, res) => {
     res.json({ hours, date: dateParam });
   } catch (err) {
     req.log.error(err, "vos missed-hourly error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX hourly report is temporarily unavailable." });
   }
 });
 
@@ -1445,7 +1587,7 @@ router.get("/vos/missed-daily", async (req, res) => {
     res.json({ days });
   } catch (err) {
     req.log.error(err, "vos missed-daily error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX daily report is temporarily unavailable." });
   }
 });
 
@@ -1454,6 +1596,10 @@ router.get("/vos/missed-breakdown", async (req, res) => {
     const dateParam = typeof req.query["date"] === "string" ? req.query["date"] : null;
     if (!dateParam) {
       res.status(400).json({ error: "date required (YYYY-MM-DD)" });
+      return;
+    }
+    if (!validateIntegrationCalendarDate(dateParam)) {
+      res.status(400).json({ error: "Invalid date; expected YYYY-MM-DD." });
       return;
     }
 
@@ -1593,19 +1739,22 @@ router.get("/vos/missed-breakdown", async (req, res) => {
       return new Date(a.firstMissedAt).getTime() - new Date(b.firstMissedAt).getTime();
     });
 
-    const withCallback = numbers.filter(n => n.hasCallback).length;
-    const connected = numbers.filter(n => n.callbackConnected).length;
+    const visibleNumbers = req.user!.role === "admin" || !req.user!.teamAccess
+      ? numbers
+      : numbers.filter((number) => number.team === req.user!.teamAccess);
+    const withCallback = visibleNumbers.filter(n => n.hasCallback).length;
+    const connected = visibleNumbers.filter(n => n.callbackConnected).length;
     res.json({
-      date: dateParam, numbers,
+      date: dateParam, numbers: visibleNumbers,
       stats: {
-        total: numbers.length, withCallback, connected,
-        callbackRate: numbers.length > 0 ? Math.round(withCallback / numbers.length * 100) / 100 : 0,
+        total: visibleNumbers.length, withCallback, connected,
+        callbackRate: visibleNumbers.length > 0 ? Math.round(withCallback / visibleNumbers.length * 100) / 100 : 0,
         connectRate: withCallback > 0 ? Math.round(connected / withCallback * 100) / 100 : 0,
       },
     });
   } catch (err) {
     req.log.error(err, "vos missed-breakdown error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX historical breakdown is temporarily unavailable." });
   }
 });
 
@@ -1618,14 +1767,28 @@ router.get("/vos/callback-review", async (req, res) => {
     let cbWindowStart: Date;
     let cbWindowEnd: Date;
 
+    if ((fromParam && !toParam) || (!fromParam && toParam)) {
+      res.status(400).json({ error: "Both from and to are required." });
+      return;
+    }
+
     if (fromParam && toParam) {
+      const range = validateIntegrationDateRange(fromParam, toParam, 90);
+      if (!range.ok) {
+        res.status(400).json({ error: range.error });
+        return;
+      }
       missedWhereTime = sql`AND (created_at AT TIME ZONE 'America/Los_Angeles')::date BETWEEN ${fromParam}::date AND ${toParam}::date`;
       cbWindowStart = new Date(fromParam + "T00:00:00Z");
       cbWindowStart.setDate(cbWindowStart.getDate() - 1);
       cbWindowEnd = new Date(toParam + "T23:59:59Z");
       cbWindowEnd.setDate(cbWindowEnd.getDate() + 3);
     } else {
-      const days = Math.min(Math.max(Number(req.query["days"] ?? 14), 1), 90);
+      const days = parseBoundedInteger(req.query["days"], 14, { min: 1, max: 90 });
+      if (days === null) {
+        res.status(400).json({ error: "Invalid days; expected an integer from 1 to 90." });
+        return;
+      }
       const windowStart = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
       missedWhereTime = sql`AND created_at >= ${windowStart}`;
       cbWindowStart = windowStart;
@@ -1772,7 +1935,10 @@ router.get("/vos/callback-review", async (req, res) => {
 
     items.sort((a, b) => new Date(b.missedAt).getTime() - new Date(a.missedAt).getTime());
 
-    const realItems = items.filter(i => !i.isGhost);
+    const visibleItems = req.user!.role === "admin" || !req.user!.teamAccess
+      ? items
+      : items.filter((item) => item.team === req.user!.teamAccess);
+    const realItems = visibleItems.filter(i => !i.isGhost);
     const withCallback = realItems.filter(i => i.hasCallback).length;
     const connected = realItems.filter(i => i.callbackConnected).length;
     const rate = realItems.length > 0 ? withCallback / realItems.length : 0;
@@ -1783,10 +1949,10 @@ router.get("/vos/callback-review", async (req, res) => {
       : 0;
 
     res.json({
-      items,
+      items: visibleItems,
       stats: {
         total: realItems.length,
-        ghost: items.filter(i => i.isGhost).length,
+        ghost: visibleItems.filter(i => i.isGhost).length,
         withCallback, connected,
         rate: Math.round(rate * 100) / 100,
         connectRate: Math.round(connectRate * 100) / 100,
@@ -1795,21 +1961,30 @@ router.get("/vos/callback-review", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "vos callback-review error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX callback report is temporarily unavailable." });
   }
 });
 
 router.get("/vos/live", async (req, res) => {
   try {
     const dashboard = await vosFetch<VosDashboard>("/api/dashboard");
-    res.json({ liveCalls: dashboard.liveCalls ?? [], agentStatuses: dashboard.agentStatuses ?? [] });
+    if (req.user!.role === "admin") {
+      res.json({ liveCalls: dashboard.liveCalls ?? [], agentStatuses: dashboard.agentStatuses ?? [] });
+      return;
+    }
+    const directory = await loadAuthorizationAgentDirectory();
+    const liveCalls = (dashboard.liveCalls ?? [])
+      .filter((call) => !!call.agentName && canAccessLiveAgent(req.user!, call.agentName, directory));
+    const agentStatuses = (dashboard.agentStatuses ?? [])
+      .filter((agent) => canAccessLiveAgent(req.user!, agent.name, directory));
+    res.json({ liveCalls, agentStatuses });
   } catch (err) {
     req.log.error(err, "vos live error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX live calls are temporarily unavailable." });
   }
 });
 
-router.get("/vos/debug/calls", async (req, res) => {
+router.get("/vos/debug/calls", requireRole("admin"), async (req, res) => {
   try {
     const qs = new URLSearchParams(req.query as Record<string, string>).toString();
     const data = await vosFetch<{ calls: VosCallRaw[]; total: number }>(
@@ -1818,18 +1993,22 @@ router.get("/vos/debug/calls", async (req, res) => {
     res.json({ total: data.total, calls: data.calls });
   } catch (err) {
     req.log.error(err, "vos debug error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX diagnostic request failed." });
   }
 });
 
-router.get("/vos/debug/proxy", async (req, res) => {
+router.get("/vos/debug/proxy", requireRole("admin"), async (req, res) => {
   try {
-    const path = String(req.query["path"] ?? "/api/calls?limit=1");
+    const path = approvedVosDebugPath(req.query["path"] ?? "/api/calls?limit=1");
+    if (!path) {
+      res.status(400).json({ error: "PBX diagnostic path is not approved." });
+      return;
+    }
     const data = await vosFetch<unknown>(path);
     res.json(data);
   } catch (err) {
     req.log.error(err, "vos debug proxy error");
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "PBX diagnostic request failed." });
   }
 });
 

@@ -1,0 +1,4 @@
+[[IgnoredVulns]]
+id = "GHSA-w5hq-g745-h8pq"
+ignoreUntil = 2026-11-08
+reason = "ExcelJS 4.4.0 declares uuid 8.x and this repository reaches only uuid v4; the affected caller-buffer paths are v3, v5, and v6. Reassess when ExcelJS supports a fixed uuid major."

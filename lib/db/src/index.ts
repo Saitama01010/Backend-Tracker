@@ -2,6 +2,7 @@ import "./env";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import * as schema from "./schema";
+import { databasePoolConfig } from "./poolConfig";
 
 const { Pool } = pg;
 const databaseUrlSource = process.env.DATABASE_URL ? "DATABASE_URL" : "OLD_DATABASE_URL";
@@ -31,7 +32,8 @@ export function databaseConnectionInfo() {
   }
 }
 
-export const pool = new Pool({ connectionString });
+export const pool = new Pool(databasePoolConfig(connectionString));
 export const db = drizzle(pool, { schema });
 
 export * from "./schema";
+export { databasePoolConfig } from "./poolConfig";

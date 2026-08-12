@@ -1,12 +1,15 @@
 import { Router } from "express";
+import { requireAuth } from "../middleware/auth.js";
+import { googleCsvUrl, OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 
 const router = Router();
+router.use("/csv-proxy", requireAuth);
 
 // Allowlisted Google Sheets CSV export URLs that can be proxied.
 // Only IDP tab is proxied here — browser fetches of this tab silently fail
 // when another tab from the same spreadsheet is fetched concurrently.
 const ALLOWED_URLS = new Set([
-  "https://docs.google.com/spreadsheets/d/11kOhk8xBPywxsAoULxS1b2QlofV7Le8ubawPoG7TZdc/export?format=csv&gid=871007220",
+  googleCsvUrl(OPERATIONAL_CONFIG.dashboardSheets.idpHandled),
 ]);
 
 router.get("/csv-proxy", async (req, res) => {
