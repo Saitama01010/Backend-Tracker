@@ -56,7 +56,7 @@ test("PBX request failures remain explicit instead of becoming zero-valued dashb
   assert.match(pbxPanel, /\{\(q\.error \|\| liveQ\.error\) && \(/);
   assert.match(pbxPanel, /PBX data is temporarily unavailable\./);
   assert.doesNotMatch(app, /if \(!r\.ok\) return \{ liveCalls: \[\], agentStatuses: \[\] \};/);
-  assert.match(app, /PBX live status is temporarily unavailable\. Historical totals are unchanged\./);
+  assert.doesNotMatch(app, /PBX live status is temporarily unavailable\. Historical totals are unchanged\./);
 });
 
 test("Quo live agents remain visible before their completed-call metrics arrive", async () => {

@@ -4343,12 +4343,6 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
           <span className="text-destructive">Quo live status is temporarily unavailable. Historical totals are unchanged.</span>
         </div>
       )}
-      {pbxLiveQ.isError && (
-        <div role="status" className="ops-card flex flex-wrap items-center justify-between gap-3 border-destructive/30 px-4 py-3 text-sm">
-          <span className="text-destructive">PBX live status is temporarily unavailable. Historical totals are unchanged.</span>
-          <Button variant="outline" size="sm" onClick={() => void pbxLiveQ.refetch()}>Retry</Button>
-        </div>
-      )}
       {liveInView.length > 0 && (
         <div className="space-y-2">
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Live calls right now</p>
