@@ -256,7 +256,7 @@ async function fetchConversationsByLine(
 
 /**
  * Step 2: Fetch all calls for a specific (lineId, participant) pair in the date range.
- * The API requires exactly one participant[] value per request.
+ * The API requires exactly one E.164 participant value per request.
  */
 async function fetchCallsForParticipant(
   lineId: string,
@@ -271,7 +271,7 @@ async function fetchCallsForParticipant(
   do {
     let url =
       `/calls?phoneNumberId=${encodeURIComponent(lineId)}` +
-      `&participants[]=${encodeURIComponent(participant)}` +
+      `&participants=${encodeURIComponent(participant)}` +
       `&createdAfter=${encodeURIComponent(from)}` +
       `&createdBefore=${encodeURIComponent(to)}` +
       `&maxResults=100`;

@@ -763,9 +763,14 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
 
     // For each recently-active conversation, check for in-progress calls
     const tasks = (convRes.data ?? [])
-      .filter((c) => lineIds.has(c.phoneNumberId) && c.participants?.length > 0)
-      .map((c) => async () => {
-        const participant = c.participants[0];
+      .map((conversation) => ({
+        conversation,
+        participant: conversation.participants?.find((value) => /^\+[1-9]\d{1,14}$/.test(value)),
+      }))
+      .filter((entry): entry is { conversation: typeof entry.conversation; participant: string } =>
+        lineIds.has(entry.conversation.phoneNumberId) && Boolean(entry.participant),
+      )
+      .map(({ conversation: c, participant }) => async () => {
         type LiveCall = {
           id: string;
           status: string;
@@ -778,7 +783,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
         };
         const callsRes = await quoFetch<{ data: LiveCall[] }>(
           `/calls?phoneNumberId=${encodeURIComponent(c.phoneNumberId)}` +
-          `&participants[]=${encodeURIComponent(participant)}` +
+          `&participants=${encodeURIComponent(participant)}` +
           `&createdAfter=${encodeURIComponent(fiveMinAgo)}` +
           `&createdBefore=${encodeURIComponent(now)}` +
           `&maxResults=5`,

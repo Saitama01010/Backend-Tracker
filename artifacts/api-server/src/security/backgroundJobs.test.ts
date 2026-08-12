@@ -311,6 +311,8 @@ test("Quo live reads refresh provider state on demand instead of waiting for cro
   assert.match(quo, /res\.status === 429/);
   assert.match(quo, /Date\.parse\(retryAfter\)/);
   assert.match(quo, /const limit = 2/);
+  assert.match(quo, /&participants=\$\{encodeURIComponent\(participant\)\}/);
+  assert.doesNotMatch(quo, /participants\[\]/);
   assert.match(quo, /INSERT INTO durable_runtime_state/);
   assert.match(quo, /durable_runtime_state\.expires_at <= now\(\)/);
   assert.match(quo, /WHERE key = \$1 AND value->>'owner' = \$2/);
