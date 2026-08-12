@@ -107,23 +107,13 @@ export function todayInLosAngeles(now = new Date()): string {
   return formatCalendarDate(now);
 }
 
-function losAngelesDayBounds(date: string): { from: number; to: number } {
-  const window = businessDayWindow(date);
-  return { from: window.start.getTime(), to: window.endExclusive.getTime() };
-}
-
 function isTodayValue(value: string, today: string): boolean {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value === today;
   const instant = Date.parse(value);
   if (!Number.isFinite(instant)) return false;
 
-  const bounds = losAngelesDayBounds(today);
-  // The dashboard serializes a selected calendar day through the browser's
-  // local timezone. Accept the current calendar day in every valid civil
-  // timezone, but reject prior/future calendar days.
-  const earliestCivilStart = bounds.from - 14 * 60 * 60_000;
-  const latestCivilEnd = bounds.to + 12 * 60 * 60_000;
-  return instant >= earliestCivilStart && instant < latestCivilEnd;
+  const { start, endExclusive } = businessDayWindow(today);
+  return instant >= start.getTime() && instant < endExclusive.getTime();
 }
 
 export function canAccessDateRange(user: AuthPayload, values: readonly (string | undefined | null)[], now = new Date()): boolean {

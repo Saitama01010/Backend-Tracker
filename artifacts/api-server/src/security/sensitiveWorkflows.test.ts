@@ -9,6 +9,7 @@ import {
   privateDownloadHeaders,
   validateOptionalWorkflowRange,
   validateWorkflowCalendarDate,
+  violationVerificationKeyMatchesPayload,
 } from "../lib/sensitiveWorkflowPolicy.js";
 
 const viewer: AuthPayload = {
@@ -86,7 +87,8 @@ test("violation actor attribution, strict inputs, import failures, and private d
   assert.match(attendance, /canAccessAttendanceMember/);
   assert.match(attendance, /allowedAgents\?\.length/);
   assert.match(qa, /const resolvedBy = req\.user!\.username/);
-  assert.match(qa, /qaAgentAccess/);
+  assert.match(qa, /qaAgentScope/);
+  assert.match(qa, /predicateFor/);
   assert.match(qa, /departmentScope\.departments/);
   for (const source of [obReport, obAnalytics, liveTransfers, qa]) {
     assert.match(source, /setPrivateDownloadHeaders/);
@@ -95,7 +97,7 @@ test("violation actor attribution, strict inputs, import failures, and private d
 
 test("verification payloads use the authenticated actor and reject malformed records", () => {
   const valid = parseViolationVerificationPayload({
-    key: "late:member:2026-07-15",
+    key: "late:Sanitized Agent:2026-07-15",
     type: "late_login",
     member: "Sanitized Agent",
     department: "CS",
@@ -107,6 +109,25 @@ test("verification payloads use the authenticated actor and reject malformed rec
   assert.equal(parseViolationVerificationPayload({ ...valid, date: "2026-02-30" }, "actor"), null);
   assert.equal(parseViolationVerificationPayload({ ...valid, type: "invented" }, "actor"), null);
   assert.equal(parseViolationVerificationPayload({ ...valid, details: "not-json" }, "actor"), null);
+  assert.equal(violationVerificationKeyMatchesPayload(valid!), true);
+  assert.equal(violationVerificationKeyMatchesPayload({ ...valid!, key: "late:Other Agent:2026-07-15" }), false);
+
+  const missed = parseViolationVerificationPayload({
+    key: "missed:42",
+    type: "missed_call",
+    member: "Sanitized Agent",
+    department: "retention",
+    date: "2026-07-15",
+    details: {
+      key: "missed:42",
+      date: "2026-07-15",
+      team: "retention",
+      availableAgents: ["Sanitized Agent"],
+    },
+  }, "authenticated-viewer");
+  assert.equal(violationVerificationKeyMatchesPayload(missed!), true);
+  assert.equal(violationVerificationKeyMatchesPayload({ ...missed!, department: "cs" }), false);
+  assert.equal(violationVerificationKeyMatchesPayload({ ...missed!, key: "missed:43" }), false);
 });
 
 test("workflow dates, wildcard escaping, and private workbook headers are deterministic", () => {

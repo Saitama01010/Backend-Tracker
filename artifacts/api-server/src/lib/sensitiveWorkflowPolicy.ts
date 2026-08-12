@@ -71,6 +71,54 @@ export type ViolationVerificationPayload = {
   verifiedBy: string;
 };
 
+function parsedViolationDetails(payload: ViolationVerificationPayload): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(payload.details);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizedKeyIdentity(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+export function violationVerificationKeyMatchesPayload(
+  payload: ViolationVerificationPayload,
+  memberAliases: readonly string[] = [],
+): boolean {
+  if (payload.type === "late_login") return payload.key === `late:${payload.member}:${payload.date}`;
+  if (payload.type === "availability_gap") return payload.key === `gap:${payload.member}:${payload.date}`;
+
+  const details = parsedViolationDetails(payload);
+  if (!details || details["key"] !== payload.key || details["date"] !== payload.date) return false;
+
+  if (payload.type === "missed_call") {
+    const availableAgents = details["availableAgents"];
+    return /^(?:missed:\d+|quo-missed:[A-Za-z0-9._:-]{1,200})$/.test(payload.key)
+      && typeof details["team"] === "string"
+      && normalizedKeyIdentity(details["team"]) === normalizedKeyIdentity(payload.department)
+      && Array.isArray(availableAgents)
+      && availableAgents.includes(payload.member);
+  }
+
+  if (payload.type === "unauthorized_cancel") {
+    if (details["agent"] !== payload.member
+      || typeof details["team"] !== "string"
+      || normalizedKeyIdentity(details["team"]) !== normalizedKeyIdentity(payload.department)
+      || typeof details["fileId"] !== "string") return false;
+    const match = /^cancel:(old|new):(.+):(\d{4}-\d{2}-\d{2}):(.*)$/.exec(payload.key);
+    if (!match || match[3] !== payload.date || match[4] !== details["fileId"]) return false;
+    const allowedIdentities = new Set([payload.member, ...memberAliases].map(normalizedKeyIdentity));
+    return allowedIdentities.has(normalizedKeyIdentity(match[2]!));
+  }
+
+  return false;
+}
+
 function boundedText(value: unknown, maximum: number, required = true): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();

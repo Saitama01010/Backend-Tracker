@@ -15,6 +15,7 @@ import {
 import {
   parseViolationVerificationPayload,
   validateOptionalWorkflowRange,
+  violationVerificationKeyMatchesPayload,
 } from "../lib/sensitiveWorkflowPolicy.js";
 import {
   ATTENDANCE_MEMBER_ALIASES,
@@ -55,6 +56,42 @@ function canAccessViolationIdentity(
 ): boolean {
   return canAccessAttendanceDepartment(user, department)
     && canAccessAgent(user, member, agentNamesForMember(member));
+}
+
+async function resolveMissedVerificationScope(key: string): Promise<{ department: string; date: string } | null> {
+  const pbxMatch = /^missed:(\d+)$/.exec(key);
+  if (pbxMatch) {
+    const id = Number(pbxMatch[1]);
+    if (!Number.isSafeInteger(id)) return null;
+    const [row] = await db.select({
+      team: pbxMissedCallsTable.team,
+      createdAt: pbxMissedCallsTable.createdAt,
+    }).from(pbxMissedCallsTable).where(eq(pbxMissedCallsTable.id, id)).limit(1);
+    if (!row || !["retention", "cs", "nsf"].includes(row.team)) return null;
+    return {
+      department: row.team,
+      date: new Date(row.createdAt).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" }),
+    };
+  }
+
+  const quoMatch = /^quo-missed:([A-Za-z0-9._:-]{1,200})$/.exec(key);
+  if (!quoMatch) return null;
+  const [row] = await db.select({
+    direction: phoneCallsTable.direction,
+    status: phoneCallsTable.status,
+    lineTeam: phoneCallsTable.lineTeam,
+    lineName: phoneCallsTable.lineName,
+    createdAt: phoneCallsTable.createdAt,
+  }).from(phoneCallsTable).where(eq(phoneCallsTable.id, quoMatch[1]!)).limit(1);
+  if (!row
+    || row.direction !== "incoming"
+    || !["no-answer", "voicemail", "missed", "voicemail-brief"].includes(row.status)
+    || !TEAM_QUO_LINES.includes(row.lineName)
+    || !["retention", "cs", "nsf"].includes(row.lineTeam)) return null;
+  return {
+    department: row.lineTeam,
+    date: new Date(row.createdAt).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" }),
+  };
 }
 
 /** GET /api/violations?from=YYYY-MM-DD&to=YYYY-MM-DD */
@@ -388,8 +425,21 @@ router.post("/violations/verify", async (req, res) => {
   try {
     const payload = parseViolationVerificationPayload(req.body, req.user!.username);
     if (!payload) return res.status(400).json({ error: "Invalid violation verification." });
-    if (!canAccessDateRange(req.user!, [payload.date])) return res.status(403).json({ error: "Forbidden" });
-    if (!canAccessViolationIdentity(req.user!, payload.member, payload.department)) {
+    if (!violationVerificationKeyMatchesPayload(payload, agentNamesForMember(payload.member))) {
+      return res.status(400).json({ error: "Invalid violation verification." });
+    }
+    const missedScope = payload.type === "missed_call"
+      ? await resolveMissedVerificationScope(payload.key)
+      : null;
+    if (payload.type === "missed_call" && (!missedScope
+      || missedScope.department !== payload.department.toLowerCase()
+      || missedScope.date !== payload.date)) {
+      return res.status(400).json({ error: "Invalid violation verification." });
+    }
+    const authorizedDepartment = missedScope?.department ?? payload.department;
+    const authorizedDate = missedScope?.date ?? payload.date;
+    if (!canAccessDateRange(req.user!, [authorizedDate])) return res.status(403).json({ error: "Forbidden" });
+    if (!canAccessViolationIdentity(req.user!, payload.member, authorizedDepartment)) {
       return res.status(403).json({ error: "Forbidden" });
     }
     await db.insert(violationVerificationsTable)

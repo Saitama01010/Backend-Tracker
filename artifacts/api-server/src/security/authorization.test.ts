@@ -78,6 +78,24 @@ test("today-only users cannot submit historical or future date parameters", () =
   assert.equal(authorizeApiDateParameters("PUT", "/attendance/record", todayOnly, {}, { date: "2026-07-14" }, now), false);
 });
 
+test("today-only instant authorization uses exact Los Angeles day boundaries, including DST", () => {
+  const summerNow = new Date("2026-07-15T18:00:00Z");
+  assert.equal(canAccessDateRange(todayOnly, ["2026-07-15T07:00:00.000Z"], summerNow), true);
+  assert.equal(canAccessDateRange(todayOnly, ["2026-07-16T06:59:59.999Z"], summerNow), true);
+  assert.equal(canAccessDateRange(todayOnly, ["2026-07-15T06:59:59.999Z"], summerNow), false);
+  assert.equal(canAccessDateRange(todayOnly, ["2026-07-16T07:00:00.000Z"], summerNow), false);
+
+  const springForwardNow = new Date("2026-03-08T18:00:00Z");
+  assert.equal(canAccessDateRange(todayOnly, ["2026-03-08T08:00:00.000Z"], springForwardNow), true);
+  assert.equal(canAccessDateRange(todayOnly, ["2026-03-09T06:59:59.999Z"], springForwardNow), true);
+  assert.equal(canAccessDateRange(todayOnly, ["2026-03-09T07:00:00.000Z"], springForwardNow), false);
+
+  const fallBackNow = new Date("2026-11-01T18:00:00Z");
+  assert.equal(canAccessDateRange(todayOnly, ["2026-11-01T07:00:00.000Z"], fallBackNow), true);
+  assert.equal(canAccessDateRange(todayOnly, ["2026-11-02T07:59:59.999Z"], fallBackNow), true);
+  assert.equal(canAccessDateRange(todayOnly, ["2026-11-02T08:00:00.000Z"], fallBackNow), false);
+});
+
 test("missing authentication is denied before route authorization and unknown routes default to admin", () => {
   assert.equal(authorizeApiRoute("GET", "/quo/stats", undefined).allowed, false);
   assert.equal(authorizeApiRoute("GET", "/future-private-route", normal).allowed, false);

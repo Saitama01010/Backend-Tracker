@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, phoneCallsTable, pbxMissedCallsTable } from "@workspace/db";
-import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import type { Logger } from "pino";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { getActiveReadymodeItems } from "./nsfReadymode.js";
@@ -16,6 +16,9 @@ import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
 import { manualJobKey, scheduledJobKey } from "../lib/durableBackgroundJobs.js";
 import { getDurableRuntimeState, putDurableRuntimeState } from "../lib/durableRuntimeState.js";
 import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
+import { businessDayWindow, formatCalendarDate } from "../lib/businessTime.js";
+import type { AuthPayload } from "../middleware/authCore.js";
+import { scopeMissedItemsForUser } from "../lib/missedCallScope.js";
 
 const router = Router();
 router.use("/vos", requireAuth);
@@ -136,9 +139,8 @@ export interface MissedNoCallbackItem {
   debugReason?: string;
 }
 
-function scopeMissedItems(req: { user?: { role: string; teamAccess?: string | null } }, items: MissedNoCallbackItem[]): MissedNoCallbackItem[] {
-  if (req.user?.role === "admin" || !req.user?.teamAccess) return items;
-  return items.filter((item) => item.team === req.user!.teamAccess);
+function scopeMissedItems(req: { user?: AuthPayload }, items: MissedNoCallbackItem[]): MissedNoCallbackItem[] {
+  return scopeMissedItemsForUser(req.user, items);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1207,7 +1209,17 @@ router.get("/vos/missed-no-callback", async (req, res) => {
   }
   // PBX scan still in progress — serve Quo DB-only results so the page isn't empty
   try {
-    const window36h = new Date(Date.now() - 36 * 60 * 60 * 1000);
+    const now = new Date();
+    const todayWindow = businessDayWindow(formatCalendarDate(now));
+    const windowStart = req.user!.lockToToday && req.user!.role !== "admin"
+      ? todayWindow.start
+      : new Date(now.getTime() - 36 * 60 * 60 * 1000);
+    const phoneDateConditions = req.user!.lockToToday && req.user!.role !== "admin"
+      ? [gte(phoneCallsTable.createdAt, windowStart), lt(phoneCallsTable.createdAt, todayWindow.endExclusive)]
+      : [gte(phoneCallsTable.createdAt, windowStart)];
+    const pbxDateConditions = req.user!.lockToToday && req.user!.role !== "admin"
+      ? [gte(pbxMissedCallsTable.createdAt, windowStart), lt(pbxMissedCallsTable.createdAt, todayWindow.endExclusive)]
+      : [gte(pbxMissedCallsTable.createdAt, windowStart)];
     const [quoMissed, quoOutbound, quoInboundAnswered, persistedPbxMissed] = await Promise.all([
       db
         .select({
@@ -1226,18 +1238,18 @@ router.get("/vos/missed-no-callback", async (req, res) => {
           and(
             eq(phoneCallsTable.direction, "incoming"),
             inArray(phoneCallsTable.status, ["no-answer", "voicemail", "missed", "voicemail-brief"]),
-            gte(phoneCallsTable.createdAt, window36h),
+            ...phoneDateConditions,
             inArray(phoneCallsTable.lineName, TEAM_QUO_LINES)
           )
         ),
       db
         .select({ id: phoneCallsTable.id, participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
         .from(phoneCallsTable)
-        .where(and(eq(phoneCallsTable.direction, "outgoing"), gte(phoneCallsTable.createdAt, window36h))),
+        .where(and(eq(phoneCallsTable.direction, "outgoing"), ...phoneDateConditions)),
       db
         .select({ id: phoneCallsTable.id, participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
         .from(phoneCallsTable)
-        .where(and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed"), gte(phoneCallsTable.createdAt, window36h))),
+        .where(and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed"), ...phoneDateConditions)),
       db
         .select({
           id: pbxMissedCallsTable.id,
@@ -1249,7 +1261,7 @@ router.get("/vos/missed-no-callback", async (req, res) => {
           team: pbxMissedCallsTable.team,
         })
         .from(pbxMissedCallsTable)
-        .where(gte(pbxMissedCallsTable.createdAt, window36h)),
+        .where(and(...pbxDateConditions)),
     ]);
 
     const callbackTimes = new Map<string, CallbackEntry[]>();
