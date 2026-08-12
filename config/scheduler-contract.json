@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "endpoint": "/api/jobs/cron",
+  "nativeCron": {
+    "schedule": "0 9 * * *",
+    "timezone": "UTC",
+    "purpose": "Daily recovery and housekeeping invocation"
+  },
+  "tasks": [
+    {
+      "jobType": "integration_live_refresh",
+      "scheduleClass": "high-frequency",
+      "cadenceMinutes": 1,
+      "maximumDelayMinutes": 2,
+      "bucket": "utc-minute",
+      "catchUp": "latest-bucket-only",
+      "priority": 10,
+      "maxAttempts": 4
+    },
+    {
+      "jobType": "quo_sync",
+      "scheduleClass": "high-frequency",
+      "cadenceMinutes": 15,
+      "maximumDelayMinutes": 30,
+      "bucket": "utc-quarter-hour",
+      "catchUp": "provider-window-overlap",
+      "priority": 20,
+      "maxAttempts": 4
+    },
+    {
+      "jobType": "qa_biweekly",
+      "scheduleClass": "daily-eligibility",
+      "cadenceMinutes": 1440,
+      "maximumDelayMinutes": 180,
+      "bucket": "utc-day-at-native-cron-hour",
+      "catchUp": "next-authenticated-invocation",
+      "priority": 30,
+      "maxAttempts": 3
+    },
+    {
+      "jobType": "vos_backfill",
+      "scheduleClass": "daily",
+      "cadenceMinutes": 1440,
+      "maximumDelayMinutes": 180,
+      "bucket": "utc-day-at-native-cron-hour",
+      "catchUp": "next-authenticated-invocation",
+      "priority": 5,
+      "maxAttempts": 3
+    },
+    {
+      "jobType": "qa_weekly_assignment",
+      "scheduleClass": "weekly",
+      "cadenceMinutes": 10080,
+      "maximumDelayMinutes": 1440,
+      "bucket": "utc-monday-at-native-cron-hour",
+      "catchUp": "next-monday-window",
+      "priority": 25,
+      "maxAttempts": 3
+    },
+    {
+      "jobType": "ai_reservation_cleanup",
+      "scheduleClass": "daily",
+      "cadenceMinutes": 1440,
+      "maximumDelayMinutes": 180,
+      "bucket": "utc-day-at-native-cron-hour",
+      "catchUp": "next-authenticated-invocation",
+      "priority": 1,
+      "maxAttempts": 3
+    }
+  ]
+}

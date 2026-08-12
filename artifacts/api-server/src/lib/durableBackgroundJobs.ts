@@ -6,6 +6,7 @@ export const BACKGROUND_JOB_TYPES = [
   "live_transfer_refresh",
   "qa_biweekly",
   "qa_weekly_assignment",
+  "ai_reservation_cleanup",
 ] as const;
 
 export type BackgroundJobType = (typeof BACKGROUND_JOB_TYPES)[number];

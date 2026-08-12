@@ -51,15 +51,22 @@ The error serializer removes request/response bodies and headers before logging.
 
 ## HTTP headers and CSP
 
-Helmet supplies the standard response-header set. The CSP permits only the resources used by the current built dashboard:
+Helmet supplies the API response-header set. `vercel.json` now supplies the
+equivalent browser boundary for static HTML/assets that never pass through
+Express. The static CSP permits only the resources used by the current built
+dashboard:
 
 - scripts, connections, forms, and base URLs from the same origin;
 - inline styles required by current React components;
 - the existing Google Fonts stylesheet and font host;
-- same-origin/data/blob images and same-origin/blob workers;
+- same-origin/data images and same-origin workers;
 - no objects, no framing, and no inline script attributes.
 
-HSTS and `upgrade-insecure-requests` apply in production only. Local development avoids forced HTTPS. Browser verification confirmed the production bundle, application stylesheet, Google Fonts stylesheet, and login screen loaded with no CSP or browser-console warnings.
+Vercel HTTPS responses receive HSTS and `upgrade-insecure-requests`; local
+development avoids forced HTTPS. The frontend API client permits only
+same-origin requests, Google Sheets are read through `/api/sheet`, and no
+third-party `connect-src` is allowed. Remote Preview verification is restricted
+to the unauthenticated page and response headers until isolated staging exists.
 
 ## CORS
 

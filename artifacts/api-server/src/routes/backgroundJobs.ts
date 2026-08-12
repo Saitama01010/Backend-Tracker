@@ -11,16 +11,24 @@ import {
 import { validCronAuthorization } from "../lib/cronAuth.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { dueScheduledJobs } from "../lib/backgroundSchedule.js";
+import { recordSchedulerHeartbeat, schedulerHealth } from "../lib/schedulerHealth.js";
 
 const router: IRouter = Router();
 const JOBS_PER_CRON_INVOCATION = 1;
 
 export async function enqueueDueScheduledJobs(now = new Date()): Promise<{ created: number; known: number }> {
-  const results = await Promise.all(dueScheduledJobs(now).map((job) => postgresBackgroundJobStore.enqueue(job)));
-  return {
+  const definitions = dueScheduledJobs(now);
+  const results = await Promise.all(definitions.map((job) => postgresBackgroundJobStore.enqueue(job)));
+  const summary = {
     created: results.filter((result) => result.created).length,
     known: results.filter((result) => !result.created).length,
   };
+  await recordSchedulerHeartbeat({
+    invokedAt: now.toISOString(),
+    scheduled: definitions.length,
+    ...summary,
+  });
+  return summary;
 }
 
 function cronAuthorized(req: { get(name: string): string | undefined }): boolean {
@@ -76,6 +84,10 @@ router.get("/jobs", requireAuth, requireRole("admin"), async (req, res) => {
     limit,
   });
   return res.json({ jobs });
+});
+
+router.get("/jobs/scheduler-health", requireAuth, requireRole("admin"), async (_req, res) => {
+  return res.json(await schedulerHealth());
 });
 
 router.get("/jobs/:id", requireAuth, requireRole("admin"), async (req, res) => {

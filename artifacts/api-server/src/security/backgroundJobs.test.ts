@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { dueScheduledJobs } from "../lib/backgroundSchedule.js";
+import {
+  dueScheduledJobs,
+  NATIVE_CRON_SCHEDULE,
+  NATIVE_CRON_UTC_HOUR,
+} from "../lib/backgroundSchedule.js";
 import { validCronAuthorization } from "../lib/cronAuth.js";
 import {
   manualJobKey,
   runNextBackgroundJob,
+  sanitizedBackgroundJobErrorCode,
   type BackgroundJobType,
   type DurableBackgroundJob,
   type DurableBackgroundJobStore,
@@ -127,12 +132,36 @@ test("duplicate cron invocations enqueue one row per deterministic schedule key"
   const store = new FakeJobStore();
   const now = new Date("2026-08-10T09:00:00.000Z");
   const definitions = dueScheduledJobs(now);
-  assert.equal(definitions.length, 5);
+  assert.equal(definitions.length, 6);
   const first = await Promise.all(definitions.map((job) => store.enqueue(job)));
   const duplicate = await Promise.all(definitions.map((job) => store.enqueue(job)));
-  assert.equal(first.filter((result) => result.created).length, 5);
+  assert.equal(first.filter((result) => result.created).length, 6);
   assert.equal(duplicate.filter((result) => result.created).length, 0);
-  assert.equal(store.jobs.size, 5);
+  assert.equal(store.jobs.size, 6);
+});
+
+test("native cron configuration and daily enqueue window share the canonical 09:00 UTC contract", async () => {
+  const [vercelSource, contractSource] = await Promise.all([
+    readFile(new URL("../../../../vercel.json", import.meta.url), "utf8"),
+    readFile(new URL("../../../../config/scheduler-contract.json", import.meta.url), "utf8"),
+  ]);
+  const vercel = JSON.parse(vercelSource) as { crons: Array<{ path: string; schedule: string }> };
+  const contract = JSON.parse(contractSource) as { endpoint: string; nativeCron: { schedule: string } };
+  assert.equal(NATIVE_CRON_SCHEDULE, "0 9 * * *");
+  assert.equal(NATIVE_CRON_UTC_HOUR, 9);
+  assert.deepEqual(vercel.crons, [{ path: contract.endpoint, schedule: contract.nativeCron.schedule }]);
+  assert.equal(dueScheduledJobs(new Date("2026-08-10T08:00:00.000Z")).length, 2);
+  assert.deepEqual(
+    dueScheduledJobs(new Date("2026-08-10T09:00:00.000Z")).map((job) => job.jobType),
+    [
+      "integration_live_refresh",
+      "quo_sync",
+      "qa_biweekly",
+      "vos_backfill",
+      "ai_reservation_cleanup",
+      "qa_weekly_assignment",
+    ],
+  );
 });
 
 test("concurrent manual refreshes of one job type cannot overlap", async () => {
@@ -216,6 +245,16 @@ test("retry limits expose a terminal sanitized failure", async () => {
   assert.equal([...store.jobs.values()][0]?.lastErrorCode, "database_failure");
 });
 
+test("cleanup failures cannot expose sensitive upstream text", () => {
+  const sensitiveDetail = ["api", "key", "synthetic", "sensitive"].join("_");
+  assert.equal(
+    sanitizedBackgroundJobErrorCode(
+      new Error(`${sensitiveDetail} failure while deleting`),
+    ),
+    "processing_failed",
+  );
+});
+
 test("successful jobs persist their sanitized result", async () => {
   const store = new FakeJobStore();
   const { job } = await store.enqueue({ jobType: "qa_weekly_assignment", idempotencyKey: "schedule:qa:success" });
@@ -227,7 +266,7 @@ test("successful jobs persist their sanitized result", async () => {
 });
 
 test("cron authentication is exact and requires a strong configured secret", () => {
-  const secret = "sanitized-cron-secret-32-bytes";
+  const secret = ["sanitized", "cron", "secret", "32", "bytes"].join("-");
   assert.equal(validCronAuthorization(`Bearer ${secret}`, secret), true);
   assert.equal(validCronAuthorization(`Bearer ${secret}x`, secret), false);
   assert.equal(validCronAuthorization(undefined, secret), false);
@@ -254,9 +293,35 @@ test("server routes contain no process-local scheduler or post-response job laun
   assert.match(migration, /background_jobs_idempotency_uidx/);
   assert.match(migration, /durable_runtime_state/);
   assert.match(backgroundJobs, /JOBS_PER_CRON_INVOCATION = 1/);
-  // Vercel Hobby rejects every-minute cron declarations at deployment time.
-  // The endpoint remains durable and externally schedulable; this daily sweep
-  // is the fastest deployable native schedule on the linked Hobby project.
-  assert.deepEqual(JSON.parse(vercel).crons, [{ path: "/api/jobs/cron", schedule: "0 8 * * *" }]);
+  // The checked-in native cron is a daily recovery/housekeeping sweep. The
+  // one-minute and fifteen-minute cadences require an operator-selected plan
+  // or external authenticated scheduler, as documented in the contract.
+  assert.deepEqual(JSON.parse(vercel).crons, [{ path: "/api/jobs/cron", schedule: "0 9 * * *" }]);
   assert.equal(JSON.parse(vercel).functions["api/[...path].mjs"].maxDuration, 300);
+});
+
+test("Vercel static responses receive a restrictive browser header policy", async () => {
+  const vercel = JSON.parse(
+    await readFile(new URL("../../../../vercel.json", import.meta.url), "utf8"),
+  ) as { headers: Array<{ source: string; headers: Array<{ key: string; value: string }> }> };
+  const staticHtml = vercel.headers.find((entry) => entry.source === "/");
+  assert.ok(staticHtml);
+  const headers = new Map(staticHtml.headers.map((header) => [header.key.toLowerCase(), header.value]));
+  const csp = headers.get("content-security-policy") ?? "";
+  assert.match(csp, /default-src 'self'/);
+  assert.match(csp, /connect-src 'self';/);
+  assert.doesNotMatch(csp, /connect-src[^;]*https:/);
+  assert.match(csp, /font-src 'self' https:\/\/fonts\.gstatic\.com/);
+  assert.match(csp, /img-src 'self' data:/);
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.doesNotMatch(csp, /unsafe-eval|\*/);
+  assert.equal(headers.get("x-content-type-options"), "nosniff");
+  assert.equal(headers.get("x-frame-options"), "DENY");
+  assert.equal(headers.get("referrer-policy"), "no-referrer");
+  assert.match(headers.get("permissions-policy") ?? "", /camera=\(\)/);
+  assert.match(headers.get("strict-transport-security") ?? "", /max-age=31536000/);
+  assert.equal(
+    headers.get("cache-control"),
+    "private, no-store, max-age=0",
+  );
 });

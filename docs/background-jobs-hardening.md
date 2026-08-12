@@ -22,7 +22,7 @@ Each invocation idempotently schedules:
 
 | Work | Idempotency bucket | Intended cadence | Retry limit |
 | --- | --- | --- | --- |
-| Quo live poll + PBX refresh | UTC minute | every minute | 4 |
+| Quo live poll + PBX refresh | UTC minute | every minute when an approved high-frequency scheduler is configured | 4 |
 | Quo incremental sync | UTC 15-minute window | every 15 minutes | 4 |
 | Biweekly QA eligibility run | UTC day at 09:00 | daily check, existing per-agent 14-day rule | 3 |
 | PBX historical backfill | UTC day at 09:00 | daily recovery pass | 3 |
@@ -30,7 +30,7 @@ Each invocation idempotently schedules:
 
 The invocation claims at most one job so its four-minute worker timeout fits inside the configured five-minute function duration. Vercel does not retry failed cron HTTP invocations, so unclaimed and retryable rows remain in PostgreSQL for a later invocation. A Vercel function is capped at 300 seconds in `vercel.json`; work is not considered lost if that request is terminated because its lease expires and the next worker can reclaim it.
 
-The minute schedule requires a Vercel Pro or Enterprise plan. Vercel Hobby accepts only daily cron schedules. Before any deployment, confirm the plan or configure an existing trusted scheduler to call the same authenticated endpoint every minute. Do not deploy the minute expression to Hobby because Vercel will reject it. No deployment was performed in this phase.
+The checked-in Vercel cron is intentionally a daily 09:00 UTC recovery invocation. It does not satisfy the one-minute live-refresh or fifteen-minute Quo synchronization requirements. Before Production deployment, an operator must make and record one of the explicit decisions in `docs/scheduler-operations.md`: use a Vercel plan that supports the required frequency, configure an approved external scheduler, or run an always-on worker. The application exposes durable idempotent work and scheduler-health evidence for any of those choices. No Production deployment was performed in this phase.
 
 ## Inventory and disposition
 
@@ -63,7 +63,7 @@ The minute schedule requires a Vercel Pro or Enterprise plan. Vercel Hobby accep
 
 ## Operations and rollback
 
-Before a future deployment, apply migration `0009_background_jobs.sql`, configure a random `CRON_SECRET` of at least 16 characters, confirm minute-cron support, and monitor failed/retry rows. Administrators can list sanitized job state with `GET /api/jobs?status=failed` and inspect a specific row at `GET /api/jobs/:id`.
+Before a future deployment, follow `docs/database-release-tooling.md` for the controlled migration review, configure a random `CRON_SECRET` of at least 16 characters, select and document the high-frequency scheduler, and monitor failed/retry rows plus `GET /api/jobs/scheduler-health`. Administrators can list sanitized job state with `GET /api/jobs?status=failed` and inspect a specific row at `GET /api/jobs/:id`.
 
 To roll back application execution, redeploy the previously tested application commit and restore the earlier cron entry. The two additive tables do not modify or replace business tables and need not be dropped. Dropping them should be a separate reviewed cleanup only after no phase-10 code is running.
 
@@ -71,7 +71,7 @@ To roll back application execution, redeploy the previously tested application c
 
 - The phase-10 migration was applied successfully to an isolated PostgreSQL 16 database.
 - Real PostgreSQL tests covered duplicate enqueue, concurrent claims, lease expiry/restart recovery, completion results, and durable runtime snapshots.
-- The repository's full clean migration chain has a pre-existing failure in `0003_anthropic_controls.sql`: it alters `qa_reviews` before that table exists in the phase-0 clean schema. This predates phase 10; `0009` itself applies successfully and was tested separately.
+- A guarded empty-database bootstrap now materializes the immutable `0000`-`0004` baseline before the normal migrator applies `0005` onward. The process is restricted to explicitly acknowledged, empty, non-Production databases and verifies both the migration ledger and the raw-SQL schema contract.
 - Live provider workflows require configured sanitized/non-production Quo, PBX, Anthropic, and dashboard credentials. They were not invoked against production by this phase.
 
 References: [Vercel cron management](https://vercel.com/docs/cron-jobs/manage-cron-jobs), [Vercel cron usage and plan limits](https://vercel.com/docs/cron-jobs/usage-and-pricing), and [Vercel function duration](https://vercel.com/docs/functions/configuring-functions/duration).

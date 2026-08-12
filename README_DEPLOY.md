@@ -56,20 +56,23 @@ or expose it in frontend code.
 pnpm install
 ```
 
-## 4. Push the Drizzle schema to Neon
+## 4. Apply reviewed migrations to Neon
 
 The Drizzle schema is exported from `lib/db/src/schema/index.ts`, and the Drizzle config is `lib/db/drizzle.config.ts`.
 
-Run:
+For an existing database, first run the read-only preflight described in
+`docs/database-release-tooling.md`, review its `GO`/`NO_GO` decision, take the
+required snapshot, and then run the normal migrator only in the approved
+environment:
 
 ```bash
 pnpm --filter @workspace/db run migrate
 ```
 
-This applies the checked-in Drizzle migrations, including the Anthropic request
-limits, QA source field, and biweekly run audit table. Use `push` only for local
-schema prototyping; do not use `push-force` unless you intentionally accept the
-risk of forced schema changes.
+This applies the checked-in Drizzle migrations. Never use schema push as a
+release shortcut. A brand-new disposable or staging database must instead use
+the guarded empty-database bootstrap documented in
+`docs/database-release-tooling.md`; it refuses Production and non-empty targets.
 
 ## 5. Run locally
 
@@ -130,8 +133,12 @@ Add the optional integration variables from `.env.example` only when the matchin
 For every AI feature, add `ANTHROPIC_API_KEY` and `CRON_SECRET` as Vercel secrets,
 plus the Anthropic model and limit variables shown above. Samia uses Sonnet;
 QA, Live Transfer, and outbound classification use Haiku. The daily Vercel cron
-calls `/api/qa/biweekly-run`; PostgreSQL eligibility checks still limit each
-agent to one automatic review in any rolling 14-day period.
+calls the authenticated durable-job endpoint `/api/jobs/cron` at 09:00 UTC.
+That recovery cadence does not provide the required one-minute live refresh or
+fifteen-minute Quo sync. Select and record an approved high-frequency scheduler
+using `docs/scheduler-operations.md` before Production deployment. PostgreSQL
+eligibility checks still limit each agent to one automatic review in any
+rolling 14-day period.
 
 For private Google Sheet submissions, add one of these setups in Vercel:
 
@@ -157,4 +164,8 @@ Production routing:
 - Frontend: static Vite files from `artifacts/agent-dashboard/dist/public`
 - API: `/api/*` requests are handled by the Express app through `api/[...path].ts`
 
-Background interval jobs are disabled on Vercel by default because serverless functions are not a reliable place for long-running workers. On-demand API routes still work, but long imports, classification jobs, or report generation can hit serverless execution limits. If those jobs become central, run the API or workers on a separate always-on host.
+Long-running and scheduled work is recorded in PostgreSQL with idempotency keys,
+leases, bounded retries, and sanitized outcomes. The checked-in daily Vercel
+cron is a recovery path only. Production still requires the explicit scheduler
+and isolated-staging decisions in `docs/scheduler-operations.md` and
+`docs/staging-environment-handoff.md`.

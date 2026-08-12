@@ -7,6 +7,7 @@ import { runOnboardingReportRefresh } from "../routes/obReport.js";
 import { runLiveTransferRefresh } from "../routes/liveTransfers.js";
 import { runBiweeklyQa, runWeeklyAssignment } from "../routes/qa.js";
 import { withDatabaseLease } from "./aiRateLimit.js";
+import { cleanupExpiredAiReservations } from "./aiReservationCleanup.js";
 
 function requestedRange(payload: Record<string, unknown>): { from: Date; to: Date } | null {
   if (typeof payload["from"] !== "string" || typeof payload["to"] !== "string") return null;
@@ -64,5 +65,12 @@ export const backgroundJobHandlers: BackgroundJobHandlers = {
   async qa_weekly_assignment(_job, { signal }) {
     signal.throwIfAborted();
     return runWeeklyAssignment();
+  },
+
+  async ai_reservation_cleanup(_job, { signal }) {
+    signal.throwIfAborted();
+    const result = await cleanupExpiredAiReservations();
+    signal.throwIfAborted();
+    return result;
   },
 };

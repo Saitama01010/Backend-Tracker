@@ -8,9 +8,13 @@
     "./schema": "./src/schema/index.ts"
   },
   "scripts": {
+    "bootstrap-empty": "tsx ./src/tools/bootstrapEmptyDatabase.ts",
     "migrate": "drizzle-kit migrate --config ./drizzle.config.ts",
+    "preflight": "tsx ./src/tools/runMigrationPreflight.ts",
     "push": "drizzle-kit push --config ./drizzle.config.ts",
-    "push-force": "drizzle-kit push --force --config ./drizzle.config.ts"
+    "push-force": "drizzle-kit push --force --config ./drizzle.config.ts",
+    "test:release-readiness": "tsx --test ./src/tools/releaseReadiness.test.ts",
+    "verify-schema-contract": "tsx ./src/tools/verifySchemaContract.ts"
   },
   "dependencies": {
     "drizzle-orm": "catalog:",
@@ -21,6 +25,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@types/pg": "^8.18.0",
-    "drizzle-kit": "^0.31.9"
+    "drizzle-kit": "^0.31.9",
+    "tsx": "catalog:"
   }
 }

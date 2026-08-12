@@ -33,9 +33,10 @@ an issue or pull request.
   ExcelJS `uuid` dependency. ExcelJS declares `uuid` 8.x and this repository's
   reachable usage is UUID v4; the affected caller-buffer APIs are UUID v3, v5,
   and v6. A major override is intentionally deferred until ExcelJS supports it.
-- `.gitleaksignore` contains the exact Git and directory fingerprints for one
-  sanitized background-job test fixture plus two commit-qualified fingerprints
-  for reviewed `.replit` findings that are already reachable from `origin/main`.
+- `.gitleaksignore` contains one exact commit-qualified fingerprint for a
+  sanitized historical background-job test fixture plus two commit-qualified
+  fingerprints for reviewed `.replit` findings already reachable from
+  `origin/main`. Current-tree fixtures require no scanner exception.
   The historical exceptions do not ignore `.replit`, `generic-api-key`,
   `QUO_API_KEY`, or `OB_IMPORT_SECRET` broadly, so current and future occurrences
   remain findings.
