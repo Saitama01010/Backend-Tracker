@@ -50,6 +50,8 @@
     { "name": "ai_request_reservations_status_check", "type": "constraint", "migration": "0011_ai_request_reservations", "parent": "ai_request_reservations", "purpose": "Reservation state bounds", "drizzleRepresented": false, "definitionIncludes": ["status", "reserved", "completed", "failed"] },
     { "name": "ai_request_reservations_feature_scope_key_uidx", "type": "index", "migration": "0011_ai_request_reservations", "parent": "ai_request_reservations", "purpose": "Reservation idempotency", "drizzleRepresented": true, "definitionIncludes": ["unique", "(feature, scope_key, idempotency_key)"] },
     { "name": "ai_request_reservations_feature_scope_reserved_idx", "type": "index", "migration": "0011_ai_request_reservations", "parent": "ai_request_reservations", "purpose": "Feature/scope reservation history", "drizzleRepresented": true, "definitionIncludes": ["(feature, scope_key, reserved_at)"] },
-    { "name": "ai_request_reservations_expires_idx", "type": "index", "migration": "0011_ai_request_reservations", "parent": "ai_request_reservations", "purpose": "Expiration and bounded cleanup", "drizzleRepresented": true, "definitionIncludes": ["(expires_at)"] }
+    { "name": "ai_request_reservations_expires_idx", "type": "index", "migration": "0011_ai_request_reservations", "parent": "ai_request_reservations", "purpose": "Expiration and bounded cleanup", "drizzleRepresented": true, "definitionIncludes": ["(expires_at)"] },
+
+    { "name": "phone_calls_dashboard_stats_cover_idx", "type": "index", "migration": "0012_dashboard_runtime_performance", "parent": "phone_calls", "purpose": "Cover bounded historical dashboard aggregation without heap row materialization", "drizzleRepresented": false, "definitionIncludes": ["(created_at)", "include (agent_name, line_name, line_team, line_id, participant, direction, status, duration_seconds, post_answer_seconds)", "where (status <> 'in-progress'::text)"] }
   ]
 }

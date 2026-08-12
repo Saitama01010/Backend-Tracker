@@ -15,7 +15,11 @@ import {
 } from "../lib/openPhoneWebhook.js";
 import { hasProcessedCallCompletion, openPhoneWebhookInbox } from "../lib/webhookInboxStore.js";
 import { classifyLine, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES } from "./quoSync.js";
-import { deleteDurableRuntimeState, putDurableRuntimeState } from "../lib/durableRuntimeState.js";
+import {
+  deleteDurableRuntimeState,
+  getDurableRuntimeStateIncludingExpired,
+  putDurableRuntimeState,
+} from "../lib/durableRuntimeState.js";
 
 const router: IRouter = Router();
 
@@ -271,6 +275,9 @@ async function processOpenPhoneEvent(delivery: VerifiedWebhookEvent): Promise<We
         participant,
         ringingSince: new Date().toISOString(),
       }, 2 * 60 * 60 * 1000);
+      await putDurableRuntimeState("quo:webhook-observation", {
+        sourceTimestamp: new Date().toISOString(),
+      }, 2 * 60 * 60 * 1000);
       logger.info(
         { providerEventId: delivery.providerEventId, eventType: type, callId: call.id },
         "quoWebhook: agent now live",
@@ -280,8 +287,28 @@ async function processOpenPhoneEvent(delivery: VerifiedWebhookEvent): Promise<We
   }
 
   if (type === "call.completed") {
-    const call = obj as { id?: string };
+    const call = obj as WebhookCall;
+    await putDurableRuntimeState("quo:webhook-observation", {
+      sourceTimestamp: new Date().toISOString(),
+    }, 2 * 60 * 60 * 1000);
     if (call.id) {
+      const inMemoryLive = liveWebhookCalls.get(call.id);
+      const durableLive = await getDurableRuntimeStateIncludingExpired<{
+        agentName: string;
+        participant: string;
+        ringingSince: string;
+      }>(`quo:webhook-live:${call.id}`);
+      const resolvedAgent = inMemoryLive?.agentName
+        ?? durableLive?.value.agentName
+        ?? (call.answeredBy || call.userId
+          ? await getAgentName(call.answeredBy ?? call.userId!).catch(() => null)
+          : null);
+      if (resolvedAgent) {
+        await putDurableRuntimeState(`quo:webhook-ended:${call.id}`, {
+          agentName: resolvedAgent,
+          sourceTimestamp: new Date().toISOString(),
+        }, 2 * 60 * 1000);
+      }
       liveWebhookCalls.delete(call.id);
       await deleteDurableRuntimeState(`quo:webhook-live:${call.id}`);
       logger.info(

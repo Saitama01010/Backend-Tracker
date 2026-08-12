@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-12",
+  "startingSha": "edfe8a3f4684b21aec7976ad900b37175cdd9f25",
+  "fixedRange": {
+    "calendar": "2026-07-01..2026-07-31",
+    "timezone": "America/Los_Angeles",
+    "role": "admin",
+    "visibleTotalCalls": 8773
+  },
+  "productionInitialLoad": {
+    "cold": {
+      "n": 5,
+      "firstMeaningfulNumberMs": { "p50": 705, "p95": 900 },
+      "firstUsableTableMs": { "p50": 705, "p95": 900 },
+      "interactableMs": { "p50": 705, "p95": 900 },
+      "requests": { "p50": 14 },
+      "apiRequests": { "p50": 8 },
+      "transferredBytes": { "p50": 747882 },
+      "scriptDurationMs": { "p50": 526, "p95": 602 },
+      "taskDurationMs": { "n": 4, "p50": 4873, "p95": 5112 },
+      "heapBytes": { "p50": 54049860, "p95": 68892504 }
+    },
+    "warm": {
+      "n": 10,
+      "firstMeaningfulNumberMs": { "p50": 833, "p95": 1162 },
+      "firstUsableTableMs": { "p50": 833, "p95": 1162 },
+      "interactableMs": { "p50": 833, "p95": 1162 },
+      "requests": { "p50": 16, "p95": 16 },
+      "apiRequests": { "p50": 9, "p95": 9 },
+      "transferredBytes": { "p50": 748075, "p95": 748306 },
+      "scriptDurationMs": { "p50": 466, "p95": 547 },
+      "taskDurationMs": { "p50": 5253, "p95": 6473 },
+      "heapBytes": { "p50": 58114708, "p95": 87168108 }
+    }
+  },
+  "productionEndpoints": {
+    "quoLive": { "n": 13, "p50Ms": 270.6, "p95Ms": 4010.3 },
+    "quoLiveApplicationLog": {
+      "n": 30,
+      "minMs": 78,
+      "p50Ms": 84,
+      "p95Ms": 4776,
+      "maxMs": 4776,
+      "errors": 0,
+      "rawMs": [84, 84, 87, 87, 87, 87, 87, 93, 93, 93, 93, 93, 84, 84, 84, 84, 84, 78, 78, 78, 78, 78, 4776, 4776, 4776, 4776, 4776, 84, 84, 82]
+    },
+    "sheetPerSource": {
+      "n": 60,
+      "p50Ms": 960.0,
+      "p95Ms": 1812.1,
+      "maxMs": 3113.1,
+      "transferBytes": { "p50": 141484, "p95": 368526 },
+      "decodedBytes": { "p50": 1765325, "p95": 4595642 }
+    },
+    "readymodeStats": { "n": 14, "p50Ms": 744.4, "p95Ms": 3243.3 },
+    "readymodeStatsApplicationLog": {
+      "n": 30,
+      "minMs": 258,
+      "p50Ms": 692,
+      "p95Ms": 2500,
+      "maxMs": 5452,
+      "errors": 0,
+      "rawMs": [728, 785, 1001, 550, 502, 568, 404, 1033, 322, 1836, 711, 637, 692, 258, 401, 337, 325, 386, 826, 1020, 2158, 1080, 676, 716, 1518, 5452, 2500, 620, 2446, 570]
+    },
+    "teamAgents": { "n": 15, "p50Ms": 268.0, "p95Ms": 363.8 },
+    "authMe": { "n": 15, "p50Ms": 261.8, "p95Ms": 366.9 },
+    "quoStatsFixedJuly": {
+      "warmups": 5,
+      "n": 30,
+      "minMs": 5038.2,
+      "p50Ms": 5359.1,
+      "p95Ms": 7478.8,
+      "maxMs": 7487.0,
+      "transferBytes": 34840,
+      "decodedBytes": 410032,
+      "errors": 0,
+      "rawMs": [5359.1, 5093.8, 5709.1, 7160.7, 5562.7, 5201.1, 5683.7, 5577.5, 5221.7, 5659.5, 5045.3, 5740.8, 6061.9, 5673.3, 5628.7, 7478.8, 5045.8, 5092.7, 5384.5, 5265.2, 5038.2, 5258.7, 5456.1, 5139.7, 5249.3, 5359.1, 5121.5, 5572.1, 7487.0, 5138.3]
+    }
+  },
+  "productionDataHandlerEquivalence": [
+    { "scope": "admin", "legacyMs": 9602, "optimizedMs": 1694, "sourceRows": 49023, "equal": true },
+    { "scope": "retention-team", "legacyMs": 4108, "optimizedMs": 1007, "sourceRows": 10126, "equal": true },
+    { "scope": "allowed-agent", "legacyMs": 3375, "optimizedMs": 455, "sourceRows": 0, "equal": true }
+  ],
+  "productionInteractionBaseline": {
+    "n": 20,
+    "p50Ms": 1161,
+    "p95Ms": 3822,
+    "maxMs": 5290,
+    "observationMs": 434304.6,
+    "longTasks": { "over50Ms": 68, "over200Ms": 53, "largestMs": 6370 },
+    "heapBytes": { "start": 37001300, "end": 44549414, "delta": 7548114 }
+  },
+  "postgres16": {
+    "phoneCalls": 220000,
+    "fixedRangeRows": 79951,
+    "aggregateRows": 7118,
+    "digest": "1a3c4368d47afe5d",
+    "sequentialExecutionMs": [37.417, 28.971, 32.889, 32.887, 37.520],
+    "indexedExecutionMs": [15.950, 16.203, 15.678, 15.481, 17.625],
+    "sequentialRowsExamined": 220000,
+    "indexedRowsExamined": 79951,
+    "sequentialSharedBlocks": 4985,
+    "indexedSharedBlocks": 1502,
+    "indexSizeBytes": 33660928
+  },
+  "loadTest": {
+    "phoneCalls": 220000,
+    "agents": 120,
+    "concurrentClients": 20,
+    "warmupsPerEndpoint": 5,
+    "stats": { "n": 60, "minMs": 200.88, "p50Ms": 220.02, "p95Ms": 240.82, "maxMs": 245.07, "p50BodyBytes": 1051639, "errors": 0, "cacheHits": 60 },
+    "live": { "n": 60, "minMs": 101.37, "p50Ms": 222.45, "p95Ms": 293.48, "maxMs": 293.60, "p50BodyBytes": 11653, "errors": 0 },
+    "databaseSessions": { "before": 5, "after": 10 }
+  },
+  "freshness": {
+    "pollIntervalMs": 5000,
+    "starts": 10,
+    "ends": 10,
+    "startP50AtMostMs": 5000,
+    "startP95AtMostMs": 5000,
+    "endP50AtMostMs": 5000,
+    "endP95AtMostMs": 5000,
+    "maxStaleMs": 120000
+  },
+  "limitations": [
+    "No React DevTools hook existed in the starting Production bundle, so no before render count is reported.",
+    "Fixed-July Quo browser samples are kept separate from today-range initial-load samples.",
+    "Host CPU is not exposed by PostgreSQL and was not estimated."
+  ]
+}

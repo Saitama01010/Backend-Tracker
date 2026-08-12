@@ -27,6 +27,10 @@ test("shared requests and polling preserve account and activity boundaries", asy
   assert.doesNotMatch(app, /queryKey: \["rmkPhoneStats"/);
   assert.doesNotMatch(app, /new URLSearchParams\(\{ id, gid, _:/);
   assert.ok((app.match(/clearDashboardQueryCache\(\)/g) ?? []).length >= 2);
+  assert.match(app, /new URLSearchParams\(\{ id, gid, format: "rows-v1" \}\)/);
+  assert.match(app, /queryKey: \["liveCalls"\][\s\S]*?baseMs: 5_000/);
+  assert.match(app, /queryKey: \["liveCallsRefresh"\][\s\S]*?baseMs: 45_000/);
+  assert.match(app, /Quo live status is stale/);
 });
 
 test("large rows remain present while browser-native rendering skips offscreen work", async () => {

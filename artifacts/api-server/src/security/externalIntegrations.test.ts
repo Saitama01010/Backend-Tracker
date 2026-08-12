@@ -129,7 +129,18 @@ test("Sheets, date ranges, probes, and pagination are wired through integration 
   assert.match(quo, /validateIntegrationDateRange/);
   assert.match(quo, /paginateAuthorizedBatches/);
   assert.match(sheets, /isApprovedSheetSource/);
+  assert.match(sheets, /const sheetRefreshes = new Map/);
+  assert.match(sheets, /const titleRefreshes = new Map/);
+  assert.match(sheets, /AbortSignal\.timeout\(15_000\)/);
+  assert.match(sheets, /format === "rows-v1"/);
+  assert.match(sheets, /scopeSheetData[\s\S]*?JSON\.stringify\(responsePayload\)/);
+  assert.match(sheets, /SHEET_MAX_STALE_MS = 5 \* 60_000/);
   assert.match(readymode, /approvedReadyModeProbePath/);
+  assert.match(readymode, /const readyModeSourceCache = new Map/);
+  assert.match(readymode, /const readyModeSourceRefreshes = new Map/);
+  assert.match(readymode, /AbortSignal\.timeout\(15_000\)/);
+  assert.match(readymode, /loadReadyModeSources[\s\S]*?loadAuthorizationAgentDirectory/);
+  assert.match(readymode, /readyModeSourceCache\.clear\(\)/);
   assert.doesNotMatch(readymode, /preview:\s*result\.body/);
   assert.doesNotMatch(readymode, /cookies:\s*cachedCookies/);
   assert.doesNotMatch(quoSync, /logger\.(?:info|warn|error)\([^\n]*participant/);

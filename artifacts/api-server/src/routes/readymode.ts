@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { performance } from "node:perf_hooks";
 import { db, readymodeUploadsTable } from "@workspace/db";
 import { and, gte, lte, sql } from "drizzle-orm";
 import type { Logger } from "pino";
@@ -383,6 +384,171 @@ function parseReadymodeRows(
   return out;
 }
 
+type ReadyModeSourceSnapshot = {
+  sources: { source: string; rows: DayRow[] }[];
+  fetchedAt: Date;
+  providerMs: number;
+  databaseMs: number;
+  parseMs: number;
+  refreshError: boolean;
+};
+
+const READYMODE_CACHE_TTL_MS = 60_000;
+const READYMODE_MAX_STALE_MS = 5 * 60_000;
+const READYMODE_CACHE_MAX_ENTRIES = 50;
+const readyModeSourceCache = new Map<string, ReadyModeSourceSnapshot>();
+const readyModeSourceRefreshes = new Map<string, Promise<ReadyModeSourceSnapshot>>();
+let readyModeCacheGeneration = 0;
+
+function roundedTiming(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function readyModeSourceKey(fromIso?: string, toIso?: string): string {
+  return `${fromIso ?? "all"}:${toIso ?? "all"}`;
+}
+
+async function refreshReadyModeSources(
+  fromIso: string | undefined,
+  toIso: string | undefined,
+  log: Logger,
+): Promise<ReadyModeSourceSnapshot> {
+  const sources: { source: string; rows: DayRow[] }[] = [];
+  let parseMs = 0;
+  let refreshError = false;
+  const ingest = (text: string, source: string) => {
+    const parseStartedAt = performance.now();
+    const rows = parseReadymodeRows(text, log, source);
+    parseMs += performance.now() - parseStartedAt;
+    sources.push({ source, rows });
+  };
+
+  const sourceStartedAt = performance.now();
+  const fs = await import("node:fs/promises");
+  const path = await import("node:path");
+  const candidates = [
+    path.resolve(process.cwd(), "..", "..", "attached_assets"),
+    path.resolve(process.cwd(), "attached_assets"),
+    "/home/runner/workspace/attached_assets",
+  ];
+  for (const root of candidates) {
+    try {
+      const files = await fs.readdir(root);
+      const csvFiles = files
+        .filter((file) => /^Agent_report.*\.csv$/i.test(file))
+        .sort()
+        .reverse();
+      if (csvFiles.length > 0) {
+        const picked = path.join(root, csvFiles[0]!);
+        ingest(await fs.readFile(picked, "utf8"), `attached-asset:${csvFiles[0]}`);
+        break;
+      }
+    } catch {
+      // Try the next known local asset location.
+    }
+  }
+
+  try {
+    const csvRes = await fetch(READYMODE_CSV_URL, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (csvRes.ok) {
+      const text = await csvRes.text();
+      if (text.trim()) ingest(text, "google-sheet");
+    } else {
+      refreshError = true;
+      log.warn({ status: csvRes.status }, "readymode google sheet fetch failed");
+    }
+  } catch (error) {
+    refreshError = true;
+    log.warn({ err: error }, "readymode google sheet fetch threw");
+  }
+  const providerMs = roundedTiming(performance.now() - sourceStartedAt);
+
+  const databaseStartedAt = performance.now();
+  try {
+    const conditions = [];
+    if (fromIso) conditions.push(gte(readymodeUploadsTable.statDate, fromIso));
+    if (toIso) conditions.push(lte(readymodeUploadsTable.statDate, toIso));
+    const dbRows = await db
+      .select()
+      .from(readymodeUploadsTable)
+      .where(conditions.length ? and(...conditions) : undefined);
+    if (dbRows.length) {
+      sources.push({
+        source: "db-upload",
+        rows: dbRows.map((row) => ({
+          name: row.agentName,
+          iso: row.statDate,
+          dialed: row.dialed,
+          talkSecs: row.talkSecs,
+        })),
+      });
+    }
+  } catch (error) {
+    refreshError = true;
+    log.warn({ err: error }, "readymode db uploads query threw");
+  }
+
+  return {
+    sources,
+    fetchedAt: new Date(),
+    providerMs,
+    databaseMs: roundedTiming(performance.now() - databaseStartedAt),
+    parseMs: roundedTiming(parseMs),
+    refreshError,
+  };
+}
+
+async function loadReadyModeSources(
+  fromIso: string | undefined,
+  toIso: string | undefined,
+  log: Logger,
+): Promise<{
+  snapshot: ReadyModeSourceSnapshot;
+  cache: "hit" | "miss" | "stale";
+  refreshError: boolean;
+}> {
+  const key = readyModeSourceKey(fromIso, toIso);
+  const cacheGeneration = readyModeCacheGeneration;
+  const now = Date.now();
+  const cached = readyModeSourceCache.get(key);
+  if (cached && now - cached.fetchedAt.getTime() <= READYMODE_CACHE_TTL_MS) {
+    return {
+      snapshot: cached,
+      cache: cached.refreshError ? "stale" : "hit",
+      refreshError: cached.refreshError,
+    };
+  }
+
+  let refresh = readyModeSourceRefreshes.get(key);
+  if (!refresh) {
+    refresh = refreshReadyModeSources(fromIso, toIso, log);
+    readyModeSourceRefreshes.set(key, refresh);
+    void refresh.finally(() => {
+      if (readyModeSourceRefreshes.get(key) === refresh) readyModeSourceRefreshes.delete(key);
+    }).catch(() => undefined);
+  }
+  const snapshot = await refresh;
+  if (snapshot.refreshError && cached && now - cached.fetchedAt.getTime() <= READYMODE_MAX_STALE_MS) {
+    return { snapshot: cached, cache: "stale", refreshError: true };
+  }
+  for (const [candidate, value] of readyModeSourceCache) {
+    if (now - value.fetchedAt.getTime() > READYMODE_MAX_STALE_MS) readyModeSourceCache.delete(candidate);
+  }
+  if (readyModeSourceCache.size >= READYMODE_CACHE_MAX_ENTRIES) {
+    const oldest = readyModeSourceCache.keys().next().value as string | undefined;
+    if (oldest) readyModeSourceCache.delete(oldest);
+  }
+  if (cacheGeneration === readyModeCacheGeneration) readyModeSourceCache.set(key, snapshot);
+  return {
+    snapshot,
+    cache: snapshot.refreshError ? "stale" : "miss",
+    refreshError: snapshot.refreshError,
+  };
+}
+
 /**
  * GET /api/readymode/stats
  * Returns per-agent dialer stats from the operator-maintained Google Sheet
@@ -404,90 +570,53 @@ router.get("/readymode/stats", async (req, res) => {
     const range = validateIntegrationDateRange(fromIso, toIso);
     if (!range.ok) return res.status(400).json({ error: range.error });
   }
+  const requestStartedAt = performance.now();
   try {
     // Three data sources, in increasing priority (later wins on (agent, day)):
     //   1. attached_assets/Agent_report_*.csv — historical baseline.
     //   2. Google Sheet CSV — live, operator-maintained.
     //   3. DB uploads (readymode_uploads) — operator-uploaded via the portal.
-    const sources: { source: string; rows: DayRow[] }[] = [];
-
-    const ingest = (text: string, source: string) => {
-      const rows = parseReadymodeRows(text, log, source);
-      sources.push({ source, rows });
+    const loaded = await loadReadyModeSources(fromIso, toIso, log);
+    const sources = loaded.snapshot.sources;
+    const transformStartedAt = performance.now();
+    const sendResponse = (response: RmStatsResponse, rowCount: number, authorizationMs = 0) => {
+      const transformMs = roundedTiming(performance.now() - transformStartedAt);
+      const serializeStartedAt = performance.now();
+      const body = JSON.stringify(response);
+      const serializeMs = roundedTiming(performance.now() - serializeStartedAt);
+      const stale = loaded.cache === "stale";
+      res.set("Cache-Control", "private, no-store");
+      res.set("X-ReadyMode-Cache", loaded.cache);
+      res.set("X-Data-Stale", stale ? "true" : "false");
+      res.set("X-Result-Rows", String(rowCount));
+      res.set("Server-Timing", [
+        `provider;dur=${loaded.cache === "miss" ? loaded.snapshot.providerMs : 0}`,
+        `db;dur=${loaded.cache === "miss" ? loaded.snapshot.databaseMs : 0}`,
+        `parse;dur=${loaded.cache === "miss" ? loaded.snapshot.parseMs : 0}`,
+        `authz;dur=${authorizationMs}`,
+        `authn;dur=${req.authTimingMs ?? 0}`,
+        `transform;dur=${transformMs}`,
+        `serialize;dur=${serializeMs}`,
+        `app;dur=${roundedTiming(performance.now() - requestStartedAt)}`,
+      ].join(", "));
+      if (stale) res.set("Warning", '110 - "ReadyMode response is stale after a refresh failure"');
+      return res.type("application/json").send(body);
     };
 
     // (1) Historical CSV bundled in attached_assets/.
-    {
-      const fs = await import("node:fs/promises");
-      const path = await import("node:path");
-      const candidates = [
-        path.resolve(process.cwd(), "..", "..", "attached_assets"),
-        path.resolve(process.cwd(), "attached_assets"),
-        "/home/runner/workspace/attached_assets",
-      ];
-      for (const root of candidates) {
-        try {
-          const files = await fs.readdir(root);
-          const csvFiles = files
-            .filter((f) => /^Agent_report.*\.csv$/i.test(f))
-            .sort()
-            .reverse();
-          if (csvFiles.length > 0) {
-            const picked = path.join(root, csvFiles[0]!);
-            const text = await fs.readFile(picked, "utf8");
-            ingest(text, `attached-asset:${csvFiles[0]}`);
-            break;
-          }
-        } catch {
-          // try next candidate
-        }
-      }
-    }
+    // Source I/O and parsing are cached and coalesced above.
 
     // (2) Live Google Sheet — overrides historical CSV on overlapping days.
-    try {
-      const csvRes = await fetch(READYMODE_CSV_URL, { redirect: "follow" });
-      if (csvRes.ok) {
-        const text = await csvRes.text();
-        if (text.trim()) ingest(text, "google-sheet");
-      }
-    } catch (e) {
-      log.warn({ err: e }, "readymode google sheet fetch threw");
-    }
-
     // (3) Operator uploads stored in the DB — highest priority. Scoped to the
     // requested range so a wide history doesn't bloat the merge.
-    try {
-      const conds = [];
-      if (fromIso) conds.push(gte(readymodeUploadsTable.statDate, fromIso));
-      if (toIso) conds.push(lte(readymodeUploadsTable.statDate, toIso));
-      const dbRows = await db
-        .select()
-        .from(readymodeUploadsTable)
-        .where(conds.length ? and(...conds) : undefined);
-      if (dbRows.length) {
-        sources.push({
-          source: "db-upload",
-          rows: dbRows.map((r) => ({
-            name: r.agentName,
-            iso: r.statDate,
-            dialed: r.dialed,
-            talkSecs: r.talkSecs,
-          })),
-        });
-      }
-    } catch (e) {
-      log.warn({ err: e }, "readymode db uploads query threw");
-    }
-
     if (sources.length === 0) {
       const empty: RmStatsResponse = {
         agents: [],
         totals: { dialed: 0, connected: 0, talkTimeSecs: 0, connectRate: 0 },
-        updatedAt: new Date().toISOString(),
+        updatedAt: loaded.snapshot.fetchedAt.toISOString(),
         raw: "ReadyMode CSV unavailable — publish the Google Sheet (File → Share → Anyone with link → Viewer) or drop Agent_report_*.csv into attached_assets/.",
       };
-      return res.json(empty);
+      return sendResponse(empty, 0);
     }
 
     // Merge sources, deduping on (name, day). Later sources win — Google
@@ -527,10 +656,12 @@ router.get("/readymode/stats", async (req, res) => {
         avgTalkSecs: v.dialed > 0 ? Math.round(v.talkTimeSecs / v.dialed) : 0,
         connectRate: 100,
       }));
+    const authorizationStartedAt = performance.now();
     const directory = req.user!.role === "admin" ? null : await loadAuthorizationAgentDirectory();
     const agents = directory
       ? allAgents.filter((agent) => canAccessMetricAgent(req.user!, agent.agentName, directory))
       : allAgents;
+    const authorizationMs = roundedTiming(performance.now() - authorizationStartedAt);
 
     const totals = {
       dialed: agents.reduce((s, a) => s + a.dialed, 0),
@@ -544,12 +675,12 @@ router.get("/readymode/stats", async (req, res) => {
     const response: RmStatsResponse = {
       agents,
       totals,
-      updatedAt: new Date().toISOString(),
+      updatedAt: loaded.snapshot.fetchedAt.toISOString(),
       raw: directory
         ? `Scoped to ${agents.length} authorized agent(s) · ${included} rows in requested range`
         : `Sources: ${sourceSummary} → ${byKey.size} unique (agent,day) rows · ${included} in range · ${skipped} out of range`,
     };
-    return res.json(response);
+    return sendResponse(response, agents.length, authorizationMs);
   } catch (err) {
     log.error({ err }, "readymode/stats error");
     return res.status(500).json({ error: "ReadyMode statistics are temporarily unavailable." });
@@ -656,6 +787,12 @@ router.post("/readymode/upload", requireAuth, requireRole("admin", "edit"), asyn
           uploadedAt: sql`now()`,
         },
       });
+
+    // A successful upload is authoritative and must be visible on the next
+    // stats read rather than waiting for the bounded source-cache TTL.
+    readyModeCacheGeneration++;
+    readyModeSourceCache.clear();
+    readyModeSourceRefreshes.clear();
 
     const dates = [...new Set(values.map((v) => v.statDate))].sort();
     log.info({ rows: values.length, dates: dates.length, uploadedBy, source }, "readymode/upload stored");

@@ -63,7 +63,13 @@ function seededRandom(seed: number): () => number {
   };
 }
 
-function planEvidence(result: QueryResult): { nodeTypes: string[]; indexes: string[]; executionMs: number | null } {
+function planEvidence(result: QueryResult): {
+  nodeTypes: string[];
+  indexes: string[];
+  executionMs: number | null;
+  rowsExamined: number | null;
+  sharedBlocks: number | null;
+} {
   const root = result.rows[0]?.["QUERY PLAN"]?.[0];
   const nodeTypes = new Set<string>();
   const indexes = new Set<string>();
@@ -79,7 +85,155 @@ function planEvidence(result: QueryResult): { nodeTypes: string[]; indexes: stri
     nodeTypes: [...nodeTypes],
     indexes: [...indexes],
     executionMs: typeof root?.["Execution Time"] === "number" ? root["Execution Time"] : null,
+    rowsExamined: typeof root?.Plan?.["Actual Rows"] === "number"
+      ? root.Plan["Actual Rows"] + (typeof root.Plan["Rows Removed by Filter"] === "number" ? root.Plan["Rows Removed by Filter"] : 0)
+      : null,
+    sharedBlocks: root?.Plan
+      ? Number(root.Plan["Shared Hit Blocks"] ?? 0) + Number(root.Plan["Shared Read Blocks"] ?? 0)
+      : null,
   };
+}
+
+function percentile(values: number[], quantile: number): number {
+  const ordered = [...values].sort((left, right) => left - right);
+  return ordered[Math.max(0, Math.ceil(ordered.length * quantile) - 1)]!;
+}
+
+type LegacyDashboardCall = {
+  agent_name: string | null;
+  line_id: string;
+  line_name: string;
+  line_team: string;
+  participant: string;
+  direction: string;
+  status: string;
+  duration_seconds: number;
+  post_answer_seconds: number | null;
+  created_at: Date;
+};
+
+type ComparableDashboardAggregate = {
+  kind: "team" | "all" | "line" | "meta";
+  resolvedTeam: string | null;
+  agentName: string | null;
+  day: string | null;
+  lineId: string | null;
+  lineName: string | null;
+  totalCalls: number;
+  outbound: number;
+  inbound: number;
+  answered: number;
+  missed: number;
+  voicemail: number;
+  vmBrief: number;
+  talkSeconds: number;
+  uniqueContacts: number;
+  lastCall: string | null;
+};
+
+function legacyEffectiveStatus(row: LegacyDashboardCall): string {
+  if (row.status !== "completed") return row.status;
+  if (row.direction === "outgoing") {
+    if (row.post_answer_seconds !== null) {
+      if (row.post_answer_seconds >= 60) return "completed";
+      if (row.post_answer_seconds >= 20) return "voicemail";
+      return "voicemail-brief";
+    }
+    if (row.duration_seconds >= 75) return "completed";
+    if (row.duration_seconds >= 35) return "voicemail";
+    return "voicemail-brief";
+  }
+  if (row.direction === "incoming" && row.duration_seconds === 0 && row.post_answer_seconds === null) {
+    return "voicemail-brief";
+  }
+  return "completed";
+}
+
+function comparableSort(rows: ComparableDashboardAggregate[]): ComparableDashboardAggregate[] {
+  return rows.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+}
+
+function legacyDashboardAggregates(
+  rows: readonly LegacyDashboardCall[],
+  blockedNumbers: ReadonlySet<string>,
+): ComparableDashboardAggregate[] {
+  type MutableBucket = Omit<ComparableDashboardAggregate, "uniqueContacts" | "lastCall"> & {
+    uniqueContacts: Set<string>;
+    lastCall: Date | null;
+  };
+  const buckets = new Map<string, MutableBucket>();
+  const getBucket = (
+    key: string,
+    base: Pick<ComparableDashboardAggregate, "kind" | "resolvedTeam" | "agentName" | "day" | "lineId" | "lineName">,
+  ) => {
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = {
+        ...base,
+        totalCalls: 0,
+        outbound: 0,
+        inbound: 0,
+        answered: 0,
+        missed: 0,
+        voicemail: 0,
+        vmBrief: 0,
+        talkSeconds: 0,
+        uniqueContacts: new Set<string>(),
+        lastCall: null,
+      };
+      buckets.set(key, bucket);
+    }
+    return bucket;
+  };
+  const increment = (bucket: MutableBucket, row: LegacyDashboardCall) => {
+    const effectiveStatus = legacyEffectiveStatus(row);
+    bucket.totalCalls++;
+    bucket.talkSeconds += row.duration_seconds;
+    if (row.participant) bucket.uniqueContacts.add(row.participant);
+    if (row.direction === "outgoing") bucket.outbound++;
+    else bucket.inbound++;
+    if (effectiveStatus === "completed") bucket.answered++;
+    else if (effectiveStatus === "voicemail") bucket.voicemail++;
+    else if (effectiveStatus === "voicemail-brief") bucket.vmBrief++;
+    else bucket.missed++;
+    const end = new Date(row.created_at.getTime() + row.duration_seconds * 1000);
+    if (!bucket.lastCall || end > bucket.lastCall) bucket.lastCall = end;
+  };
+
+  for (const row of rows) {
+    if (row.participant && blockedNumbers.has(row.participant)) continue;
+    const agentName = row.agent_name ?? "Unknown";
+    const team = ["retention", "nsf", "cs"].includes(row.line_team) ? row.line_team : "other";
+    const day = row.created_at.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+    increment(getBucket(`team:${team}:${agentName}:${day}`, {
+      kind: "team", resolvedTeam: team, agentName, day, lineId: null, lineName: null,
+    }), row);
+    increment(getBucket(`all:${agentName}:${day}`, {
+      kind: "all", resolvedTeam: null, agentName, day, lineId: null, lineName: null,
+    }), row);
+    if (row.direction === "incoming") {
+      const line = getBucket(`line:${row.line_id}:${day}`, {
+        kind: "line", resolvedTeam: null, agentName: null, day, lineId: row.line_id, lineName: row.line_name,
+      });
+      const effectiveStatus = legacyEffectiveStatus(row);
+      line.totalCalls++;
+      line.inbound++;
+      if (effectiveStatus === "completed") line.answered++;
+      else if (effectiveStatus === "voicemail") line.voicemail++;
+      else line.missed++;
+    }
+  }
+  const comparable = [...buckets.values()].map((row) => ({
+    ...row,
+    uniqueContacts: row.kind === "line" ? 0 : row.uniqueContacts.size,
+    lastCall: row.kind === "line" ? null : row.lastCall?.toISOString() ?? null,
+  }));
+  comparable.push({
+    kind: "meta", resolvedTeam: null, agentName: null, day: null, lineId: null, lineName: null,
+    totalCalls: rows.length, outbound: 0, inbound: 0, answered: 0, missed: 0,
+    voicemail: 0, vmBrief: 0, talkSeconds: 0, uniqueContacts: 0, lastCall: null,
+  });
+  return comparableSort(comparable);
 }
 
 async function timed<T>(operation: () => Promise<T>): Promise<{ value: T; ms: number }> {
@@ -89,12 +243,11 @@ async function timed<T>(operation: () => Promise<T>): Promise<{ value: T; ms: nu
 }
 
 async function applyPerformanceMigration(client: PoolClient) {
-  const migration = await readFile(
-    path.join(repoRoot, "lib/db/drizzle/0008_database_performance.sql"),
-    "utf8",
-  );
-  for (const statement of migration.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) {
-    await client.query(statement);
+  for (const migrationName of ["0008_database_performance.sql", "0012_dashboard_runtime_performance.sql"]) {
+    const migration = await readFile(path.join(repoRoot, "lib/db/drizzle", migrationName), "utf8");
+    for (const statement of migration.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) {
+      await client.query(statement);
+    }
   }
 }
 
@@ -171,15 +324,21 @@ test("sanitized database benchmark proves query and batch equivalence", async (t
   const client = await setupPool.connect();
   let workspacePool: { end(): Promise<void> } | null = null;
   try {
+    const dbModule = await import("@workspace/db");
+    workspacePool = dbModule.pool;
     await client.query(`
       DROP TABLE IF EXISTS attendance_set_records, attendance_set_members, attendance_import_records, attendance_import_members, attendance_records, attendance_members, manager_qa_tasks, qa_reviews, pbx_missed_calls, phone_calls CASCADE;
       CREATE TABLE phone_calls (
         id text PRIMARY KEY,
         agent_name text,
+        line_id text NOT NULL,
+        line_team text NOT NULL,
         participant text NOT NULL,
         direction text NOT NULL,
         status text NOT NULL,
         line_name text NOT NULL,
+        duration_seconds integer NOT NULL DEFAULT 0,
+        post_answer_seconds integer,
         created_at timestamptz NOT NULL,
         synced_at timestamptz NOT NULL DEFAULT now()
       );
@@ -255,17 +414,21 @@ test("sanitized database benchmark proves query and batch equivalence", async (t
     `);
 
     await client.query(`
-      INSERT INTO phone_calls(id, agent_name, participant, direction, status, line_name, created_at, synced_at)
+      INSERT INTO phone_calls(id, agent_name, line_id, line_team, participant, direction, status, line_name, duration_seconds, post_answer_seconds, created_at, synced_at)
       SELECT
         'sanitized-call-' || value,
         CASE WHEN value % 997 = 0 THEN NULL ELSE 'Synthetic Agent ' || (value % 120) END,
+        'synthetic-line-id-' || (value % 8),
+        CASE WHEN value % 3 = 0 THEN 'cs' WHEN value % 3 = 1 THEN 'retention' ELSE 'nsf' END,
         'synthetic-contact-' || (value % 5000),
         CASE WHEN value % 4 = 0 THEN 'incoming' ELSE 'outgoing' END,
         CASE WHEN value % 28 = 0 THEN 'missed' WHEN value % 113 = 0 THEN 'in-progress' ELSE 'completed' END,
         'Synthetic Line ' || (value % 8),
+        value % 900,
+        CASE WHEN value % 4 = 0 THEN NULL ELSE value % 300 END,
         timestamptz '2026-01-01T00:00:00Z' + (value % 129600) * interval '1 minute',
         timestamptz '2026-04-01T00:00:00Z' + (value % 7200) * interval '1 second'
-      FROM generate_series(1, 180000) AS value;
+      FROM generate_series(1, 220000) AS value;
       INSERT INTO pbx_missed_calls(id, from_number, created_at)
       SELECT value, 'synthetic-source-' || (value % 1000), timestamptz '2026-01-01T00:00:00Z' + value * interval '1 minute'
       FROM generate_series(1, 12000) AS value;
@@ -293,10 +456,99 @@ test("sanitized database benchmark proves query and batch equivalence", async (t
       INSERT INTO attendance_set_records(member_id, date, status)
       SELECT value, '2026-08-03', 'in' FROM generate_series(1, 100) AS value;
     `);
+    await client.query("ANALYZE phone_calls");
+    const dashboardFrom = new Date("2026-02-01T00:00:00Z");
+    const dashboardTo = new Date("2026-02-28T23:59:59.999Z");
+    const oldDashboardPlan = planEvidence(await client.query(`
+      EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+      SELECT agent_name, line_name, line_team, line_id, participant, direction,
+             status, duration_seconds, created_at
+      FROM phone_calls
+      WHERE created_at >= $1 AND created_at <= $2 AND status <> 'in-progress'
+    `, [dashboardFrom, dashboardTo]));
+
     await applyPerformanceMigration(client);
     // Prove rerunning the migration does not create duplicate index definitions.
     await applyPerformanceMigration(client);
-    await client.query("ANALYZE phone_calls; ANALYZE pbx_missed_calls; ANALYZE attendance_records; ANALYZE qa_reviews; ANALYZE manager_qa_tasks;");
+    await client.query("VACUUM (ANALYZE) phone_calls");
+    await client.query("ANALYZE pbx_missed_calls; ANALYZE attendance_records; ANALYZE qa_reviews; ANALYZE manager_qa_tasks;");
+    const newDashboardPlan = planEvidence(await client.query(`
+      EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+      SELECT agent_name, line_name, line_team, line_id, participant, direction,
+             status, duration_seconds, created_at
+      FROM phone_calls
+      WHERE created_at >= $1 AND created_at <= $2 AND status <> 'in-progress'
+    `, [dashboardFrom, dashboardTo]));
+    await client.query("SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off");
+    const sequentialDashboardSamples = [];
+    for (let sample = 0; sample < 6; sample++) {
+      const evidence = planEvidence(await client.query(`
+        EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+        SELECT agent_name, line_name, line_team, line_id, participant, direction,
+               status, duration_seconds, created_at
+        FROM phone_calls
+        WHERE created_at >= $1 AND created_at <= $2 AND status <> 'in-progress'
+      `, [dashboardFrom, dashboardTo]));
+      if (sample > 0) sequentialDashboardSamples.push(evidence.executionMs!);
+    }
+    await client.query("RESET enable_indexscan; RESET enable_indexonlyscan; RESET enable_bitmapscan; SET enable_seqscan = off");
+    const indexedDashboardSamples = [];
+    for (let sample = 0; sample < 6; sample++) {
+      const evidence = planEvidence(await client.query(`
+        EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+        SELECT agent_name, line_name, line_team, line_id, participant, direction,
+               status, duration_seconds, created_at
+        FROM phone_calls
+        WHERE created_at >= $1 AND created_at <= $2 AND status <> 'in-progress'
+      `, [dashboardFrom, dashboardTo]));
+      if (sample > 0) indexedDashboardSamples.push(evidence.executionMs!);
+    }
+    await client.query("RESET enable_seqscan");
+    const dashboardIndexSize = await client.query<{ bytes: string }>(
+      "SELECT pg_relation_size($1)::bigint::text AS bytes",
+      ["phone_calls_dashboard_stats_cover_idx"],
+    );
+    assert.ok(newDashboardPlan.indexes.includes("phone_calls_dashboard_stats_cover_idx"));
+    assert.ok(
+      oldDashboardPlan.rowsExamined !== null
+        && newDashboardPlan.rowsExamined !== null
+        && newDashboardPlan.rowsExamined <= oldDashboardPlan.rowsExamined * 0.5,
+    );
+    assert.ok(
+      oldDashboardPlan.sharedBlocks !== null
+        && newDashboardPlan.sharedBlocks !== null
+        && newDashboardPlan.sharedBlocks < oldDashboardPlan.sharedBlocks,
+    );
+    assert.ok(
+      percentile(indexedDashboardSamples, 0.5) < percentile(sequentialDashboardSamples, 0.5) * 0.8,
+    );
+
+    const dashboardRows = await client.query<LegacyDashboardCall>(`
+      SELECT agent_name, line_id, line_name, line_team, participant, direction,
+             status, duration_seconds, post_answer_seconds, created_at
+      FROM phone_calls
+      WHERE created_at >= $1 AND created_at <= $2 AND status <> 'in-progress'
+      ORDER BY created_at ASC, id ASC
+    `, [dashboardFrom, dashboardTo]);
+    const dashboardBlocklist = new Set(["synthetic-contact-42", "synthetic-contact-4242"]);
+    const legacyDashboard = legacyDashboardAggregates(dashboardRows.rows, dashboardBlocklist);
+    const { loadPhoneStatsAggregates } = await import("../lib/phoneStatsAggregation.js");
+    const optimizedDashboardResult = await loadPhoneStatsAggregates({
+      fromDate: dashboardFrom,
+      toDate: dashboardTo,
+      timeZone: "America/Los_Angeles",
+      blockedNumbers: dashboardBlocklist,
+      resolveDimension: (row) => ({
+        agentName: row.rawAgentName ?? "Unknown",
+        team: ["retention", "nsf", "cs"].includes(row.lineTeam) ? row.lineTeam : "other",
+        authorized: true,
+      }),
+    });
+    const optimizedDashboard = comparableSort(optimizedDashboardResult.rows.map((row) => ({
+      ...row,
+      lastCall: row.lastCall?.toISOString() ?? null,
+    })));
+    assert.deepEqual(optimizedDashboard, legacyDashboard);
 
     const from = new Date("2026-02-10T00:00:00Z");
     const to = new Date("2026-02-10T23:59:59.999Z");
@@ -618,8 +870,6 @@ test("sanitized database benchmark proves query and batch equivalence", async (t
       queryCount: newAttendanceSet.value.queryCount,
     });
 
-    const dbModule = await import("@workspace/db");
-    workspacePool = dbModule.pool;
     assert.deepEqual(
       dbModule.databasePoolConfig("postgresql://sanitized@localhost/performance_test", {}),
       {
@@ -656,6 +906,7 @@ test("sanitized database benchmark proves query and batch equivalence", async (t
       "phone_calls_participant_created_idx",
       "phone_calls_missed_line_created_idx",
       "phone_calls_live_synced_idx",
+      "phone_calls_dashboard_stats_cover_idx",
       "pbx_missed_from_created_idx",
       "attendance_records_date_member_idx",
     ];
@@ -698,7 +949,7 @@ test("sanitized database benchmark proves query and batch equivalence", async (t
 
     const evidence = {
       dataset: {
-        phoneCalls: 180_000,
+        phoneCalls: 220_000,
         qaReviews: 12_000,
         qaAgents: 100,
         managerQaTasks: 110,
@@ -768,6 +1019,27 @@ test("sanitized database benchmark proves query and batch equivalence", async (t
       },
       indexes: indexRows.rows.map((row) => row.indexname).sort(),
       indexPlans,
+      dashboardSummaryPlan: {
+        old: oldDashboardPlan,
+        optimized: newDashboardPlan,
+        repeatableExecutionMs: {
+          sequential: sequentialDashboardSamples,
+          indexed: indexedDashboardSamples,
+          sequentialP50: percentile(sequentialDashboardSamples, 0.5),
+          sequentialP95: percentile(sequentialDashboardSamples, 0.95),
+          indexedP50: percentile(indexedDashboardSamples, 0.5),
+          indexedP95: percentile(indexedDashboardSamples, 0.95),
+        },
+        indexSizeBytes: Number(dashboardIndexSize.rows[0]!.bytes),
+      },
+      dashboardResultEquivalence: {
+        legacyRows: dashboardRows.rowCount,
+        aggregateRows: optimizedDashboard.length,
+        legacyDigest: digest(legacyDashboard),
+        optimizedDigest: digest(optimizedDashboard),
+        equal: true,
+        databaseMs: optimizedDashboardResult.timings.databaseMs,
+      },
     };
     console.log(`PERFORMANCE_EVIDENCE ${JSON.stringify(evidence)}`);
   } finally {
