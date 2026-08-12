@@ -313,6 +313,9 @@ test("Quo live reads refresh provider state on demand instead of waiting for cro
   assert.match(quo, /const limit = 2/);
   assert.match(quo, /&participants=\$\{encodeURIComponent\(participant\)\}/);
   assert.doesNotMatch(quo, /participants\[\]/);
+  assert.match(quo, /recentCallFloor = new Date\(Date\.now\(\) - 4 \* 60 \* 60 \* 1000\)/);
+  assert.match(quo, /buildQuoPhoneCallRow\(call, line, participant, userMap\)/);
+  assert.match(quo, /upsertQuoPhoneCallRows\(completedRows, signal\)/);
   assert.match(quo, /INSERT INTO durable_runtime_state/);
   assert.match(quo, /durable_runtime_state\.expires_at <= now\(\)/);
   assert.match(quo, /WHERE key = \$1 AND value->>'owner' = \$2/);
@@ -321,6 +324,37 @@ test("Quo live reads refresh provider state on demand instead of waiting for cro
   assert.match(liveRoute, /const pollSnapshot = await requestDrivenLivePoll\(\)/);
   assert.doesNotMatch(liveRoute, /scheduledJobKey\("integration_live_refresh"/);
   assert.doesNotMatch(quo, /quoFetch<[^;]+>\([^;]+\)\.catch\(\(\) => \(\{ data: \[\]/s);
+});
+
+test("same-day Quo writes preserve the historical call classification", async () => {
+  process.env["DATABASE_URL"] ??= "postgresql://test:test@127.0.0.1:1/test";
+  const { buildQuoPhoneCallRow } = await import("../routes/quoSync.js");
+  const line = { id: "PN-test", name: "Retention Test", users: [] };
+  const users = new Map([["US-agent", "Test Agent"]]);
+  const base = {
+    id: "AC-test",
+    direction: "outgoing",
+    status: "completed",
+    duration: 75,
+    createdAt: "2026-08-12T16:00:00.000Z",
+    answeredAt: "2026-08-12T16:00:05.000Z",
+    completedAt: "2026-08-12T16:01:15.000Z",
+    userId: "US-agent",
+  };
+
+  const answered = buildQuoPhoneCallRow(base, line, "+15555550100", users);
+  assert.equal(answered.status, "completed");
+  assert.equal(answered.agentName, "Test Agent");
+  assert.equal(answered.postAnswerSeconds, 70);
+  assert.equal(answered.durationSeconds, 75);
+
+  const voicemail = buildQuoPhoneCallRow({
+    ...base,
+    id: "AC-voicemail",
+    completedAt: "2026-08-12T16:00:35.000Z",
+  }, line, "+15555550101", users);
+  assert.equal(voicemail.status, "voicemail");
+  assert.equal(voicemail.postAnswerSeconds, 30);
 });
 
 test("Vercel static responses receive a restrictive browser header policy", async () => {

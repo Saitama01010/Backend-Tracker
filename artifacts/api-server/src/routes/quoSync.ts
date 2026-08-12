@@ -158,7 +158,7 @@ export const USER_EMAIL_OVERRIDES: Record<string, string> = {
   "zwingherr2506@gmail.com": "Andrew Gomez",
 };
 
-interface PhoneNumber {
+export interface QuoPhoneNumber {
   id: string;
   name: string;
   number?: string;
@@ -171,7 +171,7 @@ interface Conversation {
   participants: string[];
 }
 
-interface Call {
+export interface QuoCall {
   id: string;
   direction: string;
   status: string;
@@ -182,6 +182,124 @@ interface Call {
   userId?: string;
   participants?: string[];
   answeredBy?: string | null;
+}
+
+export type QuoPhoneCallRow = typeof phoneCallsTable.$inferInsert;
+
+/**
+ * Canonical Quo call-to-database mapping for the same-day fast path. This
+ * intentionally mirrors the historical synchronizer's established KPI status
+ * thresholds, team mappings, aliases, and date handling.
+ */
+export function buildQuoPhoneCallRow(
+  call: QuoCall,
+  line: QuoPhoneNumber,
+  participant: string,
+  userMap: ReadonlyMap<string, string>,
+): QuoPhoneCallRow {
+  const team = classifyLine(line.name) ?? "other";
+  const overrideName = LINE_AGENT_OVERRIDES[line.name.toLowerCase().trim()];
+  const effectiveUserId =
+    call.direction === "incoming" && call.answeredBy
+      ? call.answeredBy
+      : call.userId;
+  const agentName =
+    overrideName ??
+    (effectiveUserId
+      ? (userMap.get(effectiveUserId) ?? USER_ID_OVERRIDES[effectiveUserId] ?? effectiveUserId)
+      : null);
+
+  let postAnswerSeconds: number | null = null;
+  if (call.answeredAt && call.completedAt) {
+    postAnswerSeconds = Math.round(
+      (new Date(call.completedAt).getTime() - new Date(call.answeredAt).getTime()) / 1000,
+    );
+  }
+
+  let effectiveStatus = call.status;
+  if (call.status === "completed" && call.answeredBy == null) {
+    if (call.direction === "outgoing") {
+      if (postAnswerSeconds !== null && postAnswerSeconds >= 60) effectiveStatus = "completed";
+      else if (postAnswerSeconds !== null && postAnswerSeconds >= 20) effectiveStatus = "voicemail";
+      else effectiveStatus = "voicemail-brief";
+    } else if (postAnswerSeconds !== null && postAnswerSeconds >= 20) {
+      effectiveStatus = "voicemail";
+    } else {
+      effectiveStatus = "voicemail-brief";
+    }
+  }
+
+  if (
+    call.status === "no-answer" &&
+    call.direction === "incoming" &&
+    (call.duration ?? 0) === 0 &&
+    call.completedAt &&
+    call.createdAt
+  ) {
+    const elapsedSeconds = Math.round(
+      (new Date(call.completedAt).getTime() - new Date(call.createdAt).getTime()) / 1000,
+    );
+    if (elapsedSeconds >= 20) effectiveStatus = "voicemail";
+  }
+
+  const ringDurationSeconds =
+    call.completedAt && call.createdAt
+      ? Math.round(
+          (new Date(call.completedAt).getTime() - new Date(call.createdAt).getTime()) / 1000,
+        )
+      : null;
+
+  return {
+    id: call.id,
+    lineId: line.id,
+    lineName: line.name,
+    lineTeam: team,
+    agentId: effectiveUserId ?? null,
+    agentName,
+    participant,
+    direction: call.direction,
+    status: effectiveStatus,
+    durationSeconds: call.duration ?? 0,
+    postAnswerSeconds,
+    ringDurationSeconds,
+    createdAt: new Date(call.createdAt),
+  };
+}
+
+export async function upsertQuoPhoneCallRows(
+  rows: QuoPhoneCallRow[],
+  signal?: AbortSignal,
+): Promise<{ inserted: number; errors: number }> {
+  let inserted = 0;
+  let errors = 0;
+  const CHUNK = 500;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    signal?.throwIfAborted();
+    try {
+      await db
+        .insert(phoneCallsTable)
+        .values(rows.slice(i, i + CHUNK))
+        .onConflictDoUpdate({
+          target: phoneCallsTable.id,
+          set: {
+            lineTeam: sql`excluded.line_team`,
+            agentId: sql`excluded.agent_id`,
+            agentName: sql`excluded.agent_name`,
+            participant: sql`excluded.participant`,
+            status: sql`excluded.status`,
+            durationSeconds: sql`excluded.duration_seconds`,
+            postAnswerSeconds: sql`excluded.post_answer_seconds`,
+            ringDurationSeconds: sql`excluded.ring_duration_seconds`,
+            syncedAt: sql`now()`,
+          },
+        });
+      inserted += Math.min(CHUNK, rows.length - i);
+    } catch (err) {
+      logger.error(err, "quoSync: DB write error");
+      errors++;
+    }
+  }
+  return { inserted, errors };
 }
 
 async function withConcurrency<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
@@ -263,8 +381,8 @@ async function fetchCallsForParticipant(
   participant: string,
   from: string,
   to: string,
-): Promise<Call[]> {
-  const all: Call[] = [];
+): Promise<QuoCall[]> {
+  const all: QuoCall[] = [];
   let pageToken: string | null = null;
   let page = 0;
 
@@ -277,7 +395,7 @@ async function fetchCallsForParticipant(
       `&maxResults=100`;
     if (pageToken) url += `&pageToken=${encodeURIComponent(pageToken)}`;
 
-    const res = await quoFetch<{ data: Call[]; nextPageToken?: string | null }>(url);
+    const res = await quoFetch<{ data: QuoCall[]; nextPageToken?: string | null }>(url);
     const chunk = res.data ?? [];
     all.push(...chunk);
     pageToken = res.nextPageToken ?? null;
@@ -299,7 +417,7 @@ export async function runSync(
   const to = toDate.toISOString();
   logger.info({ from, to, onlyLineId: opts?.onlyLineId ?? null }, "quoSync: starting sync");
 
-  const linesRes = await quoFetch<{ data: PhoneNumber[] }>("/phone-numbers");
+  const linesRes = await quoFetch<{ data: QuoPhoneNumber[] }>("/phone-numbers");
   const allLines = linesRes.data ?? [];
   const lines = allLines; // sync ALL lines, not just classified ones
   const lineMap = new Map(lines.map((l) => [l.id, l]));
@@ -370,7 +488,7 @@ export async function runSync(
       opts?.signal?.throwIfAborted();
       const calls = await fetchCallsForParticipant(lineId, participant, from, to).catch((err) => {
         logger.error({ lineId, err: String(err) }, "quoSync: call fetch error");
-        return [] as Call[];
+        return [] as QuoCall[];
       });
       tasksDone++;
       if (tasksDone % 100 === 0) {

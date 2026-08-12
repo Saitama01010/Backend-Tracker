@@ -2,7 +2,17 @@ import { randomUUID } from "node:crypto";
 import { Router, type IRouter } from "express";
 import { db, phoneCallsTable, pool } from "@workspace/db";
 import { and, eq, gte, lte, desc, ne } from "drizzle-orm";
-import { getSyncState, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES, canonicalAgentName } from "./quoSync.js";
+import {
+  buildQuoPhoneCallRow,
+  getSyncState,
+  upsertQuoPhoneCallRows,
+  USER_EMAIL_OVERRIDES,
+  USER_ID_OVERRIDES,
+  canonicalAgentName,
+  type QuoCall,
+  type QuoPhoneCallRow,
+  type QuoPhoneNumber as QuoSyncPhoneNumber,
+} from "./quoSync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { logger } from "../lib/logger.js";
 import { liveWebhookCalls } from "./quoWebhook.js";
@@ -716,6 +726,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
   try {
     signal?.throwIfAborted();
     const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const recentCallFloor = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
     const now = new Date().toISOString();
 
     // Build userId → agentName map AND collect line IDs in one call
@@ -739,7 +750,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
     }
     const [usersAll, linesAll] = await Promise.all([
       fetchAllPages<OPUser>("/users"),
-      fetchAllPages<{ id: string; users?: OPUser[] }>("/phone-numbers"),
+      fetchAllPages<QuoSyncPhoneNumber>("/phone-numbers"),
     ]);
     const userMap = new Map<string, string>();
     function addToUserMap(u: OPUser) {
@@ -752,6 +763,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
     for (const line of linesAll) for (const u of line.users ?? []) addToUserMap(u);
 
     const lineIds = new Set<string>(linesAll.map((l) => l.id));
+    const lineMap = new Map(linesAll.map((line) => [line.id, line]));
 
     // Conversations updated in last 5 minutes = potentially active calls
     const convRes = await quoFetch<{
@@ -760,6 +772,8 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
 
     const newLive = new Set<string>();
     const newParticipants = new Map<string, string>();
+    const completedRows: QuoPhoneCallRow[] = [];
+    const seenCompletedCallIds = new Set<string>();
 
     // For each recently-active conversation, check for in-progress calls
     const tasks = (convRes.data ?? [])
@@ -771,26 +785,30 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
         lineIds.has(entry.conversation.phoneNumberId) && Boolean(entry.participant),
       )
       .map(({ conversation: c, participant }) => async () => {
-        type LiveCall = {
-          id: string;
-          status: string;
-          userId?: string | null;
-          participants?: string[];
+        type LiveCall = QuoCall & {
           users?: { id?: string; firstName?: string; lastName?: string; email?: string }[];
-          answeredBy?: string | null;
           // OpenPhone occasionally returns an array of user ids that handled the call.
           userIds?: string[];
         };
         const callsRes = await quoFetch<{ data: LiveCall[] }>(
           `/calls?phoneNumberId=${encodeURIComponent(c.phoneNumberId)}` +
           `&participants=${encodeURIComponent(participant)}` +
-          `&createdAfter=${encodeURIComponent(fiveMinAgo)}` +
+          `&createdAfter=${encodeURIComponent(recentCallFloor)}` +
           `&createdBefore=${encodeURIComponent(now)}` +
           `&maxResults=5`,
           signal,
         );
 
         for (const call of callsRes.data ?? []) {
+          // Persist terminal calls before publishing the refreshed live state.
+          // The shared helper preserves the historical synchronizer's KPI
+          // interpretation and the provider call ID remains the idempotency key.
+          const line = lineMap.get(c.phoneNumberId);
+          if (call.completedAt && line && !seenCompletedCallIds.has(call.id)) {
+            seenCompletedCallIds.add(call.id);
+            completedRows.push(buildQuoPhoneCallRow(call, line, participant, userMap));
+          }
+
           if (call.status !== "in-progress") continue;
 
           // Resolve user via every known shape OpenPhone returns.
@@ -845,6 +863,14 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
       }
     }
     await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+
+    const persisted = await upsertQuoPhoneCallRows(completedRows, signal);
+    if (persisted.inserted > 0 || persisted.errors > 0) {
+      logger.info(
+        { completedCalls: completedRows.length, persisted: persisted.inserted, errors: persisted.errors },
+        "quo livePoll: persisted recent terminal calls",
+      );
+    }
 
     pollLiveAgents.clear();
     pollLiveParticipants.clear();
