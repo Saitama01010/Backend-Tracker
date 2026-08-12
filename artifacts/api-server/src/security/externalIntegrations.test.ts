@@ -6,6 +6,7 @@ import {
   approvedReadyModeProbePath,
   approvedVosDebugPath,
   isApprovedSheetSource,
+  paginateAuthorizedBatches,
   paginateAfterAuthorization,
   parseBoundedInteger,
   parseGoogleSheetsValues,
@@ -62,6 +63,25 @@ test("pagination happens only after authorization and numeric controls are bound
   assert.equal(parseBoundedInteger("1e3", 100, { min: 1, max: 1_000 }), null);
 });
 
+test("batched QUO pagination preserves authorized ordering and totals without full materialization", async () => {
+  const rows = [
+    { id: 1, allowed: false },
+    { id: 2, allowed: true },
+    { id: 3, allowed: false },
+    { id: 4, allowed: true },
+    { id: 5, allowed: true },
+  ];
+  let largestBatch = 0;
+  const actual = await paginateAuthorizedBatches(async (offset, limit) => {
+    const batch = rows.slice(offset, offset + limit);
+    largestBatch = Math.max(largestBatch, batch.length);
+    return batch;
+  }, (row) => row.allowed, 1, 1, 2);
+  assert.deepEqual(actual, { data: [{ id: 4, allowed: true }], total: 3 });
+  assert.equal(largestBatch <= 2, true);
+  assert.deepEqual(actual, paginateAfterAuthorization(rows, (row) => row.allowed, 1, 1));
+});
+
 test("diagnostic paths and Google Sheets sources use exact allowlists", () => {
   assert.equal(approvedReadyModeProbePath("/supervisor/"), "/supervisor/");
   assert.equal(approvedReadyModeProbePath("https://example.invalid/"), null);
@@ -106,7 +126,7 @@ test("Sheets, date ranges, probes, and pagination are wired through integration 
   ]);
 
   assert.match(quo, /validateIntegrationDateRange/);
-  assert.match(quo, /paginateAfterAuthorization/);
+  assert.match(quo, /paginateAuthorizedBatches/);
   assert.match(sheets, /isApprovedSheetSource/);
   assert.match(readymode, /approvedReadyModeProbePath/);
   assert.doesNotMatch(readymode, /preview:\s*result\.body/);

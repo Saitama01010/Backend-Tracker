@@ -2,7 +2,7 @@ import { Router, type IRouter, type Response } from "express";
 import type Anthropic from "@anthropic-ai/sdk";
 import ExcelJS from "exceljs";
 import { db, phoneCallsTable, qaReviewsTable, managerQaTasksTable, teamAgentsTable, qaBiweeklyRunsTable } from "@workspace/db";
-import { and, desc, eq, gt, gte, lte, sql, inArray } from "drizzle-orm";
+import { and, desc, eq, gt, gte, lte, sql, inArray, type SQL } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { canonicalAgentName } from "./quoSync.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
@@ -18,8 +18,9 @@ import {
   validateQaResultWithReason,
 } from "../lib/qaPolicy.js";
 import { setPrivateDownloadHeaders } from "../lib/sensitiveWorkflowPolicy.js";
+import { validateIntegrationDateRange } from "../lib/externalIntegrationPolicy.js";
 import type { AuthPayload } from "../middleware/authCore.js";
-import { canAccessAgent } from "../middleware/authorizationCore.js";
+import { canAccessAgent, normalizeAgentIdentity } from "../middleware/authorizationCore.js";
 import { authorizationAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
 import { planWeeklyQaAssignments } from "../lib/databasePerformance.js";
 import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
@@ -531,13 +532,41 @@ function deptFilterArr(req: { query: Record<string, unknown>; user?: AuthPayload
   return { ok: true, departments: requested ? [requested] : allowed ? [allowed] : null };
 }
 
-async function qaAgentAccess(user: AuthPayload): Promise<(agentName: string) => boolean> {
-  if (user.role === "admin" || !user.allowedAgents?.length) return () => true;
+type QaAgentScope = {
+  canAccess: (agentName: string) => boolean;
+  predicateFor: (column: typeof qaReviewsTable.agentName | typeof managerQaTasksTable.agentName) => SQL | undefined;
+};
+
+async function qaAgentScope(user: AuthPayload): Promise<QaAgentScope> {
+  if (user.role === "admin" || !user.allowedAgents?.length) {
+    return { canAccess: () => true, predicateFor: () => undefined };
+  }
   const directory = await loadAuthorizationAgentDirectory();
-  return (agentName: string) => {
+  const canAccess = (agentName: string) => {
     const agent = authorizationAgent(directory, agentName);
     return canAccessAgent(user, agentName, agent ? [agent.name, agent.arabicName ?? ""] : []);
   };
+  const authorizedIdentities = new Set(user.allowedAgents.map(normalizeAgentIdentity).filter(Boolean));
+  for (const agent of directory.agents) {
+    if (!canAccess(agent.name)) continue;
+    authorizedIdentities.add(normalizeAgentIdentity(agent.name));
+    if (agent.arabicName) authorizedIdentities.add(normalizeAgentIdentity(agent.arabicName));
+  }
+  const identities = [...authorizedIdentities].filter(Boolean);
+  return {
+    canAccess,
+    predicateFor: (column) => inArray(
+      sql<string>`regexp_replace(lower(trim(${column})), '[^a-z0-9]+', ' ', 'g')`,
+      identities,
+    ),
+  };
+}
+
+function qaRequestDateRange(query: Record<string, unknown>): { ok: true; from: Date; to: Date } | { ok: false; error: string } {
+  const rawFrom = query["from"] ? String(query["from"]) : new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+  const rawTo = query["to"] ? String(query["to"]) : new Date().toISOString();
+  const range = validateIntegrationDateRange(rawFrom, rawTo);
+  return range.ok ? { ok: true, from: range.fromDate, to: range.toDate } : range;
 }
 
 function qaReviewDateColumn(dateBasis: "evaluated" | "call") {
@@ -749,8 +778,9 @@ router.post("/qa/assign-weekly", requireAuth, requireRole("admin"), async (req, 
 
 router.get("/qa/stats", requireAuth, async (req, res) => {
   try {
-    const from = req.query["from"] ? new Date(String(req.query["from"])) : new Date(Date.now() - 30 * 24 * 3600 * 1000);
-    const to = req.query["to"] ? new Date(String(req.query["to"])) : new Date();
+    const range = qaRequestDateRange(req.query);
+    if (!range.ok) return res.status(400).json({ error: range.error });
+    const { from, to } = range;
     const departmentScope = deptFilterArr(req);
     if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
     const depts = departmentScope.departments;
@@ -761,7 +791,9 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
     const filters = [gte(dateColumn, from), lte(dateColumn, to)];
     if (depts) filters.push(inArray(qaReviewsTable.department, depts));
 
-    const canAccessQaAgent = await qaAgentAccess(req.user!);
+    const agentScope = await qaAgentScope(req.user!);
+    const reviewAgentPredicate = agentScope.predicateFor(qaReviewsTable.agentName);
+    if (reviewAgentPredicate) filters.push(reviewAgentPredicate);
     const queriedRows = await db
       .select({
         id: qaReviewsTable.id,
@@ -777,7 +809,7 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
       })
       .from(qaReviewsTable)
       .where(and(...filters));
-    const rows = queriedRows.filter((row) => canAccessQaAgent(row.agentName));
+    const rows = queriedRows.filter((row) => agentScope.canAccess(row.agentName));
 
     const reviewed = rows.length;
     const avgScore = reviewed ? Math.round(rows.reduce((a, r) => a + r.score, 0) / reviewed) : 0;
@@ -804,6 +836,8 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
 
     const taxMentions = rows.filter((row) => row.mentionsTax).length;
     const taskFilters = depts ? [inArray(managerQaTasksTable.department, depts)] : [];
+    const taskAgentPredicate = agentScope.predicateFor(managerQaTasksTable.agentName);
+    if (taskAgentPredicate) taskFilters.push(taskAgentPredicate);
     const tasks = (await db.select({
       agentName: managerQaTasksTable.agentName,
       status: managerQaTasksTable.status,
@@ -811,7 +845,7 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
       variance: managerQaTasksTable.variance,
       createdAt: managerQaTasksTable.createdAt,
     }).from(managerQaTasksTable).where(taskFilters.length ? and(...taskFilters) : undefined))
-      .filter((task) => canAccessQaAgent(task.agentName));
+      .filter((task) => agentScope.canAccess(task.agentName));
     const openManagerQueue = tasks.filter((task) => task.status === "open").length;
     const managerTasksCreatedInRange = tasks.filter((task) => task.createdAt >= from && task.createdAt <= to).length;
     const variRows = tasks.filter((task) => task.status === "resolved"
@@ -841,8 +875,9 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
 // GET /api/qa/download — Excel export of QA reviews (with a Mentions Tax flag).
 router.get("/qa/download", requireAuth, async (req, res) => {
   try {
-    const from = req.query["from"] ? new Date(String(req.query["from"])) : new Date(Date.now() - 30 * 24 * 3600 * 1000);
-    const to = req.query["to"] ? new Date(String(req.query["to"])) : new Date();
+    const range = qaRequestDateRange(req.query);
+    if (!range.ok) return res.status(400).json({ error: range.error });
+    const { from, to } = range;
     const departmentScope = deptFilterArr(req);
     if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
     const depts = departmentScope.departments;
@@ -853,7 +888,9 @@ router.get("/qa/download", requireAuth, async (req, res) => {
     const filters = [gte(dateColumn, from), lte(dateColumn, to)];
     if (depts) filters.push(inArray(qaReviewsTable.department, depts));
 
-    const canAccessQaAgent = await qaAgentAccess(req.user!);
+    const agentScope = await qaAgentScope(req.user!);
+    const agentPredicate = agentScope.predicateFor(qaReviewsTable.agentName);
+    if (agentPredicate) filters.push(agentPredicate);
     const queriedRows = await db
       .select({
         evaluatedAt: qaReviewsTable.evaluatedAt,
@@ -872,7 +909,7 @@ router.get("/qa/download", requireAuth, async (req, res) => {
       .from(qaReviewsTable)
       .where(and(...filters))
       .orderBy(desc(dateColumn));
-    const rows = queriedRows.filter((row) => canAccessQaAgent(row.agentName));
+    const rows = queriedRows.filter((row) => agentScope.canAccess(row.agentName));
 
     const wb = new ExcelJS.Workbook();
     wb.creator = "Backend Tracker";
@@ -950,8 +987,9 @@ router.get("/qa/download", requireAuth, async (req, res) => {
 
 router.get("/qa/reviews", requireAuth, async (req, res) => {
   try {
-    const from = req.query["from"] ? new Date(String(req.query["from"])) : new Date(Date.now() - 30 * 24 * 3600 * 1000);
-    const to = req.query["to"] ? new Date(String(req.query["to"])) : new Date();
+    const range = qaRequestDateRange(req.query);
+    if (!range.ok) return res.status(400).json({ error: range.error });
+    const { from, to } = range;
     const agent = (req.query["agent"] as string) || "";
     const limit = Math.min(parseInt((req.query["limit"] as string) ?? "100", 10) || 100, 500);
     const departmentScope = deptFilterArr(req);
@@ -965,14 +1003,17 @@ router.get("/qa/reviews", requireAuth, async (req, res) => {
     if (agent) filters.push(sql`lower(${qaReviewsTable.agentName}) = ${agent.toLowerCase()}`);
     if (depts) filters.push(inArray(qaReviewsTable.department, depts));
 
-    const canAccessQaAgent = await qaAgentAccess(req.user!);
-    if (agent && !canAccessQaAgent(agent)) return res.status(403).json({ error: "Forbidden" });
+    const agentScope = await qaAgentScope(req.user!);
+    if (agent && !agentScope.canAccess(agent)) return res.status(403).json({ error: "Forbidden" });
+    const agentPredicate = agentScope.predicateFor(qaReviewsTable.agentName);
+    if (agentPredicate) filters.push(agentPredicate);
     const queriedRows = await db
       .select()
       .from(qaReviewsTable)
       .where(and(...filters))
-      .orderBy(desc(dateColumn));
-    const rows = queriedRows.filter((row) => canAccessQaAgent(row.agentName)).slice(0, limit);
+      .orderBy(desc(dateColumn))
+      .limit(limit);
+    const rows = queriedRows.filter((row) => agentScope.canAccess(row.agentName));
 
     return res.json({ reviews: rows, dateBasis });
   } catch (err) {
@@ -991,8 +1032,8 @@ router.get("/qa/reviews/:id", requireAuth, async (req, res) => {
     if (departmentScope.departments && !departmentScope.departments.includes(row.department as Department)) {
       return res.status(403).json({ error: "Forbidden" });
     }
-    const canAccessQaAgent = await qaAgentAccess(req.user!);
-    if (!canAccessQaAgent(row.agentName)) return res.status(403).json({ error: "Forbidden" });
+    const agentScope = await qaAgentScope(req.user!);
+    if (!agentScope.canAccess(row.agentName)) return res.status(403).json({ error: "Forbidden" });
     return res.json(row);
   } catch (err) {
     req.log.error(err, "qa review fetch error");
@@ -1011,13 +1052,16 @@ router.get("/qa/tasks", requireAuth, async (req, res) => {
     const filters: any[] = [inArray(managerQaTasksTable.status, statuses)];
     if (depts) filters.push(inArray(managerQaTasksTable.department, depts));
 
-    const canAccessQaAgent = await qaAgentAccess(req.user!);
+    const agentScope = await qaAgentScope(req.user!);
+    const agentPredicate = agentScope.predicateFor(managerQaTasksTable.agentName);
+    if (agentPredicate) filters.push(agentPredicate);
     const queriedRows = await db
       .select()
       .from(managerQaTasksTable)
       .where(and(...filters))
-      .orderBy(desc(managerQaTasksTable.createdAt));
-    const rows = queriedRows.filter((row) => canAccessQaAgent(row.agentName)).slice(0, limit);
+      .orderBy(desc(managerQaTasksTable.createdAt))
+      .limit(limit);
+    const rows = queriedRows.filter((row) => agentScope.canAccess(row.agentName));
     return res.json({ tasks: rows });
   } catch (err) {
     req.log.error(err, "qa tasks error");
@@ -1075,8 +1119,9 @@ router.post("/qa/tasks/:id/resolve", requireAuth, requireRole("admin"), async (r
 // Per-agent leaderboard (for Agent Dashboard view)
 router.get("/qa/agents", requireAuth, async (req, res) => {
   try {
-    const from = req.query["from"] ? new Date(String(req.query["from"])) : new Date(Date.now() - 30 * 24 * 3600 * 1000);
-    const to = req.query["to"] ? new Date(String(req.query["to"])) : new Date();
+    const range = qaRequestDateRange(req.query);
+    if (!range.ok) return res.status(400).json({ error: range.error });
+    const { from, to } = range;
     const departmentScope = deptFilterArr(req);
     if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
     const depts = departmentScope.departments;
@@ -1087,7 +1132,9 @@ router.get("/qa/agents", requireAuth, async (req, res) => {
     const filters = [gte(dateColumn, from), lte(dateColumn, to)];
     if (depts) filters.push(inArray(qaReviewsTable.department, depts));
 
-    const canAccessQaAgent = await qaAgentAccess(req.user!);
+    const agentScope = await qaAgentScope(req.user!);
+    const agentPredicate = agentScope.predicateFor(qaReviewsTable.agentName);
+    if (agentPredicate) filters.push(agentPredicate);
     const queriedRows = await db
       .select({
         agentName: qaReviewsTable.agentName,
@@ -1103,7 +1150,7 @@ router.get("/qa/agents", requireAuth, async (req, res) => {
       .where(and(...filters))
       .groupBy(qaReviewsTable.agentName, qaReviewsTable.department)
       .orderBy(sql`avg(${qaReviewsTable.score}) asc`);
-    const rows = queriedRows.filter((row) => canAccessQaAgent(row.agentName));
+    const rows = queriedRows.filter((row) => agentScope.canAccess(row.agentName));
 
     return res.json({ agents: rows, dateBasis });
   } catch (err) {

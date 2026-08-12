@@ -15,7 +15,7 @@ import {
 } from "../lib/authorizationScope.js";
 import {
   MAX_QUO_SYNC_DAYS,
-  paginateAfterAuthorization,
+  paginateAuthorizedBatches,
   parseBoundedInteger,
   validateIntegrationDateRange,
 } from "../lib/externalIntegrationPolicy.js";
@@ -891,7 +891,21 @@ router.get("/quo/calls", async (req, res) => {
     }
     const { fromDate, toDate } = parseDateRange(range.from, range.to);
 
-    const rows = await db
+    const directory = req.user!.role === "admin" ? null : await loadAuthorizationAgentDirectory();
+    const isAuthorized = (row: {
+      lineTeam: string;
+      lineName: string;
+      agentName: string | null;
+    }) => {
+      const agentName = canonicalAgentName(row.agentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
+      const rawTeam = agentTeam(agentName) ?? row.lineTeam;
+      const fallbackTeam = rawTeam === "retention" || rawTeam === "nsf" || rawTeam === "cs" ? rawTeam : null;
+      if (!directory) return !team || rawTeam === team;
+      const resolvedTeam = authorizationAgent(directory, agentName)?.team ?? fallbackTeam;
+      return (!requestedTeam || resolvedTeam === requestedTeam)
+        && canAccessMetricAgent(req.user!, agentName, directory, fallbackTeam);
+    };
+    const paged = await paginateAuthorizedBatches(async (databaseOffset, batchSize) => db
       .select({
         id: phoneCallsTable.id,
         lineTeam: phoneCallsTable.lineTeam,
@@ -905,18 +919,9 @@ router.get("/quo/calls", async (req, res) => {
       })
       .from(phoneCallsTable)
       .where(and(gte(phoneCallsTable.createdAt, fromDate), lte(phoneCallsTable.createdAt, toDate)))
-      .orderBy(desc(phoneCallsTable.createdAt));
-
-    const directory = req.user!.role === "admin" ? null : await loadAuthorizationAgentDirectory();
-    const paged = paginateAfterAuthorization(rows, (row) => {
-      const agentName = canonicalAgentName(row.agentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
-      const rawTeam = agentTeam(agentName) ?? row.lineTeam;
-      const fallbackTeam = rawTeam === "retention" || rawTeam === "nsf" || rawTeam === "cs" ? rawTeam : null;
-      if (!directory) return !team || rawTeam === team;
-      const resolvedTeam = authorizationAgent(directory, agentName)?.team ?? fallbackTeam;
-      return (!requestedTeam || resolvedTeam === requestedTeam)
-        && canAccessMetricAgent(req.user!, agentName, directory, fallbackTeam);
-    }, offsetParam, limitParam);
+      .orderBy(desc(phoneCallsTable.createdAt), desc(phoneCallsTable.id))
+      .limit(batchSize)
+      .offset(databaseOffset), isAuthorized, offsetParam, limitParam);
 
     res.json(paged);
   } catch (err) {

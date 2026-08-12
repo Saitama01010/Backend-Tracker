@@ -73,6 +73,32 @@ export function paginateAfterAuthorization<T>(
   return { data: authorized.slice(offset, offset + limit), total: authorized.length };
 }
 
+export async function paginateAuthorizedBatches<T>(
+  fetchBatch: (offset: number, limit: number) => Promise<readonly T[]>,
+  isAuthorized: (row: T) => boolean,
+  offset: number,
+  limit: number,
+  batchSize = 1_000,
+): Promise<{ data: T[]; total: number }> {
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 5_000) {
+    throw new Error("Invalid authorization batch size");
+  }
+  const data: T[] = [];
+  let total = 0;
+  let databaseOffset = 0;
+  for (;;) {
+    const rows = await fetchBatch(databaseOffset, batchSize);
+    for (const row of rows) {
+      if (!isAuthorized(row)) continue;
+      if (total >= offset && data.length < limit) data.push(row);
+      total++;
+    }
+    databaseOffset += rows.length;
+    if (rows.length < batchSize) break;
+  }
+  return { data, total };
+}
+
 export const APPROVED_READYMODE_PROBE_PATHS = [
   "/",
   "/supervisor/",
