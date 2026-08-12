@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { Router, type IRouter } from "express";
-import { db, phoneCallsTable } from "@workspace/db";
+import { db, phoneCallsTable, pool } from "@workspace/db";
 import { and, eq, gte, lte, desc, ne } from "drizzle-orm";
 import { getSyncState, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES, canonicalAgentName } from "./quoSync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
@@ -24,7 +25,6 @@ import { manualJobKey } from "../lib/durableBackgroundJobs.js";
 import { getDurableRuntimeState, listDurableRuntimeState, putDurableRuntimeState } from "../lib/durableRuntimeState.js";
 import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 import { businessDayWindow } from "../lib/businessTime.js";
-import { AiRateLimitError, withDatabaseLease } from "../lib/aiRateLimit.js";
 
 const router: IRouter = Router();
 router.use("/quo", requireAuth);
@@ -654,13 +654,47 @@ const pollLiveAgents = new Set<string>();
 const pollLiveParticipants = new Map<string, string>();
 let livePollRunning = false;
 const LIVE_POLL_STATE_KEY = "quo:live-poll";
+const LIVE_POLL_LEASE_KEY = "quo:live-poll-lease";
 const LIVE_POLL_TTL_MS = 45_000;
 const LIVE_POLL_TIMEOUT_MS = 20_000;
+const LIVE_POLL_LEASE_MS = 30_000;
 
 type LivePollSnapshot = {
   active: string[];
   agentCalls: Array<{ agentName: string; participant: string }>;
 };
+
+class LivePollRefreshInProgressError extends Error {
+  constructor() {
+    super("Quo live refresh is already in progress");
+    this.name = "LivePollRefreshInProgressError";
+  }
+}
+
+async function tryAcquireLivePollLease(): Promise<string | null> {
+  const owner = randomUUID();
+  const result = await pool.query<{ owner: string }>(
+    `INSERT INTO durable_runtime_state (key, value, updated_at, expires_at)
+     VALUES ($1, jsonb_build_object('owner', $2::text), now(), now() + ($3::bigint * interval '1 millisecond'))
+     ON CONFLICT (key) DO UPDATE
+       SET value = EXCLUDED.value,
+           updated_at = EXCLUDED.updated_at,
+           expires_at = EXCLUDED.expires_at
+       WHERE durable_runtime_state.expires_at IS NULL
+          OR durable_runtime_state.expires_at <= now()
+     RETURNING value->>'owner' AS owner`,
+    [LIVE_POLL_LEASE_KEY, owner, LIVE_POLL_LEASE_MS],
+  );
+  return result.rows[0]?.owner === owner ? owner : null;
+}
+
+async function releaseLivePollLease(owner: string): Promise<void> {
+  await pool.query(
+    `DELETE FROM durable_runtime_state
+     WHERE key = $1 AND value->>'owner' = $2`,
+    [LIVE_POLL_LEASE_KEY, owner],
+  );
+}
 
 export async function runLivePoll(signal?: AbortSignal): Promise<{ active: string[]; agentCalls: Array<{ agentName: string; participant: string }> }> {
   if (livePollRunning) {
@@ -824,21 +858,24 @@ async function requestDrivenLivePoll(): Promise<LivePollSnapshot> {
   const existing = await getDurableRuntimeState<LivePollSnapshot>(LIVE_POLL_STATE_KEY);
   if (existing) return existing.value;
 
-  try {
-    await withDatabaseLease("quo_live_request_refresh", () =>
-      runLivePoll(AbortSignal.timeout(LIVE_POLL_TIMEOUT_MS)),
-    );
-  } catch (error) {
-    if (!(error instanceof AiRateLimitError) || error.reason !== "lease") throw error;
-
-    // Another Vercel instance is already refreshing. Give it a short window to
-    // publish the shared snapshot instead of returning a false empty state.
-    for (let attempt = 0; attempt < 8; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
+  const leaseOwner = await tryAcquireLivePollLease();
+  if (!leaseOwner) {
+    // Another Vercel instance is already refreshing. Wait for its durable
+    // snapshot; the expiring row lease self-recovers if that instance freezes.
+    for (let attempt = 0; attempt < 40; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
       const refreshed = await getDurableRuntimeState<LivePollSnapshot>(LIVE_POLL_STATE_KEY);
       if (refreshed) return refreshed.value;
     }
-    throw error;
+    throw new LivePollRefreshInProgressError();
+  }
+
+  try {
+    await runLivePoll(AbortSignal.timeout(LIVE_POLL_TIMEOUT_MS));
+  } finally {
+    await releaseLivePollLease(leaseOwner).catch((error: unknown) => {
+      logger.warn({ err: String(error) }, "quo livePoll: unable to release durable lease");
+    });
   }
 
   const refreshed = await getDurableRuntimeState<LivePollSnapshot>(LIVE_POLL_STATE_KEY);
@@ -923,6 +960,11 @@ router.get("/quo/live", async (req, res) => {
     res.json({ active: scopedActive, agentCalls: scopedCalls, webhookActive: scopedWebhookActive });
   } catch (err) {
     req.log.error(err, "quo live error");
+    if (err instanceof LivePollRefreshInProgressError) {
+      res.setHeader("Retry-After", "5");
+      res.status(503).json({ error: "Quo live calls are refreshing." });
+      return;
+    }
     res.status(500).json({ error: "Quo live calls are temporarily unavailable." });
   }
 });
