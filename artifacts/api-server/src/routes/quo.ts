@@ -92,6 +92,28 @@ function effectiveCallStatus(row: {
 }
 
 const QUO_BASE = "https://api.openphone.com/v1";
+const QUO_MIN_REQUEST_INTERVAL_MS = 150;
+let nextQuoRequestAt = 0;
+let quoRequestGate: Promise<void> = Promise.resolve();
+
+async function delayForQuo(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    return;
+  }
+  signal.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 function quoHeaders(): Record<string, string> {
   const key = (process.env["QUO_API_KEY"] ?? "")
@@ -103,8 +125,36 @@ function quoHeaders(): Record<string, string> {
   return { Authorization: key, Accept: "application/json" };
 }
 
+async function waitForQuoRequestSlot(signal?: AbortSignal): Promise<void> {
+  let release!: () => void;
+  const previous = quoRequestGate;
+  quoRequestGate = new Promise<void>((resolve) => { release = resolve; });
+  await previous;
+  try {
+    signal?.throwIfAborted();
+    const waitMs = Math.max(0, nextQuoRequestAt - Date.now());
+    if (waitMs > 0) await delayForQuo(waitMs, signal);
+    nextQuoRequestAt = Date.now() + QUO_MIN_REQUEST_INTERVAL_MS;
+  } finally {
+    release();
+  }
+}
+
 async function quoFetch<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(`${QUO_BASE}${path}`, { headers: quoHeaders(), signal });
+  const request = async () => {
+    await waitForQuoRequestSlot(signal);
+    return fetch(`${QUO_BASE}${path}`, { headers: quoHeaders(), signal });
+  };
+
+  let res = await request();
+  if (res.status === 429) {
+    const retryAfterSeconds = Number(res.headers.get("retry-after"));
+    const retryDelayMs = Number.isFinite(retryAfterSeconds)
+      ? Math.min(5_000, Math.max(500, retryAfterSeconds * 1_000))
+      : 1_000;
+    await delayForQuo(retryDelayMs, signal);
+    res = await request();
+  }
   if (!res.ok) {
     throw new Error(`Quo API error ${res.status}`);
   }
