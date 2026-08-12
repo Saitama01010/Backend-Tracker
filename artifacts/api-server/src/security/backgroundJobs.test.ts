@@ -305,9 +305,12 @@ test("Quo live reads refresh provider state on demand instead of waiting for cro
   const liveRoute = quo.slice(quo.indexOf('router.get("/quo/live"'));
 
   assert.match(quo, /LIVE_POLL_TTL_MS = 45_000/);
-  assert.match(quo, /LIVE_POLL_LEASE_MS = 30_000/);
-  assert.match(quo, /QUO_MIN_REQUEST_INTERVAL_MS = 150/);
-  assert.match(quo, /if \(res\.status === 429\)/);
+  assert.match(quo, /LIVE_POLL_LEASE_MS = 105_000/);
+  assert.match(quo, /QUO_MIN_REQUEST_INTERVAL_MS = 400/);
+  assert.match(quo, /QUO_MAX_RATE_LIMIT_RETRIES = 4/);
+  assert.match(quo, /res\.status === 429/);
+  assert.match(quo, /Date\.parse\(retryAfter\)/);
+  assert.match(quo, /const limit = 2/);
   assert.match(quo, /INSERT INTO durable_runtime_state/);
   assert.match(quo, /durable_runtime_state\.expires_at <= now\(\)/);
   assert.match(quo, /WHERE key = \$1 AND value->>'owner' = \$2/);

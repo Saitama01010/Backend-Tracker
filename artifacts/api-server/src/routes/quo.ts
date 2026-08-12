@@ -92,7 +92,11 @@ function effectiveCallStatus(row: {
 }
 
 const QUO_BASE = "https://api.openphone.com/v1";
-const QUO_MIN_REQUEST_INTERVAL_MS = 150;
+// Keep the live scan below Quo's shared workspace allowance. This route may
+// overlap with a scheduled/manual historical sync, so leave headroom rather
+// than attempting to consume the provider's documented ceiling.
+const QUO_MIN_REQUEST_INTERVAL_MS = 400;
+const QUO_MAX_RATE_LIMIT_RETRIES = 4;
 let nextQuoRequestAt = 0;
 let quoRequestGate: Promise<void> = Promise.resolve();
 
@@ -147,11 +151,16 @@ async function quoFetch<T>(path: string, signal?: AbortSignal): Promise<T> {
   };
 
   let res = await request();
-  if (res.status === 429) {
-    const retryAfterSeconds = Number(res.headers.get("retry-after"));
-    const retryDelayMs = Number.isFinite(retryAfterSeconds)
-      ? Math.min(5_000, Math.max(500, retryAfterSeconds * 1_000))
-      : 1_000;
+  for (let attempt = 0; res.status === 429 && attempt < QUO_MAX_RATE_LIMIT_RETRIES; attempt++) {
+    const retryAfter = res.headers.get("retry-after");
+    const seconds = retryAfter === null ? Number.NaN : Number(retryAfter);
+    const dateDelay = retryAfter && !Number.isFinite(seconds)
+      ? Date.parse(retryAfter) - Date.now()
+      : Number.NaN;
+    const providerDelay = Number.isFinite(seconds) ? seconds * 1_000 : dateDelay;
+    const retryDelayMs = Number.isFinite(providerDelay)
+      ? Math.min(30_000, Math.max(1_000, providerDelay))
+      : Math.min(8_000, 1_000 * (2 ** attempt));
     await delayForQuo(retryDelayMs, signal);
     res = await request();
   }
@@ -656,8 +665,8 @@ let livePollRunning = false;
 const LIVE_POLL_STATE_KEY = "quo:live-poll";
 const LIVE_POLL_LEASE_KEY = "quo:live-poll-lease";
 const LIVE_POLL_TTL_MS = 45_000;
-const LIVE_POLL_TIMEOUT_MS = 20_000;
-const LIVE_POLL_LEASE_MS = 30_000;
+const LIVE_POLL_TIMEOUT_MS = 90_000;
+const LIVE_POLL_LEASE_MS = 105_000;
 
 type LivePollSnapshot = {
   active: string[];
@@ -819,8 +828,9 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
         }
       });
 
-    // Run up to 8 concurrent checks
-    const limit = 8;
+    // Keep per-conversation checks bounded so they do not burst Quo even when
+    // another authorized synchronization is using the same workspace quota.
+    const limit = 2;
     let idx = 0;
     async function worker() {
       while (idx < tasks.length) {
@@ -862,7 +872,7 @@ async function requestDrivenLivePoll(): Promise<LivePollSnapshot> {
   if (!leaseOwner) {
     // Another Vercel instance is already refreshing. Wait for its durable
     // snapshot; the expiring row lease self-recovers if that instance freezes.
-    for (let attempt = 0; attempt < 40; attempt++) {
+    for (let attempt = 0; attempt < 180; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       const refreshed = await getDurableRuntimeState<LivePollSnapshot>(LIVE_POLL_STATE_KEY);
       if (refreshed) return refreshed.value;
