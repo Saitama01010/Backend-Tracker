@@ -3888,6 +3888,7 @@ const PBX_TO_DISPLAY_NAME: Record<string, string> = {
 };
 
 interface LiveCallStatus {
+  quoUnavailable: boolean;
   quo: Set<string>; // normalized names on Quo right now
   pbx: Set<string>; // normalized PBX agent names on PBX right now
   any: Set<string>; // union — PBX names mapped to their display-name equivalent
@@ -3908,7 +3909,7 @@ function useLiveCalls(): LiveCallStatus {
     queryKey: ["liveCalls"],
     queryFn: async () => {
       const r = await apiFetch("/api/quo/live");
-      if (!r.ok) return { active: [] };
+      if (!r.ok) throw new Error("Quo live status request failed");
       return r.json() as Promise<{ active: string[]; agentCalls?: { agentName: string; participant: string | null }[] }>;
     },
     refetchInterval: queryPollingInterval({
@@ -3971,8 +3972,8 @@ function useLiveCalls(): LiveCallStatus {
     for (const c of vosQ.data?.liveCalls ?? []) if (c.agentName) addPbx(c.agentName);
     for (const a of vosQ.data?.agentStatuses ?? []) if (a.status === "on_call") addPbx(a.name);
 
-    return { quo, pbx, any, quoParticipant };
-  }, [quoQ.data, vosQ.data]);
+    return { quo, pbx, any, quoParticipant, quoUnavailable: quoQ.isError };
+  }, [quoQ.data, quoQ.isError, vosQ.data]);
 }
 
 type PbxAgentEntry = {
@@ -4263,7 +4264,11 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
   const visible = useMemo(() => {
     const q = debouncedSearch.trim().toLowerCase();
     const list = (q ? agentList.filter((a) => a.toLowerCase().includes(q)) : agentList)
-      .filter((a) => ((getPhone(a)?.calls ?? 0) + (getPbx(a)?.calls ?? 0) + (getRm(a)?.calls ?? 0)) > 0);
+      .filter((a) => {
+        const hasCalls = ((getPhone(a)?.calls ?? 0) + (getPbx(a)?.calls ?? 0) + (getRm(a)?.calls ?? 0)) > 0;
+        const liveKey = directKeys ? normalizeAgent(a) : sheetToPhoneKey(a);
+        return hasCalls || liveAgents.any.has(liveKey);
+      });
     return [...list].sort((a, b) => {
       const phA = getPhone(a);
       const phB = getPhone(b);
@@ -4283,7 +4288,7 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
       else if (sort.col === "__agent__") { return sort.dir === "asc" ? a.localeCompare(b) : b.localeCompare(a); }
       return sort.dir === "asc" ? av - bv : bv - av;
     });
-  }, [agentList, debouncedSearch, sort, phoneData, pbxData, readymodeByKey, rosterPhoneAliases]);
+  }, [agentList, debouncedSearch, sort, phoneData, pbxData, readymodeByKey, rosterPhoneAliases, directKeys, liveAgents.any]);
 
   function toggle(col: string) {
     setSort((s) => s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: col === "__agent__" ? "asc" : "desc" });
@@ -4333,6 +4338,11 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
 
   return (
     <div className="space-y-4">
+      {liveAgents.quoUnavailable && (
+        <div role="status" className="ops-card flex flex-wrap items-center justify-between gap-3 border-destructive/30 px-4 py-3 text-sm">
+          <span className="text-destructive">Quo live status is temporarily unavailable. Historical totals are unchanged.</span>
+        </div>
+      )}
       {pbxLiveQ.isError && (
         <div role="status" className="ops-card flex flex-wrap items-center justify-between gap-3 border-destructive/30 px-4 py-3 text-sm">
           <span className="text-destructive">PBX live status is temporarily unavailable. Historical totals are unchanged.</span>

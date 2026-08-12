@@ -300,6 +300,18 @@ test("server routes contain no process-local scheduler or post-response job laun
   assert.equal(JSON.parse(vercel).functions["api/[...path].mjs"].maxDuration, 300);
 });
 
+test("Quo live reads refresh provider state on demand instead of waiting for cron", async () => {
+  const quo = await readFile(new URL("../routes/quo.ts", import.meta.url), "utf8");
+  const liveRoute = quo.slice(quo.indexOf('router.get("/quo/live"'));
+
+  assert.match(quo, /LIVE_POLL_TTL_MS = 45_000/);
+  assert.match(quo, /withDatabaseLease\("quo_live_request_refresh"/);
+  assert.match(quo, /runLivePoll\(AbortSignal\.timeout\(LIVE_POLL_TIMEOUT_MS\)\)/);
+  assert.match(liveRoute, /const pollSnapshot = await requestDrivenLivePoll\(\)/);
+  assert.doesNotMatch(liveRoute, /scheduledJobKey\("integration_live_refresh"/);
+  assert.doesNotMatch(quo, /quoFetch<[^;]+>\([^;]+\)\.catch\(\(\) => \(\{ data: \[\]/s);
+});
+
 test("Vercel static responses receive a restrictive browser header policy", async () => {
   const vercel = JSON.parse(
     await readFile(new URL("../../../../vercel.json", import.meta.url), "utf8"),
