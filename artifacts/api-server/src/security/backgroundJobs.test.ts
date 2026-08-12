@@ -305,6 +305,8 @@ test("Quo live reads refresh provider state on demand instead of waiting for cro
   const liveRoute = quo.slice(quo.indexOf('router.get("/quo/live"'));
 
   assert.match(quo, /LIVE_POLL_TTL_MS = 45_000/);
+  assert.match(quo, /QUO_MIN_REQUEST_INTERVAL_MS = 150/);
+  assert.match(quo, /if \(res\.status === 429\)/);
   assert.match(quo, /withDatabaseLease\("quo_live_request_refresh"/);
   assert.match(quo, /runLivePoll\(AbortSignal\.timeout\(LIVE_POLL_TIMEOUT_MS\)\)/);
   assert.match(liveRoute, /const pollSnapshot = await requestDrivenLivePoll\(\)/);
