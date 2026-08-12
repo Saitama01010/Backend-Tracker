@@ -300,9 +300,16 @@ test("server routes contain no process-local scheduler or post-response job laun
   assert.equal(JSON.parse(vercel).functions["api/[...path].mjs"].maxDuration, 300);
 });
 
-test("Quo live reads refresh provider state on demand instead of waiting for cron", async () => {
+test("Quo live state stays lightweight while provider refresh remains request-driven and coalesced", async () => {
   const quo = await readFile(new URL("../routes/quo.ts", import.meta.url), "utf8");
-  const liveRoute = quo.slice(quo.indexOf('router.get("/quo/live"'));
+  const liveHandler = quo.slice(
+    quo.indexOf("export async function optimizedQuoLiveHandler"),
+    quo.indexOf('router.get("/quo/live", optimizedQuoLiveHandler)'),
+  );
+  const refreshRoute = quo.slice(
+    quo.indexOf('router.get("/quo/live/refresh"'),
+    quo.indexOf('router.get("/quo/calls"'),
+  );
 
   assert.match(quo, /LIVE_POLL_TTL_MS = 45_000/);
   assert.match(quo, /LIVE_POLL_LEASE_MS = 105_000/);
@@ -321,8 +328,9 @@ test("Quo live reads refresh provider state on demand instead of waiting for cro
   assert.match(quo, /WHERE key = \$1 AND value->>'owner' = \$2/);
   assert.doesNotMatch(quo, /withDatabaseLease\("quo_live_request_refresh"/);
   assert.match(quo, /runLivePoll\(AbortSignal\.timeout\(LIVE_POLL_TIMEOUT_MS\)\)/);
-  assert.match(liveRoute, /const pollSnapshot = await requestDrivenLivePoll\(\)/);
-  assert.doesNotMatch(liveRoute, /scheduledJobKey\("integration_live_refresh"/);
+  assert.doesNotMatch(liveHandler, /requestDrivenLivePoll\(\)/);
+  assert.match(refreshRoute, /await requestDrivenLivePoll\(\)/);
+  assert.doesNotMatch(refreshRoute, /scheduledJobKey\("integration_live_refresh"/);
   assert.doesNotMatch(quo, /quoFetch<[^;]+>\([^;]+\)\.catch\(\(\) => \(\{ data: \[\]/s);
 });
 

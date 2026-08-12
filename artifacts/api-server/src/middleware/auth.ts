@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
+import { performance } from "node:perf_hooks";
 import type { Permission } from "@workspace/db/schema";
 import { createRequireAuth, type AuthPayload } from "./authCore.js";
 import { authPayloadForUser, loadActivePortalUser } from "../lib/authUser.js";
@@ -11,13 +12,14 @@ declare global {
   namespace Express {
     interface Request {
       user?: AuthPayload;
+      authTimingMs?: number;
     }
   }
 }
 
 export { signToken, verifyToken } from "../lib/accessToken.js";
 
-export const requireAuth = createRequireAuth({
+const authenticateRequest = createRequireAuth({
   verifyToken,
   loadActiveUser: async (payload) => {
     if (!payload.sessionId) return null;
@@ -27,6 +29,14 @@ export const requireAuth = createRequireAuth({
     return authPayloadForUser(user, payload.sessionId);
   },
 });
+
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
+  const startedAt = performance.now();
+  await authenticateRequest(req, res, () => {
+    req.authTimingMs = Math.round((performance.now() - startedAt) * 100) / 100;
+    next();
+  });
+}
 
 export function requireRole(...roles: Array<"admin" | "edit" | "view">) {
   return (req: Request, res: Response, next: NextFunction) => {

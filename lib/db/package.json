@@ -14,7 +14,8 @@
     "push": "drizzle-kit push --config ./drizzle.config.ts",
     "push-force": "drizzle-kit push --force --config ./drizzle.config.ts",
     "test:release-readiness": "tsx --test ./src/tools/releaseReadiness.test.ts",
-    "verify-schema-contract": "tsx ./src/tools/verifySchemaContract.ts"
+    "verify-schema-contract": "tsx ./src/tools/verifySchemaContract.ts",
+    "apply:dashboard-performance-index": "tsx ./src/tools/applyDashboardPerformanceIndex.ts"
   },
   "dependencies": {
     "drizzle-orm": "catalog:",

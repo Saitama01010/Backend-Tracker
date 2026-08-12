@@ -28,6 +28,16 @@ export async function getDurableRuntimeState<T extends Record<string, unknown>>(
   return { value: row.value as T, updatedAt: row.updatedAt, expiresAt: row.expiresAt };
 }
 
+export async function getDurableRuntimeStateIncludingExpired<T extends Record<string, unknown>>(
+  key: string,
+): Promise<{ value: T; updatedAt: Date; expiresAt: Date | null } | null> {
+  const [row] = await db.select().from(durableRuntimeStateTable)
+    .where(eq(durableRuntimeStateTable.key, key))
+    .limit(1);
+  if (!row) return null;
+  return { value: row.value as T, updatedAt: row.updatedAt, expiresAt: row.expiresAt };
+}
+
 export async function listDurableRuntimeState<T extends Record<string, unknown>>(
   prefix: string,
   now = new Date(),

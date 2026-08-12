@@ -108,6 +108,55 @@ test("webhook HTTP delivery is durable and idempotent in PostgreSQL", { skip: !e
     const late = await post(ringingBody, sign(ringingBody, Date.now()));
     assert.equal(late.status, 200);
 
+    const liveCallId = "CALL_INTEGRATION_LIVE_SANITIZED";
+    const liveUserId = "USER_INTEGRATION_LIVE_SANITIZED";
+    const liveRingingBody = Buffer.from(JSON.stringify({
+      id: "EV_INTEGRATION_LIVE_RINGING_SANITIZED",
+      type: "call.ringing",
+      data: { object: {
+        id: liveCallId,
+        userId: liveUserId,
+        direction: "outgoing",
+        to: "sanitized-live-participant",
+      } },
+    }));
+    const liveRinging = await post(liveRingingBody, sign(liveRingingBody, Date.now()));
+    assert.equal(liveRinging.status, 200);
+    const liveState = await pool.query<{ key: string }>(
+      "SELECT key FROM durable_runtime_state WHERE key = $1",
+      [`quo:webhook-live:${liveCallId}`],
+    );
+    assert.equal(liveState.rowCount, 1);
+
+    const liveCompletedBody = Buffer.from(JSON.stringify({
+      id: "EV_INTEGRATION_LIVE_COMPLETED_SANITIZED",
+      type: "call.completed",
+      data: { object: {
+        id: liveCallId,
+        from: "sanitized-line-reference",
+        to: "sanitized-live-participant",
+        direction: "outgoing",
+        status: "completed",
+        createdAt: "2026-08-10T09:01:00.000Z",
+        answeredAt: "2026-08-10T09:01:05.000Z",
+        completedAt: "2026-08-10T09:02:10.000Z",
+        userId: liveUserId,
+        phoneNumberId: "LINE_INTEGRATION_LIVE_SANITIZED",
+      } },
+    }));
+    const liveCompleted = await post(liveCompletedBody, sign(liveCompletedBody, Date.now()));
+    assert.equal(liveCompleted.status, 200);
+    const terminalState = await pool.query<{ key: string; agent_name: string }>(`
+      SELECT key, value->>'agentName' AS agent_name
+      FROM durable_runtime_state
+      WHERE key IN ($1, $2)
+      ORDER BY key
+    `, [`quo:webhook-ended:${liveCallId}`, `quo:webhook-live:${liveCallId}`]);
+    assert.deepEqual(terminalState.rows, [{
+      key: `quo:webhook-ended:${liveCallId}`,
+      agent_name: liveUserId,
+    }]);
+
     const invalid = await post(completedBody, `hmac;1;${Date.now()};${Buffer.alloc(32).toString("base64")}`);
     assert.equal(invalid.status, 401);
 
@@ -121,6 +170,7 @@ test("webhook HTTP delivery is durable and idempotent in PostgreSQL", { skip: !e
 
     await pool.query("DELETE FROM webhook_inbox WHERE provider_event_id LIKE 'EV_INTEGRATION_%'");
     await pool.query("DELETE FROM phone_calls WHERE id LIKE 'CALL_INTEGRATION_%'");
+    await pool.query("DELETE FROM durable_runtime_state WHERE key LIKE 'quo:webhook-%:CALL_INTEGRATION_%'");
 
     // Closing the isolated pool simulates an unavailable database. The handler
     // must return a retryable response and must not run business processing.

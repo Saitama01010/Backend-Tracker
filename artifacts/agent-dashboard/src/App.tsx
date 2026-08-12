@@ -17,7 +17,7 @@ import { UserContext, authHeaders, useUser, type AuthUser, type Permission, type
 import { unparseCsv } from "@/lib/csvExport";
 import { dashboardQueryClient, clearDashboardQueryCache } from "@/lib/dashboardQueryClient";
 import { accountQueryScope, pollingDelay, queryPollingInterval } from "@/lib/queryPolicy";
-import { loadBackendStatsSheetSources, readSheetResponse } from "@/lib/sheetData";
+import { loadBackendStatsSheetSources, readSheetResponse, type SheetFreshnessMeta } from "@/lib/sheetData";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import {
   addCalendarDays as addBusinessCalendarDays,
@@ -1000,7 +1000,38 @@ type LoadedSheetDebugRow = {
   skipReason: string;
   row: Row;
 };
-type SheetData = { headers: string[]; rows: Row[]; debugRows?: LoadedSheetDebugRow[] };
+type SheetData = {
+  headers: string[];
+  rows: Row[];
+  debugRows?: LoadedSheetDebugRow[];
+  meta?: SheetFreshnessMeta;
+};
+
+function mergeSheetFreshness(sheets: readonly SheetData[]): SheetFreshnessMeta | undefined {
+  const values = sheets.flatMap((sheet) => sheet.meta ? [sheet.meta] : []);
+  if (values.length === 0) return undefined;
+  return {
+    fetchedAt: values.map((value) => value.fetchedAt).sort()[0]!,
+    observedAt: values.map((value) => value.observedAt).sort().at(-1)!,
+    stale: values.some((value) => value.stale),
+    refreshError: values.some((value) => value.refreshError),
+    cache: values.some((value) => value.cache === "stale")
+      ? "stale"
+      : values.every((value) => value.cache === "hit") ? "hit" : "miss",
+    rowsReceived: values.reduce((sum, value) => sum + value.rowsReceived, 0),
+    rowsAccepted: values.reduce((sum, value) => sum + value.rowsAccepted, 0),
+    rowsSkipped: values.reduce((sum, value) => sum + value.rowsSkipped, 0),
+  };
+}
+
+function SheetFreshnessNotice({ meta }: { meta?: SheetFreshnessMeta }) {
+  if (!meta?.stale) return null;
+  return (
+    <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-300">
+      Google Sheets refresh failed; showing the last valid result from {new Date(meta.fetchedAt).toLocaleTimeString()}.
+    </div>
+  );
+}
 type JeremyTraceRow = {
   "source name": string;
   "spreadsheet ID": string;
@@ -1397,7 +1428,7 @@ async function fetchSheetSource(id: string, gid: string): Promise<SheetData> {
     queryKey: ["sheet-source", scope, id, gid],
     staleTime: SHEET_REFETCH_MS,
     queryFn: async () => {
-      const params = new URLSearchParams({ id, gid });
+      const params = new URLSearchParams({ id, gid, format: "rows-v1" });
       const res = await apiFetch(`/api/sheet?${params.toString()}`);
       return readSheetResponse(res);
     },
@@ -3889,11 +3920,23 @@ const PBX_TO_DISPLAY_NAME: Record<string, string> = {
 
 interface LiveCallStatus {
   quoUnavailable: boolean;
+  quoStale: boolean;
+  quoLastUpdatedAt: string | null;
   quo: Set<string>; // normalized names on Quo right now
   pbx: Set<string>; // normalized PBX agent names on PBX right now
   any: Set<string>; // union — PBX names mapped to their display-name equivalent
   quoParticipant: Map<string, string>; // normName → external number they're talking to
 }
+
+type QuoLiveResponse = {
+  active: string[];
+  agentCalls?: { agentName: string; participant: string | null }[];
+  sourceTimestamp: string | null;
+  observedAt: string;
+  lastSuccessfulUpdateAt: string | null;
+  fresh: boolean;
+  stale: boolean;
+};
 
 function formatParticipant(num: string): string {
   const d = num.replace(/\D/g, "");
@@ -3905,20 +3948,29 @@ function formatParticipant(num: string): string {
 }
 
 function useLiveCalls(): LiveCallStatus {
-  const quoQ = useQuery<{ active: string[]; agentCalls?: { agentName: string; participant: string | null }[] }>({
+  const quoQ = useQuery<QuoLiveResponse>({
     queryKey: ["liveCalls"],
     queryFn: async () => {
       const r = await apiFetch("/api/quo/live");
       if (!r.ok) throw new Error("Quo live status request failed");
-      return r.json() as Promise<{ active: string[]; agentCalls?: { agentName: string; participant: string | null }[] }>;
+      return r.json() as Promise<QuoLiveResponse>;
     },
-    refetchInterval: queryPollingInterval({
-      baseMs: 15_000,
-      idleMs: 30_000,
-      isIdle: (data) => !data?.active?.length,
-    }),
-    staleTime: 10 * 1000,
+    refetchInterval: queryPollingInterval({ baseMs: 5_000 }),
+    staleTime: 4_000,
     refetchOnWindowFocus: true,
+  });
+
+  useQuery({
+    queryKey: ["liveCallsRefresh"],
+    queryFn: async () => {
+      const response = await apiFetch("/api/quo/live/refresh");
+      if (!response.ok) throw new Error("Quo live refresh request failed");
+      return true;
+    },
+    refetchInterval: queryPollingInterval({ baseMs: 45_000 }),
+    staleTime: 40_000,
+    refetchOnWindowFocus: true,
+    retry: false,
   });
 
   const vosQ = useQuery<{ liveCalls: { agentName: string | null }[]; agentStatuses: { name: string; status: string }[] }>({
@@ -3972,7 +4024,15 @@ function useLiveCalls(): LiveCallStatus {
     for (const c of vosQ.data?.liveCalls ?? []) if (c.agentName) addPbx(c.agentName);
     for (const a of vosQ.data?.agentStatuses ?? []) if (a.status === "on_call") addPbx(a.name);
 
-    return { quo, pbx, any, quoParticipant, quoUnavailable: quoQ.isError };
+    return {
+      quo,
+      pbx,
+      any,
+      quoParticipant,
+      quoUnavailable: quoQ.isError,
+      quoStale: quoQ.data?.stale ?? false,
+      quoLastUpdatedAt: quoQ.data?.lastSuccessfulUpdateAt ?? null,
+    };
   }, [quoQ.data, quoQ.isError, vosQ.data]);
 }
 
@@ -4341,6 +4401,14 @@ function ByCallStatsView({ agentList, phoneData, directKeys, pbxData, extraMisse
       {liveAgents.quoUnavailable && (
         <div role="status" className="ops-card flex flex-wrap items-center justify-between gap-3 border-destructive/30 px-4 py-3 text-sm">
           <span className="text-destructive">Quo live status is temporarily unavailable. Historical totals are unchanged.</span>
+        </div>
+      )}
+      {!liveAgents.quoUnavailable && liveAgents.quoStale && (
+        <div role="status" className="ops-card flex flex-wrap items-center justify-between gap-3 border-amber-500/30 px-4 py-3 text-sm">
+          <span className="text-amber-300">
+            Quo live status is stale. Historical totals are unchanged.
+            {liveAgents.quoLastUpdatedAt ? ` Last successful update ${new Date(liveAgents.quoLastUpdatedAt).toLocaleTimeString()}.` : ""}
+          </span>
         </div>
       )}
       {liveInView.length > 0 && (
@@ -5060,6 +5128,7 @@ function TeamPanel({
       </CardHeader>
       <CardContent className="space-y-6">
         {isLoading && <TableSkeleton />}
+        <SheetFreshnessNotice meta={statusQ.data?.meta} />
         {error && (
           <ErrorState
             message={error instanceof Error ? error.message : "Failed to load data."}
@@ -5291,6 +5360,7 @@ function CSPanel() {
       </CardHeader>
       <CardContent className="space-y-6">
         {(phoneQ.isLoading || statusQ.isLoading) && <TableSkeleton />}
+        <SheetFreshnessNotice meta={statusQ.data?.meta} />
 
         {!csLockToToday && <PresetFilter from={from} to={to} setFrom={setFrom} setTo={setTo} />}
 
@@ -5491,6 +5561,7 @@ function RetentionPanel() {
       </CardHeader>
       <CardContent className="space-y-6">
         {(phoneQ.isLoading || statusQ.isLoading) && <TableSkeleton />}
+        <SheetFreshnessNotice meta={statusQ.data?.meta} />
         {aggregated && "error" in aggregated && (
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
             {aggregated.error}
@@ -11398,6 +11469,7 @@ const BSTAT_TEAM_META: Record<RosterTeam, { label: string; color: string }> = {
   killers: { label: "ReadyMode Killers", color: "#2dd4bf" },
 };
 type BStatRow = { agent: string; agentKey: string; team: RosterTeam; status: string; date: string; fileId: string; source: string; idpCancel: boolean };
+type BackendStatsSubmissionResult = { rows: BStatRow[]; meta?: SheetFreshnessMeta };
 
 // Resolve a raw submission name to a single canonical agent identity. Mirrors
 // aggregate()'s roster-aware resolution but ALSO applies NAME_ALIASES, so Arabic
@@ -11440,7 +11512,7 @@ function bstatRetentionStatus(update: string, context: string): "Retained" | "Ca
   return null;
 }
 
-async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<BStatRow[]> {
+async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<BackendStatsSubmissionResult> {
   const { retainedCancels, fixes, idpHandled, idpCancelRetained } = await loadBackendStatsSheetSources(
     fetchHeaderCsv,
     {
@@ -11506,11 +11578,15 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<BStatR
     add(cell(r, idpCancelAgent), "Retained", d ? toCaliforniaDateStr(d) : cell(r, idpCancelTs), cell(r, idpCancelFile), "idp-cancel-retained", "nsf");
   }
 
-  return out;
+  return {
+    rows: out,
+    meta: mergeSheetFreshness([retainedCancels, fixes, idpHandled, idpCancelRetained]),
+  };
 }
 
 async function fetchBackendStatsSheetForTeam(roster: RosterIndex, team: TeamMode): Promise<SheetData> {
-  const rows = (await fetchBackendStatsSubmissions(roster))
+  const loaded = await fetchBackendStatsSubmissions(roster);
+  const rows = loaded.rows
     .filter((r) => r.team === team)
     .map((r) => ({
       Agent: r.agent,
@@ -11520,7 +11596,7 @@ async function fetchBackendStatsSheetForTeam(roster: RosterIndex, team: TeamMode
       Source: r.source,
       ...(r.idpCancel ? { __sourceTab: "IDP-Cancel-Retained" } : {}),
     }));
-  return { headers: ["Agent", "Status", "Date", "File ID", "Source"], rows };
+  return { headers: ["Agent", "Status", "Date", "File ID", "Source"], rows, meta: loaded.meta };
 }
 
 function fetchRetentionBackendStatsSheet(roster: RosterIndex): Promise<SheetData> {
@@ -11560,11 +11636,12 @@ function BStatKpi({ icon: Icon, label, value, accent }: { icon: typeof Activity;
 
 function BackendStatsPanel() {
   const roster = useRoster();
-  const { data: rows, isLoading, isError, refetch, isFetching } = useQuery<BStatRow[]>({
+  const { data: submissionResult, isLoading, isError, refetch, isFetching } = useQuery<BackendStatsSubmissionResult>({
     queryKey: ["backend-stats-all", roster.version],
     queryFn: () => fetchBackendStatsSubmissions(roster),
     staleTime: 60_000,
   });
+  const rows = submissionResult?.rows;
 
   const today = todayPDT();
   const currentMonth = today.slice(0, 7);
@@ -11700,6 +11777,7 @@ function BackendStatsPanel() {
 
   return (
     <div className="space-y-5">
+      <SheetFreshnessNotice meta={submissionResult?.meta} />
       {/* Title row */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">

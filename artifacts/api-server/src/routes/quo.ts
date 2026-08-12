@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
+import { performance } from "node:perf_hooks";
 import { db, phoneCallsTable, pool } from "@workspace/db";
 import { and, eq, gte, lte, desc, ne } from "drizzle-orm";
 import {
@@ -32,9 +33,22 @@ import {
 } from "../lib/externalIntegrationPolicy.js";
 import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
 import { manualJobKey } from "../lib/durableBackgroundJobs.js";
-import { getDurableRuntimeState, listDurableRuntimeState, putDurableRuntimeState } from "../lib/durableRuntimeState.js";
+import {
+  deleteDurableRuntimeState,
+  getDurableRuntimeState,
+  getDurableRuntimeStateIncludingExpired,
+  listDurableRuntimeState,
+  putDurableRuntimeState,
+} from "../lib/durableRuntimeState.js";
 import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 import { businessDayWindow } from "../lib/businessTime.js";
+import { effectivePhoneCallStatus, loadPhoneStatsAggregates } from "../lib/phoneStatsAggregation.js";
+import {
+  buildLiveStatusSnapshot,
+  isSupersededLiveObservation,
+  LIVE_STATUS_MAX_STALE_MS,
+  type LiveStatusSource,
+} from "../lib/liveStatus.js";
 
 const router: IRouter = Router();
 router.use("/quo", requireAuth);
@@ -70,36 +84,7 @@ function parseDateRange(from: string, to: string): { fromDate: Date; toDate: Dat
   return { fromDate, toDate };
 }
 
-function effectiveCallStatus(row: {
-  status: string;
-  direction: string;
-  durationSeconds: number;
-  postAnswerSeconds?: number | null;
-}): string {
-  if (row.status !== "completed") return row.status;
-
-  if (row.direction === "outgoing") {
-    const pas = row.postAnswerSeconds;
-    if (pas !== null && pas !== undefined) {
-      if (pas >= 60) return "completed";
-      if (pas >= 20) return "voicemail";
-      return "voicemail-brief";
-    }
-
-    const dur = row.durationSeconds;
-    if (dur >= 75) return "completed";
-    if (dur >= 35) return "voicemail";
-    return "voicemail-brief";
-  }
-
-  // Old webhook rows for inbound voicemail were sometimes saved as
-  // completed with zero talk time. Do not count those as answered.
-  if (row.direction === "incoming" && row.durationSeconds === 0 && row.postAnswerSeconds == null) {
-    return "voicemail-brief";
-  }
-
-  return "completed";
-}
+const effectiveCallStatus = effectivePhoneCallStatus;
 
 const QUO_BASE = "https://api.openphone.com/v1";
 // Keep the live scan below Quo's shared workspace allowance. This route may
@@ -404,7 +389,7 @@ router.get("/quo/line-stats", async (req, res) => {
   }
 });
 
-router.get("/quo/stats", async (req, res) => {
+export async function legacyQuoStatsHandler(req: Request, res: Response) {
   try {
     const from = typeof req.query["from"] === "string" ? req.query["from"] : new Date(Date.now() - 30 * 86400000).toISOString();
     const to = typeof req.query["to"] === "string" ? req.query["to"] : new Date().toISOString();
@@ -621,7 +606,238 @@ router.get("/quo/stats", async (req, res) => {
     req.log.error(err, "quo stats error");
     res.status(500).json({ error: "Quo statistics are temporarily unavailable." });
   }
-});
+}
+
+type SerializedPhoneSlot = {
+  outbound: number;
+  inbound: number;
+  answered: number;
+  missed: number;
+  voicemail: number;
+  vmBrief: number;
+  totalCalls: number;
+  talkSeconds: number;
+  uniqueContacts: number;
+};
+
+function roundedTiming(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+const PHONE_STATS_CACHE_TTL_MS = 15_000;
+const PHONE_STATS_CACHE_MAX_ENTRIES = 50;
+const phoneStatsResponseCache = new Map<string, {
+  body: string;
+  createdAt: number;
+  totalRows: number;
+  aggregateRows: number;
+}>();
+
+function phoneStatsCacheKey(req: Request, from: string, to: string): string {
+  const user = req.user!;
+  return JSON.stringify({
+    from,
+    to,
+    userId: user.userId,
+    role: user.role,
+    teamAccess: user.teamAccess ?? null,
+    allowedTabs: user.allowedTabs ?? null,
+    allowedAgents: user.allowedAgents ?? null,
+    lockToToday: user.lockToToday ?? false,
+  });
+}
+
+function putPhoneStatsCache(
+  key: string,
+  value: { body: string; totalRows: number; aggregateRows: number },
+): void {
+  const now = Date.now();
+  for (const [candidate, entry] of phoneStatsResponseCache) {
+    if (now - entry.createdAt > PHONE_STATS_CACHE_TTL_MS) phoneStatsResponseCache.delete(candidate);
+  }
+  if (phoneStatsResponseCache.size >= PHONE_STATS_CACHE_MAX_ENTRIES) {
+    const oldest = phoneStatsResponseCache.keys().next().value as string | undefined;
+    if (oldest) phoneStatsResponseCache.delete(oldest);
+  }
+  phoneStatsResponseCache.set(key, { ...value, createdAt: now });
+}
+
+export async function optimizedQuoStatsHandler(req: Request, res: Response) {
+  const requestStartedAt = performance.now();
+  try {
+    const from = typeof req.query["from"] === "string" ? req.query["from"] : new Date(Date.now() - 30 * 86400000).toISOString();
+    const to = typeof req.query["to"] === "string" ? req.query["to"] : new Date().toISOString();
+    if (!canAccessDateRange(req.user!, [from, to])) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+
+    const range = validateIntegrationDateRange(from, to);
+    if (!range.ok) {
+      res.status(400).json({ error: range.error });
+      return;
+    }
+    const { fromDate, toDate } = parseDateRange(range.from, range.to);
+    // Non-admin scopes depend on the mutable authorization directory. Avoid a
+    // response cache there so a team/agent reassignment takes effect on the
+    // very next request instead of waiting for the TTL.
+    const cacheKey = req.user!.role === "admin"
+      ? phoneStatsCacheKey(req, range.from, range.to)
+      : null;
+    const cached = cacheKey ? phoneStatsResponseCache.get(cacheKey) : undefined;
+    if (cached && Date.now() - cached.createdAt <= PHONE_STATS_CACHE_TTL_MS) {
+      const totalMs = roundedTiming(performance.now() - requestStartedAt);
+      res.setHeader("Server-Timing", `cache;desc=hit;dur=0, app;dur=${totalMs}`);
+      res.setHeader("X-Result-Rows", String(cached.totalRows));
+      res.setHeader("X-Aggregate-Rows", String(cached.aggregateRows));
+      res.setHeader("X-Cache", "hit");
+      res.type("application/json").send(cached.body);
+      return;
+    }
+    if (cached && cacheKey) phoneStatsResponseCache.delete(cacheKey);
+
+    const authorizationStartedAt = performance.now();
+    const [directory, blocklist] = await Promise.all([
+      req.user!.role === "admin" ? Promise.resolve(null) : loadAuthorizationAgentDirectory(),
+      getBlockedNumbers(),
+    ]);
+    const authorizationLoadMs = roundedTiming(performance.now() - authorizationStartedAt);
+
+    const aggregation = await loadPhoneStatsAggregates({
+      fromDate,
+      toDate,
+      timeZone: OPERATIONAL_CONFIG.businessTimeZone,
+      blockedNumbers: blocklist,
+      resolveDimension: (row) => {
+        const agentName = canonicalAgentName(row.rawAgentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
+        const rawTeam = agentTeam(agentName) ?? row.lineTeam;
+        const fallbackTeam = rawTeam === "retention" || rawTeam === "nsf" || rawTeam === "cs" ? rawTeam : null;
+        return {
+          agentName,
+          team: fallbackTeam ?? "other",
+          authorized: directory ? canAccessMetricAgent(req.user!, agentName, directory, fallbackTeam) : true,
+        };
+      },
+    });
+
+    const syncStartedAt = performance.now();
+    const syncState = await getSyncState();
+    const syncQueryMs = roundedTiming(performance.now() - syncStartedAt);
+    const databaseMs = roundedTiming(aggregation.timings.databaseMs + syncQueryMs);
+
+    const transformStartedAt = performance.now();
+    const teamStats: Record<string, Record<string, Record<string, SerializedPhoneSlot>>> = {
+      retention: {}, nsf: {}, cs: {}, other: {},
+    };
+    const allAgentStats: Record<string, Record<string, SerializedPhoneSlot>> = {};
+    const lineInbound: Record<string, Record<string, {
+      lineId: string;
+      lineName: string;
+      received: number;
+      answered: number;
+      missed: number;
+      voicemail: number;
+    }>> = {};
+    const agentLastCall: Record<string, Record<string, string>> = {};
+    const allAgentLastCall: Record<string, string> = {};
+    let totalRows = 0;
+
+    for (const row of aggregation.rows) {
+      if (row.kind === "meta") {
+        totalRows = row.totalCalls;
+        continue;
+      }
+      if (row.kind === "line") {
+        if (!row.lineId || !row.lineName || !row.day) continue;
+        if (!lineInbound[row.lineId]) lineInbound[row.lineId] = {};
+        lineInbound[row.lineId][row.day] = {
+          lineId: row.lineId,
+          lineName: row.lineName,
+          received: row.totalCalls,
+          answered: row.answered,
+          missed: row.missed,
+          voicemail: row.voicemail,
+        };
+        continue;
+      }
+      if (!row.agentName || !row.day) continue;
+      const slot: SerializedPhoneSlot = {
+        outbound: row.outbound,
+        inbound: row.inbound,
+        answered: row.answered,
+        missed: row.missed,
+        voicemail: row.voicemail,
+        vmBrief: row.vmBrief,
+        totalCalls: row.totalCalls,
+        talkSeconds: row.talkSeconds,
+        uniqueContacts: row.uniqueContacts,
+      };
+      if (row.kind === "team") {
+        const team = row.resolvedTeam ?? "other";
+        if (!teamStats[team]) teamStats[team] = {};
+        if (!teamStats[team][row.agentName]) teamStats[team][row.agentName] = {};
+        teamStats[team][row.agentName][row.day] = slot;
+        if (row.lastCall) {
+          if (!agentLastCall[team]) agentLastCall[team] = {};
+          const previous = agentLastCall[team][row.agentName];
+          if (!previous || row.lastCall.getTime() > Date.parse(previous)) {
+            agentLastCall[team][row.agentName] = row.lastCall.toISOString();
+          }
+        }
+      } else {
+        if (!allAgentStats[row.agentName]) allAgentStats[row.agentName] = {};
+        allAgentStats[row.agentName][row.day] = slot;
+        if (row.lastCall) {
+          const previous = allAgentLastCall[row.agentName];
+          if (!previous || row.lastCall.getTime() > Date.parse(previous)) {
+            allAgentLastCall[row.agentName] = row.lastCall.toISOString();
+          }
+        }
+      }
+    }
+
+    const payload = {
+      teamStats,
+      allAgentStats,
+      lineInbound,
+      agentLastCall,
+      allAgentLastCall,
+      totalRows,
+      lastSyncedAt: syncState?.lastSyncedAt ?? null,
+      isSyncing: syncState?.isSyncing ?? false,
+    };
+    const transformMs = roundedTiming(performance.now() - transformStartedAt);
+    const serializeStartedAt = performance.now();
+    const body = JSON.stringify(payload);
+    const serializeMs = roundedTiming(performance.now() - serializeStartedAt);
+    const totalMs = roundedTiming(performance.now() - requestStartedAt);
+    if (cacheKey) {
+      putPhoneStatsCache(cacheKey, {
+        body,
+        totalRows,
+        aggregateRows: aggregation.rows.length,
+      });
+    }
+
+    res.setHeader("Server-Timing", [
+      `authz;dur=${authorizationLoadMs}`,
+      `authn;dur=${req.authTimingMs ?? 0}`,
+      `db;dur=${databaseMs}`,
+      `transform;dur=${transformMs}`,
+      `serialize;dur=${serializeMs}`,
+      `app;dur=${totalMs}`,
+    ].join(", "));
+    res.setHeader("X-Result-Rows", String(totalRows));
+    res.setHeader("X-Aggregate-Rows", String(aggregation.rows.length));
+    res.setHeader("X-Cache", cacheKey ? "miss" : "bypass");
+    res.type("application/json").send(body);
+  } catch (err) {
+    req.log.error(err, "quo stats error");
+    res.status(500).json({ error: "Quo statistics are temporarily unavailable." });
+  }
+}
+
+router.get("/quo/stats", optimizedQuoStatsHandler);
 
 router.post("/quo/sync", requireRole("admin"), async (req, res) => {
   try {
@@ -681,6 +897,7 @@ const LIVE_POLL_LEASE_MS = 105_000;
 type LivePollSnapshot = {
   active: string[];
   agentCalls: Array<{ agentName: string; participant: string }>;
+  sourceTimestamp?: string;
 };
 
 class LivePollRefreshInProgressError extends Error {
@@ -774,6 +991,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
     const newParticipants = new Map<string, string>();
     const completedRows: QuoPhoneCallRow[] = [];
     const seenCompletedCallIds = new Set<string>();
+    const terminalCallIds = new Set<string>();
 
     // For each recently-active conversation, check for in-progress calls
     const tasks = (convRes.data ?? [])
@@ -806,6 +1024,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
           const line = lineMap.get(c.phoneNumberId);
           if (call.completedAt && line && !seenCompletedCallIds.has(call.id)) {
             seenCompletedCallIds.add(call.id);
+            terminalCallIds.add(call.id);
             completedRows.push(buildQuoPhoneCallRow(call, line, participant, userMap));
           }
 
@@ -865,6 +1084,12 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
     await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
 
     const persisted = await upsertQuoPhoneCallRows(completedRows, signal);
+    if (terminalCallIds.size > 0) {
+      await Promise.allSettled([...terminalCallIds].map(async (callId) => {
+        liveWebhookCalls.delete(callId);
+        await deleteDurableRuntimeState(`quo:webhook-live:${callId}`);
+      }));
+    }
     if (persisted.inserted > 0 || persisted.errors > 0) {
       logger.info(
         { completedCalls: completedRows.length, persisted: persisted.inserted, errors: persisted.errors },
@@ -880,6 +1105,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
     const snapshot = {
       active: [...newLive],
       agentCalls: [...newParticipants.entries()].map(([agentName, participant]) => ({ agentName, participant })),
+      sourceTimestamp: new Date().toISOString(),
     };
     await putDurableRuntimeState(LIVE_POLL_STATE_KEY, snapshot, LIVE_POLL_TTL_MS);
 
@@ -901,13 +1127,9 @@ async function requestDrivenLivePoll(): Promise<LivePollSnapshot> {
 
   const leaseOwner = await tryAcquireLivePollLease();
   if (!leaseOwner) {
-    // Another Vercel instance is already refreshing. Wait for its durable
-    // snapshot; the expiring row lease self-recovers if that instance freezes.
-    for (let attempt = 0; attempt < 180; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const refreshed = await getDurableRuntimeState<LivePollSnapshot>(LIVE_POLL_STATE_KEY);
-      if (refreshed) return refreshed.value;
-    }
+    // A different serverless instance owns the durable refresh. The lightweight
+    // status path keeps serving the bounded last-known snapshot while that
+    // request finishes; callers must never queue behind a provider scan.
     throw new LivePollRefreshInProgressError();
   }
 
@@ -924,7 +1146,7 @@ async function requestDrivenLivePoll(): Promise<LivePollSnapshot> {
   return refreshed.value;
 }
 
-router.get("/quo/live", async (req, res) => {
+export async function legacyQuoLiveHandler(req: Request, res: Response) {
   try {
     const pollSnapshot = await requestDrivenLivePoll();
     const durableWebhookCalls = await listDurableRuntimeState<{
@@ -1007,6 +1229,179 @@ router.get("/quo/live", async (req, res) => {
       return;
     }
     res.status(500).json({ error: "Quo live calls are temporarily unavailable." });
+  }
+}
+
+type LiveStatusPayload = {
+  active: string[];
+  agentCalls: Array<{ agentName: string; participant: string | null }>;
+  webhookActive: boolean;
+  sourceTimestamp: string | null;
+  observedAt: string;
+  lastSuccessfulUpdateAt: string | null;
+  maxStaleAt: string | null;
+  fresh: boolean;
+  stale: boolean;
+};
+
+export async function optimizedQuoLiveHandler(req: Request, res: Response) {
+  const requestStartedAt = performance.now();
+  try {
+    const observedAt = new Date();
+    const recentFloor = new Date(observedAt.getTime() - LIVE_STATUS_MAX_STALE_MS);
+    const databaseStartedAt = performance.now();
+    const [pollState, durableWebhookCalls, endedWebhookCalls, webhookObservation, dbRows] = await Promise.all([
+      getDurableRuntimeStateIncludingExpired<LivePollSnapshot>(LIVE_POLL_STATE_KEY),
+      listDurableRuntimeState<{
+        agentName: string;
+        participant: string;
+        ringingSince: string;
+      }>("quo:webhook-live:"),
+      listDurableRuntimeState<{
+        agentName: string;
+        sourceTimestamp: string;
+      }>("quo:webhook-ended:"),
+      getDurableRuntimeStateIncludingExpired<{ sourceTimestamp: string }>("quo:webhook-observation"),
+      db.select({
+        agentName: phoneCallsTable.agentName,
+        participant: phoneCallsTable.participant,
+        syncedAt: phoneCallsTable.syncedAt,
+      })
+        .from(phoneCallsTable)
+        .where(and(gte(phoneCallsTable.syncedAt, recentFloor), eq(phoneCallsTable.status, "in-progress"))),
+    ]);
+    const databaseMs = roundedTiming(performance.now() - databaseStartedAt);
+
+    const observationTimes = [
+      pollState?.updatedAt,
+      webhookObservation?.updatedAt,
+      ...durableWebhookCalls.map((entry) => entry.updatedAt),
+      ...endedWebhookCalls.map((entry) => entry.updatedAt),
+      ...[...liveWebhookCalls.values()].map((entry) => entry.ringingSince),
+      ...dbRows.map((entry) => entry.syncedAt),
+    ].filter((value): value is Date => value instanceof Date && Number.isFinite(value.getTime()));
+    const liveSources: LiveStatusSource[] = [];
+    const latestEndByAgent = new Map<string, Date>();
+    for (const entry of endedWebhookCalls) {
+      const previous = latestEndByAgent.get(entry.value.agentName);
+      if (!previous || entry.updatedAt > previous) {
+        latestEndByAgent.set(entry.value.agentName, entry.updatedAt);
+      }
+    }
+    const addSource = (agentName: string, participant: string | null, sourceObservedAt: Date) => {
+      liveSources.push({ agentName, participant, observedAt: sourceObservedAt });
+    };
+    const pollUsable = pollState
+      ? observedAt.getTime() - pollState.updatedAt.getTime() <= LIVE_STATUS_MAX_STALE_MS
+      : false;
+
+    for (const { agentName, participant, ringingSince } of liveWebhookCalls.values()) {
+      addSource(agentName, participant || null, ringingSince);
+    }
+    for (const entry of durableWebhookCalls) {
+      addSource(entry.value.agentName, entry.value.participant || null, entry.updatedAt);
+    }
+    if (pollUsable && pollState) {
+      const participantByAgent = new Map(pollState.value.agentCalls.map((call) => [call.agentName, call.participant]));
+      for (const agentName of pollState.value.active) {
+        if (isSupersededLiveObservation(pollState.updatedAt, latestEndByAgent.get(agentName))) continue;
+        addSource(agentName, participantByAgent.get(agentName) ?? null, pollState.updatedAt);
+      }
+    }
+    for (const row of dbRows) {
+      if (row.agentName && !isSupersededLiveObservation(row.syncedAt, latestEndByAgent.get(row.agentName))) {
+        addSource(row.agentName, row.participant || null, row.syncedAt);
+      }
+    }
+    const merged = buildLiveStatusSnapshot(observedAt, liveSources);
+    const lastSuccessfulUpdate = observationTimes.length > 0
+      ? new Date(Math.max(...observationTimes.map((value) => value.getTime())))
+      : merged.lastSuccessfulUpdateAt;
+    const stale = lastSuccessfulUpdate
+      ? observedAt.getTime() - lastSuccessfulUpdate.getTime() > LIVE_POLL_TTL_MS
+      : true;
+    const usable = lastSuccessfulUpdate
+      ? observedAt.getTime() - lastSuccessfulUpdate.getTime() <= LIVE_STATUS_MAX_STALE_MS
+      : false;
+
+    const authorizationStartedAt = performance.now();
+    let scopedActive = usable ? merged.active : [];
+    let scopedCalls = usable ? merged.agentCalls : [];
+    let scopedWebhookActive = usable && (liveWebhookCalls.size > 0 || durableWebhookCalls.length > 0);
+    if (req.user!.role !== "admin") {
+      const directory = await loadAuthorizationAgentDirectory();
+      scopedActive = scopedActive.filter((agentName) => canAccessLiveAgent(req.user!, agentName, directory));
+      scopedCalls = scopedCalls.filter(({ agentName }) => canAccessLiveAgent(req.user!, agentName, directory));
+      scopedWebhookActive = usable && [
+        ...[...liveWebhookCalls.values()].map(({ agentName }) => agentName),
+        ...durableWebhookCalls.map(({ value }) => value.agentName),
+      ].some((agentName) => canAccessLiveAgent(req.user!, agentName, directory));
+    }
+    const authorizationMs = roundedTiming(performance.now() - authorizationStartedAt);
+
+    const sourceTimestampCandidates = [
+      pollUsable ? pollState?.value.sourceTimestamp : null,
+      webhookObservation?.value.sourceTimestamp,
+      ...durableWebhookCalls.map((entry) => entry.value.ringingSince),
+      ...[...liveWebhookCalls.values()].map((entry) => entry.ringingSince.toISOString()),
+      ...dbRows.map((entry) => entry.syncedAt.toISOString()),
+    ].flatMap((value) => {
+      if (!value) return [];
+      const timestamp = Date.parse(value);
+      return Number.isFinite(timestamp) ? [timestamp] : [];
+    });
+    const sourceTimestamp = sourceTimestampCandidates.length > 0
+      ? new Date(Math.max(...sourceTimestampCandidates)).toISOString()
+      : lastSuccessfulUpdate?.toISOString() ?? null;
+    const payload: LiveStatusPayload = {
+      active: scopedActive,
+      agentCalls: scopedCalls,
+      webhookActive: scopedWebhookActive,
+      sourceTimestamp,
+      observedAt: observedAt.toISOString(),
+      lastSuccessfulUpdateAt: lastSuccessfulUpdate?.toISOString() ?? null,
+      maxStaleAt: lastSuccessfulUpdate
+        ? new Date(lastSuccessfulUpdate.getTime() + LIVE_STATUS_MAX_STALE_MS).toISOString()
+        : null,
+      fresh: !stale,
+      stale,
+    };
+    const serializeStartedAt = performance.now();
+    const body = JSON.stringify(payload);
+    const serializeMs = roundedTiming(performance.now() - serializeStartedAt);
+    const totalMs = roundedTiming(performance.now() - requestStartedAt);
+    res.set("Cache-Control", "no-store");
+    res.set("X-Data-Stale", stale ? "true" : "false");
+    res.set("Server-Timing", [
+      `db;dur=${databaseMs}`,
+      `authz;dur=${authorizationMs}`,
+      `serialize;dur=${serializeMs}`,
+      `app;dur=${totalMs}`,
+    ].join(", "));
+    res.type("application/json").send(body);
+  } catch (err) {
+    req.log.error(err, "quo live state error");
+    res.status(500).json({ error: "Quo live calls are temporarily unavailable." });
+  }
+}
+
+router.get("/quo/live", optimizedQuoLiveHandler);
+
+router.get("/quo/live/refresh", async (req, res) => {
+  const startedAt = performance.now();
+  try {
+    await requestDrivenLivePoll();
+    res.set("Cache-Control", "no-store");
+    res.set("Server-Timing", `provider;dur=${roundedTiming(performance.now() - startedAt)}`);
+    res.status(204).end();
+  } catch (err) {
+    if (err instanceof LivePollRefreshInProgressError) {
+      res.set("Retry-After", "5");
+      res.status(202).json({ refreshing: true });
+      return;
+    }
+    req.log.error(err, "quo live refresh error");
+    res.status(502).json({ error: "Quo live refresh failed." });
   }
 });
 
