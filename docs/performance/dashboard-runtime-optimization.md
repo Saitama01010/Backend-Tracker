@@ -40,6 +40,7 @@ The measured initial waterfall was the four Sheet downloads plus ReadyMode, Quo 
 2. Sheet responses repeated every header name in every row. The default response remains unchanged; the dashboard opts in to `rows-v1`, which sends columns once and row arrays, reconstructing the exact legacy objects in the browser. The server caches unscoped source snapshots for 60 seconds, coalesces concurrent refreshes, parses once, applies authorization on every response, supports stable ETags, and serves a visibly marked result for no longer than five minutes after refresh failure.
 3. `GET /api/quo/live` previously blocked on a provider conversation/call scan. It now reads only durable webhook/poll state and the partial live-state index. A separate coalesced refresh retains all previous provider throttle, retry, lease, timeout, participant, and terminal persistence behavior. Completion tombstones prevent an older poll/DB row from resurrecting a call that just ended.
 4. The frontend now requests the compact Sheet format, starts the four independent Sheet sources in parallel, preserves previous data during refresh, shows stale/last-successful state, and polls only the lightweight live endpoint at five seconds. Polling pauses while hidden and React Query refetches on visibility/focus return. Existing heavy tabs remain lazy/on-demand and large tables retain their bounded pagination/content-visibility behavior.
+5. `GET /api/readymode/stats` re-read the bundled report, fetched the live CSV, parsed both, and queried uploads on every request. Those source reads are now coalesced and cached for 60 seconds by exact date range, with authorization still applied after the cache on every request. Successful uploads invalidate the cache immediately; a failed refresh can retain a visibly marked result for at most five minutes. Provider, database, parse, authorization, serialization, cache, and row-count evidence is returned in safe response headers.
 
 ## Measured evidence before merge
 
@@ -67,6 +68,7 @@ Important initial endpoint timing samples on the starting deployment:
 | `/api/quo/live` application log | 30 | 84 ms | 4,776 ms | latest 30 completed `quo live` observations after prior warm traffic; no errors |
 | `/api/sheet` (per source) | 60 | 960.0 ms | 1,812.1 ms | p50 141,484 B and p95 368,526 B transferred; p50 1,765,325 B and p95 4,595,642 B decoded |
 | `/api/readymode/stats` | 14 | 744.4 ms | 3,243.3 ms | 1,944 B decoded in the fixed-July trace |
+| `/api/readymode/stats` application log | 30 | 692 ms | 2,500 ms | 258 ms minimum, 5,452 ms maximum, no errors; unique request IDs after prior warm traffic |
 | `/api/team-agents` | 15 | 268.0 ms | 363.8 ms | 8,581 B decoded |
 | `/api/auth/me` | 15 | 261.8 ms | 366.9 ms | small JSON |
 
