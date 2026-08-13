@@ -40,7 +40,7 @@ import companyLogo from "./assets/company-logo.jpeg";
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion, MotionConfig, useReducedMotion, type Variants } from "framer-motion";
-import { createContext, useContext, Fragment, useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { createContext, useContext, Fragment, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -11918,6 +11918,49 @@ function BackendStatsPanel() {
 
 type DashView = "metrics" | "attendance" | "phones" | "backend-stats";
 
+/**
+ * Render only the selected metrics panel. Keeping this switch outside Dashboard
+ * isolates the expensive panel tree from urgent navigation updates, while
+ * useDeferredValue in Dashboard lets the selected-tab indicator paint before a
+ * cached sheet/table view performs its mount-time aggregation.
+ */
+const ActiveMetricsPanel = React.memo(function ActiveMetricsPanel({
+  tab,
+  lockedTeam,
+  canRefreshOnboarding,
+}: {
+  tab: string;
+  lockedTeam: TeamAccess | null;
+  canRefreshOnboarding: boolean;
+}) {
+  switch (tab) {
+    case "retention":
+      return <RetentionPanel />;
+    case "cs":
+      return <CSPanel />;
+    case "nsf":
+      return <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" statusQueryFn={fetchNSFBackendStatsSheet} />;
+    case "rmk":
+      return <ReadyModeKillersPanel />;
+    case "missed-no-cb":
+      return <MissedNoCBPanel lockedTeam={lockedTeam} />;
+    case "callback-review":
+      return <CallbackReviewPanel />;
+    case "violations":
+      return <ViolationsPanel />;
+    case "qa":
+      return <QAPanel />;
+    case "onboarding":
+      return (
+        <React.Suspense fallback={<Skeleton className="h-[420px] rounded-xl" aria-label="Loading onboarding" />}>
+          <OnboardingPanel canRefresh={canRefreshOnboarding} />
+        </React.Suspense>
+      );
+    default:
+      return null;
+  }
+});
+
 function Dashboard() {
   const { user, token, logout, can, canSeeTab } = useUser();
   const qc = useQueryClient();
@@ -11972,6 +12015,8 @@ function Dashboard() {
   const metricsTabs = ALL_TABS.filter((t) => t.value !== "backend-stats" && canSeeTab(t.value));
   const defaultTab = ta ?? "retention";
   const [metricsTab, setMetricsTab] = useState(metricsTabs[0]?.value ?? defaultTab);
+  const deferredMetricsTab = useDeferredValue(metricsTab);
+  const metricsTabPending = deferredMetricsTab !== metricsTab;
   const metricsTabValues = metricsTabs.map((t) => t.value).join("|");
   const viewOptions: AnimatedSelectOption<DashView>[] = [
     ...(can("view_metrics") ? [{
@@ -12138,53 +12183,18 @@ function Dashboard() {
         ) : view === "metrics" && can("view_metrics") ? (
           <Tabs value={metricsTab} onValueChange={setMetricsTab} className="space-y-6">
             <AnimatedMetricsNav tabs={metricsTabs} value={metricsTab} onChange={setMetricsTab} />
-            {canSeeTab("retention") && (
-              <TabsContent value="retention">
-                <RetentionPanel />
-              </TabsContent>
+            {metricsTabPending && (
+              <div className="sr-only" role="status" aria-live="polite">
+                Loading {metricsTabs.find((tab) => tab.value === metricsTab)?.label ?? "dashboard view"}
+              </div>
             )}
-            {canSeeTab("cs") && (
-              <TabsContent value="cs">
-                <CSPanel />
-              </TabsContent>
-            )}
-            {canSeeTab("nsf") && (
-              <TabsContent value="nsf">
-                <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" statusQueryFn={fetchNSFBackendStatsSheet} />
-              </TabsContent>
-            )}
-            {canSeeTab("rmk") && (
-              <TabsContent value="rmk">
-                <ReadyModeKillersPanel />
-              </TabsContent>
-            )}
-            {canSeeTab("missed-no-cb") && (
-              <TabsContent value="missed-no-cb">
-                <MissedNoCBPanel lockedTeam={ta} />
-              </TabsContent>
-            )}
-            {canSeeTab("callback-review") && (
-              <TabsContent value="callback-review">
-                <CallbackReviewPanel />
-              </TabsContent>
-            )}
-            {canSeeTab("violations") && (
-              <TabsContent value="violations">
-                <ViolationsPanel />
-              </TabsContent>
-            )}
-            {canSeeTab("qa") && (
-              <TabsContent value="qa">
-                <QAPanel />
-              </TabsContent>
-            )}
-            {canSeeTab("onboarding") && (
-              <TabsContent value="onboarding">
-                <React.Suspense fallback={<Skeleton className="h-[420px] rounded-xl" aria-label="Loading onboarding" />}>
-                  <OnboardingPanel canRefresh={user.role === "admin"} />
-                </React.Suspense>
-              </TabsContent>
-            )}
+            <div aria-busy={metricsTabPending} data-testid="active-metrics-panel" data-active-tab={deferredMetricsTab}>
+              <ActiveMetricsPanel
+                tab={deferredMetricsTab}
+                lockedTeam={ta}
+                canRefreshOnboarding={user.role === "admin"}
+              />
+            </div>
           </Tabs>
         ) : view === "attendance" && can("view_attendance") ? (
           <AttendancePanel />
