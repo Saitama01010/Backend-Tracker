@@ -195,10 +195,10 @@ named modules rather than being hidden behind generic wrappers.
   raw / 261,492 gzip bytes (unchanged known chunk/sourcemap warnings remain).
 - Dependency audit: no high/critical advisories.
 - GitHub dependency audit, OSV, and Gitleaks secret scan: pass.
-- Repository CodeQL workflow: pass on the original PR revisions; additional PR
-  alerts against test-only URL-source matching were corrected and must be green
-  on the final report revision.
-- Vercel Preview build and unauthenticated `/api/healthz`: pass (HTTP 200).
+- Final GitHub CI and Security workflows: pass. Repository CodeQL and GitHub
+  Advanced Security PR CodeQL: pass on the final release-readiness reassessment
+  of code head `223fc1792939598d3a3c7b393ed5ea52e26db990`.
+- Vercel Preview: READY. Its unauthenticated `/api/healthz` returned HTTP 200.
 - Guarded live smoke remained skipped because no live-smoke authorization was
   supplied; the guard was not bypassed.
 
@@ -221,6 +221,21 @@ named modules rather than being hidden behind generic wrappers.
   suite, frontend parsers, security/API tests, and XLSX response tests.
 - No frontend source changed. Sheets, ReadyMode, and VoS/PBX route bodies are
   byte-for-byte unchanged from `origin/main`.
+- `routes/quoSync.ts` was relocated to `integrations/quo/sync.ts`. After
+  normalizing the two required relative import paths, the 692-line source is
+  exactly equal to the pre-refactor implementation. Every former caller now
+  resolves to the canonical integration module, and no duplicate old
+  implementation remains active.
+- Standalone startup preserves port/configuration validation, listener failure
+  handling, HTTP server policy, startup-database task order, and the exact
+  `RESET_ADMIN_PASSWORD_ON_BOOT=true` password-update/session-revocation
+  semantics. The built three-line `index.ts` booted outside Vercel and returned
+  HTTP 200 from `/api/healthz`.
+- The unchanged Vercel entrypoint imports `dist/app.mjs`, not the standalone
+  startup module. `app.ts`, `vercel.json`, the database package, and all
+  migrations are unchanged; builds and startup do not run migrations, and
+  standalone seed/reset tasks cannot execute during a Vercel build or
+  serverless application import.
 
 ## Performance
 
@@ -245,7 +260,8 @@ Current deployed Production application-log baselines remain 36/656 ms for
 database index, scoped caches, durable live state, or five-second on-call client
 architecture.
 
-Two required after measurements are not available:
+Two initially requested after measurements were unavailable during the first
+validation pass:
 
 - Google Sheets: the local environment has no service-account credentials and
   the PR Preview has no general preview `DATABASE_URL`. The Sheets route is
@@ -253,6 +269,35 @@ Two required after measurements are not available:
   fabricated.
 - PBX/on-call: the locally stored VoS credentials currently receive provider
   HTTP 401. The VoS route is unchanged, but branch p50/p95 cannot be claimed.
+
+The final release-readiness reassessment retained that historical limitation
+without treating missing credentials as evidence of a regression. Static
+diff/import-graph analysis proved:
+
+- `/api/sheet` -> `routes/sheets.ts` -> authentication, authorization scope,
+  and external-integration policy: the route and its 12-file local material
+  dependency closure are unchanged.
+- Other Google-Sheet-backed dashboard paths remain unchanged:
+  `/api/csv-proxy` has an unchanged 8-file closure and
+  `/api/readymode/stats` has an unchanged 13-file closure, including its
+  database and provider-policy dependencies.
+- `/api/vos/live` and `/api/vos/stats` -> `routes/vos.ts` -> database,
+  authorization/scope, background-job/runtime-state, operational-configuration,
+  business-time, ReadyMode-queue, and missed-call-scope dependencies: the route
+  and its 18-file local material dependency closure are unchanged.
+
+No frontend, shared request-path, database-package, migration, or provider
+dependency-version change plausibly affects those endpoints. Their missing
+authenticated branch p50/p95 measurements are therefore **NOT REQUIRED FOR
+THIS REFACTOR**.
+
+The lightweight current on-call path was directly revalidated. A fresh
+20-client `/api/quo/live` load run against 220,000 sanitized calls completed 60
+measured requests with zero errors at 378.9 ms p50 and 415.1 ms p95, below its
+500 ms p95 gate. Together with the Quo relocation comparison,
+characterization/API/security tests, and unchanged live-status/KPI helpers,
+this establishes behavior and performance equivalence for the changed import
+closure.
 
 ## Remaining architecture debt
 
@@ -277,9 +322,11 @@ Two required after measurements are not available:
 ## Recommendation
 
 The structural refactor is behaviorally strong, schema-free, reviewable, and
-green on local/CI correctness gates. The PR must remain draft and unmerged until
-the final CodeQL rerun is green and authenticated branch p50/p95 evidence is
-captured for Google Sheets and PBX/on-call with valid non-Production test
-configuration or another authorized read-only method.
+green on local correctness, CI, Security, CodeQL, Vercel Preview, and health
+gates. The final dependency-equivalence assessment proves that the initially
+unavailable Sheets and VoS/PBX measurements are not required for this refactor;
+`/api/quo/live`, the Quo relocation, and standalone/serverless startup were
+directly revalidated. Actual release blockers are none. The PR is ready for
+review and deployment but remains unmerged pending the explicit merge decision.
 
-ARCHITECTURE CLEANUP NOT READY
+ARCHITECTURE CLEANUP READY FOR DEPLOYMENT
