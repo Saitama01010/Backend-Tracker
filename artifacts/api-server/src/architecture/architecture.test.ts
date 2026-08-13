@@ -72,8 +72,7 @@ test("Quo provider operations with established boundaries stay out of HTTP route
   ]);
   for (const route of [onboarding, liveTransfers]) {
     assert.match(route, /integrations\/quo\/transcripts\.js/);
-    assert.equal(route.includes("api.openphone.com/v1"), false);
-    assert.doesNotMatch(route, /fetch\([^\n]*call-transcripts/);
+    assert.doesNotMatch(route, /call-transcripts/);
   }
   assert.match(backgroundHandlers, /integrations\/quo\/sync\.js/);
   await assert.rejects(access(path.join(sourceRoot, "routes/quoSync.ts")));
@@ -125,7 +124,7 @@ test("live-transfer reporting keeps HTTP concerns out of its application module"
     assert.match(route, new RegExp(`\\b${operation}\\b`));
   }
   assert.doesNotMatch(route, /@workspace\/db|drizzle-orm|ExcelJS|@anthropic-ai/);
-  assert.equal(route.includes("api.openphone.com"), false);
+  assert.doesNotMatch(route, /\bfetch\s*\(/);
   assert.doesNotMatch(service, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
   assert.doesNotMatch(service, /router\.(?:get|post|put|patch|delete)\(/);
   assert.match(backgroundHandlers, /modules\/transfers\/liveTransfers\.js/);

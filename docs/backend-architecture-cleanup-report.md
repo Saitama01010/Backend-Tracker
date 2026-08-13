@@ -77,10 +77,10 @@ Express app
 | Inconsistency | 74 production environment reads and mixed validation/error approaches | Historical feature-by-feature development; broad consolidation could change optional-provider/error contracts | Reduced proven reads only; broader configuration/error/validation standardization is deferred |
 | Uncertain compatibility | `csvProxy.ts`, legacy KPI handlers, date/status compatibility branches | Static non-use is not proof for registered APIs, performance oracles, or historical semantics | Retained and documented; no speculative deletion |
 
-CodeQL initially flagged a regex in the new architecture test as a high-severity
-unanchored URL check. It searched source text and was not runtime validation, but
-the ambiguous regex was still replaced with an exact substring assertion. The
-alert was not dismissed.
+CodeQL initially flagged URL-source matching in the new architecture test as a
+high-severity URL-validation pattern. It was not runtime validation, but URL
+matching was removed in favor of direct provider-operation/fetch boundary
+assertions. The alerts were not dismissed.
 
 ## Architecture after
 
@@ -195,8 +195,9 @@ named modules rather than being hidden behind generic wrappers.
   raw / 261,492 gzip bytes (unchanged known chunk/sourcemap warnings remain).
 - Dependency audit: no high/critical advisories.
 - GitHub dependency audit, OSV, and Gitleaks secret scan: pass.
-- Repository CodeQL workflow: pass on the original PR revision; the additional
-  PR alert was corrected and must be green on the final report revision.
+- Repository CodeQL workflow: pass on the original PR revisions; additional PR
+  alerts against test-only URL-source matching were corrected and must be green
+  on the final report revision.
 - Vercel Preview build and unauthenticated `/api/healthz`: pass (HTTP 200).
 - Guarded live smoke remained skipped because no live-smoke authorization was
   supplied; the guard was not bypassed.
