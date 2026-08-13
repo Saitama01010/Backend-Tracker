@@ -146,6 +146,16 @@
       "longTasksOver200Ms": 0,
       "largestLongTaskMs": 164,
       "heapDeltaBytes": 1026033
+    },
+    "fiveMinuteStability": {
+      "durationMs": 318264.3,
+      "heapStartBytes": 38783856,
+      "heapEndBytes": 49330779,
+      "heapDeltaBytes": 10546923,
+      "longTasksOver50Ms": 6,
+      "longTasksOver200Ms": 0,
+      "largestLongTaskMs": 185,
+      "uncaughtErrors": 0
     }
   },
   "postgres16": {
