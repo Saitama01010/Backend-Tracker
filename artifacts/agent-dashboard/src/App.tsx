@@ -2767,6 +2767,22 @@ function aggregate(
 
   const rosterTeamForMode: RosterTeam | null =
     mode === "retention" || mode === "nsf" || mode === "cs" ? mode : mode === "rmk" ? "killers" : null;
+  const resolvedAgentCache = new Map<string, RosterAgent | null>();
+  const agentCandidateCache = new Map<string, string[]>();
+  const resolveStatusAgent = (rawAgent: string): RosterAgent | null => {
+    if (!roster) return null;
+    if (resolvedAgentCache.has(rawAgent)) return resolvedAgentCache.get(rawAgent) ?? null;
+    const resolved = resolveSheetAgent(rawAgent, roster);
+    resolvedAgentCache.set(rawAgent, resolved);
+    return resolved;
+  };
+  const candidatesForAgent = (rawAgent: string): string[] => {
+    const cached = agentCandidateCache.get(rawAgent);
+    if (cached) return cached;
+    const candidates = sheetAgentCandidates(rawAgent);
+    agentCandidateCache.set(rawAgent, candidates);
+    return candidates;
+  };
 
   // Filter status rows
   const filteredStatus = status.rows.filter((r) => {
@@ -2774,7 +2790,7 @@ function aggregate(
     if (!agent) return false;
     if (/total$/i.test(agent)) return false;
     if (roster && rosterTeamForMode) {
-      const resolved = resolveSheetAgent(agent, roster);
+      const resolved = resolveStatusAgent(agent);
       const belongsToTeam = resolved?.team === rosterTeamForMode && resolved.active !== false;
       if (!belongsToTeam) return false;
     }
@@ -2819,15 +2835,15 @@ function aggregate(
   const ensureAgent = (a: string, sourceRow?: Row): AgentBreakdown => {
     // Sheet-specific identity: rows like "Anna Stone / Anisa" or
     // "Anisa-Anna Stone-2382" roll up under the canonical roster name.
-    const rosterHit = roster ? resolveSheetAgent(a, roster) : null;
+    const rosterHit = resolveStatusAgent(a);
     if (roster && !rosterHit) {
-      debugSheetAgentResolution(`aggregate:${mode}`, a, sheetAgentCandidates(a), null, "unresolved-before-count", {
+      debugSheetAgentResolution(`aggregate:${mode}`, a, candidatesForAgent(a), null, "unresolved-before-count", {
         agentColumn,
         row: sourceRow,
         counted: true,
       });
     } else if (rosterHit) {
-      debugSheetAgentResolution(`aggregate:${mode}`, a, sheetAgentCandidates(a), rosterHit, "counted-under-canonical-agent", {
+      debugSheetAgentResolution(`aggregate:${mode}`, a, candidatesForAgent(a), rosterHit, "counted-under-canonical-agent", {
         agentColumn,
         row: sourceRow,
         counted: true,
@@ -8260,6 +8276,7 @@ async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetD
   const teamNames = rosterTeamMembers(RMK_AGENT_NAMES, roster, "killers");
   const rows: Row[] = [];
   const seen = new Set<string>();
+  const resolvedKillerAgentCache = new Map<string, { isKiller: boolean; display: string }>();
 
   const addSheetRow = (
     row: Row,
@@ -8274,16 +8291,22 @@ async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetD
     const fileCol = sheetFileIdColumn(sheet.headers);
     const agentRaw = sheetAgentValue(row, agentCol);
     if (!agentRaw) return;
-    const rosterHit = resolveSheetAgent(agentRaw, roster);
-    const legacyKey = resolveKillerAgentKey(agentRaw);
-    const isKiller =
-      rosterHit?.team === "killers" ||
-      !!legacyKey ||
-      sheetCandidateMatchesTeamNames(agentRaw, teamNames, roster, "killers");
-    if (!isKiller) return;
+    let resolution = resolvedKillerAgentCache.get(agentRaw);
+    if (!resolution) {
+      const rosterHit = resolveSheetAgent(agentRaw, roster);
+      const legacyKey = resolveKillerAgentKey(agentRaw);
+      resolution = {
+        isKiller: rosterHit?.team === "killers"
+          || !!legacyKey
+          || sheetCandidateMatchesTeamNames(agentRaw, teamNames, roster, "killers"),
+        display: rosterHit?.name ?? (legacyKey ? (RMK_DISPLAY[legacyKey] ?? agentRaw) : agentRaw),
+      };
+      resolvedKillerAgentCache.set(agentRaw, resolution);
+    }
+    if (!resolution.isKiller) return;
     const d = parseSheetDate(sheetDateValue(row, dateCol), dateCol);
     if (!d) return;
-    const display = rosterHit?.name ?? (legacyKey ? (RMK_DISPLAY[legacyKey] ?? agentRaw) : agentRaw);
+    const display = resolution.display;
     const fileId = cell(row, fileCol);
     const date = toCaliforniaDateStr(d);
     const key = `${meta.sourceName}:${meta.gid}:${rawIndex}:${display}:${date}:${fileId}:${status}`;
@@ -11579,8 +11602,14 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<Backen
   }
 
   const out: BStatRow[] = [];
+  const resolvedSubmissionAgentCache = new Map<string, ReturnType<typeof bstatResolveAgent>>();
   const add = (rawAgent: string, status: string, date: string, fileId: string, source: string, fallbackTeam: TeamMode) => {
-    const resolved = bstatResolveAgent(rawAgent, roster, fallbackTeam);
+    const cacheKey = `${fallbackTeam}\u0000${rawAgent}`;
+    let resolved = resolvedSubmissionAgentCache.get(cacheKey);
+    if (!resolved) {
+      resolved = bstatResolveAgent(rawAgent, roster, fallbackTeam);
+      resolvedSubmissionAgentCache.set(cacheKey, resolved);
+    }
     out.push({
       agent: resolved.display,
       agentKey: resolved.key === "unknown" ? `${resolved.team}:unknown` : resolved.key,
