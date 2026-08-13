@@ -278,7 +278,7 @@ test("production source continues to construct the pinned KPI and response field
     readFile(new URL("../routes/readymode.ts", import.meta.url), "utf8"),
     readFile(new URL("../routes/attendance.ts", import.meta.url), "utf8"),
     readFile(new URL("../routes/violations.ts", import.meta.url), "utf8"),
-    readFile(new URL("../routes/obAnalytics.ts", import.meta.url), "utf8"),
+    readFile(new URL("../modules/onboarding/analytics.ts", import.meta.url), "utf8"),
     readFile(new URL("../routes/samia.ts", import.meta.url), "utf8"),
     readFile(new URL("../../../agent-dashboard/src/App.tsx", import.meta.url), "utf8"),
   ]);

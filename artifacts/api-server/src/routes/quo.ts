@@ -13,7 +13,7 @@ import {
   type QuoCall,
   type QuoPhoneCallRow,
   type QuoPhoneNumber as QuoSyncPhoneNumber,
-} from "./quoSync.js";
+} from "../integrations/quo/sync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { logger } from "../lib/logger.js";
 import { liveWebhookCalls } from "./quoWebhook.js";
@@ -173,7 +173,7 @@ interface QuoPhoneNumber {
   users: { id: string; firstName: string; lastName: string; email: string }[];
 }
 
-// Exact line name → team (mirrors quoSync.ts LINE_TEAM_MAP)
+// Exact line name → team (mirrors the Quo sync integration's LINE_TEAM_MAP)
 const LINE_TEAM_MAP = OPERATIONAL_CONFIG.lineTeamMap;
 
 function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
@@ -1033,7 +1033,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
           // Resolve user via every known shape OpenPhone returns.
           // For INBOUND calls, `userId` is the line owner (often a manager) while
           // `answeredBy` is the agent who actually picked up — same pattern used
-          // in quoSync.ts. Prefer answeredBy so we attribute the live call to
+          // in the Quo sync integration. Prefer answeredBy so we attribute the live call to
           // the agent on the phone, not the line's owner.
           const inlineUser = call.users?.[0];
           if (inlineUser?.id) addToUserMap({

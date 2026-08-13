@@ -276,10 +276,10 @@ test("cron authentication is exact and requires a strong configured secret", () 
 test("server routes contain no process-local scheduler or post-response job launch", async () => {
   const [quo, quoSync, vos, onboarding, liveTransfers, backgroundJobs, migration, vercel] = await Promise.all([
     readFile(new URL("../routes/quo.ts", import.meta.url), "utf8"),
-    readFile(new URL("../routes/quoSync.ts", import.meta.url), "utf8"),
+    readFile(new URL("../integrations/quo/sync.ts", import.meta.url), "utf8"),
     readFile(new URL("../routes/vos.ts", import.meta.url), "utf8"),
-    readFile(new URL("../routes/obReport.ts", import.meta.url), "utf8"),
-    readFile(new URL("../routes/liveTransfers.ts", import.meta.url), "utf8"),
+    readFile(new URL("../modules/onboarding/report.ts", import.meta.url), "utf8"),
+    readFile(new URL("../modules/transfers/liveTransfers.ts", import.meta.url), "utf8"),
     readFile(new URL("../routes/backgroundJobs.ts", import.meta.url), "utf8"),
     readFile(new URL("../../../../lib/db/drizzle/0009_background_jobs.sql", import.meta.url), "utf8"),
     readFile(new URL("../../../../vercel.json", import.meta.url), "utf8"),
@@ -336,7 +336,7 @@ test("Quo live state stays lightweight while provider refresh remains request-dr
 
 test("same-day Quo writes preserve the historical call classification", async () => {
   process.env["DATABASE_URL"] ??= "postgresql://test:test@127.0.0.1:1/test";
-  const { buildQuoPhoneCallRow } = await import("../routes/quoSync.js");
+  const { buildQuoPhoneCallRow } = await import("../integrations/quo/sync.js");
   const line = { id: "PN-test", name: "Retention Test", users: [] };
   const users = new Map([["US-agent", "Test Agent"]]);
   const base = {

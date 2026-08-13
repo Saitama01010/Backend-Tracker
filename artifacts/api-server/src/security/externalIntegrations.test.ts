@@ -121,7 +121,7 @@ test("Sheets, date ranges, probes, and pagination are wired through integration 
   const base = new URL("../routes/", import.meta.url);
   const [quo, quoSync, sheets, readymode] = await Promise.all([
     readFile(new URL("quo.ts", base), "utf8"),
-    readFile(new URL("quoSync.ts", base), "utf8"),
+    readFile(new URL("../integrations/quo/sync.ts", base), "utf8"),
     readFile(new URL("sheets.ts", base), "utf8"),
     readFile(new URL("readymode.ts", base), "utf8"),
   ]);

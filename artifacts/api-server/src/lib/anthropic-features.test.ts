@@ -463,7 +463,7 @@ test("AI reservation schema is additive and protects Samia and QA concurrency", 
 });
 
 test("Live Transfer classification uses strict Anthropic tools and has no startup job", async () => {
-  const source = await readFile(path.join(routesDir, "liveTransfers.ts"), "utf8");
+  const source = await readFile(path.resolve(routesDir, "../modules/transfers/liveTransfers.ts"), "utf8");
   const configSource = await readFile(path.resolve(routesDir, "../lib/operationalConfig.ts"), "utf8");
   const indexSource = await readFile(path.join(routesDir, "index.ts"), "utf8");
   assert.match(source, /OPERATIONAL_CONFIG\.aiModels\.liveTransfers/);
