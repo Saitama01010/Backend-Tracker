@@ -4,7 +4,7 @@
 
 - Source: business-owner workbook `Backend Tracker.xlsx`, sheet `Sheet1` (25 data rows). The workbook was audited read-only and was not added to the repository.
 - Production and `origin/main` baseline: `ed3ac5ab5f069f2114a1ea78973b5a9404c7fa20`.
-- Canonical roster migration: ledger entry `0015_canonical_agent_roster_identity.sql` was present with the expected hash; the normalized-name, normalized-email, and active-roster constraints were validated before the write.
+- Canonical roster migration: `0013_canonical_agent_roster_identity.sql` was present as Production ledger row 15 with the expected hash; the normalized-name, normalized-email, and active-roster constraints were validated before the write.
 - Pre-import roster: 44 total agents (28 active, 16 inactive), all 44 with no email.
 
 ## Import result
