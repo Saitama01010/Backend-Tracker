@@ -9,14 +9,15 @@
 
 ## Import result
 
-The workbook contained 25 valid, unique email addresses. A Production dry run used the deployed English-name, Arabic-name, and email normalization rules and required an exact canonical roster match plus compatible shift data.
+The workbook contained 25 valid, unique email addresses. A Production dry run used the deployed English-name, Arabic-name, and email normalization rules and required an exact canonical roster match plus compatible shift data unless the business owner explicitly resolved a mismatch.
 
 - 22 active-agent rows matched unambiguously and received normalized emails in one guarded `SERIALIZABLE` transaction.
+- Three rows were initially withheld because the workbook shift did not agree with Production: Nora Adam (workbook shift 4, Production shift 6), Kayla Navarro (3 versus 4), and Ryan Henderson (FT versus 4).
+- The business owner subsequently confirmed that those workbook rows represented the same three canonical people and authorized their workbook emails. All three were populated in a second all-or-nothing guarded transaction; their authoritative Production shifts remained unchanged at 6, 4, and 4 respectively.
 - No inactive-agent email was populated or changed.
-- Three rows were skipped because the workbook shift did not agree with Production: Nora Adam (workbook shift 4, Production shift 6), Kayla Navarro (3 versus 4), and Ryan Henderson (FT versus 4).
 - No source row was unmatched, malformed, or in conflict with an existing email; no duplicate normalized English name, Arabic name, or email was created.
-- Post-import roster: 44 total, 28 active, 16 inactive; 22 active agents have an email, six active agents remain without one, and all 16 inactive agents remain without one.
-- Active agents still missing email: Nora Adam, Andrew Gomez, Kayla Navarro, Ryan Henderson, Zeiad, and Zeiad Fouad-Zack Ford.
+- Final post-import roster: 44 total, 28 active, 16 inactive; 25 active agents have an email, three active agents remain without one, and all 16 inactive agents remain without one.
+- Active agents still missing email: Andrew Gomez, Zeiad, and Zeiad Fouad.
 - Max Francis remains the single inactive canonical row at ID 29; legacy duplicate ID 30 remains absent.
 
 Only `team_agents.email` and `team_agents.email_normalized` were updated. Names, Arabic aliases, shifts, teams, active status, IDs, timestamps, and historical records were not changed.
@@ -32,8 +33,8 @@ The minimal follow-up is a nullable `portal_users.team_agent_id` foreign key to 
 - Database invariants passed after the transaction: no normalized identity conflicts, no malformed email pairs, and no inactive email changes.
 - Historical name-based attribution remained present across attendance, manager QA tasks, phone calls, QA reviews, and ReadyMode uploads.
 - Production HTTP smoke checks passed for health, dashboard, login, current user, team agents, Quo stats/live, Google Sheets, ReadyMode, attendance, QA stats, and QA reviews. The existing VoS provider login failure remained isolated to VoS endpoints.
-- Live browser verification showed 44 roster rows, 28 active controls, 16 inactive controls, 22 populated roster emails, 22 missing roster emails, and exactly one Max Francis row.
+- Authenticated Production roster verification showed 44 roster rows, 28 active identities, 16 inactive identities, 25 populated active-agent emails, three missing active-agent emails, no inactive emails, and exactly one Max Francis row.
 - Regression tests: 29 passed, 0 failed (27 API/auth tests and two frontend roster-identity tests).
-- Vercel returned no error-level Production logs in the one-hour post-import query.
+- Post-correction Vercel logs contained the existing PostgreSQL SSL-mode deprecation warning on successful 200 responses; no new database, constraint, or application failure appeared.
 
 No application/authentication code was changed and no Production deployment was created. The repository's Git integration created its normal docs-only PR Preview after publication. This record does not contain the source workbook or email values.
