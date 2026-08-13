@@ -8251,10 +8251,7 @@ async function fetchRMKSubmissions(): Promise<SheetData> {
 }
 
 let rmkSubmissionsMemo: {
-  backendSheet: SheetData;
-  idpSheet: SheetData;
-  idpCancelSheet: SheetData;
-  newRetentionSheet: SheetData;
+  sources: [SheetData, SheetData, SheetData, SheetData];
   rosterVersion: number;
   result: SheetData;
 } | null = null;
@@ -8300,12 +8297,11 @@ async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetD
   const idpSheet = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
   const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
   const newRetentionSheet = await newRetentionP;
+  const sources: [SheetData, SheetData, SheetData, SheetData] = [backendSheet, idpSheet, idpCancelSheet, newRetentionSheet];
   const memo = rmkSubmissionsMemo;
   if (memo
-      && memo.backendSheet === backendSheet
-      && memo.idpSheet === idpSheet
-      && memo.idpCancelSheet === idpCancelSheet
-      && memo.newRetentionSheet === newRetentionSheet
+      && memo.sources.every((source, index) =>
+        source.rows === sources[index]!.rows && source.headers === sources[index]!.headers)
       && memo.rosterVersion === roster.version) {
     return memo.result;
   }
@@ -8342,10 +8338,7 @@ async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetD
 
   const result: SheetData = { headers: ["Agent", "Status", "Date", "File ID"], rows, debugRows };
   rmkSubmissionsMemo = {
-    backendSheet,
-    idpSheet,
-    idpCancelSheet,
-    newRetentionSheet,
+    sources,
     rosterVersion: roster.version,
     result,
   };
@@ -11516,14 +11509,11 @@ const BSTAT_TEAM_META: Record<RosterTeam, { label: string; color: string }> = {
 type BStatRow = { agent: string; agentKey: string; team: RosterTeam; status: string; date: string; fileId: string; source: string; idpCancel: boolean };
 type BackendStatsSubmissionResult = { rows: BStatRow[]; meta?: SheetFreshnessMeta };
 let backendStatsSubmissionsMemo: {
-  retainedCancels: SheetData;
-  fixes: SheetData;
-  idpHandled: SheetData;
-  idpCancelRetained: SheetData;
+  sources: [SheetData, SheetData, SheetData, SheetData];
   rosterVersion: number;
-  result: BackendStatsSubmissionResult;
+  rows: BStatRow[];
 } | null = null;
-const backendStatsTeamSheetCache = new WeakMap<BackendStatsSubmissionResult, Map<TeamMode, SheetData>>();
+const backendStatsTeamRowsCache = new WeakMap<BStatRow[], Map<TeamMode, Row[]>>();
 
 // Resolve a raw submission name to a single canonical agent identity. Mirrors
 // aggregate()'s roster-aware resolution but ALSO applies NAME_ALIASES, so Arabic
@@ -11576,14 +11566,16 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<Backen
       idpCancelRetained: IDP_CANCEL_RETAINED_URL,
     },
   );
+  const sources: [SheetData, SheetData, SheetData, SheetData] = [retainedCancels, fixes, idpHandled, idpCancelRetained];
   const memo = backendStatsSubmissionsMemo;
   if (memo
-      && memo.retainedCancels === retainedCancels
-      && memo.fixes === fixes
-      && memo.idpHandled === idpHandled
-      && memo.idpCancelRetained === idpCancelRetained
+      && memo.sources.every((source, index) =>
+        source.rows === sources[index]!.rows && source.headers === sources[index]!.headers)
       && memo.rosterVersion === roster.version) {
-    return memo.result;
+    return {
+      rows: memo.rows,
+      meta: mergeSheetFreshness(sources),
+    };
   }
 
   const out: BStatRow[] = [];
@@ -11646,18 +11638,15 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<Backen
     meta: mergeSheetFreshness([retainedCancels, fixes, idpHandled, idpCancelRetained]),
   };
   backendStatsSubmissionsMemo = {
-    retainedCancels,
-    fixes,
-    idpHandled,
-    idpCancelRetained,
+    sources,
     rosterVersion: roster.version,
-    result,
+    rows: out,
   };
   return result;
 }
 
 type AggregateResult = ReturnType<typeof aggregate>;
-const aggregateResultCache = new WeakMap<SheetData, Map<string, AggregateResult>>();
+const aggregateResultCache = new WeakMap<Row[], Map<string, AggregateResult>>();
 
 /**
  * React Query keeps a successful sheet response referentially stable. Cache the
@@ -11672,10 +11661,10 @@ function aggregateCached(
   toDate: Date | null,
   roster?: RosterIndex,
 ): AggregateResult {
-  let sourceCache = aggregateResultCache.get(status);
+  let sourceCache = aggregateResultCache.get(status.rows);
   if (!sourceCache) {
     sourceCache = new Map();
-    aggregateResultCache.set(status, sourceCache);
+    aggregateResultCache.set(status.rows, sourceCache);
   }
   const cacheKey = [
     mode,
@@ -11692,26 +11681,26 @@ function aggregateCached(
 
 async function fetchBackendStatsSheetForTeam(roster: RosterIndex, team: TeamMode): Promise<SheetData> {
   const loaded = await fetchBackendStatsSubmissions(roster);
-  const cached = backendStatsTeamSheetCache.get(loaded)?.get(team);
-  if (cached) return cached;
-  const rows = loaded.rows
-    .filter((r) => r.team === team)
-    .map((r) => ({
-      Agent: r.agent,
-      Status: r.status,
-      Date: r.date,
-      "File ID": r.fileId,
-      Source: r.source,
-      ...(r.idpCancel ? { __sourceTab: "IDP-Cancel-Retained" } : {}),
-    }));
-  const result: SheetData = { headers: ["Agent", "Status", "Date", "File ID", "Source"], rows, meta: loaded.meta };
-  let teamCache = backendStatsTeamSheetCache.get(loaded);
+  let teamCache = backendStatsTeamRowsCache.get(loaded.rows);
   if (!teamCache) {
     teamCache = new Map();
-    backendStatsTeamSheetCache.set(loaded, teamCache);
+    backendStatsTeamRowsCache.set(loaded.rows, teamCache);
   }
-  teamCache.set(team, result);
-  return result;
+  let rows = teamCache.get(team);
+  if (!rows) {
+    rows = loaded.rows
+      .filter((r) => r.team === team)
+      .map((r) => ({
+        Agent: r.agent,
+        Status: r.status,
+        Date: r.date,
+        "File ID": r.fileId,
+        Source: r.source,
+        ...(r.idpCancel ? { __sourceTab: "IDP-Cancel-Retained" } : {}),
+      }));
+    teamCache.set(team, rows);
+  }
+  return { headers: ["Agent", "Status", "Date", "File ID", "Source"], rows, meta: loaded.meta };
 }
 
 function fetchRetentionBackendStatsSheet(roster: RosterIndex): Promise<SheetData> {
