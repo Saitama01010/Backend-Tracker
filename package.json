@@ -4,6 +4,7 @@
   "license": "MIT",
   "packageManager": "pnpm@10.23.0",
   "scripts": {
+    "audit:agent-identities": "pnpm --filter @workspace/api-server exec tsx src/tools/auditAgentRosterIdentity.ts",
     "audit:dependencies": "node ./scripts/security/run-pnpm-audit.mjs",
     "preinstall": "node ./scripts/preinstall.mjs",
     "build": "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/agent-dashboard run build",

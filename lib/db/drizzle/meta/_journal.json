@@ -92,6 +92,13 @@
       "when": 1789282800000,
       "tag": "0012_dashboard_runtime_performance",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789369200000,
+      "tag": "0013_canonical_agent_roster_identity",
+      "breakpoints": true
     }
   ]
 }

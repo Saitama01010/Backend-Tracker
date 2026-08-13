@@ -160,7 +160,7 @@ try {
     await verifyMigrationLedger(pool, migrationCount);
     const contract = await verifySchemaContract(pool);
     if (!contract.ok) throw new Error("SCHEMA_CONTRACT_FAILED_AFTER_BOOTSTRAP");
-    process.stdout.write(`PASS migrations 0005-0012 (${migrationCount} ledger rows)\n`);
+    process.stdout.write(`PASS post-baseline migrations (${migrationCount} ledger rows)\n`);
     process.stdout.write(`PASS schema contract (${contract.results.length} objects)\n`);
   }
 } finally {

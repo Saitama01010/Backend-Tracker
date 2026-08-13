@@ -49,7 +49,7 @@ const phoneDay = {
 test("sanitized API contract fixtures match the important dashboard response shapes", () => {
   authResponseSchema.parse({ token: "sanitized-token", user: fixtureUser });
   adminUserListSchema.parse([{ ...fixtureUser, active: true }]);
-  teamAgentListSchema.parse([{ id: 1, name: "Agent Alpha", team: "retention", active: true }]);
+  teamAgentListSchema.parse([{ id: 1, name: "Agent Alpha", email: null, team: "retention", active: true }]);
 
   quoStatsSchema.parse({
     teamStats: { retention: { "Agent Alpha": { "2026-01-15": phoneDay } } },
