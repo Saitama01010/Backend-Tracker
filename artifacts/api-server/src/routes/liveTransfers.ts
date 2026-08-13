@@ -25,6 +25,10 @@ import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
 import { manualJobKey } from "../lib/durableBackgroundJobs.js";
 import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 import { businessDayWindow } from "../lib/businessTime.js";
+import {
+  fetchQuoTranscript as fetchTranscript,
+  type QuoDialogueLine as DialogueLine,
+} from "../integrations/quo/transcripts.js";
 
 const router: IRouter = Router();
 
@@ -114,52 +118,6 @@ function rangeFromQuery(req: { query: Record<string, unknown> }): { fromDate: Da
 }
 
 // ─── OpenPhone transcript fetch (mirrors obReport) ────────────────────────────
-const QUO_BASE = "https://api.openphone.com/v1";
-function quoHeaders(): Record<string, string> {
-  const key = process.env["QUO_API_KEY"];
-  if (!key) throw new Error("QUO_API_KEY not configured");
-  return { Authorization: key, Accept: "application/json" };
-}
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-interface DialogueLine {
-  identifier?: string;
-  content?: string;
-}
-interface TranscriptBody {
-  data?: { dialogue?: DialogueLine[]; status?: string };
-}
-type TranscriptResult =
-  | { kind: "ok"; dialogue: DialogueLine[]; status: string }
-  | { kind: "notfound" }
-  | { kind: "error" };
-
-async function fetchTranscript(callId: string, tries = 5): Promise<TranscriptResult> {
-  const url = `${QUO_BASE}/call-transcripts/${callId}`;
-  for (let i = 0; i < tries; i++) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 20000);
-    try {
-      const res = await fetch(url, { headers: quoHeaders(), signal: ctrl.signal });
-      if (res.status === 404) return { kind: "notfound" };
-      if (res.status === 429 || res.status >= 500) {
-        await sleep(2000 * (i + 1));
-        continue;
-      }
-      if (!res.ok) return { kind: "error" };
-      const body = (await res.json()) as TranscriptBody;
-      return { kind: "ok", dialogue: body?.data?.dialogue ?? [], status: body?.data?.status ?? "none" };
-    } catch {
-      await sleep(1500 * (i + 1));
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  return { kind: "error" };
-}
-
 function dialogueText(dialogue: DialogueLine[]): string {
   return dialogue
     .map((d) => (d.content ?? "").trim())
