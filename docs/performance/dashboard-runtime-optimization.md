@@ -180,6 +180,29 @@ Leave the index in place during an application-only Vercel rollback.
 - Dependency audit: no high or critical advisories
 - Secret scan and GitHub checks: recorded in the PR/final deployment evidence
 
+## Real Production result
+
+The optimized backend from PR #9 and the follow-up render isolation from PR #10 were measured in the same authenticated Chrome session and fixed July range used for the baseline. The final application deployment was `dpl_437WoZcPsxyz3e3CZuidF7cZjaE5` at commit `ea70fb82cdd7fb25dc56ca0244a1f6416937b434`.
+
+| Metric | Before | After | Difference |
+| --- | ---: | ---: | ---: |
+| Fixed-July `/api/quo/stats` p50 (n=30) | 5,359.1 ms | 325.2 ms | -93.9% |
+| Fixed-July `/api/quo/stats` p95 (n=30) | 7,478.8 ms | 958.0 ms | -87.2% |
+| Warm first meaningful number p50 / p95 (n=10) | 833 / 1,162 ms | 494 / 564 ms | -40.7% / -51.5% |
+| Warm first usable table p50 / p95 (n=10) | 833 / 1,162 ms | 494 / 564 ms | -40.7% / -51.5% |
+| Warm transferred bytes p50 / p95 (n=10) | 748,075 / 748,306 B | 502,522 / 503,398 B | -32.8% / -32.7% |
+| Major-tab commit p50 / p95 (n=20) | 1,161 / 3,822 ms | 143.8 / 175.5 ms | -87.6% / -95.4% |
+| Major-tab maximum | 5,290 ms | 183.6 ms | -96.5% |
+| Filter synchronous handler p50 / p95 (n=20) | unavailable | 4.0 / 5.6 ms | below 100 ms gate |
+
+The fixed-July total remained exactly 8,773 calls. The post-deployment major-tab sample had no main-thread task above 50 ms. A separate 77.7-second observation spanning an unchanged source-metadata refresh recorded one 164 ms task and no task above 200 ms; the immediately following 20-switch sample remained at 138.7 ms p50 / 146.4 ms p95.
+
+During 318.3 seconds of normal Production use, the page recorded six tasks above 50 ms, zero above 200 ms, a 185 ms maximum, and no uncaught browser error. Reported JavaScript heap moved from 38,783,856 to 49,330,779 bytes (+10,546,923 bytes). That two-point heap delta includes loaded tab data and does not by itself establish continuous retained growth; the browser interface did not expose a production-safe forced-GC comparison, so no retained-heap estimate is substituted.
+
+The backend application-log samples were `/api/quo/live` 14/61 ms p50/p95 (n=30), `/api/quo/stats` 36/656 ms (n=30), `/api/sheet` 465/926 ms (n=26), and `/api/readymode/stats` 384/1,959 ms (n=28, one 8,563 ms provider/cache-refresh outlier). The final deployment added enough unchanged-backend observations to bring Sheet and ReadyMode evidence above 30 combined samples. All optimized endpoint samples returned without application errors.
+
+Five edge-warmed cold loads measured 1,031/1,086 ms p50/p95, slower than the 705/900 ms starting cold sample, while the repeatable warm result improved substantially. This cold-path variability is disclosed rather than blended into the warm acceptance metric. The matched post sample did not retain initial request count, total-load, JavaScript execution, or React render-count measurements, so those values remain explicitly unavailable rather than estimated.
+
 ## Limitations
 
 - The starting Production bundle did not expose the React DevTools profiling hook, so a true before render count is unavailable and is not replaced with an estimate.
