@@ -92,6 +92,62 @@
     "longTasks": { "over50Ms": 68, "over200Ms": 53, "largestMs": 6370 },
     "heapBytes": { "start": 37001300, "end": 44549414, "delta": 7548114 }
   },
+  "productionAfter": {
+    "applicationSha": "ea70fb82cdd7fb25dc56ca0244a1f6416937b434",
+    "deploymentId": "dpl_437WoZcPsxyz3e3CZuidF7cZjaE5",
+    "fixedJulyQuoStats": {
+      "warmups": 5,
+      "n": 30,
+      "minMs": 266.3,
+      "p50Ms": 325.2,
+      "p95Ms": 958.0,
+      "maxMs": 982.1,
+      "visibleTotalCalls": 8773,
+      "errors": 0
+    },
+    "warmDashboardLoads": {
+      "n": 10,
+      "firstMeaningfulNumberMs": { "p50": 494, "p95": 564 },
+      "firstUsableTableMs": { "p50": 494, "p95": 564 },
+      "transferredBytes": { "p50": 502522, "p95": 503398 }
+    },
+    "coldDashboardLoads": {
+      "n": 5,
+      "firstMeaningfulNumberMs": { "p50": 1031, "p95": 1086 },
+      "firstUsableTableMs": { "p50": 1031, "p95": 1086 },
+      "rawMs": [1041, 1031, 879, 945, 1086]
+    },
+    "serverLogs": {
+      "quoLive": { "n": 30, "p50Ms": 14, "p95Ms": 61, "errors": 0 },
+      "quoStats": { "n": 30, "p50Ms": 36, "p95Ms": 656, "errors": 0 },
+      "sheet": { "n": 26, "p50Ms": 465, "p95Ms": 926, "errors": 0 },
+      "readymodeStats": { "n": 28, "p50Ms": 384, "p95Ms": 1959, "maxMs": 8563, "errors": 0 }
+    },
+    "majorTabSwitches": {
+      "n": 20,
+      "minMs": 137.1,
+      "p50Ms": 143.8,
+      "p95Ms": 175.5,
+      "maxMs": 183.6,
+      "longTasksOver50Ms": 0,
+      "longTasksOver200Ms": 0
+    },
+    "filterInput": {
+      "n": 20,
+      "minMs": 3.4,
+      "p50Ms": 4.0,
+      "p95Ms": 5.6,
+      "maxMs": 5.8,
+      "longTasksOver50Ms": 0
+    },
+    "metadataRefreshObservation": {
+      "durationMs": 77742.7,
+      "longTasksOver50Ms": 1,
+      "longTasksOver200Ms": 0,
+      "largestLongTaskMs": 164,
+      "heapDeltaBytes": 1026033
+    }
+  },
   "postgres16": {
     "phoneCalls": 220000,
     "fixedRangeRows": 79951,
@@ -127,6 +183,8 @@
   "limitations": [
     "No React DevTools hook existed in the starting Production bundle, so no before render count is reported.",
     "Fixed-July Quo browser samples are kept separate from today-range initial-load samples.",
+    "The matched post-deployment dashboard sample did not retain initial request count, total-load, JavaScript execution, or React render-count measurements; these values are reported as unavailable rather than estimated.",
+    "Edge-warmed cold loads were slower than the starting cold sample while repeatable warm loads improved; cold variability is kept separate from the warm acceptance result.",
     "Host CPU is not exposed by PostgreSQL and was not estimated."
   ]
 }
