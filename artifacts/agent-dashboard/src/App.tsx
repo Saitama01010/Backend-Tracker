@@ -8232,6 +8232,15 @@ async function fetchRMKSubmissions(): Promise<SheetData> {
   return { headers: ["Agent", "Status", "Date", "File ID"], rows };
 }
 
+let rmkSubmissionsMemo: {
+  backendSheet: SheetData;
+  idpSheet: SheetData;
+  idpCancelSheet: SheetData;
+  newRetentionSheet: SheetData;
+  roster: RosterIndex;
+  result: SheetData;
+} | null = null;
+
 async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetData> {
   const teamNames = rosterTeamMembers(RMK_AGENT_NAMES, roster, "killers");
   const rows: Row[] = [];
@@ -8273,6 +8282,15 @@ async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetD
   const idpSheet = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
   const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
   const newRetentionSheet = await newRetentionP;
+  const memo = rmkSubmissionsMemo;
+  if (memo
+      && memo.backendSheet === backendSheet
+      && memo.idpSheet === idpSheet
+      && memo.idpCancelSheet === idpCancelSheet
+      && memo.newRetentionSheet === newRetentionSheet
+      && memo.roster === roster) {
+    return memo.result;
+  }
 
   for (let i = 0; i < backendSheet.rows.length; i++) {
     const row = backendSheet.rows[i]!;
@@ -8304,7 +8322,16 @@ async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetD
     ...debugRowsForRequiredSheet({ sheet: newRetentionSheet, meta: SHEET_SOURCES.retentionSubmission, panelTeam: "killers", roster, teamNames, statusMode: "retention-update" }),
   ];
 
-  return { headers: ["Agent", "Status", "Date", "File ID"], rows, debugRows };
+  const result: SheetData = { headers: ["Agent", "Status", "Date", "File ID"], rows, debugRows };
+  rmkSubmissionsMemo = {
+    backendSheet,
+    idpSheet,
+    idpCancelSheet,
+    newRetentionSheet,
+    roster,
+    result,
+  };
+  return result;
 }
 
 function ReadyModeKillersPanel() {
@@ -11470,6 +11497,15 @@ const BSTAT_TEAM_META: Record<RosterTeam, { label: string; color: string }> = {
 };
 type BStatRow = { agent: string; agentKey: string; team: RosterTeam; status: string; date: string; fileId: string; source: string; idpCancel: boolean };
 type BackendStatsSubmissionResult = { rows: BStatRow[]; meta?: SheetFreshnessMeta };
+let backendStatsSubmissionsMemo: {
+  retainedCancels: SheetData;
+  fixes: SheetData;
+  idpHandled: SheetData;
+  idpCancelRetained: SheetData;
+  roster: RosterIndex;
+  result: BackendStatsSubmissionResult;
+} | null = null;
+const backendStatsTeamSheetCache = new WeakMap<BackendStatsSubmissionResult, Map<TeamMode, SheetData>>();
 
 // Resolve a raw submission name to a single canonical agent identity. Mirrors
 // aggregate()'s roster-aware resolution but ALSO applies NAME_ALIASES, so Arabic
@@ -11522,6 +11558,15 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<Backen
       idpCancelRetained: IDP_CANCEL_RETAINED_URL,
     },
   );
+  const memo = backendStatsSubmissionsMemo;
+  if (memo
+      && memo.retainedCancels === retainedCancels
+      && memo.fixes === fixes
+      && memo.idpHandled === idpHandled
+      && memo.idpCancelRetained === idpCancelRetained
+      && memo.roster === roster) {
+    return memo.result;
+  }
 
   const out: BStatRow[] = [];
   const add = (rawAgent: string, status: string, date: string, fileId: string, source: string, fallbackTeam: TeamMode) => {
@@ -11578,10 +11623,19 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<Backen
     add(cell(r, idpCancelAgent), "Retained", d ? toCaliforniaDateStr(d) : cell(r, idpCancelTs), cell(r, idpCancelFile), "idp-cancel-retained", "nsf");
   }
 
-  return {
+  const result: BackendStatsSubmissionResult = {
     rows: out,
     meta: mergeSheetFreshness([retainedCancels, fixes, idpHandled, idpCancelRetained]),
   };
+  backendStatsSubmissionsMemo = {
+    retainedCancels,
+    fixes,
+    idpHandled,
+    idpCancelRetained,
+    roster,
+    result,
+  };
+  return result;
 }
 
 type AggregateResult = ReturnType<typeof aggregate>;
@@ -11620,6 +11674,8 @@ function aggregateCached(
 
 async function fetchBackendStatsSheetForTeam(roster: RosterIndex, team: TeamMode): Promise<SheetData> {
   const loaded = await fetchBackendStatsSubmissions(roster);
+  const cached = backendStatsTeamSheetCache.get(loaded)?.get(team);
+  if (cached) return cached;
   const rows = loaded.rows
     .filter((r) => r.team === team)
     .map((r) => ({
@@ -11630,7 +11686,14 @@ async function fetchBackendStatsSheetForTeam(roster: RosterIndex, team: TeamMode
       Source: r.source,
       ...(r.idpCancel ? { __sourceTab: "IDP-Cancel-Retained" } : {}),
     }));
-  return { headers: ["Agent", "Status", "Date", "File ID", "Source"], rows, meta: loaded.meta };
+  const result: SheetData = { headers: ["Agent", "Status", "Date", "File ID", "Source"], rows, meta: loaded.meta };
+  let teamCache = backendStatsTeamSheetCache.get(loaded);
+  if (!teamCache) {
+    teamCache = new Map();
+    backendStatsTeamSheetCache.set(loaded, teamCache);
+  }
+  teamCache.set(team, result);
+  return result;
 }
 
 function fetchRetentionBackendStatsSheet(roster: RosterIndex): Promise<SheetData> {
