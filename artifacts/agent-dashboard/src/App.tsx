@@ -40,7 +40,7 @@ import companyLogo from "./assets/company-logo.jpeg";
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion, MotionConfig, useReducedMotion, type Variants } from "framer-motion";
-import { createContext, useContext, Fragment, useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { createContext, useContext, Fragment, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -892,7 +892,25 @@ function RosterProvider({ children }: { children: React.ReactNode }) {
     refetchInterval: queryPollingInterval({ baseMs: 30_000 }), // poll while this authenticated dashboard is active
     refetchOnWindowFocus: true,
   });
-  const idx = useMemo(() => buildRosterIndex(q.data ?? []), [q.data]);
+  const candidate = useMemo(() => buildRosterIndex(q.data ?? []), [q.data]);
+  const stableRoster = useRef(candidate);
+  const previousAgents = stableRoster.current.agents;
+  const nextAgents = candidate.agents;
+  const unchanged = stableRoster.current.version === candidate.version
+    && previousAgents.length === nextAgents.length
+    && previousAgents.every((agent, index) => {
+      const next = nextAgents[index];
+      return next
+        && agent.id === next.id
+        && agent.name === next.name
+        && agent.arabicName === next.arabicName
+        && agent.shift === next.shift
+        && agent.team === next.team
+        && agent.active === next.active
+        && agent.notes === next.notes;
+    });
+  if (!unchanged) stableRoster.current = candidate;
+  const idx = stableRoster.current;
   return <RosterContext.Provider value={idx}>{children}</RosterContext.Provider>;
 }
 
@@ -2749,6 +2767,22 @@ function aggregate(
 
   const rosterTeamForMode: RosterTeam | null =
     mode === "retention" || mode === "nsf" || mode === "cs" ? mode : mode === "rmk" ? "killers" : null;
+  const resolvedAgentCache = new Map<string, RosterAgent | null>();
+  const agentCandidateCache = new Map<string, string[]>();
+  const resolveStatusAgent = (rawAgent: string): RosterAgent | null => {
+    if (!roster) return null;
+    if (resolvedAgentCache.has(rawAgent)) return resolvedAgentCache.get(rawAgent) ?? null;
+    const resolved = resolveSheetAgent(rawAgent, roster);
+    resolvedAgentCache.set(rawAgent, resolved);
+    return resolved;
+  };
+  const candidatesForAgent = (rawAgent: string): string[] => {
+    const cached = agentCandidateCache.get(rawAgent);
+    if (cached) return cached;
+    const candidates = sheetAgentCandidates(rawAgent);
+    agentCandidateCache.set(rawAgent, candidates);
+    return candidates;
+  };
 
   // Filter status rows
   const filteredStatus = status.rows.filter((r) => {
@@ -2756,7 +2790,7 @@ function aggregate(
     if (!agent) return false;
     if (/total$/i.test(agent)) return false;
     if (roster && rosterTeamForMode) {
-      const resolved = resolveSheetAgent(agent, roster);
+      const resolved = resolveStatusAgent(agent);
       const belongsToTeam = resolved?.team === rosterTeamForMode && resolved.active !== false;
       if (!belongsToTeam) return false;
     }
@@ -2801,15 +2835,15 @@ function aggregate(
   const ensureAgent = (a: string, sourceRow?: Row): AgentBreakdown => {
     // Sheet-specific identity: rows like "Anna Stone / Anisa" or
     // "Anisa-Anna Stone-2382" roll up under the canonical roster name.
-    const rosterHit = roster ? resolveSheetAgent(a, roster) : null;
+    const rosterHit = resolveStatusAgent(a);
     if (roster && !rosterHit) {
-      debugSheetAgentResolution(`aggregate:${mode}`, a, sheetAgentCandidates(a), null, "unresolved-before-count", {
+      debugSheetAgentResolution(`aggregate:${mode}`, a, candidatesForAgent(a), null, "unresolved-before-count", {
         agentColumn,
         row: sourceRow,
         counted: true,
       });
     } else if (rosterHit) {
-      debugSheetAgentResolution(`aggregate:${mode}`, a, sheetAgentCandidates(a), rosterHit, "counted-under-canonical-agent", {
+      debugSheetAgentResolution(`aggregate:${mode}`, a, candidatesForAgent(a), rosterHit, "counted-under-canonical-agent", {
         agentColumn,
         row: sourceRow,
         counted: true,
@@ -5013,7 +5047,7 @@ function TeamPanel({
 
   const aggregated = useMemo(() => {
     if (!statusQ.data) return null;
-    return aggregate(statusQ.data, mode, fromDate, toDate, roster);
+    return aggregateCached(statusQ.data, mode, fromDate, toDate, roster);
   }, [statusQ.data, mode, from, to, roster]);
 
   const phoneTotals = useMemo(() => {
@@ -5273,7 +5307,7 @@ function CSPanel() {
 
   const aggregated = useMemo(() => {
     if (!statusQ.data) return null;
-    return aggregate(statusQ.data, "cs", fromDate, toDate, roster);
+    return aggregateCached(statusQ.data, "cs", fromDate, toDate, roster);
   }, [statusQ.data, from, to, roster]);
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
@@ -5472,7 +5506,7 @@ function RetentionPanel() {
 
   const aggregated = useMemo(() => {
     if (!statusQ.data) return null;
-    return aggregate(statusQ.data, "retention", fromDate, toDate, roster);
+    return aggregateCached(statusQ.data, "retention", fromDate, toDate, roster);
   }, [statusQ.data, from, to, roster]);
 
   const readymodeByKey = useReadymodeByKey(from, to, roster);
@@ -8232,10 +8266,17 @@ async function fetchRMKSubmissions(): Promise<SheetData> {
   return { headers: ["Agent", "Status", "Date", "File ID"], rows };
 }
 
+let rmkSubmissionsMemo: {
+  sources: [SheetData, SheetData, SheetData, SheetData];
+  rosterVersion: number;
+  result: SheetData;
+} | null = null;
+
 async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetData> {
   const teamNames = rosterTeamMembers(RMK_AGENT_NAMES, roster, "killers");
   const rows: Row[] = [];
   const seen = new Set<string>();
+  const resolvedKillerAgentCache = new Map<string, { isKiller: boolean; display: string }>();
 
   const addSheetRow = (
     row: Row,
@@ -8250,16 +8291,22 @@ async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetD
     const fileCol = sheetFileIdColumn(sheet.headers);
     const agentRaw = sheetAgentValue(row, agentCol);
     if (!agentRaw) return;
-    const rosterHit = resolveSheetAgent(agentRaw, roster);
-    const legacyKey = resolveKillerAgentKey(agentRaw);
-    const isKiller =
-      rosterHit?.team === "killers" ||
-      !!legacyKey ||
-      sheetCandidateMatchesTeamNames(agentRaw, teamNames, roster, "killers");
-    if (!isKiller) return;
+    let resolution = resolvedKillerAgentCache.get(agentRaw);
+    if (!resolution) {
+      const rosterHit = resolveSheetAgent(agentRaw, roster);
+      const legacyKey = resolveKillerAgentKey(agentRaw);
+      resolution = {
+        isKiller: rosterHit?.team === "killers"
+          || !!legacyKey
+          || sheetCandidateMatchesTeamNames(agentRaw, teamNames, roster, "killers"),
+        display: rosterHit?.name ?? (legacyKey ? (RMK_DISPLAY[legacyKey] ?? agentRaw) : agentRaw),
+      };
+      resolvedKillerAgentCache.set(agentRaw, resolution);
+    }
+    if (!resolution.isKiller) return;
     const d = parseSheetDate(sheetDateValue(row, dateCol), dateCol);
     if (!d) return;
-    const display = rosterHit?.name ?? (legacyKey ? (RMK_DISPLAY[legacyKey] ?? agentRaw) : agentRaw);
+    const display = resolution.display;
     const fileId = cell(row, fileCol);
     const date = toCaliforniaDateStr(d);
     const key = `${meta.sourceName}:${meta.gid}:${rawIndex}:${display}:${date}:${fileId}:${status}`;
@@ -8273,6 +8320,14 @@ async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetD
   const idpSheet = await fetchHeaderCsv(IDP_RETENTION_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
   const idpCancelSheet = await fetchHeaderCsv(IDP_CANCEL_RETAINED_URL).catch(() => ({ headers: [] as string[], rows: [] as Row[] }));
   const newRetentionSheet = await newRetentionP;
+  const sources: [SheetData, SheetData, SheetData, SheetData] = [backendSheet, idpSheet, idpCancelSheet, newRetentionSheet];
+  const memo = rmkSubmissionsMemo;
+  if (memo
+      && memo.sources.every((source, index) =>
+        source.rows === sources[index]!.rows && source.headers === sources[index]!.headers)
+      && memo.rosterVersion === roster.version) {
+    return memo.result;
+  }
 
   for (let i = 0; i < backendSheet.rows.length; i++) {
     const row = backendSheet.rows[i]!;
@@ -8304,7 +8359,13 @@ async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetD
     ...debugRowsForRequiredSheet({ sheet: newRetentionSheet, meta: SHEET_SOURCES.retentionSubmission, panelTeam: "killers", roster, teamNames, statusMode: "retention-update" }),
   ];
 
-  return { headers: ["Agent", "Status", "Date", "File ID"], rows, debugRows };
+  const result: SheetData = { headers: ["Agent", "Status", "Date", "File ID"], rows, debugRows };
+  rmkSubmissionsMemo = {
+    sources,
+    rosterVersion: roster.version,
+    result,
+  };
+  return result;
 }
 
 function ReadyModeKillersPanel() {
@@ -8369,7 +8430,7 @@ function ReadyModeKillersPanel() {
 
   const aggregated = useMemo(() => {
     if (!subsQ.data) return null;
-    return aggregate(subsQ.data, "rmk", fromDate, toDate, roster);
+    return aggregateCached(subsQ.data, "rmk", fromDate, toDate, roster);
   }, [subsQ.data, from, to, roster]);
 
   const rmkKeys = useMemo(() => {
@@ -11470,6 +11531,12 @@ const BSTAT_TEAM_META: Record<RosterTeam, { label: string; color: string }> = {
 };
 type BStatRow = { agent: string; agentKey: string; team: RosterTeam; status: string; date: string; fileId: string; source: string; idpCancel: boolean };
 type BackendStatsSubmissionResult = { rows: BStatRow[]; meta?: SheetFreshnessMeta };
+let backendStatsSubmissionsMemo: {
+  sources: [SheetData, SheetData, SheetData, SheetData];
+  rosterVersion: number;
+  rows: BStatRow[];
+} | null = null;
+const backendStatsTeamRowsCache = new WeakMap<BStatRow[], Map<TeamMode, Row[]>>();
 
 // Resolve a raw submission name to a single canonical agent identity. Mirrors
 // aggregate()'s roster-aware resolution but ALSO applies NAME_ALIASES, so Arabic
@@ -11522,10 +11589,27 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<Backen
       idpCancelRetained: IDP_CANCEL_RETAINED_URL,
     },
   );
+  const sources: [SheetData, SheetData, SheetData, SheetData] = [retainedCancels, fixes, idpHandled, idpCancelRetained];
+  const memo = backendStatsSubmissionsMemo;
+  if (memo
+      && memo.sources.every((source, index) =>
+        source.rows === sources[index]!.rows && source.headers === sources[index]!.headers)
+      && memo.rosterVersion === roster.version) {
+    return {
+      rows: memo.rows,
+      meta: mergeSheetFreshness(sources),
+    };
+  }
 
   const out: BStatRow[] = [];
+  const resolvedSubmissionAgentCache = new Map<string, ReturnType<typeof bstatResolveAgent>>();
   const add = (rawAgent: string, status: string, date: string, fileId: string, source: string, fallbackTeam: TeamMode) => {
-    const resolved = bstatResolveAgent(rawAgent, roster, fallbackTeam);
+    const cacheKey = `${fallbackTeam}\u0000${rawAgent}`;
+    let resolved = resolvedSubmissionAgentCache.get(cacheKey);
+    if (!resolved) {
+      resolved = bstatResolveAgent(rawAgent, roster, fallbackTeam);
+      resolvedSubmissionAgentCache.set(cacheKey, resolved);
+    }
     out.push({
       agent: resolved.display,
       agentKey: resolved.key === "unknown" ? `${resolved.team}:unknown` : resolved.key,
@@ -11578,24 +11662,73 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<Backen
     add(cell(r, idpCancelAgent), "Retained", d ? toCaliforniaDateStr(d) : cell(r, idpCancelTs), cell(r, idpCancelFile), "idp-cancel-retained", "nsf");
   }
 
-  return {
+  const result: BackendStatsSubmissionResult = {
     rows: out,
     meta: mergeSheetFreshness([retainedCancels, fixes, idpHandled, idpCancelRetained]),
   };
+  backendStatsSubmissionsMemo = {
+    sources,
+    rosterVersion: roster.version,
+    rows: out,
+  };
+  return result;
+}
+
+type AggregateResult = ReturnType<typeof aggregate>;
+const aggregateResultCache = new WeakMap<Row[], Map<string, AggregateResult>>();
+
+/**
+ * React Query keeps a successful sheet response referentially stable. Cache the
+ * corresponding pure aggregation by source object, date window, mode, and
+ * roster version so revisiting a lazily mounted tab does not rescan thousands
+ * of unchanged rows on the browser's main thread.
+ */
+function aggregateCached(
+  status: SheetData,
+  mode: AggregationMode,
+  fromDate: Date | null,
+  toDate: Date | null,
+  roster?: RosterIndex,
+): AggregateResult {
+  let sourceCache = aggregateResultCache.get(status.rows);
+  if (!sourceCache) {
+    sourceCache = new Map();
+    aggregateResultCache.set(status.rows, sourceCache);
+  }
+  const cacheKey = [
+    mode,
+    fromDate?.getTime() ?? "",
+    toDate?.getTime() ?? "",
+    roster?.version ?? "",
+  ].join(":");
+  const cached = sourceCache.get(cacheKey);
+  if (cached) return cached;
+  const result = aggregate(status, mode, fromDate, toDate, roster);
+  sourceCache.set(cacheKey, result);
+  return result;
 }
 
 async function fetchBackendStatsSheetForTeam(roster: RosterIndex, team: TeamMode): Promise<SheetData> {
   const loaded = await fetchBackendStatsSubmissions(roster);
-  const rows = loaded.rows
-    .filter((r) => r.team === team)
-    .map((r) => ({
-      Agent: r.agent,
-      Status: r.status,
-      Date: r.date,
-      "File ID": r.fileId,
-      Source: r.source,
-      ...(r.idpCancel ? { __sourceTab: "IDP-Cancel-Retained" } : {}),
-    }));
+  let teamCache = backendStatsTeamRowsCache.get(loaded.rows);
+  if (!teamCache) {
+    teamCache = new Map();
+    backendStatsTeamRowsCache.set(loaded.rows, teamCache);
+  }
+  let rows = teamCache.get(team);
+  if (!rows) {
+    rows = loaded.rows
+      .filter((r) => r.team === team)
+      .map((r) => ({
+        Agent: r.agent,
+        Status: r.status,
+        Date: r.date,
+        "File ID": r.fileId,
+        Source: r.source,
+        ...(r.idpCancel ? { __sourceTab: "IDP-Cancel-Retained" } : {}),
+      }));
+    teamCache.set(team, rows);
+  }
   return { headers: ["Agent", "Status", "Date", "File ID", "Source"], rows, meta: loaded.meta };
 }
 
@@ -11918,6 +12051,49 @@ function BackendStatsPanel() {
 
 type DashView = "metrics" | "attendance" | "phones" | "backend-stats";
 
+/**
+ * Render only the selected metrics panel. Keeping this switch outside Dashboard
+ * isolates the expensive panel tree from urgent navigation updates, while
+ * useDeferredValue in Dashboard lets the selected-tab indicator paint before a
+ * cached sheet/table view performs its mount-time aggregation.
+ */
+const ActiveMetricsPanel = React.memo(function ActiveMetricsPanel({
+  tab,
+  lockedTeam,
+  canRefreshOnboarding,
+}: {
+  tab: string;
+  lockedTeam: TeamAccess | null;
+  canRefreshOnboarding: boolean;
+}) {
+  switch (tab) {
+    case "retention":
+      return <RetentionPanel />;
+    case "cs":
+      return <CSPanel />;
+    case "nsf":
+      return <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" statusQueryFn={fetchNSFBackendStatsSheet} />;
+    case "rmk":
+      return <ReadyModeKillersPanel />;
+    case "missed-no-cb":
+      return <MissedNoCBPanel lockedTeam={lockedTeam} />;
+    case "callback-review":
+      return <CallbackReviewPanel />;
+    case "violations":
+      return <ViolationsPanel />;
+    case "qa":
+      return <QAPanel />;
+    case "onboarding":
+      return (
+        <React.Suspense fallback={<Skeleton className="h-[420px] rounded-xl" aria-label="Loading onboarding" />}>
+          <OnboardingPanel canRefresh={canRefreshOnboarding} />
+        </React.Suspense>
+      );
+    default:
+      return null;
+  }
+});
+
 function Dashboard() {
   const { user, token, logout, can, canSeeTab } = useUser();
   const qc = useQueryClient();
@@ -11972,6 +12148,8 @@ function Dashboard() {
   const metricsTabs = ALL_TABS.filter((t) => t.value !== "backend-stats" && canSeeTab(t.value));
   const defaultTab = ta ?? "retention";
   const [metricsTab, setMetricsTab] = useState(metricsTabs[0]?.value ?? defaultTab);
+  const deferredMetricsTab = useDeferredValue(metricsTab);
+  const metricsTabPending = deferredMetricsTab !== metricsTab;
   const metricsTabValues = metricsTabs.map((t) => t.value).join("|");
   const viewOptions: AnimatedSelectOption<DashView>[] = [
     ...(can("view_metrics") ? [{
@@ -12138,53 +12316,18 @@ function Dashboard() {
         ) : view === "metrics" && can("view_metrics") ? (
           <Tabs value={metricsTab} onValueChange={setMetricsTab} className="space-y-6">
             <AnimatedMetricsNav tabs={metricsTabs} value={metricsTab} onChange={setMetricsTab} />
-            {canSeeTab("retention") && (
-              <TabsContent value="retention">
-                <RetentionPanel />
-              </TabsContent>
+            {metricsTabPending && (
+              <div className="sr-only" role="status" aria-live="polite">
+                Loading {metricsTabs.find((tab) => tab.value === metricsTab)?.label ?? "dashboard view"}
+              </div>
             )}
-            {canSeeTab("cs") && (
-              <TabsContent value="cs">
-                <CSPanel />
-              </TabsContent>
-            )}
-            {canSeeTab("nsf") && (
-              <TabsContent value="nsf">
-                <TeamPanel urls={NSF} sheetKey="nsf" label="NSF Team" mode="nsf" statusQueryFn={fetchNSFBackendStatsSheet} />
-              </TabsContent>
-            )}
-            {canSeeTab("rmk") && (
-              <TabsContent value="rmk">
-                <ReadyModeKillersPanel />
-              </TabsContent>
-            )}
-            {canSeeTab("missed-no-cb") && (
-              <TabsContent value="missed-no-cb">
-                <MissedNoCBPanel lockedTeam={ta} />
-              </TabsContent>
-            )}
-            {canSeeTab("callback-review") && (
-              <TabsContent value="callback-review">
-                <CallbackReviewPanel />
-              </TabsContent>
-            )}
-            {canSeeTab("violations") && (
-              <TabsContent value="violations">
-                <ViolationsPanel />
-              </TabsContent>
-            )}
-            {canSeeTab("qa") && (
-              <TabsContent value="qa">
-                <QAPanel />
-              </TabsContent>
-            )}
-            {canSeeTab("onboarding") && (
-              <TabsContent value="onboarding">
-                <React.Suspense fallback={<Skeleton className="h-[420px] rounded-xl" aria-label="Loading onboarding" />}>
-                  <OnboardingPanel canRefresh={user.role === "admin"} />
-                </React.Suspense>
-              </TabsContent>
-            )}
+            <div aria-busy={metricsTabPending} data-testid="active-metrics-panel" data-active-tab={deferredMetricsTab}>
+              <ActiveMetricsPanel
+                tab={deferredMetricsTab}
+                lockedTeam={ta}
+                canRefreshOnboarding={user.role === "admin"}
+              />
+            </div>
           </Tabs>
         ) : view === "attendance" && can("view_attendance") ? (
           <AttendancePanel />

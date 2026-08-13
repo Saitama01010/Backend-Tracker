@@ -49,6 +49,24 @@ test("expensive table searches use the shared debounce hook", async () => {
   assert.ok((app.match(/useDebouncedValue\(search\)/g) ?? []).length >= 6);
 });
 
+test("major metrics navigation paints before the expensive panel tree changes", async () => {
+  const app = await readFile(path.join(srcRoot, "App.tsx"), "utf8");
+  assert.match(app, /const deferredMetricsTab = useDeferredValue\(metricsTab\)/);
+  assert.match(app, /const metricsTabPending = deferredMetricsTab !== metricsTab/);
+  assert.match(app, /<ActiveMetricsPanel[\s\S]*?tab=\{deferredMetricsTab\}/);
+  assert.match(app, /const aggregateResultCache = new WeakMap<Row\[\], Map<string, AggregateResult>>\(\)/);
+  assert.ok((app.match(/aggregateCached\(/g) ?? []).length >= 5);
+  assert.match(app, /let backendStatsSubmissionsMemo:/);
+  assert.match(app, /const backendStatsTeamRowsCache = new WeakMap/);
+  assert.match(app, /let rmkSubmissionsMemo:/);
+  assert.match(app, /const stableRoster = useRef\(candidate\)/);
+  assert.match(app, /memo\.rosterVersion === roster\.version/);
+  assert.match(app, /const resolvedAgentCache = new Map<string, RosterAgent \| null>\(\)/);
+  assert.match(app, /const resolvedSubmissionAgentCache = new Map/);
+  assert.match(app, /const resolvedKillerAgentCache = new Map/);
+  assert.doesNotMatch(app, /<TabsContent value="retention">[\s\S]*?<RetentionPanel \/>/);
+});
+
 test("PBX request failures remain explicit instead of becoming zero-valued dashboard data", async () => {
   const app = await readFile(path.join(srcRoot, "App.tsx"), "utf8");
   const sharedPbxHook = app.match(/function useVosStats\(\)[\s\S]*?function useVosRingGroupMissed/)?.[0] ?? "";
