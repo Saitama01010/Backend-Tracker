@@ -15,9 +15,9 @@ inventory and debt report, not a proposed rewrite.
 - Scope counts: 111 production TypeScript files and 23,135 production lines in
   `artifacts/api-server/src` plus `lib/db/src`; 25 route files, 98 endpoint
   declarations, and 14,252 route-layer lines.
-- Coupling signals: 19 route files import database/query primitives, 23
+- Coupling signals: 19 route files import database/query primitives, 24
   route-level `fetch` call sites, two route files import the Anthropic SDK, and
-  80 direct production `process.env` reads across the API and DB sources.
+  74 direct production `process.env` reads across the API and DB sources.
 
 The unmodified baseline passed type checking, ESLint, and the Production build.
 The default test command passed 32 tests and aborted two database-importing
