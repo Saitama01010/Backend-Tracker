@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import ExcelJS from "exceljs";
 import { db, phoneCallsTable, onboardingClassificationsTable } from "@workspace/db";
 import { and, eq, gte, lte, ne } from "drizzle-orm";
-import { canonicalAgentName } from "./quoSync.js";
+import { canonicalAgentName } from "../integrations/quo/sync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { requireAuth } from "../middleware/auth.js";
 import { setPrivateDownloadHeaders, validateOptionalWorkflowRange } from "../lib/sensitiveWorkflowPolicy.js";

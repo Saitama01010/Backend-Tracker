@@ -14,7 +14,7 @@ import {
   type VerifiedWebhookEvent,
 } from "../lib/openPhoneWebhook.js";
 import { hasProcessedCallCompletion, openPhoneWebhookInbox } from "../lib/webhookInboxStore.js";
-import { classifyLine, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES } from "./quoSync.js";
+import { classifyLine, USER_EMAIL_OVERRIDES, USER_ID_OVERRIDES } from "../integrations/quo/sync.js";
 import {
   deleteDurableRuntimeState,
   getDurableRuntimeStateIncludingExpired,

@@ -4,7 +4,7 @@ import ExcelJS from "exceljs";
 import { db, phoneCallsTable, qaReviewsTable, managerQaTasksTable, teamAgentsTable, qaBiweeklyRunsTable } from "@workspace/db";
 import { and, desc, eq, gt, gte, lte, sql, inArray, type SQL } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
-import { canonicalAgentName } from "./quoSync.js";
+import { canonicalAgentName } from "../integrations/quo/sync.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { anthropicErrorStatus, createAnthropicToolMessage, toolInput, usageFields } from "../lib/anthropic.js";
 import { AI_UNTRUSTED_DATA_SYSTEM_POLICY, wrapUntrustedAiData } from "../lib/aiPrivacy.js";

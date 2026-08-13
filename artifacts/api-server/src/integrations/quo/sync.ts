@@ -1,7 +1,7 @@
 import { db, phoneCallsTable, phoneSyncStateTable } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { logger } from "../lib/logger.js";
-import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
+import { logger } from "../../lib/logger.js";
+import { OPERATIONAL_CONFIG } from "../../lib/operationalConfig.js";
 
 const QUO_KEY = process.env.QUO_API_KEY ?? "";
 const BASE = "https://api.openphone.com/v1";
