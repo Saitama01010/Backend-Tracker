@@ -87,3 +87,13 @@ test("Quo live agents remain visible before their completed-call metrics arrive"
   assert.match(app, /if \(!r\.ok\) throw new Error\("Quo live status request failed"\)/);
   assert.match(app, /Quo live status is temporarily unavailable\. Historical totals are unchanged\./);
 });
+
+test("Agent Roster adds email without replacing existing dashboard matching behavior", async () => {
+  const app = await readFile(path.join(srcRoot, "App.tsx"), "utf8");
+  assert.match(app, /interface RosterAgent \{[^}]*email: string \| null/);
+  assert.match(app, /<th[^>]*>Email<\/th>/);
+  assert.match(app, /type="email"[\s\S]*?placeholder="Missing email"/);
+  assert.match(app, /validateRosterIdentity\(/);
+  assert.match(app, /agent\.email === next\.email/);
+  assert.match(app, /Arabic names are matched as aliases for the same agent/);
+});

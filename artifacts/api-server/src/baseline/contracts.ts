@@ -280,6 +280,7 @@ export const samiaDiagnosticsSchema = z.object({
 export const teamAgentListSchema = z.array(z.object({
   id: z.number().int(),
   name: z.string(),
+  email: z.string().email().nullable(),
   team: z.enum(["retention", "nsf", "cs", "killers"]),
   active: z.boolean(),
 }));

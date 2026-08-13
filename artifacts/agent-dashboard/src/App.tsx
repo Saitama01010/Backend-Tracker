@@ -17,6 +17,10 @@ import { UserContext, authHeaders, useUser, type AuthUser, type Permission, type
 import { unparseCsv } from "@/lib/csvExport";
 import { dashboardQueryClient, clearDashboardQueryCache } from "@/lib/dashboardQueryClient";
 import { accountQueryScope, pollingDelay, queryPollingInterval } from "@/lib/queryPolicy";
+import {
+  validateRosterIdentity,
+  type RosterIdentityField,
+} from "@/lib/agentRosterIdentity";
 import { loadBackendStatsSheetSources, readSheetResponse, type SheetFreshnessMeta } from "@/lib/sheetData";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import {
@@ -611,7 +615,7 @@ function AnimatedMetricsNav({
 // AND OpenPhone/PBX call matching — no code change required.
 
 type RosterTeam = "retention" | "nsf" | "cs" | "killers";
-interface RosterAgent { id: number; name: string; arabicName: string | null; shift: string | null; team: RosterTeam; active: boolean; notes?: string | null; }
+interface RosterAgent { id: number; name: string; arabicName: string | null; email: string | null; shift: string | null; team: RosterTeam; active: boolean; notes?: string | null; }
 interface RosterIndex {
   agents: RosterAgent[];
   version: number; // bump on any roster mutation; included in React Query keys for invalidation
@@ -812,7 +816,7 @@ function buildRosterIndex(agents: RosterAgent[]): RosterIndex {
   // Mutation-sensitive hash: changes on any add/remove/team/active/name/arabic/shift edit
   // so React Query keys keyed on `version` reliably re-fetch dependent sheet queries.
   idx.version = agents.reduce((acc, a) => {
-    const s = `${a.id}|${a.team}|${a.active ? 1 : 0}|${a.name}|${a.arabicName ?? ""}|${a.shift ?? ""}|${a.notes ?? ""}`;
+    const s = `${a.id}|${a.team}|${a.active ? 1 : 0}|${a.name}|${a.arabicName ?? ""}|${a.email ?? ""}|${a.shift ?? ""}|${a.notes ?? ""}`;
     let h = 0;
     for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
     return (acc + h) | 0;
@@ -904,6 +908,7 @@ function RosterProvider({ children }: { children: React.ReactNode }) {
         && agent.id === next.id
         && agent.name === next.name
         && agent.arabicName === next.arabicName
+        && agent.email === next.email
         && agent.shift === next.shift
         && agent.team === next.team
         && agent.active === next.active
@@ -6465,7 +6470,8 @@ function TabCheckboxes({ tabs, onChange }: { tabs: string[]; onChange: (t: strin
   );
 }
 
-type TeamAgent = { id: number; name: string; team: string; active: boolean; arabicName?: string | null; shift?: string | null; notes?: string | null };
+type TeamAgent = { id: number; name: string; team: string; active: boolean; arabicName?: string | null; email?: string | null; shift?: string | null; notes?: string | null };
+type RosterFieldErrors = Partial<Record<RosterIdentityField, string>>;
 
 function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   const { token } = useUser();
@@ -6474,30 +6480,39 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(true);
   const [newName, setNewName] = useState("");
   const [newArabic, setNewArabic] = useState("");
+  const [newEmail, setNewEmail] = useState("");
   const [newShift, setNewShift] = useState("");
   const [newTeam, setNewTeam] = useState<RosterTeam>("retention");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [newErrors, setNewErrors] = useState<RosterFieldErrors>({});
+  const [detailErrors, setDetailErrors] = useState<RosterFieldErrors>({});
+  const [rowErrors, setRowErrors] = useState<Record<number, RosterFieldErrors>>({});
   const [busyId, setBusyId] = useState<number | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<TeamAgent | null>(null);
   const [agentDetail, setAgentDetail] = useState({
     name: "",
     arabicName: "",
+    email: "",
     team: "retention" as RosterTeam,
     shift: "",
     notes: "",
     active: true,
   });
-  // Local drafts for inline-edited arabic/shift cells so typing is smooth.
-  const [drafts, setDrafts] = useState<Record<number, { name?: string; arabicName?: string; shift?: string }>>({});
+  // Local drafts for inline-edited identity/shift cells so typing is smooth.
+  const [drafts, setDrafts] = useState<Record<number, { name?: string; arabicName?: string; email?: string; shift?: string }>>({});
 
-  async function readTeamAgentError(response: Response, fallback: string): Promise<string> {
+  async function readTeamAgentError(response: Response, fallback: string): Promise<{ message: string; field?: RosterIdentityField }> {
     const contentType = response.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
-      const parsed = await response.json().catch(() => null) as { error?: string } | null;
-      return parsed?.error || fallback;
+      const parsed = await response.json().catch(() => null) as { error?: string; field?: string; message?: string } | null;
+      const field = parsed?.field;
+      return {
+        message: parsed?.message || parsed?.error || fallback,
+        field: field === "name" || field === "arabicName" || field === "email" ? field : undefined,
+      };
     }
-    return "Server error while saving agent. Check API logs.";
+    return { message: "Server error while saving agent. Check API logs." };
   }
 
   const load = useCallback(async () => {
@@ -6507,8 +6522,9 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
       if (r.ok) {
         setAgents(await r.json() as TeamAgent[]);
         setDrafts({});
+        setRowErrors({});
       } else {
-        setError(await readTeamAgentError(r, "Failed to load agents"));
+        setError((await readTeamAgentError(r, "Failed to load agents")).message);
       }
     } catch {
       setError("Failed to load agents");
@@ -6520,8 +6536,15 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   useEffect(() => { void load(); }, [load]);
 
   async function addAgent() {
-    if (!newName.trim()) return;
-    setSaving(true); setError("");
+    const validation = validateRosterIdentity({
+      name: newName,
+      arabicName: newArabic,
+      email: newEmail,
+    }, agents, { requireEmail: true });
+    setNewErrors(validation);
+    if (Object.keys(validation).length > 0) return;
+    setSaving(true);
+    setError("");
     try {
       const r = await apiFetch("/api/team-agents", {
         method: "POST",
@@ -6530,16 +6553,20 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
           name: newName.trim(),
           team: newTeam,
           arabicName: newArabic.trim() || null,
+          email: newEmail,
           shift: newShift.trim() || null,
           notes: null,
         }),
       });
       if (r.ok) {
-        setNewName(""); setNewArabic(""); setNewShift("");
+        setNewName(""); setNewArabic(""); setNewEmail(""); setNewShift("");
+        setNewErrors({});
         await load();
         await qc.invalidateQueries({ queryKey: ["roster"] });
       } else {
-        setError(await readTeamAgentError(r, "Failed to add"));
+        const failure = await readTeamAgentError(r, "Failed to add");
+        if (failure.field) setNewErrors((prev) => ({ ...prev, [failure.field!]: failure.message }));
+        else setError(failure.message);
       }
     } catch {
       setError("Failed to add");
@@ -6548,7 +6575,11 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
     }
   }
 
-  async function patchAgent(id: number, body: Record<string, unknown>) {
+  async function patchAgent(
+    id: number,
+    body: Record<string, unknown>,
+    onFieldError?: (field: RosterIdentityField, message: string) => void,
+  ) {
     setBusyId(id); setError("");
     try {
       const r = await apiFetch(`/api/team-agents/${id}`, {
@@ -6557,7 +6588,9 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
         body: JSON.stringify(body),
       });
       if (!r.ok) {
-        setError(await readTeamAgentError(r, "Failed to update"));
+        const failure = await readTeamAgentError(r, "Failed to update");
+        if (failure.field && onFieldError) onFieldError(failure.field, failure.message);
+        else setError(failure.message);
         return false;
       }
       await load();
@@ -6571,28 +6604,14 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
     }
   }
 
-  async function removeAgent(id: number) {
-    setBusyId(id); setError("");
-    try {
-      const r = await apiFetch(`/api/team-agents/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
-      if (!r.ok) {
-        setError(await readTeamAgentError(r, "Failed to delete"));
-        return;
-      }
-      await load();
-      await qc.invalidateQueries({ queryKey: ["roster"] });
-    } catch {
-      setError("Failed to delete");
-    } finally {
-      setBusyId(null);
-    }
-  }
-
   function openAgentDetail(agent: TeamAgent) {
+    setDetailErrors({});
+    setError("");
     setSelectedAgent(agent);
     setAgentDetail({
       name: agent.name,
       arabicName: agent.arabicName ?? "",
+      email: agent.email ?? "",
       team: agent.team as RosterTeam,
       shift: agent.shift ?? "",
       notes: agent.notes ?? "",
@@ -6601,36 +6620,59 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
   }
 
   async function saveAgentDetail() {
-    if (!selectedAgent || !agentDetail.name.trim()) return;
+    if (!selectedAgent) return;
+    const validation = validateRosterIdentity({
+      name: agentDetail.name,
+      arabicName: agentDetail.arabicName,
+      email: agentDetail.email,
+    }, agents, { excludeId: selectedAgent.id, requireEmail: false });
+    setDetailErrors(validation);
+    if (Object.keys(validation).length > 0) return;
     const saved = await patchAgent(selectedAgent.id, {
       name: agentDetail.name.trim(),
       arabicName: agentDetail.arabicName.trim() || null,
+      email: agentDetail.email,
       team: agentDetail.team,
       shift: agentDetail.shift.trim() || null,
       notes: agentDetail.notes.trim() || null,
       active: agentDetail.active,
-    });
+    }, (field, message) => setDetailErrors((prev) => ({ ...prev, [field]: message })));
     if (saved) setSelectedAgent(null);
   }
 
-  function getDraft(a: TeamAgent, field: "name" | "arabicName" | "shift"): string {
+  function getDraft(a: TeamAgent, field: "name" | "arabicName" | "email" | "shift"): string {
     const d = drafts[a.id];
     if (d && field in d) return d[field] ?? "";
     return (a[field] ?? "") as string;
   }
-  function setDraft(id: number, field: "name" | "arabicName" | "shift", v: string) {
+  function setDraft(id: number, field: "name" | "arabicName" | "email" | "shift", v: string) {
     setDrafts(prev => ({ ...prev, [id]: { ...prev[id], [field]: v } }));
   }
-  async function commitDraft(a: TeamAgent, field: "name" | "arabicName" | "shift") {
+  async function commitDraft(a: TeamAgent, field: "name" | "arabicName" | "email" | "shift") {
     const next = (drafts[a.id]?.[field] ?? "").trim();
     const current = (a[field] ?? "").toString().trim();
     if (next === current) return;
-    // English name is required; ignore empty commits and reset draft.
-    if (field === "name" && !next) {
-      setDrafts(prev => { const cp = { ...prev }; if (cp[a.id]) { const inner = { ...cp[a.id] }; delete inner.name; cp[a.id] = inner; } return cp; });
-      return;
+    if (field !== "shift") {
+      const validation = validateRosterIdentity({
+        name: field === "name" ? next : a.name,
+        arabicName: field === "arabicName" ? next : (a.arabicName ?? ""),
+        email: field === "email" ? next : (a.email ?? ""),
+      }, agents, { excludeId: a.id, requireEmail: false });
+      const fieldError = validation[field];
+      setRowErrors((prev) => ({
+        ...prev,
+        [a.id]: { ...prev[a.id], [field]: fieldError },
+      }));
+      if (fieldError) return;
     }
-    await patchAgent(a.id, { [field]: field === "name" ? next : (next || null) });
+    await patchAgent(
+      a.id,
+      { [field]: field === "name" ? next : (next || null) },
+      (errorField, message) => setRowErrors((prev) => ({
+        ...prev,
+        [a.id]: { ...prev[a.id], [errorField]: message },
+      })),
+    );
   }
 
   const TEAMS: { key: RosterTeam; label: string }[] = [
@@ -6668,41 +6710,62 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
           {/* Add agent form */}
           <div className="space-y-3">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Add Agent</p>
-            <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_140px_auto] gap-2">
-              <input
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && void addAgent()}
-                placeholder="English name"
-                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-ring/50"
-              />
-              <input
-                value={newArabic}
-                onChange={(e) => setNewArabic(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && void addAgent()}
-                placeholder="Arabic name (optional)"
-                dir="rtl"
-                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-ring/50"
-              />
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              <div>
+                <input
+                  value={newName}
+                  onChange={(e) => { setNewName(e.target.value); setNewErrors((prev) => ({ ...prev, name: undefined })); }}
+                  onKeyDown={(e) => e.key === "Enter" && void addAgent()}
+                  placeholder="English name"
+                  aria-invalid={!!newErrors.name}
+                  className="h-10 w-full rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-ring/50"
+                />
+                {newErrors.name && <p className="mt-1 text-xs metric-bad">{newErrors.name}</p>}
+              </div>
+              <div>
+                <input
+                  value={newArabic}
+                  onChange={(e) => { setNewArabic(e.target.value); setNewErrors((prev) => ({ ...prev, arabicName: undefined })); }}
+                  onKeyDown={(e) => e.key === "Enter" && void addAgent()}
+                  placeholder="Arabic name (optional)"
+                  aria-invalid={!!newErrors.arabicName}
+                  dir="rtl"
+                  className="h-10 w-full rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-ring/50"
+                />
+                {newErrors.arabicName && <p className="mt-1 text-xs metric-bad">{newErrors.arabicName}</p>}
+              </div>
+              <div>
+                <input
+                  type="email"
+                  value={newEmail}
+                  onChange={(e) => { setNewEmail(e.target.value); setNewErrors((prev) => ({ ...prev, email: undefined })); }}
+                  onKeyDown={(e) => e.key === "Enter" && void addAgent()}
+                  placeholder="Email"
+                  aria-invalid={!!newErrors.email}
+                  autoComplete="off"
+                  className="h-10 w-full rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-ring/50"
+                />
+                {newErrors.email && <p className="mt-1 text-xs metric-bad">{newErrors.email}</p>}
+              </div>
               <input
                 value={newShift}
                 onChange={(e) => setNewShift(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && void addAgent()}
                 placeholder="Shift (e.g. 9–5, Night)"
-                className="rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-ring/50"
+                className="h-10 rounded-lg border border-white/10 bg-zinc-800/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-ring/50"
               />
               <AnimatedValueSelect
                 value={newTeam}
                 onChange={(value) => setNewTeam(value as RosterTeam)}
                 ariaLabel="Choose agent team"
-                triggerClassName="h-10 min-w-[140px] rounded-lg border-white/10 bg-zinc-800/80 text-white"
+                triggerClassName="h-10 w-full rounded-lg border-white/10 bg-zinc-800/80 text-white"
                 menuClassName="w-44"
                 options={TEAMS.map((t) => ({ value: t.key, label: t.label }))}
               />
               <button
                 onClick={() => void addAgent()}
-                disabled={saving || !newName.trim()}
-                className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                disabled={saving}
+                className="flex h-10 items-center justify-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
               >
                 <Plus className="h-4 w-4" />Add
               </button>
@@ -6717,12 +6780,13 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
             <div className="text-center py-8 text-zinc-500 text-sm">No agents added yet. Use the form above to add team members.</div>
           ) : (
             <div className="overflow-x-auto rounded-xl border border-white/8">
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[1080px] text-sm">
                 <thead className="bg-zinc-900/70 text-zinc-400 text-xs uppercase tracking-wider">
                   <tr>
                     <th className="text-left px-3 py-2 font-semibold">Department</th>
                     <th className="text-left px-3 py-2 font-semibold">English Name</th>
                     <th className="text-left px-3 py-2 font-semibold">Arabic Name</th>
+                    <th className="text-left px-3 py-2 font-semibold">Email</th>
                     <th className="text-left px-3 py-2 font-semibold">Shift</th>
                     <th className="text-center px-3 py-2 font-semibold w-24">Active</th>
                     <th className="text-right px-3 py-2 font-semibold w-20">Actions</th>
@@ -6755,9 +6819,11 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                             onChange={(e) => setDraft(a.id, "name", e.target.value)}
                             onBlur={() => void commitDraft(a, "name")}
                             onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                            aria-invalid={!!rowErrors[a.id]?.name}
                             className={`w-full bg-transparent px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-border focus:outline-none ${a.active ? "text-zinc-100" : "text-zinc-500 line-through"}`}
                           />
                         </div>
+                        {rowErrors[a.id]?.name && <p className="mt-1 max-w-48 text-xs metric-bad">{rowErrors[a.id]?.name}</p>}
                       </td>
                       <td className="px-3 py-2">
                         <input
@@ -6768,8 +6834,28 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                           onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                           dir="rtl"
                           placeholder="—"
+                          aria-invalid={!!rowErrors[a.id]?.arabicName}
                           className="w-full bg-transparent text-zinc-200 placeholder:text-zinc-600 px-2 py-1 rounded border border-transparent hover:border-white/10 focus:border-border focus:outline-none"
                         />
+                        {rowErrors[a.id]?.arabicName && <p className="mt-1 max-w-48 text-xs metric-bad">{rowErrors[a.id]?.arabicName}</p>}
+                      </td>
+                      <td className="min-w-[210px] max-w-[260px] px-3 py-2">
+                        <input
+                          type="email"
+                          onClick={(e) => e.stopPropagation()}
+                          value={getDraft(a, "email")}
+                          onChange={(e) => setDraft(a.id, "email", e.target.value)}
+                          onBlur={() => void commitDraft(a, "email")}
+                          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                          placeholder="Missing email"
+                          title={getDraft(a, "email") || "Email missing"}
+                          aria-invalid={!!rowErrors[a.id]?.email}
+                          className={cn(
+                            "w-full truncate rounded border border-transparent bg-transparent px-2 py-1 placeholder:metric-warn hover:border-white/10 focus:border-border focus:outline-none",
+                            getDraft(a, "email") ? "text-zinc-200" : "metric-warn",
+                          )}
+                        />
+                        {rowErrors[a.id]?.email && <p className="mt-1 max-w-56 text-xs metric-bad">{rowErrors[a.id]?.email}</p>}
                       </td>
                       <td className="px-3 py-2">
                         <input
@@ -6793,11 +6879,11 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                       </td>
                       <td className="px-3 py-2 text-right">
                         <button
-                          onClick={(e) => { e.stopPropagation(); if (confirm(`Remove ${a.name}?`)) void removeAgent(a.id); }}
-                          title="Remove agent"
-                          className="inline-flex items-center justify-center rounded-md p-1.5 text-zinc-500 hover:metric-bad hover:bg-muted/50 transition-colors"
+                          onClick={(e) => { e.stopPropagation(); openAgentDetail(a); }}
+                          title="Edit agent"
+                          className="inline-flex items-center justify-center rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-muted/50 hover:text-zinc-100"
                         >
-                          <X className="h-4 w-4" />
+                          <Pencil className="h-4 w-4" />
                         </button>
                       </td>
                     </tr>
@@ -6808,7 +6894,7 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
           )}
 
           <p className="text-xs text-zinc-600 leading-relaxed">
-            This roster is the canonical identity registry. Agents added here are automatically matched in the Google Sheets data <em>and</em> in OpenPhone/PBX call data — no code change required. Arabic names are matched as aliases for the same agent.
+            This roster is the canonical identity registry. Agents added here are automatically matched in the Google Sheets data <em>and</em> in OpenPhone/PBX call data — no code change required. Arabic names are matched as aliases for the same agent. Missing-email rows remain valid legacy identities and are clearly marked until a real email is supplied.
           </p>
         </div>
         <AnimatePresence>
@@ -6846,11 +6932,19 @@ function AgentRosterPanel({ onClose }: { onClose: () => void }) {
                 <div className="grid gap-4 p-5 sm:grid-cols-2">
                   <label className="space-y-1.5">
                     <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">English name</span>
-                    <Input value={agentDetail.name} onChange={(e) => setAgentDetail((prev) => ({ ...prev, name: e.target.value }))} className="h-9" />
+                    <Input value={agentDetail.name} onChange={(e) => { setAgentDetail((prev) => ({ ...prev, name: e.target.value })); setDetailErrors((prev) => ({ ...prev, name: undefined })); }} aria-invalid={!!detailErrors.name} className="h-9" />
+                    {detailErrors.name && <p className="text-xs metric-bad">{detailErrors.name}</p>}
                   </label>
                   <label className="space-y-1.5">
                     <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Arabic name</span>
-                    <Input value={agentDetail.arabicName} onChange={(e) => setAgentDetail((prev) => ({ ...prev, arabicName: e.target.value }))} dir="rtl" className="h-9" />
+                    <Input value={agentDetail.arabicName} onChange={(e) => { setAgentDetail((prev) => ({ ...prev, arabicName: e.target.value })); setDetailErrors((prev) => ({ ...prev, arabicName: undefined })); }} aria-invalid={!!detailErrors.arabicName} dir="rtl" className="h-9" />
+                    {detailErrors.arabicName && <p className="text-xs metric-bad">{detailErrors.arabicName}</p>}
+                  </label>
+                  <label className="space-y-1.5 sm:col-span-2">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Email</span>
+                    <Input type="email" value={agentDetail.email} onChange={(e) => { setAgentDetail((prev) => ({ ...prev, email: e.target.value })); setDetailErrors((prev) => ({ ...prev, email: undefined })); }} placeholder="Real email not yet supplied" aria-invalid={!!detailErrors.email} autoComplete="off" className="h-9" />
+                    {detailErrors.email && <p className="text-xs metric-bad">{detailErrors.email}</p>}
+                    {!agentDetail.email.trim() && !detailErrors.email && <p className="text-xs metric-warn">This existing identity is still missing email.</p>}
                   </label>
                   <label className="space-y-1.5">
                     <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Department</span>

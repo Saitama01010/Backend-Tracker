@@ -104,6 +104,11 @@ jobs:
           RUN_LOGIN_SESSION_INTEGRATION_TEST: "1"
         run: pnpm --filter @workspace/api-server exec tsx --test src/security/loginSessions.integration.test.ts
 
+      - name: Run canonical Agent Roster integration tests
+        env:
+          AGENT_ROSTER_TEST_DATABASE_URL: postgresql://ci:ci@127.0.0.1:54329/backend_tracker_test
+        run: pnpm --filter @workspace/api-server run test:agent-roster:integration
+
       - name: Run AI reservation integration tests
         env:
           NODE_ENV: test
