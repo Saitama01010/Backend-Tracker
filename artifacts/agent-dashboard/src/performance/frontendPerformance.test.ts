@@ -54,6 +54,8 @@ test("major metrics navigation paints before the expensive panel tree changes", 
   assert.match(app, /const deferredMetricsTab = useDeferredValue\(metricsTab\)/);
   assert.match(app, /const metricsTabPending = deferredMetricsTab !== metricsTab/);
   assert.match(app, /<ActiveMetricsPanel[\s\S]*?tab=\{deferredMetricsTab\}/);
+  assert.match(app, /const aggregateResultCache = new WeakMap<SheetData, Map<string, AggregateResult>>\(\)/);
+  assert.ok((app.match(/aggregateCached\(/g) ?? []).length >= 5);
   assert.doesNotMatch(app, /<TabsContent value="retention">[\s\S]*?<RetentionPanel \/>/);
 });
 

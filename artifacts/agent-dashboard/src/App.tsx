@@ -5013,7 +5013,7 @@ function TeamPanel({
 
   const aggregated = useMemo(() => {
     if (!statusQ.data) return null;
-    return aggregate(statusQ.data, mode, fromDate, toDate, roster);
+    return aggregateCached(statusQ.data, mode, fromDate, toDate, roster);
   }, [statusQ.data, mode, from, to, roster]);
 
   const phoneTotals = useMemo(() => {
@@ -5273,7 +5273,7 @@ function CSPanel() {
 
   const aggregated = useMemo(() => {
     if (!statusQ.data) return null;
-    return aggregate(statusQ.data, "cs", fromDate, toDate, roster);
+    return aggregateCached(statusQ.data, "cs", fromDate, toDate, roster);
   }, [statusQ.data, from, to, roster]);
 
   const phoneData = useMemo<Map<string, PhoneAgentMetrics>>(() => {
@@ -5472,7 +5472,7 @@ function RetentionPanel() {
 
   const aggregated = useMemo(() => {
     if (!statusQ.data) return null;
-    return aggregate(statusQ.data, "retention", fromDate, toDate, roster);
+    return aggregateCached(statusQ.data, "retention", fromDate, toDate, roster);
   }, [statusQ.data, from, to, roster]);
 
   const readymodeByKey = useReadymodeByKey(from, to, roster);
@@ -8369,7 +8369,7 @@ function ReadyModeKillersPanel() {
 
   const aggregated = useMemo(() => {
     if (!subsQ.data) return null;
-    return aggregate(subsQ.data, "rmk", fromDate, toDate, roster);
+    return aggregateCached(subsQ.data, "rmk", fromDate, toDate, roster);
   }, [subsQ.data, from, to, roster]);
 
   const rmkKeys = useMemo(() => {
@@ -11582,6 +11582,40 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<Backen
     rows: out,
     meta: mergeSheetFreshness([retainedCancels, fixes, idpHandled, idpCancelRetained]),
   };
+}
+
+type AggregateResult = ReturnType<typeof aggregate>;
+const aggregateResultCache = new WeakMap<SheetData, Map<string, AggregateResult>>();
+
+/**
+ * React Query keeps a successful sheet response referentially stable. Cache the
+ * corresponding pure aggregation by source object, date window, mode, and
+ * roster version so revisiting a lazily mounted tab does not rescan thousands
+ * of unchanged rows on the browser's main thread.
+ */
+function aggregateCached(
+  status: SheetData,
+  mode: AggregationMode,
+  fromDate: Date | null,
+  toDate: Date | null,
+  roster?: RosterIndex,
+): AggregateResult {
+  let sourceCache = aggregateResultCache.get(status);
+  if (!sourceCache) {
+    sourceCache = new Map();
+    aggregateResultCache.set(status, sourceCache);
+  }
+  const cacheKey = [
+    mode,
+    fromDate?.getTime() ?? "",
+    toDate?.getTime() ?? "",
+    roster?.version ?? "",
+  ].join(":");
+  const cached = sourceCache.get(cacheKey);
+  if (cached) return cached;
+  const result = aggregate(status, mode, fromDate, toDate, roster);
+  sourceCache.set(cacheKey, result);
+  return result;
 }
 
 async function fetchBackendStatsSheetForTeam(roster: RosterIndex, team: TeamMode): Promise<SheetData> {
