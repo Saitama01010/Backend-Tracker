@@ -25,7 +25,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.111.0",
-    "@replit/connectors-sdk": "^0.4.1",
     "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
     "bcryptjs": "^3.0.3",
@@ -42,7 +41,6 @@
     "pino-http": "^10"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^3.0.0",
     "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
