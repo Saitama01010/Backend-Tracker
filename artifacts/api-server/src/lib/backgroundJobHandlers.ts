@@ -3,7 +3,7 @@ import type { BackgroundJobHandlers } from "./durableBackgroundJobs.js";
 import { runLivePoll } from "../routes/quo.js";
 import { runScheduledQuoSync, runSync } from "../integrations/quo/sync.js";
 import { refreshCallHistory } from "../routes/vos.js";
-import { runOnboardingReportRefresh } from "../routes/obReport.js";
+import { runOnboardingReportRefresh } from "../modules/onboarding/report.js";
 import { runLiveTransferRefresh } from "../routes/liveTransfers.js";
 import { runBiweeklyQa, runWeeklyAssignment } from "../routes/qa.js";
 import { withDatabaseLease } from "./aiRateLimit.js";

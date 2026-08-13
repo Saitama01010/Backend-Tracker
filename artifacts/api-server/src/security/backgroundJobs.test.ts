@@ -278,7 +278,7 @@ test("server routes contain no process-local scheduler or post-response job laun
     readFile(new URL("../routes/quo.ts", import.meta.url), "utf8"),
     readFile(new URL("../integrations/quo/sync.ts", import.meta.url), "utf8"),
     readFile(new URL("../routes/vos.ts", import.meta.url), "utf8"),
-    readFile(new URL("../routes/obReport.ts", import.meta.url), "utf8"),
+    readFile(new URL("../modules/onboarding/report.ts", import.meta.url), "utf8"),
     readFile(new URL("../routes/liveTransfers.ts", import.meta.url), "utf8"),
     readFile(new URL("../routes/backgroundJobs.ts", import.meta.url), "utf8"),
     readFile(new URL("../../../../lib/db/drizzle/0009_background_jobs.sql", import.meta.url), "utf8"),

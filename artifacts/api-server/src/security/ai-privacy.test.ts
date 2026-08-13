@@ -160,6 +160,7 @@ test("AI routes preserve authentication and fixed internal requests ignore Host 
   const qa = await source("routes/qa.ts");
   const live = await source("routes/liveTransfers.ts");
   const onboarding = await source("routes/obReport.ts");
+  const onboardingService = await source("modules/onboarding/report.ts");
   assert.doesNotMatch(samia, /x-forwarded-host|req\.get\("host"\)/i);
   assert.match(samia, /getTrustedInternalBaseUrl/);
   assert.match(samia, /path\.startsWith\("\/api\/"\)/);
@@ -172,11 +173,11 @@ test("AI routes preserve authentication and fixed internal requests ignore Host 
   assert.match(onboarding, /router\.post\("\/ob-report\/import"[\s\S]*OB_IMPORT_SECRET/);
   assert.match(qa, /feature: "qa_admin_run"/);
   assert.match(live, /feature: "live_transfer_refresh"/);
-  assert.match(onboarding, /feature: "onboarding_report_refresh"/);
+  assert.match(onboardingService, /feature: "onboarding_report_refresh"/);
 });
 
 test("all runtime provider prompts apply the shared untrusted-data boundary", async () => {
-  for (const relative of ["routes/samia.ts", "routes/qa.ts", "routes/liveTransfers.ts", "routes/obReport.ts"]) {
+  for (const relative of ["routes/samia.ts", "routes/qa.ts", "routes/liveTransfers.ts", "modules/onboarding/report.ts"]) {
     const text = await source(relative);
     assert.match(text, /AI_UNTRUSTED_DATA_SYSTEM_POLICY/, relative);
     assert.match(text, /wrap|dataProtector/, relative);

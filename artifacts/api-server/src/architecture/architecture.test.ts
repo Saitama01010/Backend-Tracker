@@ -66,7 +66,7 @@ test("middleware and application startup have one canonical owner", async () => 
 
 test("Quo provider operations with established boundaries stay out of HTTP routes", async () => {
   const [onboarding, liveTransfers, backgroundHandlers] = await Promise.all([
-    source("routes/obReport.ts"),
+    source("modules/onboarding/report.ts"),
     source("routes/liveTransfers.ts"),
     source("lib/backgroundJobHandlers.ts"),
   ]);
@@ -89,6 +89,26 @@ test("onboarding analytics keeps HTTP concerns out of its application module", a
   assert.doesNotMatch(route, /@workspace\/db|drizzle-orm|ExcelJS/);
   assert.doesNotMatch(analytics, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
   assert.doesNotMatch(analytics, /router\.(?:get|post|put|patch|delete)\(/);
+});
+
+test("onboarding reporting keeps HTTP concerns out of its application module", async () => {
+  const [route, report, backgroundHandlers] = await Promise.all([
+    source("routes/obReport.ts"),
+    source("modules/onboarding/report.ts"),
+    source("lib/backgroundJobHandlers.ts"),
+  ]);
+  for (const operation of [
+    "requestOnboardingReportRefresh",
+    "getOnboardingReportStatus",
+    "buildOnboardingReportWorkbook",
+    "importOnboardingClassifications",
+  ]) {
+    assert.match(route, new RegExp(`\\b${operation}\\b`));
+  }
+  assert.doesNotMatch(route, /@workspace\/db|drizzle-orm|ExcelJS|@anthropic-ai/);
+  assert.doesNotMatch(report, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  assert.doesNotMatch(report, /router\.(?:get|post|put|patch|delete)\(/);
+  assert.match(backgroundHandlers, /modules\/onboarding\/report\.js/);
 });
 
 test("the production API relative-import graph remains acyclic", async () => {
