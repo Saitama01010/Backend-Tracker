@@ -79,6 +79,18 @@ test("Quo provider operations with established boundaries stay out of HTTP route
   await assert.rejects(access(path.join(sourceRoot, "routes/quoSync.ts")));
 });
 
+test("onboarding analytics keeps HTTP concerns out of its application module", async () => {
+  const [route, analytics] = await Promise.all([
+    source("routes/obAnalytics.ts"),
+    source("modules/onboarding/analytics.ts"),
+  ]);
+  assert.match(route, /computeOnboardingAnalytics/);
+  assert.match(route, /buildOnboardingAnalyticsWorkbook/);
+  assert.doesNotMatch(route, /@workspace\/db|drizzle-orm|ExcelJS/);
+  assert.doesNotMatch(analytics, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  assert.doesNotMatch(analytics, /router\.(?:get|post|put|patch|delete)\(/);
+});
+
 test("the production API relative-import graph remains acyclic", async () => {
   const files = await productionTypeScriptFiles(sourceRoot);
   const known = new Set(files);
