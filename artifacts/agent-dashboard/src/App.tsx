@@ -892,7 +892,25 @@ function RosterProvider({ children }: { children: React.ReactNode }) {
     refetchInterval: queryPollingInterval({ baseMs: 30_000 }), // poll while this authenticated dashboard is active
     refetchOnWindowFocus: true,
   });
-  const idx = useMemo(() => buildRosterIndex(q.data ?? []), [q.data]);
+  const candidate = useMemo(() => buildRosterIndex(q.data ?? []), [q.data]);
+  const stableRoster = useRef(candidate);
+  const previousAgents = stableRoster.current.agents;
+  const nextAgents = candidate.agents;
+  const unchanged = stableRoster.current.version === candidate.version
+    && previousAgents.length === nextAgents.length
+    && previousAgents.every((agent, index) => {
+      const next = nextAgents[index];
+      return next
+        && agent.id === next.id
+        && agent.name === next.name
+        && agent.arabicName === next.arabicName
+        && agent.shift === next.shift
+        && agent.team === next.team
+        && agent.active === next.active
+        && agent.notes === next.notes;
+    });
+  if (!unchanged) stableRoster.current = candidate;
+  const idx = stableRoster.current;
   return <RosterContext.Provider value={idx}>{children}</RosterContext.Provider>;
 }
 
@@ -8237,7 +8255,7 @@ let rmkSubmissionsMemo: {
   idpSheet: SheetData;
   idpCancelSheet: SheetData;
   newRetentionSheet: SheetData;
-  roster: RosterIndex;
+  rosterVersion: number;
   result: SheetData;
 } | null = null;
 
@@ -8288,7 +8306,7 @@ async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetD
       && memo.idpSheet === idpSheet
       && memo.idpCancelSheet === idpCancelSheet
       && memo.newRetentionSheet === newRetentionSheet
-      && memo.roster === roster) {
+      && memo.rosterVersion === roster.version) {
     return memo.result;
   }
 
@@ -8328,7 +8346,7 @@ async function fetchRMKSubmissionsForRoster(roster: RosterIndex): Promise<SheetD
     idpSheet,
     idpCancelSheet,
     newRetentionSheet,
-    roster,
+    rosterVersion: roster.version,
     result,
   };
   return result;
@@ -11502,7 +11520,7 @@ let backendStatsSubmissionsMemo: {
   fixes: SheetData;
   idpHandled: SheetData;
   idpCancelRetained: SheetData;
-  roster: RosterIndex;
+  rosterVersion: number;
   result: BackendStatsSubmissionResult;
 } | null = null;
 const backendStatsTeamSheetCache = new WeakMap<BackendStatsSubmissionResult, Map<TeamMode, SheetData>>();
@@ -11564,7 +11582,7 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<Backen
       && memo.fixes === fixes
       && memo.idpHandled === idpHandled
       && memo.idpCancelRetained === idpCancelRetained
-      && memo.roster === roster) {
+      && memo.rosterVersion === roster.version) {
     return memo.result;
   }
 
@@ -11632,7 +11650,7 @@ async function fetchBackendStatsSubmissions(roster: RosterIndex): Promise<Backen
     fixes,
     idpHandled,
     idpCancelRetained,
-    roster,
+    rosterVersion: roster.version,
     result,
   };
   return result;

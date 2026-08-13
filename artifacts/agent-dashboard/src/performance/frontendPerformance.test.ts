@@ -59,6 +59,8 @@ test("major metrics navigation paints before the expensive panel tree changes", 
   assert.match(app, /let backendStatsSubmissionsMemo:/);
   assert.match(app, /const backendStatsTeamSheetCache = new WeakMap/);
   assert.match(app, /let rmkSubmissionsMemo:/);
+  assert.match(app, /const stableRoster = useRef\(candidate\)/);
+  assert.match(app, /memo\.rosterVersion === roster\.version/);
   assert.doesNotMatch(app, /<TabsContent value="retention">[\s\S]*?<RetentionPanel \/>/);
 });
 
