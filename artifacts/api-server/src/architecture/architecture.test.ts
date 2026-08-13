@@ -67,7 +67,7 @@ test("middleware and application startup have one canonical owner", async () => 
 test("Quo provider operations with established boundaries stay out of HTTP routes", async () => {
   const [onboarding, liveTransfers, backgroundHandlers] = await Promise.all([
     source("modules/onboarding/report.ts"),
-    source("routes/liveTransfers.ts"),
+    source("modules/transfers/liveTransfers.ts"),
     source("lib/backgroundJobHandlers.ts"),
   ]);
   for (const route of [onboarding, liveTransfers]) {
@@ -109,6 +109,25 @@ test("onboarding reporting keeps HTTP concerns out of its application module", a
   assert.doesNotMatch(report, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
   assert.doesNotMatch(report, /router\.(?:get|post|put|patch|delete)\(/);
   assert.match(backgroundHandlers, /modules\/onboarding\/report\.js/);
+});
+
+test("live-transfer reporting keeps HTTP concerns out of its application module", async () => {
+  const [route, service, backgroundHandlers] = await Promise.all([
+    source("routes/liveTransfers.ts"),
+    source("modules/transfers/liveTransfers.ts"),
+    source("lib/backgroundJobHandlers.ts"),
+  ]);
+  for (const operation of [
+    "getLiveTransferStatus",
+    "requestLiveTransferRefresh",
+    "buildLiveTransferWorkbook",
+  ]) {
+    assert.match(route, new RegExp(`\\b${operation}\\b`));
+  }
+  assert.doesNotMatch(route, /@workspace\/db|drizzle-orm|ExcelJS|@anthropic-ai|api\.openphone\.com/);
+  assert.doesNotMatch(service, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  assert.doesNotMatch(service, /router\.(?:get|post|put|patch|delete)\(/);
+  assert.match(backgroundHandlers, /modules\/transfers\/liveTransfers\.js/);
 });
 
 test("the production API relative-import graph remains acyclic", async () => {

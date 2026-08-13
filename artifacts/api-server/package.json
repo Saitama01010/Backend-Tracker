@@ -7,7 +7,7 @@
     "dev": "pnpm run build && pnpm run start",
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
-    "test": "tsx --test src/lib/anthropic-features.test.ts src/lib/dashboard-actions.test.ts src/lib/databasePerformance.test.ts src/baseline/regression.test.ts src/security/backgroundJobs.test.ts src/dataCorrectness/dataCorrectness.test.ts src/integrations/quo/transcriptCharacterization.test.ts src/architecture/architecture.test.ts",
+    "test": "tsx --test src/lib/anthropic-features.test.ts src/lib/dashboard-actions.test.ts src/lib/databasePerformance.test.ts src/baseline/regression.test.ts src/security/backgroundJobs.test.ts src/dataCorrectness/dataCorrectness.test.ts src/integrations/quo/transcriptCharacterization.test.ts src/modules/transfers/liveTransferSummary.test.ts src/architecture/architecture.test.ts",
     "test:architecture": "tsx --test src/architecture/architecture.test.ts",
     "test:baseline": "tsx --test src/baseline/regression.test.ts",
     "test:security": "tsx --test src/security/*.test.ts",
