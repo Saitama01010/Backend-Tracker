@@ -36,4 +36,4 @@ The minimal follow-up is a nullable `portal_users.team_agent_id` foreign key to 
 - Regression tests: 29 passed, 0 failed (27 API/auth tests and two frontend roster-identity tests).
 - Vercel returned no error-level Production logs in the one-hour post-import query.
 
-No application/authentication code was changed, no deployment was created, and this record does not contain the source workbook or email values.
+No application/authentication code was changed and no Production deployment was created. The repository's Git integration created its normal docs-only PR Preview after publication. This record does not contain the source workbook or email values.
