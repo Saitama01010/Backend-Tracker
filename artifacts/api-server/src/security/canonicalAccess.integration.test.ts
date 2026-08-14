@@ -138,7 +138,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
         tabGrants: ["violations"],
         permissions: ["view_metrics", "view_attendance"],
       });
-      assert.equal(response.status, 201);
+      assert.equal(response.status, 201, await response.clone().text());
       const body = await response.json() as Record<string, unknown> & { id: number };
       agentUserId = body.id;
       assert.equal(Object.prototype.hasOwnProperty.call(body, "passwordHash"), false);
@@ -191,7 +191,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
         tabGrants: ["qa"],
         permissions: ["view_metrics", "view_missed_tables"],
       });
-      assert.equal(response.status, 201);
+      assert.equal(response.status, 201, await response.clone().text());
       const manager = await response.json() as { id: number };
       managerUserId = manager.id;
       const access = await authUser.loadAuthenticatablePortalUser(manager.id);
@@ -217,7 +217,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
         tabGrants: [],
         permissions: [],
       });
-      assert.equal(response.status, 201);
+      assert.equal(response.status, 201, await response.clone().text());
       const admin = await response.json() as Record<string, unknown> & { id: number };
       adminUserId = admin.id;
       assert.equal(admin["accessRole"], "admin");
