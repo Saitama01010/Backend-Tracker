@@ -153,6 +153,9 @@ export function CanonicalUserManagementPanel({ onClose }: { onClose: () => void 
       ...(form.accessRole === "agent" && selectedAgent ? [selectedAgent.team] : []),
       ...(form.accessRole === "manager" && form.primaryTeam ? [form.primaryTeam] : []),
     ];
+    const includedFullTeams: Team[] = form.accessRole === "manager" && form.primaryTeam
+      ? [form.primaryTeam]
+      : [];
     const effectiveTeams = Array.from(new Set<Team>([...derivedTeams, ...form.teamGrants]));
     return <div className="space-y-4">
       <label className="block space-y-1.5"><span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Access Role</span>
@@ -188,8 +191,8 @@ export function CanonicalUserManagementPanel({ onClose }: { onClose: () => void 
       {form.accessRole && form.accessRole !== "admin" && <>
         <div><p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Extra Team Access</p>
           <p className="mt-1 text-[11px] text-zinc-500">Agents are self-only unless a team is checked. Managers already receive their Primary Team.</p>
-          <ToggleGrid values={Array.from(new Set<Team>([...derivedTeams, ...form.teamGrants]))} disabledValues={derivedTeams} options={TEAMS}
-            onChange={(values) => setForm((current) => ({ ...current, teamGrants: values.filter((team) => !derivedTeams.includes(team)) }))} />
+          <ToggleGrid values={Array.from(new Set<Team>([...includedFullTeams, ...form.teamGrants]))} disabledValues={includedFullTeams} options={TEAMS}
+            onChange={(values) => setForm((current) => ({ ...current, teamGrants: values.filter((team) => !includedFullTeams.includes(team)) }))} />
         </div>
         <div><p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Tab Access</p>
           <p className="mt-1 text-[11px] text-zinc-500">Metric tabs for {effectiveTeams.length ? effectiveTeams.map(teamLabel).join(", ") : "the derived scope"} are automatic. Onboarding exports remain canonical-admin-only until safe row scoping is available.</p>
