@@ -32,6 +32,7 @@ import {
 } from "../lib/databasePerformance.js";
 import {
   attendanceDepartmentForUser,
+  canAccessAgent,
   canAccessAttendanceDepartment,
   canAccessDateRange,
   hasPermission,
@@ -116,9 +117,11 @@ function canAccessAttendanceMember(
   member: { name: string; department: string },
   directory: AuthorizationAgentDirectory,
 ): boolean {
-  return canAccessAttendanceDepartment(user, member.department)
-    && [member.name, ...(ATTENDANCE_MEMBER_ALIASES[member.name] ?? [])]
-      .some((name) => canAccessMetricAgent(user, name, directory));
+  if (!canAccessAttendanceDepartment(user, member.department)) return false;
+  const aliases = ATTENDANCE_MEMBER_ALIASES[member.name] ?? [];
+  if (!isCanonicalUser(user)) return canAccessAgent(user, member.name, aliases);
+  return [member.name, ...aliases]
+    .some((name) => canAccessMetricAgent(user, name, directory));
 }
 
 router.get("/attendance", async (req, res) => {
