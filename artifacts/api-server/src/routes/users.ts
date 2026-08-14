@@ -196,7 +196,7 @@ async function listPortalUsers() {
     ...user,
     permissions: user.accessRole === "admin" || (!user.accessRole && user.role === "admin")
       ? [...ALL_PERMISSIONS]
-      : parsePermissions(user.permissions, false),
+      : parseStoredPermissions(user.permissions),
     allowedTabs: parseStringGrantListFromJson(user.allowedTabs),
     allowedAgents: parseStringGrantListFromJson(user.allowedAgents),
     allowedSubTabs: parseStringGrantListFromJson(user.allowedSubTabs),
@@ -218,6 +218,15 @@ function parseStringGrantListFromJson(raw: string | null | undefined): string[] 
     return Array.isArray(parsed) && parsed.every((item) => typeof item === "string") ? parsed : null;
   } catch {
     return null;
+  }
+}
+
+function parseStoredPermissions(raw: string | null | undefined): Permission[] {
+  if (!raw) return [];
+  try {
+    return parsePermissions(JSON.parse(raw), false);
+  } catch {
+    return [];
   }
 }
 
