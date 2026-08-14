@@ -1,5 +1,6 @@
 import type { Permission } from "@workspace/db/schema";
 import type { AuthPayload } from "../middleware/auth.js";
+import { isAdministrator } from "../middleware/authorizationCore.js";
 import { recordActionAudit } from "./actionAudit.js";
 import { validateStrictToolInput, type StrictToolJsonSchema } from "./strictToolSchema.js";
 
@@ -175,7 +176,7 @@ export function hasForbiddenCapabilityInput(value: unknown): boolean {
 }
 
 function authorized(definition: SamiaCapabilityDefinition, user: AuthPayload): boolean {
-  if (definition.requiredRole === "admin" && user.role !== "admin") return false;
+  if (definition.requiredRole === "admin" && !isAdministrator(user)) return false;
   if (definition.requiredPermission && !user.permissions.includes(definition.requiredPermission)) return false;
   return true;
 }

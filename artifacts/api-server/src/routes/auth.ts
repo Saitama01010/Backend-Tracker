@@ -4,7 +4,12 @@ import { db } from "@workspace/db";
 import { portalUsersTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import { requireAuth, signToken } from "../middleware/auth.js";
-import { authPayloadForUser, loadActivePortalUser, publicAuthUser } from "../lib/authUser.js";
+import {
+  authPayloadForAccess,
+  loadAuthenticatablePortalUser,
+  publicAuthUser,
+} from "../lib/authUser.js";
+import type { SessionAuthPayload } from "../middleware/authCore.js";
 import {
   createRefreshSession,
   rotateRefreshSession,
@@ -96,10 +101,18 @@ router.post("/auth/login", async (req, res) => {
     return;
   }
 
+  const access = await loadAuthenticatablePortalUser(user.id);
+  if (!access) {
+    await consumeFixedWindow(failureScope, "login-failure", LOGIN_FAILURE_LIMIT, LOGIN_WINDOW_SECONDS);
+    logger.warn({ event: "auth.login.failed" }, "Authentication failed");
+    res.status(401).json({ error: INVALID_CREDENTIALS });
+    return;
+  }
+
   await clearFixedWindow(failureScope, "login-failure");
   try {
-    const sessionId = await issueSession(user.id, res);
-    const payload = authPayloadForUser(user, sessionId);
+    const sessionId = await issueSession(access.user.id, res);
+    const payload = authPayloadForAccess(access, sessionId);
     res.setHeader("Cache-Control", "no-store");
     res.json({ token: signToken(payload), user: publicAuthUser(payload) });
   } catch (error) {
@@ -124,8 +137,8 @@ router.post("/auth/refresh", async (req, res) => {
   }
 
   const session = await rotateRefreshSession(refreshToken);
-  const user = session ? await loadActivePortalUser(session.userId) : null;
-  if (!session || !user) {
+  const access = session ? await loadAuthenticatablePortalUser(session.userId) : null;
+  if (!session || !access) {
     if (session) await revokeRefreshSession(session.token);
     clearRefreshCookie(res);
     res.status(401).json({ error: "Invalid or expired session" });
@@ -133,7 +146,7 @@ router.post("/auth/refresh", async (req, res) => {
   }
 
   setRefreshCookie(res, session.token);
-  const payload = authPayloadForUser(user, session.id);
+  const payload = authPayloadForAccess(access, session.id);
   res.setHeader("Cache-Control", "no-store");
   res.json({ token: signToken(payload), user: publicAuthUser(payload) });
 });
@@ -147,20 +160,13 @@ router.post("/auth/logout", async (req, res) => {
 });
 
 router.get("/auth/me", requireAuth, async (req, res) => {
-  const user = await loadActivePortalUser(req.user!.userId);
-  if (!user) {
-    clearRefreshCookie(res);
-    res.status(401).json({ error: "Invalid or expired token" });
-    return;
-  }
-
   const sessionId = req.user!.sessionId;
   if (!sessionId) {
     clearRefreshCookie(res);
     res.status(401).json({ error: "Invalid or expired token" });
     return;
   }
-  const payload = authPayloadForUser(user, sessionId);
+  const payload: SessionAuthPayload = { ...req.user!, sessionId };
   res.setHeader("Cache-Control", "no-store");
   res.json({ token: signToken(payload), user: publicAuthUser(payload) });
 });

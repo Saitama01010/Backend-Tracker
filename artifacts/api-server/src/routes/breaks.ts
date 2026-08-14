@@ -1,18 +1,44 @@
-import { Router } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import { db, agentBreaksTable } from "@workspace/db";
 import { and, eq, gte, lte, isNull, or, desc } from "drizzle-orm";
-import { requireAuth, requireRole } from "../middleware/auth.js";
-import { canAccessAgent, canAccessAttendanceDepartment, canAccessDateRange } from "../middleware/authorizationCore.js";
+import { requireAuth } from "../middleware/auth.js";
+import { canAccessAttendanceDepartment, canAccessDateRange, isAdministrator, isCanonicalUser } from "../middleware/authorizationCore.js";
 import { businessDayWindow, formatCalendarDate, isCalendarDate } from "../lib/businessTime.js";
+import { ATTENDANCE_MEMBER_ALIASES } from "../lib/attendancePolicy.js";
+import {
+  canAccessMetricAgent,
+  loadAuthorizationAgentDirectory,
+  type AuthorizationAgentDirectory,
+} from "../lib/authorizationScope.js";
+import type { AuthPayload } from "../middleware/authCore.js";
 
 const router = Router();
+
+function requireBreakEditor(req: Request, res: Response, next: NextFunction): void {
+  const allowed = !!req.user && (
+    isAdministrator(req.user)
+    || (isCanonicalUser(req.user)
+      ? req.user.permissions.includes("edit_attendance")
+      : req.user.role === "edit")
+  );
+  if (!allowed) {
+    res.status(403).json({ error: "Forbidden" });
+    return;
+  }
+  next();
+}
+
+function canAccessBreakAgent(user: AuthPayload, agentName: string, directory: AuthorizationAgentDirectory): boolean {
+  return [agentName, ...(ATTENDANCE_MEMBER_ALIASES[agentName] ?? [])]
+    .some((name) => canAccessMetricAgent(user, name, directory));
+}
 
 /**
  * POST /api/breaks/start
  * Body: { agentName, department, breakStart?, note?, loggedBy? }
  * Opens a break session (breakEnd = null = still on break).
  */
-router.post("/breaks/start", requireAuth, requireRole("admin", "edit"), async (req, res) => {
+router.post("/breaks/start", requireAuth, requireBreakEditor, async (req, res) => {
   try {
     const { agentName, department, breakStart, note, loggedBy } = req.body as {
       agentName: string; department: string;
@@ -23,8 +49,9 @@ router.post("/breaks/start", requireAuth, requireRole("admin", "edit"), async (r
     }
     const start = breakStart ? new Date(breakStart) : new Date();
     if (!Number.isFinite(start.getTime())) return res.status(400).json({ error: "Invalid breakStart." });
+    const directory = await loadAuthorizationAgentDirectory();
     if (!canAccessAttendanceDepartment(req.user!, department)
-      || !canAccessAgent(req.user!, agentName)
+      || !canAccessBreakAgent(req.user!, agentName, directory)
       || !canAccessDateRange(req.user!, [start.toISOString()])) {
       return res.status(403).json({ error: "Forbidden" });
     }
@@ -47,7 +74,7 @@ router.post("/breaks/start", requireAuth, requireRole("admin", "edit"), async (r
  * Body: { id?, agentName?, breakEnd? }
  * Closes an open break session. Looks up by id OR by agentName (latest open).
  */
-router.post("/breaks/end", requireAuth, requireRole("admin", "edit"), async (req, res) => {
+router.post("/breaks/end", requireAuth, requireBreakEditor, async (req, res) => {
   try {
     const { id, agentName, breakEnd } = req.body as {
       id?: number; agentName?: string; breakEnd?: string;
@@ -58,8 +85,9 @@ router.post("/breaks/end", requireAuth, requireRole("admin", "edit"), async (req
     if (id) {
       const [existing] = await db.select().from(agentBreaksTable).where(eq(agentBreaksTable.id, id)).limit(1);
       if (!existing) return res.status(404).json({ error: "Break not found" });
+      const directory = await loadAuthorizationAgentDirectory();
       if (!canAccessAttendanceDepartment(req.user!, existing.department)
-        || !canAccessAgent(req.user!, existing.agentName)
+        || !canAccessBreakAgent(req.user!, existing.agentName, directory)
         || !canAccessDateRange(req.user!, [existing.breakStart.toISOString(), end.toISOString()])) {
         return res.status(403).json({ error: "Forbidden" });
       }
@@ -80,8 +108,9 @@ router.post("/breaks/end", requireAuth, requireRole("admin", "edit"), async (req
         .orderBy(desc(agentBreaksTable.breakStart))
         .limit(1);
       if (open.length === 0) return res.status(404).json({ error: "No open break found for this agent" });
+      const directory = await loadAuthorizationAgentDirectory();
       if (!canAccessAttendanceDepartment(req.user!, open[0]!.department)
-        || !canAccessAgent(req.user!, open[0]!.agentName)
+        || !canAccessBreakAgent(req.user!, open[0]!.agentName, directory)
         || !canAccessDateRange(req.user!, [open[0]!.breakStart.toISOString(), end.toISOString()])) {
         return res.status(403).json({ error: "Forbidden" });
       }
@@ -103,7 +132,7 @@ router.post("/breaks/end", requireAuth, requireRole("admin", "edit"), async (req
  * Body: { agentName, department, breakStart, breakEnd, note?, loggedBy? }
  * Log a complete break (start + end at once) — for external tools that submit after the fact.
  */
-router.post("/breaks/log", requireAuth, requireRole("admin", "edit"), async (req, res) => {
+router.post("/breaks/log", requireAuth, requireBreakEditor, async (req, res) => {
   try {
     const { agentName, department, breakStart, breakEnd, note, loggedBy } = req.body as {
       agentName: string; department: string;
@@ -118,8 +147,9 @@ router.post("/breaks/log", requireAuth, requireRole("admin", "edit"), async (req
     if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end < start) {
       return res.status(400).json({ error: "Invalid break time range." });
     }
+    const directory = await loadAuthorizationAgentDirectory();
     if (!canAccessAttendanceDepartment(req.user!, department)
-      || !canAccessAgent(req.user!, agentName)
+      || !canAccessBreakAgent(req.user!, agentName, directory)
       || !canAccessDateRange(req.user!, [breakStart, breakEnd])) {
       return res.status(403).json({ error: "Forbidden" });
     }
@@ -142,15 +172,16 @@ router.post("/breaks/log", requireAuth, requireRole("admin", "edit"), async (req
  * DELETE /api/breaks/:id
  * Remove a break record.
  */
-router.delete("/breaks/:id", requireAuth, requireRole("admin", "edit"), async (req, res) => {
+router.delete("/breaks/:id", requireAuth, requireBreakEditor, async (req, res) => {
   try {
     const rawId = req.params.id;
     const id = parseInt(Array.isArray(rawId) ? rawId[0] ?? "" : rawId ?? "");
     if (isNaN(id)) return res.status(400).json({ error: "invalid id" });
     const [existing] = await db.select().from(agentBreaksTable).where(eq(agentBreaksTable.id, id)).limit(1);
     if (!existing) return res.status(404).json({ error: "Break not found" });
+    const directory = await loadAuthorizationAgentDirectory();
     if (!canAccessAttendanceDepartment(req.user!, existing.department)
-      || !canAccessAgent(req.user!, existing.agentName)
+      || !canAccessBreakAgent(req.user!, existing.agentName, directory)
       || !canAccessDateRange(req.user!, [existing.breakStart.toISOString()])) {
       return res.status(403).json({ error: "Forbidden" });
     }
@@ -175,7 +206,8 @@ router.get("/breaks", requireAuth, async (req, res) => {
     if (!isCalendarDate(from) || !isCalendarDate(to) || from > to) {
       return res.status(400).json({ error: "Invalid break date range." });
     }
-    if (!canAccessDateRange(req.user!, [from, to]) || (agentFilter && !canAccessAgent(req.user!, agentFilter))) {
+    const directory = await loadAuthorizationAgentDirectory();
+    if (!canAccessDateRange(req.user!, [from, to]) || (agentFilter && !canAccessBreakAgent(req.user!, agentFilter, directory))) {
       return res.status(403).json({ error: "Forbidden" });
     }
 
@@ -191,7 +223,7 @@ router.get("/breaks", requireAuth, async (req, res) => {
       .orderBy(desc(agentBreaksTable.breakStart));
 
     const scopedRows = rows.filter((row) =>
-      canAccessAttendanceDepartment(req.user!, row.department) && canAccessAgent(req.user!, row.agentName));
+      canAccessAttendanceDepartment(req.user!, row.department) && canAccessBreakAgent(req.user!, row.agentName, directory));
     return res.json({ breaks: scopedRows });
   } catch (err) {
     req.log.error(err, "breaks GET error");

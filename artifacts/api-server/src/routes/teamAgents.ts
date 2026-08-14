@@ -7,13 +7,21 @@ import {
   normalizeAgentEnglishName,
 } from "@workspace/api-zod/agent-identity";
 import { db } from "@workspace/db";
-import { teamAgentsTable, VALID_TEAMS } from "@workspace/db/schema";
+import { portalUsersTable, teamAgentsTable, VALID_TEAMS } from "@workspace/db/schema";
 import type { TeamSlug } from "@workspace/db/schema";
 import { and, asc, eq, ne } from "drizzle-orm";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { canAccessAgent } from "../middleware/authorizationCore.js";
+import { canAccessAgent, isAdministrator } from "../middleware/authorizationCore.js";
+import { revokeUserSessions } from "../lib/sessionStore.js";
 
 const router = Router();
+
+async function revokeLinkedPortalSessions(teamAgentId: number): Promise<void> {
+  const linked = await db.select({ id: portalUsersTable.id })
+    .from(portalUsersTable)
+    .where(eq(portalUsersTable.teamAgentId, teamAgentId));
+  await Promise.all(linked.map(({ id }) => revokeUserSessions(id)));
+}
 
 const teamAgentColumns = {
   id: teamAgentsTable.id,
@@ -234,11 +242,16 @@ router.get("/team-agents", requireAuth, async (req, res) => {
       .select(teamAgentColumns)
       .from(teamAgentsTable)
       .orderBy(asc(teamAgentsTable.team), asc(teamAgentsTable.name));
-    const scoped = req.user?.role === "admin"
+    const scoped = req.user && isAdministrator(req.user)
       ? agents
       : agents.filter((agent) => {
           if (req.user?.teamAccess && agent.team !== req.user.teamAccess) return false;
-          return !!req.user && canAccessAgent(req.user, agent.name, agent.arabicName ? [agent.arabicName] : []);
+          return !!req.user && canAccessAgent(
+            req.user,
+            agent.name,
+            agent.arabicName ? [agent.arabicName] : [],
+            { id: agent.id, team: agent.team },
+          );
         });
     res.json(scoped);
   } catch (error) {
@@ -364,6 +377,7 @@ router.patch("/team-agents/:id", requireAuth, requireRole("admin"), async (req, 
       res.status(404).json({ error: "not found" });
       return;
     }
+    if (updates.active === false) await revokeLinkedPortalSessions(updated.id);
     res.json(updated);
   } catch (error) {
     sendCaughtError(req, res, error, "update");
@@ -388,6 +402,7 @@ router.delete("/team-agents/:id", requireAuth, requireRole("admin"), async (req,
       res.status(404).json({ error: "not found" });
       return;
     }
+    await revokeLinkedPortalSessions(updated.id);
     res.status(204).send();
   } catch (error) {
     sendCaughtError(req, res, error, "delete");

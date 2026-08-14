@@ -2,6 +2,8 @@ import type { AuthPayload } from "../middleware/authCore.js";
 import {
   canAccessAgent,
   canViewTab,
+  isAdministrator,
+  isCanonicalUser,
   metricTeamsForUser,
   normalizeAgentIdentity,
   todayInLosAngeles,
@@ -10,9 +12,11 @@ import {
 import { formatCalendarDate } from "./businessTime.js";
 
 export interface AuthorizationAgent {
+  id?: number;
   name: string;
   arabicName: string | null;
   team: MetricTeam;
+  active?: boolean;
 }
 
 export interface AuthorizationAgentDirectory {
@@ -32,9 +36,11 @@ export function createAuthorizationAgentDirectory(agents: AuthorizationAgent[]):
 export async function loadAuthorizationAgentDirectory(): Promise<AuthorizationAgentDirectory> {
   const { db, teamAgentsTable } = await import("@workspace/db");
   const rows = await db.select({
+    id: teamAgentsTable.id,
     name: teamAgentsTable.name,
     arabicName: teamAgentsTable.arabicName,
     team: teamAgentsTable.team,
+    active: teamAgentsTable.active,
   }).from(teamAgentsTable);
   return createAuthorizationAgentDirectory(rows);
 }
@@ -49,10 +55,11 @@ export function canAccessMetricAgent(
   directory: AuthorizationAgentDirectory,
   fallbackTeam?: MetricTeam | null,
 ): boolean {
-  if (user.role === "admin") return true;
+  if (isAdministrator(user)) return true;
   const agent = authorizationAgent(directory, name);
   const aliases = agent ? [agent.name, agent.arabicName ?? ""] : [];
-  if (!canAccessAgent(user, name, aliases)) return false;
+  if (!canAccessAgent(user, name, aliases, agent && typeof agent.id === "number" ? { id: agent.id, team: agent.team } : undefined)) return false;
+  if (isCanonicalUser(user)) return true;
   const teams = metricTeamsForUser(user);
   if (teams === null) return true;
   const resolvedTeam = agent?.team ?? fallbackTeam ?? null;
@@ -60,10 +67,11 @@ export function canAccessMetricAgent(
 }
 
 export function canAccessLiveAgent(user: AuthPayload, name: string, directory: AuthorizationAgentDirectory): boolean {
-  if (user.role === "admin") return true;
+  if (isAdministrator(user)) return true;
   const agent = authorizationAgent(directory, name);
   const aliases = agent ? [agent.name, agent.arabicName ?? ""] : [];
-  if (!canAccessAgent(user, name, aliases)) return false;
+  if (!canAccessAgent(user, name, aliases, agent && typeof agent.id === "number" ? { id: agent.id, team: agent.team } : undefined)) return false;
+  if (isCanonicalUser(user)) return true;
   return !user.teamAccess || agent?.team === user.teamAccess;
 }
 
@@ -98,7 +106,7 @@ export function scopeSheetData(
   directory: AuthorizationAgentDirectory,
   now = new Date(),
 ): ScopedSheetResult {
-  if (user.role === "admin" || canViewTab(user, "backend-stats")) return { ok: true, data };
+  if (isAdministrator(user) || (!isCanonicalUser(user) && canViewTab(user, "backend-stats"))) return { ok: true, data };
 
   const agentHeader = findHeader(data.headers, AGENT_HEADERS);
   if (!agentHeader) return { ok: false, reason: "The requested sheet has no resolvable agent column." };

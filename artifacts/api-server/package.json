@@ -16,6 +16,7 @@
     "test:ai-reservations:integration": "tsx --test src/security/aiRequestReservations.integration.test.ts",
     "test:ai-cleanup:integration": "tsx --test src/security/aiReservationCleanup.integration.test.ts",
     "test:agent-roster:integration": "tsx --test src/routes/teamAgents.integration.test.ts",
+    "test:canonical-access:integration": "tsx --test src/security/canonicalAccess.integration.test.ts",
     "test:performance": "tsx --test src/performance/databasePerformance.integration.test.ts src/performance/liveStatus.test.ts",
     "test:load": "tsx --test src/performance/readEndpointLoad.integration.test.ts",
     "test:data-correctness": "tsx --test src/dataCorrectness/dataCorrectness.test.ts src/dataCorrectness/attendanceMigration.integration.test.ts src/dataCorrectness/attendanceNote.integration.test.ts",

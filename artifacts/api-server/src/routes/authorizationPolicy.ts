@@ -6,6 +6,9 @@ import {
   canAccessDateRange,
   hasAnyPermission,
   hasPermission,
+  isAdministrator,
+  isCanonicalUser,
+  canAccessFullTeam,
   type DashboardTab,
 } from "../middleware/authorizationCore.js";
 import { isPublicApiRoute } from "./apiPolicy.js";
@@ -24,8 +27,13 @@ type RoutePolicy = {
   allows: Predicate;
 };
 
-const admin: Predicate = (user) => user.role === "admin";
-const roles = (...allowed: AuthPayload["role"][]): Predicate => (user) => allowed.includes(user.role);
+const admin: Predicate = isAdministrator;
+const roles = (...allowed: AuthPayload["role"][]): Predicate => (user) => {
+  const compatibilityRole: AuthPayload["role"] = isCanonicalUser(user)
+    ? user.accessRole === "admin" ? "admin" : "view"
+    : user.role;
+  return allowed.includes(compatibilityRole);
+};
 const permission = (value: Permission): Predicate => (user) => hasPermission(user, value);
 const anyPermission = (...values: Permission[]): Predicate => (user) => hasAnyPermission(user, values);
 const tab = (value: DashboardTab): Predicate => (user) => hasPermission(user, "view_metrics") && canViewTab(user, value);
@@ -33,6 +41,10 @@ const anyMetricTab: Predicate = (user) => hasPermission(user, "view_metrics")
   && canViewAnyTab(user, ["retention", "nsf", "cs", "rmk"]);
 const sheetData: Predicate = (user) => canViewTab(user, "backend-stats") || anyMetricTab(user);
 const missedManager: Predicate = (user) => tab("missed-no-cb")(user) && hasPermission(user, "view_missed_tables");
+const breakEditor: Predicate = (user) => isAdministrator(user)
+  || (isCanonicalUser(user) ? hasPermission(user, "edit_attendance") : user.role === "edit");
+const canonicallyScopedOnboarding: Predicate = (user) => tab("onboarding")(user)
+  && (!isCanonicalUser(user) || isAdministrator(user));
 
 export const PRIVATE_API_AUTHORIZATION_POLICIES: readonly RoutePolicy[] = [
   { methods: ["GET"], path: /^\/auth\/me$/, requirement: "active authenticated user", allows: () => true },
@@ -73,8 +85,8 @@ export const PRIVATE_API_AUTHORIZATION_POLICIES: readonly RoutePolicy[] = [
   { methods: ["POST"], path: /^\/readymode\/session\/reset$/, requirement: "admin ReadyMode system control", allows: admin },
 
   { methods: ["POST"], path: /^\/nsf\/readymode-queue$/, requirement: "admin Samia workflow", allows: admin },
-  { methods: ["GET"], path: /^\/nsf\/readymode-queue$/, requirement: "NSF-capable missed-no-callback tab", allows: (user) => tab("missed-no-cb")(user) && (!user.teamAccess || user.teamAccess === "nsf") },
-  { methods: ["POST"], path: /^\/nsf\/readymode-queue\/(?:\d+\/done|done-by-number)$/, requirement: "NSF-capable missed-no-callback tab", allows: (user) => tab("missed-no-cb")(user) && (!user.teamAccess || user.teamAccess === "nsf") },
+  { methods: ["GET"], path: /^\/nsf\/readymode-queue$/, requirement: "full NSF team access and missed-no-callback tab", allows: (user) => tab("missed-no-cb")(user) && canAccessFullTeam(user, "nsf") },
+  { methods: ["POST"], path: /^\/nsf\/readymode-queue\/(?:\d+\/done|done-by-number)$/, requirement: "full NSF team access and missed-no-callback tab", allows: (user) => tab("missed-no-cb")(user) && canAccessFullTeam(user, "nsf") },
 
   { methods: ["GET"], path: /^\/violations(?:\/verified)?$/, requirement: "view_metrics and violations tab", allows: tab("violations") },
   { methods: ["POST"], path: /^\/violations\/verify$/, requirement: "view_metrics and violations tab", allows: tab("violations") },
@@ -86,9 +98,9 @@ export const PRIVATE_API_AUTHORIZATION_POLICIES: readonly RoutePolicy[] = [
   { methods: ["GET"], path: /^\/qa\/(?:biweekly-run|stats|download|reviews|tasks|agents)$/, requirement: "view_metrics and QA tab (cron route is independently authenticated)", allows: tab("qa") },
   { methods: ["GET"], path: /^\/qa\/reviews\/[^/]+$/, requirement: "view_metrics and QA tab", allows: tab("qa") },
 
-  { methods: ["GET"], path: /^\/ob-(?:report\/(?:status|download)|analytics(?:\/download)?)$/, requirement: "view_metrics and onboarding tab", allows: tab("onboarding") },
+  { methods: ["GET"], path: /^\/ob-(?:report\/(?:status|download)|analytics(?:\/download)?)$/, requirement: "legacy onboarding access or canonical admin (dataset cannot yet be safely row-scoped)", allows: canonicallyScopedOnboarding },
   { methods: ["POST"], path: /^\/ob-report\/refresh$/, requirement: "admin AI and sync control", allows: admin },
-  { methods: ["GET"], path: /^\/live-transfers\/(?:status|download)$/, requirement: "view_metrics and onboarding tab", allows: tab("onboarding") },
+  { methods: ["GET"], path: /^\/live-transfers\/(?:status|download)$/, requirement: "legacy onboarding access or canonical admin (dataset cannot yet be safely row-scoped)", allows: canonicallyScopedOnboarding },
   { methods: ["POST"], path: /^\/live-transfers\/refresh$/, requirement: "admin AI and sync control", allows: admin },
 
   { methods: ["GET"], path: /^\/team-agents$/, requirement: "view_metrics or view_attendance", allows: anyPermission("view_metrics", "view_attendance") },
@@ -96,7 +108,7 @@ export const PRIVATE_API_AUTHORIZATION_POLICIES: readonly RoutePolicy[] = [
   { methods: ["GET"], path: /^\/blocked-numbers$/, requirement: "admin panel", allows: admin },
   { methods: ["POST", "DELETE"], path: /^\/blocked-numbers(?:\/[^/]+)?$/, requirement: "admin or edit role (existing backend workflow)", allows: roles("admin", "edit") },
   { methods: ["GET"], path: /^\/breaks$/, requirement: "view_attendance", allows: permission("view_attendance") },
-  { methods: ["POST", "DELETE"], path: /^\/breaks(?:\/(?:start|end|log|\d+))$/, requirement: "admin or edit role (existing backend workflow)", allows: roles("admin", "edit") },
+  { methods: ["POST", "DELETE"], path: /^\/breaks(?:\/(?:start|end|log|\d+))$/, requirement: "legacy edit role or canonical edit_attendance permission", allows: breakEditor },
 ] as const;
 
 export function authorizeApiRoute(method: string, path: string, user: AuthPayload | undefined): ApiAuthorizationDecision {
@@ -109,7 +121,7 @@ export function authorizeApiRoute(method: string, path: string, user: AuthPayloa
   const policy = PRIVATE_API_AUTHORIZATION_POLICIES.find(({ methods, path: routePath }) =>
     methods.includes(normalizedMethod) && routePath.test(path));
   if (!policy) {
-    return { allowed: user.role === "admin", matched: false, requirement: "unmapped routes default to admin" };
+    return { allowed: isAdministrator(user), matched: false, requirement: "unmapped routes default to admin" };
   }
   return { allowed: policy.allows(user), matched: true, requirement: policy.requirement };
 }
@@ -137,7 +149,7 @@ export function authorizeApiDateParameters(
   body: RequestValues = {},
   now = new Date(),
 ): boolean {
-  if (!user || user.role === "admin" || !user.lockToToday) return true;
+  if (!user || isAdministrator(user) || !user.lockToToday) return true;
   const key = `${method.toUpperCase()} ${path}`;
   const requiresRange = LOCKED_RANGE_ROUTES.some((pattern) => pattern.test(key));
   const from = typeof query["from"] === "string" ? query["from"] : typeof body["from"] === "string" ? body["from"] : undefined;

@@ -20,8 +20,13 @@ import {
 import { setPrivateDownloadHeaders } from "../lib/sensitiveWorkflowPolicy.js";
 import { validateIntegrationDateRange } from "../lib/externalIntegrationPolicy.js";
 import type { AuthPayload } from "../middleware/authCore.js";
-import { canAccessAgent, normalizeAgentIdentity } from "../middleware/authorizationCore.js";
-import { authorizationAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
+import {
+  isAdministrator,
+  isCanonicalUser,
+  metricTeamsForUser,
+  normalizeAgentIdentity,
+} from "../middleware/authorizationCore.js";
+import { canAccessMetricAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
 import { planWeeklyQaAssignments } from "../lib/databasePerformance.js";
 import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
 import { manualJobKey, runNextBackgroundJob, scheduledJobKey } from "../lib/durableBackgroundJobs.js";
@@ -525,6 +530,24 @@ function deptFilterArr(req: { query: Record<string, unknown>; user?: AuthPayload
   const requested = !d || d === "all" ? null : map[d];
   if (d && d !== "all" && !requested) return { ok: false, status: 400, error: "Invalid department." };
 
+  if (req.user && isCanonicalUser(req.user)) {
+    if (isAdministrator(req.user)) return { ok: true, departments: requested ? [requested] : null };
+    const allowedTeams = metricTeamsForUser(req.user) ?? new Set();
+    const teamForDepartment: Record<Department, "retention" | "cs" | "nsf"> = {
+      Retention: "retention",
+      CS: "cs",
+      NSF: "nsf",
+    };
+    if (requested && !allowedTeams.has(teamForDepartment[requested])) {
+      return { ok: false, status: 403, error: "Forbidden" };
+    }
+    const departments = requested
+      ? [requested]
+      : (Object.keys(teamForDepartment) as Department[]).filter((department) =>
+          allowedTeams.has(teamForDepartment[department]));
+    return { ok: true, departments };
+  }
+
   const team = req.user?.role === "admin" ? null : req.user?.teamAccess;
   const allowed = team === "retention" ? "Retention" : team === "cs" ? "CS" : team === "nsf" ? "NSF" : null;
   if (team && !allowed) return { ok: false, status: 403, error: "Forbidden" };
@@ -538,15 +561,16 @@ type QaAgentScope = {
 };
 
 async function qaAgentScope(user: AuthPayload): Promise<QaAgentScope> {
-  if (user.role === "admin" || !user.allowedAgents?.length) {
+  if (isAdministrator(user) || (!isCanonicalUser(user) && !user.allowedAgents?.length)) {
     return { canAccess: () => true, predicateFor: () => undefined };
   }
   const directory = await loadAuthorizationAgentDirectory();
   const canAccess = (agentName: string) => {
-    const agent = authorizationAgent(directory, agentName);
-    return canAccessAgent(user, agentName, agent ? [agent.name, agent.arabicName ?? ""] : []);
+    return canAccessMetricAgent(user, agentName, directory);
   };
-  const authorizedIdentities = new Set(user.allowedAgents.map(normalizeAgentIdentity).filter(Boolean));
+  const authorizedIdentities = new Set(
+    isCanonicalUser(user) ? [] : (user.allowedAgents ?? []).map(normalizeAgentIdentity).filter(Boolean),
+  );
   for (const agent of directory.agents) {
     if (!canAccess(agent.name)) continue;
     authorizedIdentities.add(normalizeAgentIdentity(agent.name));

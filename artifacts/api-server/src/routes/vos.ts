@@ -19,6 +19,7 @@ import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 import { businessDayWindow, formatCalendarDate } from "../lib/businessTime.js";
 import type { AuthPayload } from "../middleware/authCore.js";
 import { scopeMissedItemsForUser } from "../lib/missedCallScope.js";
+import { canAccessFullTeam, isAdministrator, type MetricTeam } from "../middleware/authorizationCore.js";
 
 const router = Router();
 router.use("/vos", requireAuth);
@@ -1120,7 +1121,7 @@ router.get("/vos/stats", async (req, res) => {
             firstCallAt: null,
           }));
 
-    if (req.user!.role === "admin") {
+    if (isAdministrator(req.user!)) {
       res.json({ dashboard, agents, ringGroups, callHistory, callHistoryFetchedAt, ringGroupMissed: ringGroupMissedCache });
       return;
     }
@@ -1211,13 +1212,13 @@ router.get("/vos/missed-no-callback", async (req, res) => {
   try {
     const now = new Date();
     const todayWindow = businessDayWindow(formatCalendarDate(now));
-    const windowStart = req.user!.lockToToday && req.user!.role !== "admin"
+    const windowStart = req.user!.lockToToday && !isAdministrator(req.user!)
       ? todayWindow.start
       : new Date(now.getTime() - 36 * 60 * 60 * 1000);
-    const phoneDateConditions = req.user!.lockToToday && req.user!.role !== "admin"
+    const phoneDateConditions = req.user!.lockToToday && !isAdministrator(req.user!)
       ? [gte(phoneCallsTable.createdAt, windowStart), lt(phoneCallsTable.createdAt, todayWindow.endExclusive)]
       : [gte(phoneCallsTable.createdAt, windowStart)];
-    const pbxDateConditions = req.user!.lockToToday && req.user!.role !== "admin"
+    const pbxDateConditions = req.user!.lockToToday && !isAdministrator(req.user!)
       ? [gte(pbxMissedCallsTable.createdAt, windowStart), lt(pbxMissedCallsTable.createdAt, todayWindow.endExclusive)]
       : [gte(pbxMissedCallsTable.createdAt, windowStart)];
     const [quoMissed, quoOutbound, quoInboundAnswered, persistedPbxMissed] = await Promise.all([
@@ -1739,9 +1740,11 @@ router.get("/vos/missed-breakdown", async (req, res) => {
       return new Date(a.firstMissedAt).getTime() - new Date(b.firstMissedAt).getTime();
     });
 
-    const visibleNumbers = req.user!.role === "admin" || !req.user!.teamAccess
+    const visibleNumbers = isAdministrator(req.user!)
       ? numbers
-      : numbers.filter((number) => number.team === req.user!.teamAccess);
+      : numbers.filter((number) => (
+          number.team === "retention" || number.team === "nsf" || number.team === "cs" || number.team === "killers"
+        ) && canAccessFullTeam(req.user!, number.team as MetricTeam));
     const withCallback = visibleNumbers.filter(n => n.hasCallback).length;
     const connected = visibleNumbers.filter(n => n.callbackConnected).length;
     res.json({
@@ -1935,9 +1938,11 @@ router.get("/vos/callback-review", async (req, res) => {
 
     items.sort((a, b) => new Date(b.missedAt).getTime() - new Date(a.missedAt).getTime());
 
-    const visibleItems = req.user!.role === "admin" || !req.user!.teamAccess
+    const visibleItems = isAdministrator(req.user!)
       ? items
-      : items.filter((item) => item.team === req.user!.teamAccess);
+      : items.filter((item) => (
+          item.team === "retention" || item.team === "nsf" || item.team === "cs" || item.team === "killers"
+        ) && canAccessFullTeam(req.user!, item.team as MetricTeam));
     const realItems = visibleItems.filter(i => !i.isGhost);
     const withCallback = realItems.filter(i => i.hasCallback).length;
     const connected = realItems.filter(i => i.callbackConnected).length;
@@ -1968,7 +1973,7 @@ router.get("/vos/callback-review", async (req, res) => {
 router.get("/vos/live", async (req, res) => {
   try {
     const dashboard = await vosFetch<VosDashboard>("/api/dashboard");
-    if (req.user!.role === "admin") {
+    if (isAdministrator(req.user!)) {
       res.json({ liveCalls: dashboard.liveCalls ?? [], agentStatuses: dashboard.agentStatuses ?? [] });
       return;
     }

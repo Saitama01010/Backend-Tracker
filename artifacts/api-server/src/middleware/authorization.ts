@@ -6,6 +6,7 @@ import {
   canAccessMetricTeam,
   canViewAnyTab,
   hasAnyPermission,
+  isAdministrator,
   type DashboardTab,
   type MetricTeam,
 } from "./authorizationCore.js";
@@ -15,7 +16,7 @@ function forbidden(res: Response): void {
 }
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
-  if (req.user?.role !== "admin") return forbidden(res);
+  if (!req.user || !isAdministrator(req.user)) return forbidden(res);
   next();
 }
 

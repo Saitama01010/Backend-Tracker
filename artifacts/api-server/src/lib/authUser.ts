@@ -1,7 +1,19 @@
 import { db } from "@workspace/db";
-import { ALL_PERMISSIONS, portalUsersTable } from "@workspace/db/schema";
-import type { Permission, PortalUser, TeamAccess } from "@workspace/db/schema";
-import { eq } from "drizzle-orm";
+import {
+  ALL_PERMISSIONS,
+  portalUsersTable,
+  portalUserTabGrantsTable,
+  portalUserTeamGrantsTable,
+  teamAgentsTable,
+} from "@workspace/db/schema";
+import type {
+  CanonicalDashboardTab,
+  Permission,
+  PortalUser,
+  TeamAccess,
+  TeamSlug,
+} from "@workspace/db/schema";
+import { eq, getTableColumns } from "drizzle-orm";
 import type { AuthPayload, SessionAuthPayload } from "../middleware/authCore.js";
 
 function parsePermissions(raw: string | null | undefined, role: string): Permission[] {
@@ -35,7 +47,19 @@ function parseTeamAccess(raw: string | null | undefined): TeamAccess | null {
   return raw === "retention" || raw === "nsf" || raw === "cs" ? raw : null;
 }
 
-export function authPayloadForUser(user: PortalUser, sessionId: string): SessionAuthPayload {
+const TEAM_TAB: Record<TeamSlug, CanonicalDashboardTab> = {
+  retention: "retention",
+  nsf: "nsf",
+  cs: "cs",
+  killers: "rmk",
+};
+
+export interface ResolvedPortalAccess {
+  user: PortalUser;
+  payload: Omit<SessionAuthPayload, "sessionId">;
+}
+
+function legacyPayload(user: PortalUser): Omit<SessionAuthPayload, "sessionId"> {
   return {
     userId: user.id,
     username: user.username,
@@ -48,8 +72,26 @@ export function authPayloadForUser(user: PortalUser, sessionId: string): Session
     lockToToday: !!user.lockToToday,
     samiaCurse: !!user.samiaCurse,
     hideBackendStats: !!user.hideBackendStats,
-    sessionId,
+    accessModel: "legacy",
+    accessRole: null,
+    selfAgentId: null,
+    selfAgentName: null,
+    selfAgentTeam: null,
+    primaryTeam: null,
+    fullTeamAccess: [],
+    tabGrants: [],
   };
+}
+
+export function authPayloadForUser(user: PortalUser, sessionId: string): SessionAuthPayload {
+  return { ...legacyPayload(user), sessionId };
+}
+
+export function authPayloadForAccess(
+  access: ResolvedPortalAccess,
+  sessionId: string,
+): SessionAuthPayload {
+  return { ...access.payload, sessionId };
 }
 
 export function publicAuthUser(payload: AuthPayload) {
@@ -64,14 +106,102 @@ export function publicAuthUser(payload: AuthPayload) {
     allowedSubTabs: payload.allowedSubTabs ?? null,
     lockToToday: !!payload.lockToToday,
     hideBackendStats: !!payload.hideBackendStats,
+    accessModel: payload.accessModel ?? "legacy",
+    accessRole: payload.accessRole ?? null,
+    selfAgentId: payload.selfAgentId ?? null,
+    selfAgentName: payload.selfAgentName ?? null,
+    selfAgentTeam: payload.selfAgentTeam ?? null,
+    primaryTeam: payload.primaryTeam ?? null,
+    fullTeamAccess: payload.fullTeamAccess ?? [],
+    tabGrants: payload.tabGrants ?? [],
+  };
+}
+
+export async function loadAuthenticatablePortalUser(userId: number): Promise<ResolvedPortalAccess | null> {
+  const [row] = await db
+    .select({
+      ...getTableColumns(portalUsersTable),
+      linkedAgentId: teamAgentsTable.id,
+      linkedAgentName: teamAgentsTable.name,
+      linkedAgentTeam: teamAgentsTable.team,
+      linkedAgentActive: teamAgentsTable.active,
+    })
+    .from(portalUsersTable)
+    .leftJoin(teamAgentsTable, eq(portalUsersTable.teamAgentId, teamAgentsTable.id))
+    .where(eq(portalUsersTable.id, userId))
+    .limit(1);
+  if (!row?.active) return null;
+
+  const user: PortalUser = row;
+  if (!user.accessRole) return { user, payload: legacyPayload(user) };
+
+  if (user.accessRole === "agent" && (
+    !row.linkedAgentId
+    || !row.linkedAgentName
+    || !row.linkedAgentTeam
+    || !row.linkedAgentActive
+  )) return null;
+  if (user.accessRole === "manager" && !user.primaryTeam) return null;
+
+  const [teamGrantRows, tabGrantRows] = user.accessRole === "admin"
+    ? [[], []] as const
+    : await Promise.all([
+        db.select({ team: portalUserTeamGrantsTable.team })
+          .from(portalUserTeamGrantsTable)
+          .where(eq(portalUserTeamGrantsTable.portalUserId, user.id)),
+        db.select({ tab: portalUserTabGrantsTable.tab })
+          .from(portalUserTabGrantsTable)
+          .where(eq(portalUserTabGrantsTable.portalUserId, user.id)),
+      ]);
+
+  const grantedTeams = teamGrantRows.map(({ team }) => team);
+  const fullTeamAccess = user.accessRole === "manager"
+    ? Array.from(new Set([user.primaryTeam!, ...grantedTeams]))
+    : grantedTeams;
+  const coreTeams = user.accessRole === "agent"
+    ? [row.linkedAgentTeam!]
+    : user.accessRole === "manager"
+      ? fullTeamAccess
+      : [];
+  const tabGrants = tabGrantRows.map(({ tab }) => tab);
+  const effectiveTabs = user.accessRole === "admin"
+    ? null
+    : Array.from(new Set([
+        ...coreTeams.map((team) => TEAM_TAB[team]),
+        ...grantedTeams.map((team) => TEAM_TAB[team]),
+        ...tabGrants,
+      ]));
+  const storedPermissions = parsePermissions(user.permissions, user.accessRole === "admin" ? "admin" : user.role);
+  const permissions = user.accessRole === "admin"
+    ? [...ALL_PERMISSIONS]
+    : Array.from(new Set<Permission>(["view_metrics", ...storedPermissions]));
+
+  return {
+    user,
+    payload: {
+      userId: user.id,
+      username: user.username,
+      role: user.accessRole === "admin" ? "admin" : "view",
+      permissions,
+      teamAccess: null,
+      allowedTabs: effectiveTabs,
+      allowedAgents: null,
+      allowedSubTabs: parseJsonArray(user.allowedSubTabs),
+      lockToToday: !!user.lockToToday,
+      samiaCurse: !!user.samiaCurse,
+      hideBackendStats: !!user.hideBackendStats,
+      accessModel: "canonical",
+      accessRole: user.accessRole,
+      selfAgentId: row.linkedAgentId,
+      selfAgentName: row.linkedAgentName,
+      selfAgentTeam: row.linkedAgentTeam,
+      primaryTeam: user.primaryTeam,
+      fullTeamAccess,
+      tabGrants,
+    },
   };
 }
 
 export async function loadActivePortalUser(userId: number): Promise<PortalUser | null> {
-  const [user] = await db
-    .select()
-    .from(portalUsersTable)
-    .where(eq(portalUsersTable.id, userId))
-    .limit(1);
-  return user?.active ? user : null;
+  return (await loadAuthenticatablePortalUser(userId))?.user ?? null;
 }

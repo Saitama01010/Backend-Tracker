@@ -1,6 +1,7 @@
 import { QueryClientProvider, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { AvatarIcon, AvatarName } from "@/components/AvatarName";
+import { CanonicalUserManagementPanel } from "@/components/CanonicalUserManagementPanel";
 import { TablePager, usePaginatedRows } from "@/components/TablePager";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -12291,7 +12292,7 @@ function Dashboard() {
 
   return (
     <div className="ops-shell min-h-screen bg-background relative overflow-x-hidden overflow-y-visible">
-      {showUsers && <UserManagementPanel onClose={() => setShowUsers(false)} />}
+      {showUsers && <CanonicalUserManagementPanel onClose={() => setShowUsers(false)} />}
       {showBlocked && <BlockedNumbersPanel onClose={() => setShowBlocked(false)} />}
       {showAgents && <AgentRosterPanel onClose={() => setShowAgents(false)} />}
 

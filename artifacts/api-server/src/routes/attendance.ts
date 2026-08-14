@@ -32,14 +32,21 @@ import {
 } from "../lib/databasePerformance.js";
 import {
   attendanceDepartmentForUser,
-  canAccessAgent,
   canAccessAttendanceDepartment,
   canAccessDateRange,
   hasPermission,
+  isAdministrator,
+  isCanonicalUser,
   normalizeAgentIdentity,
 } from "../middleware/authorizationCore.js";
 import type { AuthPayload } from "../middleware/authCore.js";
-import { canAccessLiveAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
+import {
+  authorizationAgent,
+  canAccessLiveAgent,
+  canAccessMetricAgent,
+  loadAuthorizationAgentDirectory,
+  type AuthorizationAgentDirectory,
+} from "../lib/authorizationScope.js";
 import {
   escapeLikePattern,
   validateOptionalWorkflowRange,
@@ -107,9 +114,11 @@ function todayLA(): string {
 function canAccessAttendanceMember(
   user: AuthPayload,
   member: { name: string; department: string },
+  directory: AuthorizationAgentDirectory,
 ): boolean {
   return canAccessAttendanceDepartment(user, member.department)
-    && canAccessAgent(user, member.name, ATTENDANCE_MEMBER_ALIASES[member.name] ?? []);
+    && [member.name, ...(ATTENDANCE_MEMBER_ALIASES[member.name] ?? [])]
+      .some((name) => canAccessMetricAgent(user, name, directory));
 }
 
 router.get("/attendance", async (req, res) => {
@@ -133,7 +142,8 @@ router.get("/attendance", async (req, res) => {
       .where(includeInactive ? undefined : eq(attendanceMembersTable.active, true))
       .orderBy(attendanceMembersTable.department, attendanceMembersTable.name);
 
-    const members = allMembers.filter((member) => canAccessAttendanceMember(req.user!, member));
+    const directory = await loadAuthorizationAgentDirectory();
+    const members = allMembers.filter((member) => canAccessAttendanceMember(req.user!, member, directory));
     const records =
       members.length > 0
         ? await db
@@ -162,7 +172,8 @@ router.post("/attendance/members", requireAuth, requirePermission("manage_member
       res.status(400).json({ error: "name required" });
       return;
     }
-    if (!canAccessAttendanceMember(req.user!, { name: name.trim(), department: department?.trim() ?? "" })) {
+    const directory = await loadAuthorizationAgentDirectory();
+    if (!canAccessAttendanceMember(req.user!, { name: name.trim(), department: department?.trim() ?? "" }, directory)) {
       res.status(403).json({ error: "Forbidden" });
       return;
     }
@@ -192,8 +203,9 @@ router.patch("/attendance/members/:id", requireAuth, requirePermission("manage_m
     }
     const finalDepartment = body.department?.trim() ?? existing.department;
     const finalName = body.name?.trim() ?? existing.name;
-    if (!canAccessAttendanceMember(req.user!, existing)
-      || !canAccessAttendanceMember(req.user!, { name: finalName, department: finalDepartment })) {
+    const directory = await loadAuthorizationAgentDirectory();
+    if (!canAccessAttendanceMember(req.user!, existing, directory)
+      || !canAccessAttendanceMember(req.user!, { name: finalName, department: finalDepartment }, directory)) {
       res.status(403).json({ error: "Forbidden" });
       return;
     }
@@ -226,7 +238,8 @@ router.put("/attendance/record", requireAuth, requirePermission("edit_attendance
     const resolved = await resolveActiveAttendanceMember(memberId);
     if (resolved.kind === "missing") return res.status(404).json({ error: "Attendance member not found" });
     if (resolved.kind === "ambiguous") return res.status(409).json({ error: "Attendance member is ambiguous" });
-    if (!canAccessAttendanceMember(req.user!, resolved.member)) {
+    const directory = await loadAuthorizationAgentDirectory();
+    if (!canAccessAttendanceMember(req.user!, resolved.member, directory)) {
       return res.status(403).json({ error: "Forbidden" });
     }
     const result = await setAttendanceRecord({
@@ -250,7 +263,11 @@ router.put("/attendance/record", requireAuth, requirePermission("edit_attendance
 
 router.post("/attendance/import", requireAuth, requirePermission("manage_members"), async (req, res) => {
   try {
-    if (attendanceDepartmentForUser(req.user!) || req.user!.allowedAgents?.length) {
+    if (
+      (isCanonicalUser(req.user!) && !isAdministrator(req.user!))
+      || attendanceDepartmentForUser(req.user!)
+      || req.user!.allowedAgents?.length
+    ) {
       res.status(403).json({ error: "Forbidden", reason: "The attendance import spans multiple departments." });
       return;
     }
@@ -470,12 +487,13 @@ router.get("/attendance/call-logs", async (req, res) => {
 
     const quoCalls = await buildQuoCallsMap(dayStartUtc, dayEndUtc);
 
+    const directory = await loadAuthorizationAgentDirectory();
     const members = (await db
       .select()
       .from(attendanceMembersTable)
       .where(eq(attendanceMembersTable.active, true))
       .orderBy(attendanceMembersTable.department, attendanceMembersTable.name))
-      .filter((member) => canAccessAttendanceMember(req.user!, member));
+      .filter((member) => canAccessAttendanceMember(req.user!, member, directory));
 
     const existingRecords = members.length > 0
       ? await db.select(attendanceRecordSelection).from(attendanceRecordsTable)
@@ -548,11 +566,14 @@ router.post("/attendance/set", requireAuth, requirePermission("edit_attendance")
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    const members = await activeAttendanceMembers();
+    const [members, directory] = await Promise.all([
+      activeAttendanceMembers(),
+      loadAuthorizationAgentDirectory(),
+    ]);
     for (const record of records) {
       const resolved = resolveActiveAttendanceMemberFromList(members, record.memberId, record.memberName);
       if (resolved.kind === "ambiguous") return res.status(409).json({ error: "Attendance member is ambiguous" });
-      if (resolved.kind === "unique" && !canAccessAttendanceMember(req.user!, resolved.member)) {
+      if (resolved.kind === "unique" && !canAccessAttendanceMember(req.user!, resolved.member, directory)) {
         return res.status(403).json({ error: "Forbidden" });
       }
     }
@@ -631,8 +652,9 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
 
     const quoCalls = await buildQuoCallsMap(dayStartUtc, dayEndUtc);
 
+    const directory = await loadAuthorizationAgentDirectory();
     const members = (await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true)))
-      .filter((member) => canAccessAttendanceMember(req.user!, member));
+      .filter((member) => canAccessAttendanceMember(req.user!, member, directory));
 
     const existingRecords = await db.select({ memberId: attendanceRecordsTable.memberId })
       .from(attendanceRecordsTable)
@@ -711,11 +733,14 @@ router.get("/attendance/agent-contacts", async (req, res) => {
     }
 
     const directory = await loadAuthorizationAgentDirectory();
-    if (req.user!.role !== "admin") {
+    if (!isAdministrator(req.user!)) {
       const requestedIdentity = normalizeAgentIdentity(agentParam);
-      const matchingAgents = directory.agents.filter((agent) =>
-        normalizeAgentIdentity(agent.name).includes(requestedIdentity)
-        || (!!agent.arabicName && normalizeAgentIdentity(agent.arabicName).includes(requestedIdentity)));
+      const exactAgent = authorizationAgent(directory, agentParam);
+      const matchingAgents = isCanonicalUser(req.user!)
+        ? exactAgent ? [exactAgent] : []
+        : directory.agents.filter((agent) =>
+            normalizeAgentIdentity(agent.name).includes(requestedIdentity)
+            || (!!agent.arabicName && normalizeAgentIdentity(agent.arabicName).includes(requestedIdentity)));
       if (!matchingAgents.some((agent) => canAccessLiveAgent(req.user!, agent.name, directory))) {
         return res.status(403).json({ error: "Forbidden" });
       }
