@@ -9,9 +9,9 @@ import {
 } from "../lib/authorizationScope.js";
 
 const directory = createAuthorizationAgentDirectory([
-  { name: "Agent Alpha", arabicName: "Alpha Alias", team: "retention" },
-  { name: "Agent Beta", arabicName: null, team: "cs" },
-  { name: "Agent Gamma", arabicName: null, team: "killers" },
+  { id: 11, name: "Agent Alpha", arabicName: "Alpha Alias", team: "retention", active: true },
+  { id: 12, name: "Agent Beta", arabicName: null, team: "cs", active: true },
+  { id: 13, name: "Agent Gamma", arabicName: null, team: "killers", active: true },
 ]);
 const retentionUser: AuthPayload = {
   userId: 201,
@@ -55,4 +55,44 @@ test("sheet rows are filtered by team, agent, and today-only restrictions withou
 test("unscopable sheets fail closed instead of returning empty success data", () => {
   const result = scopeSheetData(retentionUser, { headers: ["Status"], rows: [{ Status: "Fixed" }] }, directory);
   assert.deepEqual(result, { ok: false, reason: "The requested sheet has no resolvable agent column." });
+});
+
+test("canonical provider aliases resolve to immutable self scope and never name-match another row", () => {
+  const agent: AuthPayload = {
+    ...retentionUser,
+    accessModel: "canonical",
+    accessRole: "agent",
+    selfAgentId: 11,
+    selfAgentName: "Agent Alpha",
+    selfAgentTeam: "retention",
+    fullTeamAccess: [],
+  };
+  assert.equal(canAccessMetricAgent(agent, "Alpha Alias", directory), true);
+  assert.equal(canAccessMetricAgent(agent, "Agent Beta", directory), false);
+  assert.equal(canAccessMetricAgent(agent, "Unknown Agent", directory), false);
+  assert.equal(canAccessLiveAgent(agent, "Alpha Alias", directory), true);
+});
+
+test("canonical sheets are always row-scoped and fail closed without an authoritative identity column", () => {
+  const agent: AuthPayload = {
+    ...retentionUser,
+    accessModel: "canonical",
+    accessRole: "agent",
+    selfAgentId: 11,
+    selfAgentName: "Agent Alpha",
+    selfAgentTeam: "retention",
+    fullTeamAccess: [],
+    allowedTabs: ["backend-stats", "retention"],
+  };
+  const data = {
+    headers: ["Agent Name", "Status"],
+    rows: [
+      { "Agent Name": "Alpha Alias", Status: "Fixed" },
+      { "Agent Name": "Agent Beta", Status: "Fixed" },
+    ],
+  };
+  const result = scopeSheetData(agent, data, directory);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.deepEqual(result.data.rows, [data.rows[0]]);
+  assert.equal(scopeSheetData(agent, { headers: ["Status"], rows: [{ Status: "Fixed" }] }, directory).ok, false);
 });

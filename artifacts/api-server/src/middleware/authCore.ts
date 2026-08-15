@@ -1,5 +1,11 @@
 import type { NextFunction, Request, Response } from "express";
-import type { Permission, TeamAccess } from "@workspace/db/schema";
+import type {
+  CanonicalAccessRole,
+  CanonicalDashboardTab,
+  Permission,
+  TeamAccess,
+  TeamSlug,
+} from "@workspace/db/schema";
 
 export interface AuthPayload {
   userId: number;
@@ -13,6 +19,14 @@ export interface AuthPayload {
   lockToToday?: boolean;
   samiaCurse?: boolean;
   hideBackendStats?: boolean;
+  accessModel?: "legacy" | "canonical";
+  accessRole?: CanonicalAccessRole | null;
+  selfAgentId?: number | null;
+  selfAgentName?: string | null;
+  selfAgentTeam?: TeamSlug | null;
+  primaryTeam?: TeamSlug | null;
+  fullTeamAccess?: TeamSlug[];
+  tabGrants?: CanonicalDashboardTab[];
   sessionId?: string;
 }
 

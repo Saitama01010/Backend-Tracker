@@ -8,7 +8,6 @@ import { and, gte, lte, or, eq, inArray } from "drizzle-orm";
 import { hydrateVosState, vosCallSpansCache, vosCallTimestampsCache } from "./vos";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import {
-  canAccessAgent,
   canAccessAttendanceDepartment,
   canAccessDateRange,
 } from "../middleware/authorizationCore.js";
@@ -25,6 +24,11 @@ import {
 } from "../lib/attendancePolicy.js";
 import { attendanceShiftStart } from "../lib/businessTime.js";
 import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
+import {
+  canAccessMetricAgent,
+  loadAuthorizationAgentDirectory,
+  type AuthorizationAgentDirectory,
+} from "../lib/authorizationScope.js";
 
 const TEAM_QUO_LINES = [...OPERATIONAL_CONFIG.trackedTeamLines];
 
@@ -53,9 +57,11 @@ function canAccessViolationIdentity(
   user: NonNullable<Express.Request["user"]>,
   member: string,
   department: string,
+  directory: AuthorizationAgentDirectory,
 ): boolean {
   return canAccessAttendanceDepartment(user, department)
-    && canAccessAgent(user, member, agentNamesForMember(member));
+    && [member, ...agentNamesForMember(member)]
+      .some((name) => canAccessMetricAgent(user, name, directory));
 }
 
 async function resolveMissedVerificationScope(key: string): Promise<{ department: string; date: string } | null> {
@@ -113,7 +119,7 @@ router.get("/violations", async (req, res) => {
     const rangeEnd = new Date(laStartOfDay(addAttendanceCalendarDays(dates[dates.length - 1]!, 1)).getTime() - 1);
 
     // Parallel fetch: members, verified keys, phone calls, missed PBX calls, missed Quo calls
-    const [members, verifications, callRows, missedRows, quoMissedRows] = await Promise.all([
+    const [members, verifications, callRows, missedRows, quoMissedRows, directory] = await Promise.all([
       db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true)),
       db.select().from(violationVerificationsTable),
       db.select({
@@ -152,17 +158,20 @@ router.get("/violations", async (req, res) => {
         inArray(phoneCallsTable.status, ["no-answer", "voicemail", "missed", "voicemail-brief"]),
         inArray(phoneCallsTable.lineName, TEAM_QUO_LINES),
       )),
+      loadAuthorizationAgentDirectory(),
     ]);
 
     const scopedMembers = members.filter((member) => canAccessViolationIdentity(
       req.user!,
       member.name,
       member.department,
+      directory,
     ));
     const scopedVerifications = verifications.filter((verification) => canAccessViolationIdentity(
       req.user!,
       verification.member,
       verification.department,
+      directory,
     ));
     const verifiedKeys = new Set(scopedVerifications.map((v) => v.key));
 
@@ -439,7 +448,8 @@ router.post("/violations/verify", async (req, res) => {
     const authorizedDepartment = missedScope?.department ?? payload.department;
     const authorizedDate = missedScope?.date ?? payload.date;
     if (!canAccessDateRange(req.user!, [authorizedDate])) return res.status(403).json({ error: "Forbidden" });
-    if (!canAccessViolationIdentity(req.user!, payload.member, authorizedDepartment)) {
+    const directory = await loadAuthorizationAgentDirectory();
+    if (!canAccessViolationIdentity(req.user!, payload.member, authorizedDepartment, directory)) {
       return res.status(403).json({ error: "Forbidden" });
     }
     await db.insert(violationVerificationsTable)
@@ -472,7 +482,8 @@ router.get("/violations/verified", async (req, res) => {
   try {
     const rows = await db.select().from(violationVerificationsTable)
       .orderBy(violationVerificationsTable.verifiedAt);
-    const items = rows.filter((row) => canAccessViolationIdentity(req.user!, row.member, row.department));
+    const directory = await loadAuthorizationAgentDirectory();
+    const items = rows.filter((row) => canAccessViolationIdentity(req.user!, row.member, row.department, directory));
     return res.json({ items });
   } catch (err) {
     req.log.error(err, "violations/verified GET error");

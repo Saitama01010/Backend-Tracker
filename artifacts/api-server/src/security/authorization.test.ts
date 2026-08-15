@@ -5,6 +5,7 @@ import {
   canAccessAgent,
   canAccessAttendanceDepartment,
   canAccessDateRange,
+  canAccessFullTeam,
   canAccessMetricTeam,
   canViewSubTab,
   canViewTab,
@@ -29,6 +30,30 @@ const limitedTeam: AuthPayload = {
 const limitedAgent: AuthPayload = { ...limitedTeam, allowedAgents: ["Agent Alpha"] };
 const limitedTab: AuthPayload = { ...normal, allowedTabs: ["onboarding"] };
 const todayOnly: AuthPayload = { ...limitedTeam, lockToToday: true };
+const canonicalAgent: AuthPayload = {
+  ...normal,
+  userId: 301,
+  username: "canonical-agent-fixture",
+  accessModel: "canonical",
+  accessRole: "agent",
+  selfAgentId: 11,
+  selfAgentName: "Agent Alpha",
+  selfAgentTeam: "retention",
+  fullTeamAccess: [],
+  allowedTabs: ["retention", "violations"],
+  tabGrants: ["violations"],
+};
+const canonicalManager: AuthPayload = {
+  ...normal,
+  userId: 302,
+  username: "canonical-manager-fixture",
+  accessModel: "canonical",
+  accessRole: "manager",
+  primaryTeam: "nsf",
+  fullTeamAccess: ["nsf", "cs"],
+  allowedTabs: ["nsf", "cs", "missed-no-cb"],
+  tabGrants: ["missed-no-cb"],
+};
 
 test("admin routes reject ordinary authenticated users with 403 decisions", () => {
   for (const [method, path] of [["GET", "/users"], ["POST", "/qa/process"], ["GET", "/samia/diagnostics"]]) {
@@ -63,6 +88,82 @@ test("agent and subtab allowlists cannot be bypassed by alternate casing or punc
   assert.equal(canAccessAgent(limitedAgent, "Provider Name", ["Agent Alpha"]), true);
   assert.equal(canViewSubTab({ ...limitedTeam, allowedSubTabs: ["files"] }, "files"), true);
   assert.equal(canViewSubTab({ ...limitedTeam, allowedSubTabs: ["files"] }, "call"), false);
+});
+
+test("canonical Agent scope is self-only by immutable roster ID unless full-team access is explicit", () => {
+  assert.equal(canAccessAgent(canonicalAgent, "Provider Alias", [], { id: 11, team: "retention" }), true);
+  assert.equal(canAccessAgent(canonicalAgent, "Agent Alpha", [], { id: 12, team: "retention" }), false);
+  assert.equal(canAccessAgent(canonicalAgent, "Agent Alpha"), false);
+  assert.equal(canAccessFullTeam(canonicalAgent, "retention"), false);
+  const granted: AuthPayload = { ...canonicalAgent, fullTeamAccess: ["retention"] };
+  assert.equal(canAccessAgent(granted, "Agent Beta", [], { id: 12, team: "retention" }), true);
+  assert.equal(canAccessFullTeam(granted, "retention"), true);
+});
+
+test("canonical Manager scope includes the primary team and explicit extra teams only", () => {
+  assert.equal(canAccessAgent(canonicalManager, "NSF Agent", [], { id: 20, team: "nsf" }), true);
+  assert.equal(canAccessAgent(canonicalManager, "CS Agent", [], { id: 21, team: "cs" }), true);
+  assert.equal(canAccessAgent(canonicalManager, "Retention Agent", [], { id: 22, team: "retention" }), false);
+  assert.equal(canAccessFullTeam(canonicalManager, "nsf"), true);
+  assert.equal(canAccessFullTeam(canonicalManager, "cs"), true);
+  assert.equal(canAccessFullTeam(canonicalManager, "retention"), false);
+});
+
+test("canonical tab and endpoint authorization fails closed beyond resolved scope", () => {
+  assert.equal(canViewTab(canonicalAgent, "retention"), true);
+  assert.equal(canViewTab(canonicalAgent, "cs"), false);
+  assert.equal(canViewTab(canonicalAgent, "violations"), true);
+  assert.equal(authorizeApiRoute("GET", "/nsf/readymode-queue", canonicalAgent).allowed, false);
+  assert.equal(authorizeApiRoute("GET", "/nsf/readymode-queue", canonicalManager).allowed, true);
+  assert.equal(authorizeApiRoute("GET", "/live-transfers/download", { ...canonicalAgent, allowedTabs: ["onboarding"] }).allowed, false);
+  assert.equal(authorizeApiRoute("POST", "/breaks/start", canonicalAgent).allowed, false);
+  assert.equal(authorizeApiRoute("POST", "/breaks/start", { ...canonicalAgent, permissions: [...canonicalAgent.permissions, "edit_attendance"] }).allowed, true);
+  assert.equal(authorizeApiRoute("PUT", "/attendance/record", canonicalManager).allowed, false);
+  assert.equal(authorizeApiRoute("PUT", "/attendance/record", { ...canonicalManager, permissions: [...canonicalManager.permissions, "edit_attendance"] }).allowed, true);
+  assert.equal(authorizeApiRoute("PUT", "/attendance/record", admin).allowed, true);
+});
+
+test("Onboarding is a privileged global tab for canonical accounts and preserves legacy behavior", () => {
+  const onboardingPaths = [
+    "/ob-report/status",
+    "/ob-report/download",
+    "/ob-analytics",
+    "/ob-analytics/download",
+  ];
+  const grantedAgent: AuthPayload = {
+    ...canonicalAgent,
+    allowedTabs: [...canonicalAgent.allowedTabs!, "onboarding"],
+    tabGrants: [...canonicalAgent.tabGrants!, "onboarding"],
+  };
+  const grantedManager: AuthPayload = {
+    ...canonicalManager,
+    allowedTabs: [...canonicalManager.allowedTabs!, "onboarding"],
+    tabGrants: [...canonicalManager.tabGrants!, "onboarding"],
+  };
+
+  assert.equal(canViewTab(canonicalAgent, "onboarding"), false);
+  assert.equal(canViewTab(canonicalManager, "onboarding"), false);
+  assert.equal(canViewTab(grantedAgent, "onboarding"), true);
+  assert.equal(canViewTab(grantedManager, "onboarding"), true);
+  assert.equal(canViewTab(admin, "onboarding"), true);
+  assert.equal(canViewTab(limitedTab, "onboarding"), true);
+
+  for (const path of onboardingPaths) {
+    assert.equal(authorizeApiRoute("GET", path, canonicalAgent).allowed, false, `Agent without grant: ${path}`);
+    assert.equal(authorizeApiRoute("GET", path, grantedAgent).allowed, true, `Agent with grant: ${path}`);
+    assert.equal(authorizeApiRoute("GET", path, canonicalManager).allowed, false, `Manager without grant: ${path}`);
+    assert.equal(authorizeApiRoute("GET", path, grantedManager).allowed, true, `Manager with grant: ${path}`);
+    assert.equal(authorizeApiRoute("GET", path, admin).allowed, true, `Admin: ${path}`);
+    assert.equal(authorizeApiRoute("GET", path, limitedTab).allowed, true, `Legacy grant behavior: ${path}`);
+  }
+
+  assert.equal(canAccessAgent(grantedAgent, "Agent Alpha", [], { id: 12, team: "retention" }), false);
+  assert.equal(canAccessMetricTeam(grantedAgent, "cs"), false);
+  assert.equal(canAccessMetricTeam(grantedManager, "retention"), false);
+  assert.equal(authorizeApiRoute("GET", "/live-transfers/status", grantedAgent).allowed, false);
+  assert.equal(authorizeApiRoute("POST", "/ob-report/refresh", grantedAgent).allowed, false);
+  assert.equal(authorizeApiRoute("POST", "/ob-report/refresh", grantedManager).allowed, false);
+  assert.equal(authorizeApiRoute("POST", "/ob-report/refresh", admin).allowed, true);
 });
 
 test("today-only users cannot submit historical or future date parameters", () => {

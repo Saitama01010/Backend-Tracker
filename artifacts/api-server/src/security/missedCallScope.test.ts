@@ -96,3 +96,31 @@ test("cached rows are scoped again for every user and business day", () => {
     ["day-two"],
   );
 });
+
+test("canonical team-wide missed-call rows require Manager scope or an explicit Agent grant", () => {
+  const rows = [
+    item("retention", "2026-07-15T12:00:00.000Z", "retention"),
+    item("nsf", "2026-07-15T12:00:00.000Z", "nsf"),
+    item("cs", "2026-07-15T12:00:00.000Z", "cs"),
+  ];
+  const canonicalAgent: AuthPayload = {
+    ...todayOnlyUser,
+    accessModel: "canonical",
+    accessRole: "agent",
+    selfAgentId: 11,
+    selfAgentTeam: "retention",
+    fullTeamAccess: [],
+    lockToToday: false,
+  };
+  assert.deepEqual(scopeMissedItemsForUser(canonicalAgent, rows), []);
+  assert.deepEqual(scopeMissedItemsForUser({ ...canonicalAgent, fullTeamAccess: ["retention"] }, rows).map(({ id }) => id), ["retention"]);
+  const manager: AuthPayload = {
+    ...canonicalAgent,
+    accessRole: "manager",
+    selfAgentId: null,
+    selfAgentTeam: null,
+    primaryTeam: "nsf",
+    fullTeamAccess: ["nsf", "cs"],
+  };
+  assert.deepEqual(scopeMissedItemsForUser(manager, rows).map(({ id }) => id), ["nsf", "cs"]);
+});

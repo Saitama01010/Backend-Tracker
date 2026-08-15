@@ -2,9 +2,10 @@ import type { Request, Response, NextFunction } from "express";
 import { performance } from "node:perf_hooks";
 import type { Permission } from "@workspace/db/schema";
 import { createRequireAuth, type AuthPayload } from "./authCore.js";
-import { authPayloadForUser, loadActivePortalUser } from "../lib/authUser.js";
+import { authPayloadForAccess, loadAuthenticatablePortalUser } from "../lib/authUser.js";
 import { isActiveAccessSession } from "../lib/sessionStore.js";
 import { signToken, verifyToken } from "../lib/accessToken.js";
+import { isAdministrator, isCanonicalUser } from "./authorizationCore.js";
 
 export type { AuthPayload } from "./authCore.js";
 
@@ -23,10 +24,10 @@ const authenticateRequest = createRequireAuth({
   verifyToken,
   loadActiveUser: async (payload) => {
     if (!payload.sessionId) return null;
-    const user = await loadActivePortalUser(payload.userId);
-    if (!user) return null;
-    if (!await isActiveAccessSession(payload.sessionId, user.id)) return null;
-    return authPayloadForUser(user, payload.sessionId);
+    const access = await loadAuthenticatablePortalUser(payload.userId);
+    if (!access) return null;
+    if (!await isActiveAccessSession(payload.sessionId, access.user.id)) return null;
+    return authPayloadForAccess(access, payload.sessionId);
   },
 });
 
@@ -40,7 +41,12 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
 export function requireRole(...roles: Array<"admin" | "edit" | "view">) {
   return (req: Request, res: Response, next: NextFunction) => {
-    if (!req.user || !roles.includes(req.user.role)) {
+    const compatibilityRole = req.user
+      ? isCanonicalUser(req.user)
+        ? isAdministrator(req.user) ? "admin" : "view"
+        : req.user.role
+      : null;
+    if (!compatibilityRole || !roles.includes(compatibilityRole)) {
       res.status(403).json({ error: "Forbidden" });
       return;
     }

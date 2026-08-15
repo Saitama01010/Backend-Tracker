@@ -111,6 +111,10 @@ test("authentication uses authoritative session and user state with generic fail
 
 test("new and changed passwords use the stronger policy without evaluating stored passwords", () => {
   assert.equal(validateNewPassword("Long-Fake-Passphrase-47", "fixture-user"), null);
+  assert.equal(validateNewPassword("fifteen chars ok", "fixture-user"), null);
+  assert.equal(validateNewPassword("correct horse battery staple", "fixture-user"), null);
+  assert.equal(validateNewPassword("!".repeat(72), "fixture-user"), null);
+  assert.equal(validateNewPassword("é".repeat(37), "fixture-user"), PASSWORD_POLICY_MESSAGE);
   assert.equal(validateNewPassword("short7!", "fixture-user"), PASSWORD_POLICY_MESSAGE);
   assert.equal(validateNewPassword("fixture-user-Passphrase-47!", "fixture-user"), "Password must not contain the username.");
   assert.equal(validateNewPassword(undefined, "fixture-user"), PASSWORD_POLICY_MESSAGE);

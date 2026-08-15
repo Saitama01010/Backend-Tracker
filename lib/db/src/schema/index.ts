@@ -21,6 +21,7 @@ export * from "./phoneCalls";
 export * from "./pbxMissedCalls";
 export * from "./attendance";
 export * from "./users";
+export * from "./portalAccess";
 export * from "./blockedNumbers";
 export * from "./violationVerifications";
 export * from "./samiaMessages";

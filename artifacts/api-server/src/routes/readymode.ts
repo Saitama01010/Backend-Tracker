@@ -5,7 +5,7 @@ import { and, gte, lte, sql } from "drizzle-orm";
 import type { Logger } from "pino";
 import { logger as rootLogger } from "../lib/logger";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { canAccessDateRange } from "../middleware/authorizationCore.js";
+import { canAccessDateRange, isAdministrator } from "../middleware/authorizationCore.js";
 import { canAccessMetricAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
 import {
   approvedReadyModeProbePath,
@@ -657,7 +657,7 @@ router.get("/readymode/stats", async (req, res) => {
         connectRate: 100,
       }));
     const authorizationStartedAt = performance.now();
-    const directory = req.user!.role === "admin" ? null : await loadAuthorizationAgentDirectory();
+    const directory = isAdministrator(req.user!) ? null : await loadAuthorizationAgentDirectory();
     const agents = directory
       ? allAgents.filter((agent) => canAccessMetricAgent(req.user!, agent.agentName, directory))
       : allAgents;

@@ -99,6 +99,13 @@
       "when": 1789369200000,
       "tag": "0013_canonical_agent_roster_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1789455600000,
+      "tag": "0014_canonical_dashboard_access",
+      "breakpoints": true
     }
   ]
 }

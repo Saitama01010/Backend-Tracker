@@ -18,7 +18,7 @@ import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { logger } from "../lib/logger.js";
 import { liveWebhookCalls } from "./quoWebhook.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { canAccessDateRange, canAccessMetricTeam, type MetricTeam } from "../middleware/authorizationCore.js";
+import { canAccessDateRange, canAccessMetricTeam, isAdministrator, type MetricTeam } from "../middleware/authorizationCore.js";
 import {
   authorizationAgent,
   canAccessLiveAgent,
@@ -422,7 +422,7 @@ export async function legacyQuoStatsHandler(req: Request, res: Response) {
       .from(phoneCallsTable)
       .where(and(gte(phoneCallsTable.createdAt, fromDate), lte(phoneCallsTable.createdAt, toDate), ne(phoneCallsTable.status, "in-progress")));
 
-    const directory = req.user!.role === "admin" ? null : await loadAuthorizationAgentDirectory();
+    const directory = isAdministrator(req.user!) ? null : await loadAuthorizationAgentDirectory();
     const scopedRows = directory
       ? rows.filter((row) => {
           const agentName = canonicalAgentName(row.agentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
@@ -681,7 +681,7 @@ export async function optimizedQuoStatsHandler(req: Request, res: Response) {
     // Non-admin scopes depend on the mutable authorization directory. Avoid a
     // response cache there so a team/agent reassignment takes effect on the
     // very next request instead of waiting for the TTL.
-    const cacheKey = req.user!.role === "admin"
+    const cacheKey = isAdministrator(req.user!)
       ? phoneStatsCacheKey(req, range.from, range.to)
       : null;
     const cached = cacheKey ? phoneStatsResponseCache.get(cacheKey) : undefined;
@@ -698,7 +698,7 @@ export async function optimizedQuoStatsHandler(req: Request, res: Response) {
 
     const authorizationStartedAt = performance.now();
     const [directory, blocklist] = await Promise.all([
-      req.user!.role === "admin" ? Promise.resolve(null) : loadAuthorizationAgentDirectory(),
+      isAdministrator(req.user!) ? Promise.resolve(null) : loadAuthorizationAgentDirectory(),
       getBlockedNumbers(),
     ]);
     const authorizationLoadMs = roundedTiming(performance.now() - authorizationStartedAt);
@@ -1203,7 +1203,7 @@ export async function legacyQuoLiveHandler(req: Request, res: Response) {
       },
       "quo live"
     );
-    if (req.user!.role === "admin") {
+    if (isAdministrator(req.user!)) {
       res.json({
         active: [...active],
         agentCalls: [...agentParticipant.entries()].map(([agentName, participant]) => ({ agentName, participant })),
@@ -1328,7 +1328,7 @@ export async function optimizedQuoLiveHandler(req: Request, res: Response) {
     let scopedActive = usable ? merged.active : [];
     let scopedCalls = usable ? merged.agentCalls : [];
     let scopedWebhookActive = usable && (liveWebhookCalls.size > 0 || durableWebhookCalls.length > 0);
-    if (req.user!.role !== "admin") {
+    if (!isAdministrator(req.user!)) {
       const directory = await loadAuthorizationAgentDirectory();
       scopedActive = scopedActive.filter((agentName) => canAccessLiveAgent(req.user!, agentName, directory));
       scopedCalls = scopedCalls.filter(({ agentName }) => canAccessLiveAgent(req.user!, agentName, directory));
@@ -1427,7 +1427,7 @@ router.get("/quo/calls", async (req, res) => {
       res.status(400).json({ error: "Invalid team." });
       return;
     }
-    if (req.user!.role !== "admin" && (
+    if (!isAdministrator(req.user!) && (
       !requestedTeam
       || !["retention", "nsf", "cs", "killers"].includes(requestedTeam)
       || !canAccessMetricTeam(req.user!, requestedTeam)
@@ -1443,7 +1443,7 @@ router.get("/quo/calls", async (req, res) => {
     }
     const { fromDate, toDate } = parseDateRange(range.from, range.to);
 
-    const directory = req.user!.role === "admin" ? null : await loadAuthorizationAgentDirectory();
+    const directory = isAdministrator(req.user!) ? null : await loadAuthorizationAgentDirectory();
     const isAuthorized = (row: {
       lineTeam: string;
       lineName: string;
