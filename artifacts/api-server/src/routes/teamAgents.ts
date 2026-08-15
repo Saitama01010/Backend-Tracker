@@ -208,6 +208,11 @@ async function findIdentityConflict(
       .where(and(eq(teamAgentsTable.emailNormalized, identities.emailNormalized), exclude))
       .limit(1);
     if (existing) return "email";
+    const portalMatches = await db
+      .select({ teamAgentId: portalUsersTable.teamAgentId })
+      .from(portalUsersTable)
+      .where(eq(portalUsersTable.emailNormalized, identities.emailNormalized));
+    if (portalMatches.some(({ teamAgentId }) => !excludeId || teamAgentId !== excludeId)) return "email";
   }
   return null;
 }

@@ -2,6 +2,7 @@ import { db } from "@workspace/db";
 import { portalUsersTable, ALL_PERMISSIONS, attendanceMembersTable, attendanceRecordsTable } from "@workspace/db/schema";
 import { count, eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
+import { isValidAgentEmail, normalizeAgentEmail } from "@workspace/api-zod/agent-identity";
 import { logger } from "../lib/logger.js";
 import { CURRENT_PASSWORD_POLICY_VERSION, validateNewPassword } from "../lib/passwordPolicy.js";
 import { revokeUserSessions } from "../lib/sessionStore.js";
@@ -18,15 +19,25 @@ function dashboardPassword(environment: NodeJS.ProcessEnv): string {
     : "DASHBOARD_PASSWORD is required before seeding or updating the admin user.");
 }
 
+function dashboardEmail(environment: NodeJS.ProcessEnv): { email: string; emailNormalized: string } {
+  const value = environment["DASHBOARD_EMAIL"];
+  if (!value || !isValidAgentEmail(value)) {
+    throw new Error("DASHBOARD_EMAIL must be a valid email before seeding the admin user.");
+  }
+  return { email: value.trim(), emailNormalized: normalizeAgentEmail(value) };
+}
+
 async function seedAdminUser(environment: NodeJS.ProcessEnv) {
   const [{ value }] = await db.select({ value: count() }).from(portalUsersTable);
   if (value === 0) {
     const password = dashboardPassword(environment);
     const passwordError = validateNewPassword(password);
     if (passwordError) throw new Error(`DASHBOARD_PASSWORD: ${passwordError}`);
+    const emailIdentity = dashboardEmail(environment);
     const hash = await bcrypt.hash(password, 10);
     await db.insert(portalUsersTable).values({
       username: "admin",
+      ...emailIdentity,
       passwordHash: hash,
       passwordPolicyVersion: CURRENT_PASSWORD_POLICY_VERSION,
       passwordChangedAt: new Date(),
@@ -34,7 +45,7 @@ async function seedAdminUser(environment: NodeJS.ProcessEnv) {
       permissions: JSON.stringify([...ALL_PERMISSIONS]),
       active: true,
     });
-    logger.info("Seeded default admin user (username: admin)");
+    logger.info("Seeded default admin user");
     return;
   }
 

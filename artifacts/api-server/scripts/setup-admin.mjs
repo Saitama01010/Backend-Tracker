@@ -26,15 +26,18 @@ function requiredEnv(name) {
   return value;
 }
 
-function validatePassword(password, username) {
-  const categories = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/]
-    .filter((pattern) => pattern.test(password)).length;
-  if (password.length < 12 || password.length > 128 || categories < 3) {
-    throw new Error("ADMIN_PASSWORD must be 12-128 characters and include at least three character categories");
+function validatePassword(password) {
+  if (password.length < 15 || !password.trim() || Buffer.byteLength(password, "utf8") > 72) {
+    throw new Error("ADMIN_PASSWORD must be at least 15 characters and no more than 72 UTF-8 bytes");
   }
-  if (username.length >= 3 && password.toLowerCase().includes(username)) {
-    throw new Error("ADMIN_PASSWORD must not contain ADMIN_USERNAME");
+}
+
+function normalizeEmail(value) {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+    throw new Error("ADMIN_EMAIL must be a valid email address");
   }
+  return normalized;
 }
 
 function databaseUrls() {
@@ -52,14 +55,18 @@ function databaseUrls() {
   return [active];
 }
 
-async function upsertAdmin(label, connectionString, username, passwordHash) {
+async function upsertAdmin(label, connectionString, username, email, passwordHash) {
   const pool = new Pool({ connectionString });
   try {
     const result = await pool.query(
       `
         insert into portal_users (
           username,
+          email,
+          email_normalized,
           password_hash,
+          password_policy_version,
+          password_changed_at,
           role,
           permissions,
           team_access,
@@ -71,9 +78,13 @@ async function upsertAdmin(label, connectionString, username, passwordHash) {
           hide_backend_stats,
           active
         )
-        values ($1, $2, 'admin', $3, null, null, null, null, false, false, false, true)
+        values ($1, $2, $2, $3, 1, now(), 'admin', $4, null, null, null, null, false, false, false, true)
         on conflict (username) do update set
+          email = excluded.email,
+          email_normalized = excluded.email_normalized,
           password_hash = excluded.password_hash,
+          password_policy_version = 1,
+          password_changed_at = now(),
           role = 'admin',
           permissions = excluded.permissions,
           team_access = null,
@@ -87,6 +98,7 @@ async function upsertAdmin(label, connectionString, username, passwordHash) {
       `,
       [
         username,
+        email,
         passwordHash,
         JSON.stringify([
           "view_metrics",
@@ -110,10 +122,11 @@ async function upsertAdmin(label, connectionString, username, passwordHash) {
 loadEnvFile();
 
 const username = requiredEnv("ADMIN_USERNAME").toLowerCase();
+const email = normalizeEmail(requiredEnv("ADMIN_EMAIL"));
 const password = requiredEnv("ADMIN_PASSWORD");
-validatePassword(password, username);
+validatePassword(password);
 const passwordHash = await bcrypt.hash(password, 10);
 
 for (const [label, connectionString] of databaseUrls()) {
-  await upsertAdmin(label, connectionString, username, passwordHash);
+  await upsertAdmin(label, connectionString, username, email, passwordHash);
 }
