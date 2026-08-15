@@ -309,7 +309,7 @@ router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
       : {};
     const username = normalizeUsername(body.username);
     const emailIdentity = portalUserEmailIdentity(body.email);
-    const passwordError = validateNewPassword(body.password, username);
+    const passwordError = validateNewPassword(body.password);
     if (passwordError) throw new UserRequestError(400, passwordError);
     const access = await validateCanonicalInput(body);
     const passwordHash = await bcrypt.hash(body.password as string, 10);
@@ -380,7 +380,7 @@ router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) =
     if (Object.prototype.hasOwnProperty.call(body, "email")) Object.assign(updates, portalUserEmailIdentity(body.email));
     const passwordWasChanged = typeof body.password === "string" && body.password.length > 0;
     if (passwordWasChanged) {
-      const passwordError = validateNewPassword(body.password, updates.username ?? existing.username);
+      const passwordError = validateNewPassword(body.password);
       if (passwordError) throw new UserRequestError(400, passwordError);
       updates.passwordHash = await bcrypt.hash(body.password as string, 10);
       updates.passwordPolicyVersion = CURRENT_PASSWORD_POLICY_VERSION;

@@ -22,7 +22,7 @@ async function seedAdminUser(environment: NodeJS.ProcessEnv) {
   const [{ value }] = await db.select({ value: count() }).from(portalUsersTable);
   if (value === 0) {
     const password = dashboardPassword(environment);
-    const passwordError = validateNewPassword(password, "admin");
+    const passwordError = validateNewPassword(password);
     if (passwordError) throw new Error(`DASHBOARD_PASSWORD: ${passwordError}`);
     const hash = await bcrypt.hash(password, 10);
     await db.insert(portalUsersTable).values({
@@ -40,7 +40,7 @@ async function seedAdminUser(environment: NodeJS.ProcessEnv) {
 
   if (environment["RESET_ADMIN_PASSWORD_ON_BOOT"] === "true") {
     const password = dashboardPassword(environment);
-    const passwordError = validateNewPassword(password, "admin");
+    const passwordError = validateNewPassword(password);
     if (passwordError) throw new Error(`DASHBOARD_PASSWORD: ${passwordError}`);
     const hash = await bcrypt.hash(password, 10);
     const updated = await db.transaction(async (tx) => {

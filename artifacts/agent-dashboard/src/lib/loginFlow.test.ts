@@ -40,20 +40,20 @@ test("a fresh LoginGate state does not retain an unfinished upgrade credential",
 
 test("password confirmation and the displayed policy constraints are validated", () => {
   assert.equal(
-    validatePasswordUpgradeForm("correct horse battery staple", "different horse battery staple", "legacy-user"),
+    validatePasswordUpgradeForm("correct horse battery staple", "different horse battery staple"),
     "Passwords do not match.",
   );
-  assert.equal(validatePasswordUpgradeForm("too short", "too short", "legacy-user"), "Password must be at least 15 characters.");
+  assert.equal(validatePasswordUpgradeForm("too short", "too short"), "Password must be at least 15 characters.");
   assert.equal(
-    validatePasswordUpgradeForm("legacy-user correct horse battery", "legacy-user correct horse battery", "legacy-user"),
-    "Password must not contain your username.",
+    validatePasswordUpgradeForm("legacy-user correct horse battery", "legacy-user correct horse battery"),
+    null,
   );
   const tooManyBytes = "é".repeat(37);
   assert.equal(
-    validatePasswordUpgradeForm(tooManyBytes, tooManyBytes, "legacy-user"),
+    validatePasswordUpgradeForm(tooManyBytes, tooManyBytes),
     "Password must be no more than 72 UTF-8 bytes.",
   );
-  assert.equal(validatePasswordUpgradeForm("correct horse battery staple", "correct horse battery staple", "legacy-user"), null);
+  assert.equal(validatePasswordUpgradeForm("correct horse battery staple", "correct horse battery staple"), null);
 });
 
 test("successful upgrade persists only the normal returned auth session", () => {
@@ -74,5 +74,6 @@ test("LoginGate wires the memory-only challenge into password fields and the upg
   assert.match(source, /Update Password & Continue/);
   assert.match(source, /\/api\/auth\/password-upgrade/);
   assert.match(source, /autoComplete="new-password"/);
+  assert.doesNotMatch(source, /Must not contain your username/);
   assert.doesNotMatch(source, /localStorage\.setItem\([^\n]*upgrade/i);
 });

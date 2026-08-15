@@ -44,7 +44,6 @@ export function isPasswordUpgradeResponse(value: unknown): value is PasswordUpgr
 export function validatePasswordUpgradeForm(
   newPassword: string,
   confirmPassword: string,
-  username: string,
 ): string | null {
   if (newPassword !== confirmPassword) return "Passwords do not match.";
   if (newPassword.length < 15 || !newPassword.trim()) {
@@ -52,13 +51,6 @@ export function validatePasswordUpgradeForm(
   }
   if (new TextEncoder().encode(newPassword).byteLength > 72) {
     return "Password must be no more than 72 UTF-8 bytes.";
-  }
-  const normalizedUsername = username.trim().toLowerCase();
-  if (
-    normalizedUsername.length >= 3
-    && newPassword.toLowerCase().includes(normalizedUsername)
-  ) {
-    return "Password must not contain your username.";
   }
   return null;
 }

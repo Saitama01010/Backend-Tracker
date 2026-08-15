@@ -114,7 +114,7 @@ router.post("/auth/login", async (req, res) => {
   }
 
   await clearFixedWindow(failureScope, "login-failure");
-  const passwordPolicyError = validateNewPassword(password, user.username);
+  const passwordPolicyError = validateNewPassword(password);
   if (passwordPolicyError) {
     try {
       const verifiedPasswordHash = await db.transaction(async (tx) => {
@@ -239,7 +239,7 @@ router.post("/auth/password-upgrade", async (req, res) => {
     res.status(400).json({ error: "Passwords do not match." });
     return;
   }
-  const passwordError = validateNewPassword(newPassword, user.username);
+  const passwordError = validateNewPassword(newPassword);
   if (passwordError) {
     res.status(400).json({ error: passwordError });
     return;
@@ -264,7 +264,7 @@ router.post("/auth/password-upgrade", async (req, res) => {
         || !passwordCredentialStampMatches(current.id, current.passwordHash, claims.credentialStamp)
       ) return { kind: "invalid" as const };
 
-      const currentPasswordError = validateNewPassword(newPassword, current.username);
+      const currentPasswordError = validateNewPassword(newPassword);
       if (currentPasswordError) return { kind: "password-error" as const, error: currentPasswordError };
 
       await tx.update(portalUsersTable)
