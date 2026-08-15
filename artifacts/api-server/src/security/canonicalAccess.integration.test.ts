@@ -12,11 +12,12 @@ const enabled = Boolean(
 );
 
 test("canonical Portal access persists normalized grants and revokes deactivated Agent sessions", { skip: !enabled }, async (t) => {
-  const [{ default: express }, { default: usersRouter }, { default: teamAgentsRouter }, { default: authRouter }, authMiddleware, { default: bcrypt }, dbModule, authUser, authScope, sessions] = await Promise.all([
+  const [{ default: express }, { default: usersRouter }, { default: teamAgentsRouter }, { default: authRouter }, { default: apiRouter }, authMiddleware, { default: bcrypt }, dbModule, authUser, authScope, sessions] = await Promise.all([
     import("express"),
     import("../routes/users.js"),
     import("../routes/teamAgents.js"),
     import("../routes/auth.js"),
+    import("../routes/index.js"),
     import("../middleware/auth.js"),
     import("bcryptjs"),
     import("@workspace/db"),
@@ -54,6 +55,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
       .filter((row) => authScope.canAccessMetricAgent(req.user!, row.agentName, directory));
     res.json({ rows });
   });
+  app.use("/api", apiRouter);
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve, reject) => {
     server.once("listening", resolve);
@@ -233,6 +235,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
     let agentToken = "";
     let managerToken = "";
     let adminToken = "";
+    let legacyToken = "";
     await t.test("active Agent, Manager, Admin, and legacy authentication resolve through their correct models", async () => {
       const agentLogin = await login(`${usernamePrefix}-agent`, initialAgentPassword);
       assert.equal(agentLogin.status, 200);
@@ -240,6 +243,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
       agentToken = agentBody.token;
       assert.equal(agentBody.user["accessRole"], "agent");
       assert.equal(agentBody.user["selfAgentId"], agentId);
+      assert.equal((agentBody.user["allowedTabs"] as string[]).includes("onboarding"), false);
       assert.equal(Object.prototype.hasOwnProperty.call(agentBody.user, "passwordHash"), false);
       const protectedResponse = await fetch(`${origin}/protected-fixture`, {
         headers: { Authorization: `Bearer ${agentBody.token}`, "x-fixture-real-auth": "1" },
@@ -256,6 +260,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
       managerToken = managerBody.token;
       assert.equal(managerBody.user["accessRole"], "manager");
       assert.equal(managerBody.user["selfAgentId"], null);
+      assert.equal((managerBody.user["allowedTabs"] as string[]).includes("onboarding"), false);
 
       const adminLogin = await login(`${usernamePrefix}-admin`, adminPassword);
       assert.equal(adminLogin.status, 200);
@@ -265,7 +270,9 @@ test("canonical Portal access persists normalized grants and revokes deactivated
 
       const legacyLogin = await login(`${usernamePrefix}-legacy`, legacyPassword);
       assert.equal(legacyLogin.status, 200);
-      assert.equal((await legacyLogin.json() as { user: { accessModel: string } }).user.accessModel, "legacy");
+      const legacyBody = await legacyLogin.json() as { token: string; user: { accessModel: string } };
+      legacyToken = legacyBody.token;
+      assert.equal(legacyBody.user.accessModel, "legacy");
     });
 
     await t.test("server-side metric filtering resists team parameter changes for Agent and Manager scopes", async () => {
@@ -316,6 +323,111 @@ test("canonical Portal access persists normalized grants and revokes deactivated
       assert.equal(otherTeamGrant.status, 200);
       assert.deepEqual(await metricIds(agentToken, "cs"), [csAgentId]);
       assert.deepEqual(await metricIds(agentToken, "killers"), []);
+    });
+
+    await t.test("Onboarding tab grants authorize the complete global APIs without expanding normal scope", async () => {
+      const authenticatedHeaders = (token: string) => ({
+        Authorization: `Bearer ${token}`,
+        "x-fixture-real-auth": "1",
+      });
+      const onboardingPaths = [
+        "/ob-report/status",
+        "/ob-report/download",
+        "/ob-analytics",
+        "/ob-analytics/download",
+      ] as const;
+      const metricIds = async (token: string, team?: string) => {
+        const response = await fetch(`${origin}/metrics-fixture${team ? `?team=${encodeURIComponent(team)}` : ""}`, {
+          headers: authenticatedHeaders(token),
+        });
+        assert.equal(response.status, 200);
+        return (await response.json() as { rows: { agentId: number }[] }).rows.map(({ agentId: id }) => id);
+      };
+      const apiRequest = (path: string, token: string, init: RequestInit = {}) => fetch(`${origin}/api${path}`, {
+        ...init,
+        headers: { ...authenticatedHeaders(token), ...(init.headers ?? {}) },
+      });
+      const updateCanonicalUser = (id: number, token: string, body: Record<string, unknown>) => apiRequest(`/users/${id}`, token, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const agentAccess = (tabGrants: string[]) => ({
+        accessRole: "agent", teamAgentId: agentId, primaryTeam: null,
+        teamGrants: ["retention", "cs"], tabGrants,
+        permissions: ["view_metrics", "view_attendance"],
+      });
+      const managerAccess = (tabGrants: string[]) => ({
+        accessRole: "manager", teamAgentId: null, primaryTeam: "nsf",
+        teamGrants: ["cs"], tabGrants,
+        permissions: ["view_metrics", "view_missed_tables"],
+      });
+
+      const agentScopeBefore = await metricIds(agentToken);
+      const managerScopeBefore = await metricIds(managerToken);
+      for (const path of onboardingPaths) {
+        const separator = path.includes("?") ? "&" : "?";
+        assert.equal((await apiRequest(`${path}${separator}team=retention&agentId=${retentionPeerId}`, agentToken)).status, 403, `Agent without grant: ${path}`);
+        assert.equal((await apiRequest(`${path}${separator}team=retention&agentId=${retentionPeerId}`, managerToken)).status, 403, `Manager without grant: ${path}`);
+      }
+
+      const adminStatus = await apiRequest("/ob-report/status", adminToken);
+      const adminAnalytics = await apiRequest("/ob-analytics", adminToken);
+      assert.equal(adminStatus.status, 200, await adminStatus.clone().text());
+      assert.equal(adminAnalytics.status, 200, await adminAnalytics.clone().text());
+      const adminStatusData = await adminStatus.json();
+      const adminAnalyticsData = await adminAnalytics.json();
+      const stableAnalytics = (value: unknown) => {
+        const data = value as { meta: Record<string, unknown> } & Record<string, unknown>;
+        return { ...data, meta: { ...data.meta, generatedAt: "<generated-at>" } };
+      };
+      for (const path of onboardingPaths) {
+        assert.equal((await apiRequest(path, adminToken)).status, 200, `Admin: ${path}`);
+        assert.equal((await apiRequest(path, legacyToken)).status, 200, `Legacy: ${path}`);
+      }
+
+      assert.equal((await updateCanonicalUser(agentUserId, adminToken, agentAccess(["violations", "onboarding"]))).status, 200);
+      assert.equal((await updateCanonicalUser(managerUserId, adminToken, managerAccess(["qa", "onboarding"]))).status, 200);
+
+      const agentMe = await apiRequest("/auth/me", agentToken);
+      const managerMe = await apiRequest("/auth/me", managerToken);
+      assert.equal(agentMe.status, 200);
+      assert.equal(managerMe.status, 200);
+      assert.equal((await agentMe.json() as { user: { allowedTabs: string[] } }).user.allowedTabs.includes("onboarding"), true);
+      assert.equal((await managerMe.json() as { user: { allowedTabs: string[] } }).user.allowedTabs.includes("onboarding"), true);
+
+      const agentStatus = await apiRequest("/ob-report/status", agentToken);
+      const managerStatus = await apiRequest("/ob-report/status", managerToken);
+      const agentAnalytics = await apiRequest("/ob-analytics", agentToken);
+      const managerAnalytics = await apiRequest("/ob-analytics", managerToken);
+      for (const [label, response] of [
+        ["Agent status", agentStatus], ["Manager status", managerStatus],
+        ["Agent analytics", agentAnalytics], ["Manager analytics", managerAnalytics],
+      ] as const) assert.equal(response.status, 200, `${label}: ${await response.clone().text()}`);
+      assert.deepEqual(await agentStatus.json(), adminStatusData);
+      assert.deepEqual(await managerStatus.json(), adminStatusData);
+      assert.deepEqual(stableAnalytics(await agentAnalytics.json()), stableAnalytics(adminAnalyticsData));
+      assert.deepEqual(stableAnalytics(await managerAnalytics.json()), stableAnalytics(adminAnalyticsData));
+
+      for (const token of [agentToken, managerToken]) {
+        for (const path of ["/ob-report/download", "/ob-analytics/download"] as const) {
+          const response = await apiRequest(path, token);
+          assert.equal(response.status, 200, path);
+          assert.match(response.headers.get("content-type") ?? "", /spreadsheetml/);
+          assert.ok((await response.arrayBuffer()).byteLength > 0);
+        }
+        assert.equal((await apiRequest("/ob-report/refresh", token, { method: "POST" })).status, 403);
+        assert.equal((await apiRequest("/live-transfers/status", token)).status, 403);
+      }
+
+      assert.deepEqual(await metricIds(agentToken), agentScopeBefore);
+      assert.deepEqual(await metricIds(managerToken), managerScopeBefore);
+
+      assert.equal((await updateCanonicalUser(agentUserId, adminToken, agentAccess(["violations"]))).status, 200);
+      assert.equal((await apiRequest("/ob-report/status", agentToken)).status, 403);
+      assert.equal((await apiRequest("/ob-analytics?team=cs", agentToken)).status, 403);
+      assert.equal((await updateCanonicalUser(managerUserId, adminToken, managerAccess(["qa"]))).status, 200);
+      assert.equal((await apiRequest("/ob-report/status", managerToken)).status, 403);
     });
 
     await t.test("password creation and reset hash safely, enforce byte limits, preserve blank edits, and revoke sessions", async () => {

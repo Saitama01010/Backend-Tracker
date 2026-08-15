@@ -43,7 +43,8 @@ const sheetData: Predicate = (user) => canViewTab(user, "backend-stats") || anyM
 const missedManager: Predicate = (user) => tab("missed-no-cb")(user) && hasPermission(user, "view_missed_tables");
 const breakEditor: Predicate = (user) => isAdministrator(user)
   || (isCanonicalUser(user) ? hasPermission(user, "edit_attendance") : user.role === "edit");
-const canonicallyScopedOnboarding: Predicate = (user) => tab("onboarding")(user)
+const globalOnboardingView: Predicate = tab("onboarding");
+const canonicallyScopedLiveTransfers: Predicate = (user) => tab("onboarding")(user)
   && (!isCanonicalUser(user) || isAdministrator(user));
 
 export const PRIVATE_API_AUTHORIZATION_POLICIES: readonly RoutePolicy[] = [
@@ -98,9 +99,9 @@ export const PRIVATE_API_AUTHORIZATION_POLICIES: readonly RoutePolicy[] = [
   { methods: ["GET"], path: /^\/qa\/(?:biweekly-run|stats|download|reviews|tasks|agents)$/, requirement: "view_metrics and QA tab (cron route is independently authenticated)", allows: tab("qa") },
   { methods: ["GET"], path: /^\/qa\/reviews\/[^/]+$/, requirement: "view_metrics and QA tab", allows: tab("qa") },
 
-  { methods: ["GET"], path: /^\/ob-(?:report\/(?:status|download)|analytics(?:\/download)?)$/, requirement: "legacy onboarding access or canonical admin (dataset cannot yet be safely row-scoped)", allows: canonicallyScopedOnboarding },
+  { methods: ["GET"], path: /^\/ob-(?:report\/(?:status|download)|analytics(?:\/download)?)$/, requirement: "onboarding tab grant (global dataset; no agent or team scoping)", allows: globalOnboardingView },
   { methods: ["POST"], path: /^\/ob-report\/refresh$/, requirement: "admin AI and sync control", allows: admin },
-  { methods: ["GET"], path: /^\/live-transfers\/(?:status|download)$/, requirement: "legacy onboarding access or canonical admin (dataset cannot yet be safely row-scoped)", allows: canonicallyScopedOnboarding },
+  { methods: ["GET"], path: /^\/live-transfers\/(?:status|download)$/, requirement: "legacy onboarding access or canonical admin (dataset cannot yet be safely row-scoped)", allows: canonicallyScopedLiveTransfers },
   { methods: ["POST"], path: /^\/live-transfers\/refresh$/, requirement: "admin AI and sync control", allows: admin },
 
   { methods: ["GET"], path: /^\/team-agents$/, requirement: "view_metrics or view_attendance", allows: anyPermission("view_metrics", "view_attendance") },

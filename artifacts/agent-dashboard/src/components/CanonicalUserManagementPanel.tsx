@@ -195,7 +195,7 @@ export function CanonicalUserManagementPanel({ onClose }: { onClose: () => void 
             onChange={(values) => setForm((current) => ({ ...current, teamGrants: values.filter((team) => !includedFullTeams.includes(team)) }))} />
         </div>
         <div><p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Tab Access</p>
-          <p className="mt-1 text-[11px] text-zinc-500">Metric tabs for {effectiveTeams.length ? effectiveTeams.map(teamLabel).join(", ") : "the derived scope"} are automatic. Onboarding exports remain canonical-admin-only until safe row scoping is available.</p>
+          <p className="mt-1 text-[11px] text-zinc-500">Metric tabs for {effectiveTeams.length ? effectiveTeams.map(teamLabel).join(", ") : "the derived scope"} are automatic. Onboarding is a privileged global tab: checking it grants the complete Onboarding view without changing normal Agent or Manager team scope.</p>
           <ToggleGrid values={form.tabGrants} options={TABS} onChange={(tabGrants) => setForm((current) => ({ ...current, tabGrants }))} />
         </div>
         <div><p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Permissions</p>

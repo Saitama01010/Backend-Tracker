@@ -14,7 +14,7 @@ import { Calendar as CalendarPicker } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { API_SESSION_RENEWED_EVENT, API_UNAUTHORIZED_EVENT, apiFetch } from "@/lib/api";
-import { UserContext, authHeaders, useUser, type AuthUser, type Permission, type TeamAccess } from "@/lib/authContext";
+import { UserContext, authHeaders, canUserSeeTab, useUser, type AuthUser, type Permission, type TeamAccess } from "@/lib/authContext";
 import { unparseCsv } from "@/lib/csvExport";
 import { dashboardQueryClient, clearDashboardQueryCache } from "@/lib/dashboardQueryClient";
 import { accountQueryScope, pollingDelay, queryPollingInterval } from "@/lib/queryPolicy";
@@ -6156,25 +6156,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
 
   if (auth) {
     const can = (p: Permission) => auth.user.role === "admin" || auth.user.permissions.includes(p);
-    const canSeeTab = (tab: string) => {
-      // Per-user override: hide the Backend Statistics tab entirely, even for admins.
-      if (tab === "backend-stats" && auth.user.hideBackendStats) return false;
-      if (auth.user.role === "admin") return true;
-      const at = auth.user.allowedTabs;
-      if (at && at.length > 0) return at.includes(tab);
-      // Fallback: teamAccess-based visibility
-      const ta = auth.user.teamAccess ?? null;
-      const allTeams = ta === null;
-      if (tab === "backend-stats") return allTeams;
-      if (tab === "violations" || tab === "callback-review") return allTeams;
-      if (tab === "missed-no-cb") return true;
-      if (tab === "retention") return allTeams || ta === "retention";
-      if (tab === "cs") return allTeams || ta === "cs";
-      if (tab === "nsf") return allTeams || ta === "nsf";
-      if (tab === "rmk") return allTeams;
-      if (tab === "onboarding") return allTeams;
-      return false;
-    };
+    const canSeeTab = (tab: string) => canUserSeeTab(auth.user, tab);
     return (
       <UserContext.Provider value={{ user: auth.user, token: auth.token, logout, can, canSeeTab }}>
         {children}

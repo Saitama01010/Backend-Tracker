@@ -115,13 +115,55 @@ test("canonical tab and endpoint authorization fails closed beyond resolved scop
   assert.equal(canViewTab(canonicalAgent, "violations"), true);
   assert.equal(authorizeApiRoute("GET", "/nsf/readymode-queue", canonicalAgent).allowed, false);
   assert.equal(authorizeApiRoute("GET", "/nsf/readymode-queue", canonicalManager).allowed, true);
-  assert.equal(authorizeApiRoute("GET", "/ob-report/status", { ...canonicalManager, allowedTabs: ["onboarding"] }).allowed, false);
   assert.equal(authorizeApiRoute("GET", "/live-transfers/download", { ...canonicalAgent, allowedTabs: ["onboarding"] }).allowed, false);
   assert.equal(authorizeApiRoute("POST", "/breaks/start", canonicalAgent).allowed, false);
   assert.equal(authorizeApiRoute("POST", "/breaks/start", { ...canonicalAgent, permissions: [...canonicalAgent.permissions, "edit_attendance"] }).allowed, true);
   assert.equal(authorizeApiRoute("PUT", "/attendance/record", canonicalManager).allowed, false);
   assert.equal(authorizeApiRoute("PUT", "/attendance/record", { ...canonicalManager, permissions: [...canonicalManager.permissions, "edit_attendance"] }).allowed, true);
   assert.equal(authorizeApiRoute("PUT", "/attendance/record", admin).allowed, true);
+});
+
+test("Onboarding is a privileged global tab for canonical accounts and preserves legacy behavior", () => {
+  const onboardingPaths = [
+    "/ob-report/status",
+    "/ob-report/download",
+    "/ob-analytics",
+    "/ob-analytics/download",
+  ];
+  const grantedAgent: AuthPayload = {
+    ...canonicalAgent,
+    allowedTabs: [...canonicalAgent.allowedTabs!, "onboarding"],
+    tabGrants: [...canonicalAgent.tabGrants!, "onboarding"],
+  };
+  const grantedManager: AuthPayload = {
+    ...canonicalManager,
+    allowedTabs: [...canonicalManager.allowedTabs!, "onboarding"],
+    tabGrants: [...canonicalManager.tabGrants!, "onboarding"],
+  };
+
+  assert.equal(canViewTab(canonicalAgent, "onboarding"), false);
+  assert.equal(canViewTab(canonicalManager, "onboarding"), false);
+  assert.equal(canViewTab(grantedAgent, "onboarding"), true);
+  assert.equal(canViewTab(grantedManager, "onboarding"), true);
+  assert.equal(canViewTab(admin, "onboarding"), true);
+  assert.equal(canViewTab(limitedTab, "onboarding"), true);
+
+  for (const path of onboardingPaths) {
+    assert.equal(authorizeApiRoute("GET", path, canonicalAgent).allowed, false, `Agent without grant: ${path}`);
+    assert.equal(authorizeApiRoute("GET", path, grantedAgent).allowed, true, `Agent with grant: ${path}`);
+    assert.equal(authorizeApiRoute("GET", path, canonicalManager).allowed, false, `Manager without grant: ${path}`);
+    assert.equal(authorizeApiRoute("GET", path, grantedManager).allowed, true, `Manager with grant: ${path}`);
+    assert.equal(authorizeApiRoute("GET", path, admin).allowed, true, `Admin: ${path}`);
+    assert.equal(authorizeApiRoute("GET", path, limitedTab).allowed, true, `Legacy grant behavior: ${path}`);
+  }
+
+  assert.equal(canAccessAgent(grantedAgent, "Agent Alpha", [], { id: 12, team: "retention" }), false);
+  assert.equal(canAccessMetricTeam(grantedAgent, "cs"), false);
+  assert.equal(canAccessMetricTeam(grantedManager, "retention"), false);
+  assert.equal(authorizeApiRoute("GET", "/live-transfers/status", grantedAgent).allowed, false);
+  assert.equal(authorizeApiRoute("POST", "/ob-report/refresh", grantedAgent).allowed, false);
+  assert.equal(authorizeApiRoute("POST", "/ob-report/refresh", grantedManager).allowed, false);
+  assert.equal(authorizeApiRoute("POST", "/ob-report/refresh", admin).allowed, true);
 });
 
 test("today-only users cannot submit historical or future date parameters", () => {

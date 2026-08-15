@@ -30,9 +30,13 @@ Canonical identity and team scope are applied to:
 
 Provider records that are name-based are authorized only after the provider identity resolves to a canonical roster record. Unknown or ambiguous provider identities fail closed for canonical users. Historical roster rows are not filtered by current `team_agents.active` state.
 
-## Explicit fail-closed exception
+## Privileged global Onboarding tab
 
-Onboarding report, onboarding analytics, and live-transfer export/status datasets do not currently expose a reliable canonical roster identity on every row. Canonical Agent and Manager requests to those endpoints are therefore denied, even if the onboarding tab was granted. Canonical Admin and intentionally unmigrated legacy behavior remain unchanged. These endpoints must not be enabled for canonical non-admins until their source contract supports authoritative row scoping.
+Onboarding is intentionally global rather than roster- or team-scoped. Canonical Admin accounts always receive the complete Onboarding view. Canonical Agent and Manager accounts receive the complete view only when an administrator explicitly grants the `onboarding` tab in User Management; without that grant, the server returns `403 Forbidden` for Onboarding report and analytics reads and downloads. Removing the grant takes effect on the next authenticated request because the current account is resolved from the database for every request. This grant does not alter Agent self scope, Manager primary-team scope, or any explicit extra-team grants elsewhere.
+
+The centralized policy enforces the grant for `/ob-report/status`, `/ob-report/download`, `/ob-analytics`, and `/ob-analytics/download`. Onboarding refresh/reprocessing remains Admin-only, and the separately secret-protected import route is unchanged. Intentionally unmigrated legacy accounts retain their existing tab behavior.
+
+Live-transfer export/status remains an explicit fail-closed exception for canonical Agent and Manager accounts because those datasets do not expose a reliable canonical roster identity on every row. Canonical Admin and legacy behavior remain unchanged for live transfers.
 
 ## Password and session behavior
 
