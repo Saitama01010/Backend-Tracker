@@ -40,8 +40,12 @@ function normalizeUsername(value: unknown): string {
   return value.trim().toLowerCase();
 }
 
-function portalUserEmailIdentity(value: unknown): { email: string | null; emailNormalized: string | null } {
+function portalUserEmailIdentity(
+  value: unknown,
+  options: { required?: boolean } = {},
+): { email: string | null; emailNormalized: string | null } {
   if (value == null || (typeof value === "string" && !value.trim())) {
+    if (options.required) throw new UserRequestError(400, "Email is required");
     return { email: null, emailNormalized: null };
   }
   if (typeof value !== "string" || !isValidAgentEmail(value)) {
@@ -94,6 +98,7 @@ type CanonicalInput = {
   tabGrants: CanonicalDashboardTab[];
   permissions: Permission[];
   compatibilityRole: "admin" | "view";
+  rosterEmailNormalized: string | null;
 };
 
 async function validateCanonicalInput(body: Record<string, unknown>): Promise<CanonicalInput> {
@@ -120,6 +125,7 @@ async function validateCanonicalInput(body: Record<string, unknown>): Promise<Ca
       nameNormalized: teamAgentsTable.nameNormalized,
       team: teamAgentsTable.team,
       active: teamAgentsTable.active,
+      emailNormalized: teamAgentsTable.emailNormalized,
     }).from(teamAgentsTable).where(eq(teamAgentsTable.id, teamAgentId)).limit(1);
     if (!agent?.active || !agent.nameNormalized || !isTeam(agent.team)) {
       throw new UserRequestError(400, "Select an active canonical Agent Roster identity");
@@ -132,6 +138,7 @@ async function validateCanonicalInput(body: Record<string, unknown>): Promise<Ca
       tabGrants,
       permissions,
       compatibilityRole: "view",
+      rosterEmailNormalized: agent.emailNormalized,
     };
   }
 
@@ -148,6 +155,7 @@ async function validateCanonicalInput(body: Record<string, unknown>): Promise<Ca
       tabGrants,
       permissions,
       compatibilityRole: "view",
+      rosterEmailNormalized: null,
     };
   }
 
@@ -165,7 +173,31 @@ async function validateCanonicalInput(body: Record<string, unknown>): Promise<Ca
     tabGrants: [],
     permissions,
     compatibilityRole: "admin",
+    rosterEmailNormalized: null,
   };
+}
+
+async function rosterLoginEmailNormalized(teamAgentId: number | null): Promise<string | null> {
+  if (!teamAgentId) return null;
+  const [agent] = await db.select({ emailNormalized: teamAgentsTable.emailNormalized })
+    .from(teamAgentsTable)
+    .where(eq(teamAgentsTable.id, teamAgentId))
+    .limit(1);
+  return agent?.emailNormalized ?? null;
+}
+
+async function ensurePortalEmailDoesNotClaimAnotherRosterIdentity(
+  emailNormalized: string | null,
+  targetTeamAgentId: number | null,
+): Promise<void> {
+  if (!emailNormalized) return;
+  const [rosterIdentity] = await db.select({ id: teamAgentsTable.id })
+    .from(teamAgentsTable)
+    .where(eq(teamAgentsTable.emailNormalized, emailNormalized))
+    .limit(1);
+  if (rosterIdentity && rosterIdentity.id !== targetTeamAgentId) {
+    throw new UserRequestError(409, "Email belongs to another Agent Roster identity");
+  }
 }
 
 async function replaceGrants(
@@ -197,6 +229,7 @@ async function listPortalUsers() {
       canonicalAgentName: teamAgentsTable.name,
       canonicalAgentTeam: teamAgentsTable.team,
       canonicalAgentActive: teamAgentsTable.active,
+      canonicalAgentEmail: teamAgentsTable.email,
     })
       .from(portalUsersTable)
       .leftJoin(teamAgentsTable, eq(portalUsersTable.teamAgentId, teamAgentsTable.id))
@@ -209,8 +242,9 @@ async function listPortalUsers() {
   for (const grant of teamGrants) teamsByUser.set(grant.portalUserId, [...(teamsByUser.get(grant.portalUserId) ?? []), grant.team]);
   for (const grant of tabGrants) tabsByUser.set(grant.portalUserId, [...(tabsByUser.get(grant.portalUserId) ?? []), grant.tab]);
 
-  return users.map(({ passwordHash: _passwordHash, emailNormalized: _emailNormalized, ...user }) => ({
+  return users.map(({ passwordHash: _passwordHash, emailNormalized: _emailNormalized, canonicalAgentEmail, ...user }) => ({
     ...user,
+    loginEmail: user.email ?? canonicalAgentEmail ?? null,
     permissions: user.accessRole === "admin" || (!user.accessRole && user.role === "admin")
       ? [...ALL_PERMISSIONS]
       : parseStoredPermissions(user.permissions),
@@ -314,10 +348,11 @@ router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
       ? req.body as Record<string, unknown>
       : {};
     const username = normalizeUsername(body.username);
-    const emailIdentity = portalUserEmailIdentity(body.email);
     const passwordError = validateNewPassword(body.password);
     if (passwordError) throw new UserRequestError(400, passwordError);
     const access = await validateCanonicalInput(body);
+    const emailIdentity = portalUserEmailIdentity(body.email, { required: !access.rosterEmailNormalized });
+    await ensurePortalEmailDoesNotClaimAnotherRosterIdentity(emailIdentity.emailNormalized, access.teamAgentId);
     const passwordHash = await bcrypt.hash(body.password as string, 10);
 
     const userId = await db.transaction(async (tx) => {
@@ -383,7 +418,24 @@ router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) =
 
     const updates: Partial<typeof portalUsersTable.$inferInsert> = {};
     if (Object.prototype.hasOwnProperty.call(body, "username")) updates.username = normalizeUsername(body.username);
-    if (Object.prototype.hasOwnProperty.call(body, "email")) Object.assign(updates, portalUserEmailIdentity(body.email));
+    const emailWasChanged = Object.prototype.hasOwnProperty.call(body, "email");
+    if (emailWasChanged) {
+      const emailIdentity = portalUserEmailIdentity(body.email);
+      Object.assign(updates, emailIdentity);
+    }
+    const targetTeamAgentId = access ? access.teamAgentId : existing.teamAgentId;
+    const rosterEmailNormalized = access
+      ? access.rosterEmailNormalized
+      : await rosterLoginEmailNormalized(targetTeamAgentId);
+    const effectiveEmailNormalized = (emailWasChanged ? updates.emailNormalized : existing.emailNormalized)
+      ?? rosterEmailNormalized;
+    const targetActive = typeof requestedActive === "boolean" ? requestedActive : existing.active;
+    if (targetActive && !effectiveEmailNormalized) {
+      throw new UserRequestError(400, "Active users require an email address for login");
+    }
+    if (emailWasChanged) {
+      await ensurePortalEmailDoesNotClaimAnotherRosterIdentity(updates.emailNormalized ?? null, targetTeamAgentId);
+    }
     const passwordWasChanged = typeof body.password === "string" && body.password.length > 0;
     if (passwordWasChanged) {
       const passwordError = validateNewPassword(body.password);
@@ -442,7 +494,8 @@ router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) =
         await tx.update(portalUsersTable).set(updates).where(eq(portalUsersTable.id, id));
       }
       if (access) await replaceGrants(tx, id, access);
-      if (passwordWasChanged || requestedActive === false) {
+      const persistenceClassChanged = targetAdmin !== isAdminAccount(existing);
+      if (passwordWasChanged || requestedActive === false || emailWasChanged || persistenceClassChanged) {
         await revokeUserSessions(id, tx);
       }
     });

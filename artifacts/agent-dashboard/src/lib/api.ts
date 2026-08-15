@@ -1,3 +1,9 @@
+import {
+  browserAccessToken,
+  browserSessionBinding,
+  persistBrowserAuthSession,
+} from "./authSession.js";
+
 export const API_UNAUTHORIZED_EVENT = "tracker:unauthorized";
 export const API_SESSION_RENEWED_EVENT = "tracker:session-renewed";
 
@@ -36,18 +42,28 @@ export class ApiUnauthorizedError extends ApiHttpError {
 
 let browserRenewal: Promise<string | null> | null = null;
 
+function browserStores() {
+  return { local: window.localStorage, session: window.sessionStorage };
+}
+
 function renewBrowserSession(): Promise<string | null> {
   if (browserRenewal) return browserRenewal;
+  const sessionBinding = browserSessionBinding(browserStores());
+  const headers = new Headers({ Accept: "application/json" });
+  if (sessionBinding) headers.set("X-Tracker-Session-Binding", sessionBinding);
   browserRenewal = window.fetch(new URL("/api/auth/refresh", window.location.origin), {
     method: "POST",
     credentials: "same-origin",
-    headers: { Accept: "application/json" },
+    headers,
   }).then(async (response) => {
     if (!response.ok) return null;
-    const data = await response.json() as { token?: unknown; user?: unknown };
-    if (typeof data.token !== "string" || !data.user) return null;
-    window.localStorage.setItem("tracker_token", data.token);
-    window.localStorage.setItem("tracker_user", JSON.stringify(data.user));
+    const data = await response.json() as { token?: unknown; user?: { role?: unknown }; sessionBinding?: unknown };
+    if (typeof data.token !== "string" || !data.user || typeof data.user.role !== "string") return null;
+    persistBrowserAuthSession(browserStores(), {
+      token: data.token,
+      user: data.user as { role: string },
+      ...(typeof data.sessionBinding === "string" ? { sessionBinding: data.sessionBinding } : {}),
+    });
     window.dispatchEvent(new CustomEvent(API_SESSION_RENEWED_EVENT));
     return data.token;
   }).catch(() => null).finally(() => {
@@ -60,11 +76,9 @@ function browserRuntime(): ApiClientRuntime {
   return {
     origin: window.location.origin,
     fetch: window.fetch.bind(window),
-    getToken: () => window.localStorage.getItem("tracker_token"),
+    getToken: () => browserAccessToken(browserStores()),
     renewSession: renewBrowserSession,
     onUnauthorized: () => {
-      window.localStorage.removeItem("tracker_token");
-      window.localStorage.removeItem("tracker_user");
       window.dispatchEvent(new CustomEvent(API_UNAUTHORIZED_EVENT));
     },
   };

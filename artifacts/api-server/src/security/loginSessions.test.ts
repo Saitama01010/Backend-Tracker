@@ -13,7 +13,7 @@ import {
   signPasswordUpgradeToken,
   verifyPasswordUpgradeToken,
 } from "../lib/passwordUpgradeToken.js";
-import { hashRefreshToken, readRefreshCookie, refreshCookieOptions } from "../lib/sessionToken.js";
+import { hashRefreshToken, readRefreshCookie, readSessionBinding, refreshCookieOptions } from "../lib/sessionToken.js";
 import { isPublicApiRoute } from "../routes/apiPolicy.js";
 import { boundedAnonymousScope } from "../lib/privateScope.js";
 
@@ -146,7 +146,7 @@ test("new and changed passwords use the current length and UTF-8 byte policy wit
   assert.equal(validateNewPassword(undefined), PASSWORD_POLICY_MESSAGE);
 });
 
-test("refresh cookies are HttpOnly, same-site, scoped, and raw tokens are only represented by hashes", () => {
+test("persistent admin and session-only tab cookies are HttpOnly, same-site, scoped, and hashed", () => {
   const oldNodeEnv = process.env["NODE_ENV"];
   try {
     process.env["NODE_ENV"] = "production";
@@ -156,6 +156,7 @@ test("refresh cookies are HttpOnly, same-site, scoped, and raw tokens are only r
     assert.equal(options.sameSite, "strict");
     assert.equal(options.path, "/api/auth");
     assert.equal(options.maxAge, 30 * 24 * 60 * 60 * 1_000);
+    assert.equal(refreshCookieOptions(false).maxAge, undefined);
     const raw = "fake-refresh-token-never-store-this-value";
     const digest = hashRefreshToken(raw);
     assert.notEqual(digest, raw);
@@ -163,6 +164,8 @@ test("refresh cookies are HttpOnly, same-site, scoped, and raw tokens are only r
     const token = "A".repeat(43);
     assert.equal(readRefreshCookie({ headers: { cookie: `sidebar=open; tracker_refresh=${token}` } } as Request), token);
     assert.equal(readRefreshCookie({ headers: { cookie: "tracker_refresh[]=tampered" } } as Request), null);
+    assert.equal(readSessionBinding({ headers: { "x-tracker-session-binding": token } } as unknown as Request), token);
+    assert.equal(readSessionBinding({ headers: { "x-tracker-session-binding": "tampered" } } as unknown as Request), null);
   } finally {
     if (oldNodeEnv === undefined) delete process.env["NODE_ENV"]; else process.env["NODE_ENV"] = oldNodeEnv;
   }
@@ -225,15 +228,19 @@ test("password replacement revokes old sessions before creating the replacement 
   const authSource = await readFile(new URL("../routes/auth.ts", import.meta.url), "utf8");
   const upgradeRoute = authSource.slice(authSource.indexOf('router.post("/auth/password-upgrade"'));
   assert.ok(upgradeRoute.indexOf("revokeUserSessions(current.id, tx)") >= 0);
-  assert.ok(upgradeRoute.indexOf("createRefreshSession(current.id, tx)") > upgradeRoute.indexOf("revokeUserSessions(current.id, tx)"));
+  assert.ok(upgradeRoute.indexOf("createRefreshSession(current.id, tx,") > upgradeRoute.indexOf("revokeUserSessions(current.id, tx)"));
   assert.match(upgradeRoute, /\.for\("update"\)/);
   assert.match(upgradeRoute, /passwordCredentialStampMatches/);
 });
 
-test("failed-login protection combines a per-IP request limit with an independent account limit", async () => {
+test("email login protection combines a per-IP request limit with an independent normalized-account limit", async () => {
   const authSource = await readFile(new URL("../routes/auth.ts", import.meta.url), "utf8");
+  assert.match(authSource, /eq\(portalUsersTable\.emailNormalized, normalizedEmail\)/);
+  assert.match(authSource, /eq\(teamAgentsTable\.emailNormalized, normalizedEmail\)/);
+  assert.match(authSource, /isNull\(portalUsersTable\.emailNormalized\)/);
+  assert.doesNotMatch(authSource, /eq\(portalUsersTable\.username, normalized/);
   assert.match(authSource, /login-ip:\$\{address\}/);
-  assert.match(authSource, /login-failure:\$\{normalizedUsername\}/);
+  assert.match(authSource, /login-failure:\$\{normalizedEmail\}/);
   assert.doesNotMatch(authSource, /login-failure:\$\{address\}/);
   assert.match(authSource, /boundedAnonymousScope/);
   assert.equal(boundedAnonymousScope("login-failure:fixture-a").length, 4);
@@ -245,12 +252,13 @@ test("refresh sessions rotate with one atomic compare-and-swap update", async ()
   const storeSource = await readFile(new URL("../lib/sessionStore.ts", import.meta.url), "utf8");
   const authSource = await readFile(new URL("../routes/auth.ts", import.meta.url), "utf8");
   assert.match(storeSource, /rotateRefreshSession/);
-  assert.match(storeSource, /refreshTokenHash:\s*hashRefreshToken\(rotatedToken\)/);
-  assert.match(storeSource, /eq\(authSessionsTable\.refreshTokenHash, hashRefreshToken\(token\)\)/);
+  assert.match(storeSource, /refreshTokenHash:\s*rotated\.hash/);
+  assert.match(storeSource, /hashRefreshToken\(refreshCredential\(token, binding\)\)/);
   assert.match(storeSource, /isNull\(authSessionsTable\.revokedAt\)/);
   assert.match(storeSource, /\.returning\(\{ id: authSessionsTable\.id, userId: authSessionsTable\.userId \}\)/);
   assert.doesNotMatch(authSource, /findActiveRefreshSession|touchRefreshSession/);
-  assert.match(authSource, /setRefreshCookie\(res, session\.token\)/);
+  assert.match(authSource, /setRefreshCookie\(res, session\.token, !session\.tabBound\)/);
+  assert.match(authSource, /readSessionBinding\(req\)/);
 });
 
 test("session and rate-limit tables are supplied by an additive migration", async () => {
@@ -273,7 +281,7 @@ test("admin-created and reset passwords record current policy metadata without r
   const startupSource = await readFile(new URL("../app/startupDatabase.ts", import.meta.url), "utf8");
   assert.match(usersSource, /passwordPolicyVersion:\s*CURRENT_PASSWORD_POLICY_VERSION/);
   assert.match(usersSource, /passwordChangedAt:\s*new Date\(\)/);
-  assert.match(usersSource, /\{ passwordHash: _passwordHash, emailNormalized: _emailNormalized, \.\.\.user \}/);
+  assert.match(usersSource, /passwordHash: _passwordHash, emailNormalized: _emailNormalized/);
   assert.match(startupSource, /passwordPolicyVersion:\s*CURRENT_PASSWORD_POLICY_VERSION/);
   assert.match(startupSource, /passwordChangedAt:\s*new Date\(\)/);
 });

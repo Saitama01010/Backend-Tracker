@@ -26,6 +26,7 @@ DATABASE_URL=<your Neon PostgreSQL connection string>
 QUO_API_KEY=
 OB_IMPORT_SECRET=
 SESSION_SECRET=<generate a long random value>
+DASHBOARD_EMAIL=<admin login email>
 DASHBOARD_PASSWORD=<set a strong admin password>
 PORT=8080
 ```
@@ -124,6 +125,7 @@ DATABASE_URL=<your Neon PostgreSQL connection string>
 QUO_API_KEY=
 OB_IMPORT_SECRET=
 SESSION_SECRET=<generate a long random value>
+DASHBOARD_EMAIL=<admin login email>
 DASHBOARD_PASSWORD=<set a strong admin password>
 PORT=8080
 ```

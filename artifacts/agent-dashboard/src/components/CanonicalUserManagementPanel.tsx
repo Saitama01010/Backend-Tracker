@@ -7,14 +7,14 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiFetch } from "@/lib/api";
 import { authHeaders, useUser, type Permission } from "@/lib/authContext";
-import { validateOptionalPortalUserEmail } from "@/lib/portalUserEmail";
+import { validateOptionalPortalUserEmail, validateRequiredPortalUserEmail } from "@/lib/portalUserEmail";
 
 type AccessRole = "agent" | "manager" | "admin";
 type Team = "retention" | "nsf" | "cs" | "killers";
 type PrimaryTeam = Team | "onboarding";
-type TeamAgent = { id: number; name: string; team: Team; active: boolean };
+type TeamAgent = { id: number; name: string; email?: string | null; team: Team; active: boolean };
 type PortalUser = {
-  id: number; username: string; email?: string | null; role: "admin" | "edit" | "view"; permissions: Permission[]; active: boolean;
+  id: number; username: string; email?: string | null; loginEmail?: string | null; role: "admin" | "edit" | "view"; permissions: Permission[]; active: boolean;
   accessRole?: AccessRole | null; teamAgentId?: number | null; primaryTeam?: PrimaryTeam | null;
   teamGrants?: Team[]; tabGrants?: string[];
   canonicalAgent?: { id: number; name: string | null; team: Team | null; active: boolean | null } | null;
@@ -106,6 +106,18 @@ export function CanonicalUserManagementPanel({ onClose }: { onClose: () => void 
   const activeAgents = useMemo(() => agents.filter(({ active }) => active), [agents]);
   const linkedElsewhere = useMemo(() => new Set(users.filter((user) => user.id !== editingId && user.teamAgentId).map((user) => user.teamAgentId!)), [editingId, users]);
 
+  function hasRosterLoginEmail(form: UserForm): boolean {
+    if (form.accessRole !== "agent") return false;
+    const teamAgentId = Number(form.teamAgentId);
+    return !!agents.find((agent) => agent.id === teamAgentId)?.email;
+  }
+
+  function validateLoginEmail(form: UserForm, active: boolean): string | null {
+    return active && !hasRosterLoginEmail(form)
+      ? validateRequiredPortalUserEmail(form.email)
+      : validateOptionalPortalUserEmail(form.email);
+  }
+
   function payload(form: UserForm): Record<string, unknown> {
     return {
       accessRole: form.accessRole,
@@ -124,7 +136,7 @@ export function CanonicalUserManagementPanel({ onClose }: { onClose: () => void 
     return false;
   }
   async function addUser() {
-    const emailError = validateOptionalPortalUserEmail(newForm.email);
+    const emailError = validateLoginEmail(newForm, true);
     if (emailError) { setError(emailError); return; }
     setSavingKey("new"); setError("");
     if (await request("/api/users", "POST", {
@@ -145,7 +157,7 @@ export function CanonicalUserManagementPanel({ onClose }: { onClose: () => void 
       teamGrants: user.teamGrants ?? [], tabGrants: user.tabGrants ?? [], permissions: user.permissions ?? ["view_metrics"] });
   }
   async function saveUser(user: PortalUser) {
-    const emailError = validateOptionalPortalUserEmail(editForm.email);
+    const emailError = validateLoginEmail(editForm, user.active);
     if (emailError) { setError(emailError); return; }
     setSavingKey(`edit-${user.id}`); setError("");
     const body: Record<string, unknown> = editForm.accessRole
@@ -227,7 +239,7 @@ export function CanonicalUserManagementPanel({ onClose }: { onClose: () => void 
     </div>;
   }
 
-  const newFormComplete = !!newForm.username.trim() && !!newForm.password
+  const newFormComplete = !!newForm.username.trim() && (!!newForm.email.trim() || hasRosterLoginEmail(newForm)) && !!newForm.password
     && (newForm.accessRole !== "agent" || !!newForm.teamAgentId)
     && (newForm.accessRole !== "manager" || !!newForm.primaryTeam);
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3 backdrop-blur-sm sm:p-6" onClick={(event) => event.target === event.currentTarget && onClose()}>
@@ -244,8 +256,8 @@ export function CanonicalUserManagementPanel({ onClose }: { onClose: () => void 
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="space-y-1.5"><span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Username</span>
               <Input value={newForm.username} onChange={(event) => setNewForm((current) => ({ ...current, username: event.target.value }))} autoComplete="off" className="h-9" /></label>
-            <label className="space-y-1.5"><span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Email (optional)</span>
-              <Input type="email" value={newForm.email} onChange={(event) => setNewForm((current) => ({ ...current, email: event.target.value }))} autoComplete="email" placeholder="admin@example.com" className="h-9" /></label>
+            <label className="space-y-1.5"><span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Portal Login Email{hasRosterLoginEmail(newForm) ? " (optional)" : ""}</span>
+              <Input type="email" value={newForm.email} onChange={(event) => setNewForm((current) => ({ ...current, email: event.target.value }))} autoComplete="off" placeholder={hasRosterLoginEmail(newForm) ? "Uses Agent Roster email" : "user@example.com"} className="h-9" required={!hasRosterLoginEmail(newForm)} /></label>
             <label className="space-y-1.5"><span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Temporary Password</span>
               <Input type="password" value={newForm.password} onChange={(event) => setNewForm((current) => ({ ...current, password: event.target.value }))} autoComplete="new-password" className="h-9" /></label>
           </div>
@@ -258,7 +270,7 @@ export function CanonicalUserManagementPanel({ onClose }: { onClose: () => void 
           {loading ? <Skeleton className="h-32 w-full" /> : users.map((user) => <div key={user.id} className={`overflow-hidden rounded-xl border ${user.active ? "border-white/10 bg-zinc-900/50" : "border-white/5 bg-zinc-900/25"}`}>
             <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
               <div className="flex min-w-0 flex-wrap items-center gap-2"><AvatarName name={user.username} size="sm" textClassName="text-sm font-medium text-white" />
-                {user.email && <span className="max-w-full truncate text-xs text-zinc-400" title={user.email}>{user.email}</span>}
+                {user.loginEmail && <span className="max-w-full truncate text-xs text-zinc-400" title={user.loginEmail}>{user.loginEmail}</span>}
                 <Badge className={`border px-2 py-0 text-[10px] ${user.accessRole === "admin" ? "border-blue-500/30 bg-blue-500/15 text-blue-300" : user.accessRole ? "border-white/10 bg-white/5 text-zinc-300" : "border-amber-500/30 bg-amber-500/10 text-amber-300"}`}>{roleLabel(user.accessRole)}</Badge>
                 {user.canonicalAgent && <span className="text-xs text-zinc-400">{user.canonicalAgent.name} · {teamLabel(user.canonicalAgent.team)}</span>}
                 {user.primaryTeam && <span className="text-xs text-zinc-400">Primary: {teamLabel(user.primaryTeam)}</span>}
@@ -274,7 +286,7 @@ export function CanonicalUserManagementPanel({ onClose }: { onClose: () => void 
             {editingId === user.id && <div className="space-y-4 border-t border-white/5 bg-black/10 p-4">
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="space-y-1.5"><span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Username</span><Input value={editForm.username} onChange={(event) => setEditForm((current) => ({ ...current, username: event.target.value }))} className="h-9" /></label>
-                <label className="space-y-1.5"><span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Email (optional)</span><Input type="email" value={editForm.email} onChange={(event) => setEditForm((current) => ({ ...current, email: event.target.value }))} autoComplete="email" placeholder="No email assigned" className="h-9" /></label>
+                <label className="space-y-1.5"><span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Portal Login Email{hasRosterLoginEmail(editForm) || !user.active ? " (optional)" : ""}</span><Input type="email" value={editForm.email} onChange={(event) => setEditForm((current) => ({ ...current, email: event.target.value }))} autoComplete="off" placeholder={hasRosterLoginEmail(editForm) ? "Uses Agent Roster email" : "user@example.com"} className="h-9" required={user.active && !hasRosterLoginEmail(editForm)} /></label>
                 <label className="space-y-1.5"><span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Reset Password (optional)</span><Input type="password" value={editForm.password} onChange={(event) => setEditForm((current) => ({ ...current, password: event.target.value }))} autoComplete="new-password" className="h-9" /></label>
               </div>
               <p className="text-[11px] text-zinc-500">Saving a new password immediately revokes every session for this account.</p>

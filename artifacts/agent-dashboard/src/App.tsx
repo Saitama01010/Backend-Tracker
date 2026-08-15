@@ -21,9 +21,15 @@ import {
   initialLoginFlowState,
   isPasswordUpgradeResponse,
   loginFlowReducer,
-  persistAuthenticatedSession,
   validatePasswordUpgradeForm,
 } from "@/lib/loginFlow";
+import {
+  browserSessionBinding,
+  clearBrowserAuthSession,
+  persistBrowserAuthSession,
+  readBrowserAuthSession,
+  saveAdminBrowserCredential,
+} from "@/lib/authSession";
 import { accountQueryScope, pollingDelay, queryPollingInterval } from "@/lib/queryPolicy";
 import {
   validateRosterIdentity,
@@ -65,6 +71,7 @@ import {
   Clock,
   CalendarDays,
   Users,
+  Mail,
   Download,
   Lock,
   PhoneIncoming,
@@ -1445,8 +1452,10 @@ function classifyTraceRowForPanel(
 function currentAccountQueryScope(): string {
   let userId: number | null = null;
   try {
-    const storedUser = localStorage.getItem("tracker_user");
-    userId = storedUser ? (JSON.parse(storedUser) as { id?: number }).id ?? null : null;
+    userId = readBrowserAuthSession<AuthUser>({
+      local: window.localStorage,
+      session: window.sessionStorage,
+    })?.user.id ?? null;
   } catch {
     userId = null;
   }
@@ -6066,15 +6075,13 @@ function LoginAnimation({ isTyping, passwordVisible, hasPassword }: { isTyping: 
 }
 
 function LoginGate({ children }: { children: React.ReactNode }) {
-  const stored = localStorage.getItem("tracker_token");
-  const storedUser = localStorage.getItem("tracker_user");
-  const [auth, setAuth] = useState<{ token: string; user: AuthUser } | null>(() => {
-    if (stored && storedUser) {
-      try { return { token: stored, user: JSON.parse(storedUser) as AuthUser }; } catch { return null; }
-    }
-    return null;
-  });
-  const [username, setUsername] = useState("");
+  const authStores = useMemo(() => ({
+    local: window.localStorage,
+    session: window.sessionStorage,
+  }), []);
+  const [auth, setAuth] = useState<{ token: string; user: AuthUser } | null>(() =>
+    readBrowserAuthSession<AuthUser>(authStores));
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -6087,8 +6094,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
   // On mount, refresh user data from DB so permission/teamAccess changes
   // take effect on the next page load without requiring re-login.
   useEffect(() => {
-    const token = localStorage.getItem("tracker_token");
-    if (!token) return;
+    if (!readBrowserAuthSession<AuthUser>(authStores)?.token) return;
     apiFetch("/api/auth/me")
       .then((r) => {
         if (!r.ok) { logout(); return; }
@@ -6096,21 +6102,24 @@ function LoginGate({ children }: { children: React.ReactNode }) {
       })
       .then((data) => {
         if (!data) return;
-        localStorage.setItem("tracker_token", data.token);
-        localStorage.setItem("tracker_user", JSON.stringify(data.user));
+        persistBrowserAuthSession(authStores, data);
         setAuth(data);
       })
       .catch(() => { /* network error — keep existing auth */ });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [authStores]);
 
   const logout = useCallback(() => {
-    void apiFetch("/api/auth/logout", { method: "POST", auth: "none" }).catch(() => undefined);
+    const binding = browserSessionBinding(authStores);
+    void apiFetch("/api/auth/logout", {
+      method: "POST",
+      auth: "none",
+      ...(binding ? { headers: { "X-Tracker-Session-Binding": binding } } : {}),
+    }).catch(() => undefined);
     clearDashboardQueryCache();
-    localStorage.removeItem("tracker_token");
-    localStorage.removeItem("tracker_user");
+    clearBrowserAuthSession(authStores);
     setAuth(null);
-  }, []);
+  }, [authStores]);
 
   useEffect(() => {
     window.addEventListener(API_UNAUTHORIZED_EVENT, logout);
@@ -6119,18 +6128,16 @@ function LoginGate({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const applyRenewedSession = () => {
-      const token = localStorage.getItem("tracker_token");
-      const rawUser = localStorage.getItem("tracker_user");
-      if (!token || !rawUser) return;
-      try { setAuth({ token, user: JSON.parse(rawUser) as AuthUser }); } catch { /* Ignore invalid local state. */ }
+      const renewed = readBrowserAuthSession<AuthUser>(authStores);
+      if (renewed) setAuth({ token: renewed.token, user: renewed.user });
     };
     window.addEventListener(API_SESSION_RENEWED_EVENT, applyRenewedSession);
     return () => window.removeEventListener(API_SESSION_RENEWED_EVENT, applyRenewedSession);
-  }, []);
+  }, [authStores]);
 
-  function establishAuthenticatedSession(data: { token: string; user: AuthUser }) {
+  function establishAuthenticatedSession(data: { token: string; user: AuthUser; sessionBinding?: string }) {
     clearDashboardQueryCache();
-    persistAuthenticatedSession(localStorage, data);
+    persistBrowserAuthSession(authStores, data);
     setAuth(data);
   }
 
@@ -6160,7 +6167,8 @@ function LoginGate({ children }: { children: React.ReactNode }) {
           }),
         });
         if (r.ok) {
-          const data = await r.json() as { token: string; user: AuthUser };
+          const data = await r.json() as { token: string; user: AuthUser; sessionBinding?: string };
+          void saveAdminBrowserCredential(loginFlow.email, newPassword, data.user).catch(() => undefined);
           establishAuthenticatedSession(data);
           setNewPassword("");
           setConfirmPassword("");
@@ -6196,7 +6204,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
         method: "POST",
         auth: "none",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: username.trim(), password }),
+        body: JSON.stringify({ email: email.trim(), password }),
       });
       if (r.ok) {
         const data = await r.json() as unknown;
@@ -6204,21 +6212,24 @@ function LoginGate({ children }: { children: React.ReactNode }) {
           dispatchLoginFlow({
             type: "password-upgrade-required",
             upgradeToken: data.upgradeToken,
-            username: username.trim(),
+            email: email.trim(),
           });
           setPassword("");
           setShowPassword(false);
         } else {
-          establishAuthenticatedSession(data as { token: string; user: AuthUser });
+          const session = data as { token: string; user: AuthUser; sessionBinding?: string };
+          void saveAdminBrowserCredential(email.trim(), password, session.user).catch(() => undefined);
+          establishAuthenticatedSession(session);
+          setPassword("");
         }
       } else {
         let message = "Login failed. Try again.";
         try {
           const data = await r.json() as { error?: string };
-          if (r.status === 401) message = "Invalid username or password.";
+          if (r.status === 401) message = "Invalid email or password.";
           else if (data.error) message = data.error;
         } catch {
-          if (r.status === 401) message = "Invalid username or password.";
+          if (r.status === 401) message = "Invalid email or password.";
         }
         setError(message);
         setPassword("");
@@ -6287,23 +6298,27 @@ function LoginGate({ children }: { children: React.ReactNode }) {
             </div>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
             {loginFlow.mode === "login" ? (
               <>
                 <div className="space-y-2">
-                  <Label htmlFor="tracker-username" className="text-sm font-medium">Username</Label>
+                  <Label htmlFor="tracker-email" className="text-sm font-medium">Email</Label>
                   <div className="relative">
-                    <Users className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                     <Input
-                      id="tracker-username"
-                      placeholder="Username"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
+                      id="tracker-email"
+                      type="email"
+                      inputMode="email"
+                      placeholder="Email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
                       onFocus={() => setIsTypingLogin(true)}
                       onBlur={() => setIsTypingLogin(false)}
                       className="h-12 pl-10"
                       autoFocus
-                      autoComplete="username"
+                      autoComplete="off"
+                      autoCapitalize="none"
+                      spellCheck={false}
                     />
                   </div>
                 </div>
@@ -6321,7 +6336,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
                       onFocus={() => setIsTypingLogin(true)}
                       onBlur={() => setIsTypingLogin(false)}
                       className="h-12 pl-10 pr-11"
-                      autoComplete="current-password"
+                      autoComplete="off"
                     />
                     <button
                       type="button"
@@ -6393,7 +6408,7 @@ function LoginGate({ children }: { children: React.ReactNode }) {
               type="submit"
               className="h-12 w-full text-base"
               disabled={loading || (loginFlow.mode === "login"
-                ? !username || !password
+                ? !email || !password
                 : !newPassword || !confirmPassword)}
             >
               {loading

@@ -1,8 +1,9 @@
 import { Router, type Response } from "express";
 import bcrypt from "bcryptjs";
+import { normalizeAgentEmail } from "@workspace/api-zod/agent-identity";
 import { db } from "@workspace/db";
-import { portalUsersTable } from "@workspace/db/schema";
-import { eq } from "drizzle-orm";
+import { portalUsersTable, teamAgentsTable } from "@workspace/db/schema";
+import { and, eq, getTableColumns, isNull } from "drizzle-orm";
 import { requireAuth, signToken } from "../middleware/auth.js";
 import {
   authPayloadForAccess,
@@ -19,6 +20,7 @@ import {
 import {
   clearRefreshCookie,
   readRefreshCookie,
+  readSessionBinding,
   setRefreshCookie,
 } from "../lib/sessionToken.js";
 import {
@@ -47,14 +49,38 @@ const PASSWORD_UPGRADE_WINDOW_SECONDS = 10 * 60;
 const PASSWORD_UPGRADE_IP_LIMIT = 30;
 const INVALID_PASSWORD_UPGRADE_TOKEN = "Invalid or expired password upgrade token";
 
+function isAdminAccount(user: { role: string; accessRole: string | null }): boolean {
+  return user.accessRole === "admin" || (!user.accessRole && user.role === "admin");
+}
+
+async function loadPortalUserByLoginEmail(normalizedEmail: string) {
+  const [explicitUser] = await db
+    .select()
+    .from(portalUsersTable)
+    .where(eq(portalUsersTable.emailNormalized, normalizedEmail))
+    .limit(1);
+  if (explicitUser) return explicitUser;
+
+  const [rosterLinkedUser] = await db
+    .select({ ...getTableColumns(portalUsersTable) })
+    .from(portalUsersTable)
+    .innerJoin(teamAgentsTable, eq(portalUsersTable.teamAgentId, teamAgentsTable.id))
+    .where(and(
+      isNull(portalUsersTable.emailNormalized),
+      eq(teamAgentsTable.emailNormalized, normalizedEmail),
+    ))
+    .limit(1);
+  return rosterLinkedUser;
+}
+
 function rateLimited(res: Response, decision: RateLimitDecision): void {
   res.setHeader("Retry-After", String(decision.retryAfter));
   res.status(429).json({ error: "Too many attempts. Try again later." });
 }
 
 router.post("/auth/login", async (req, res) => {
-  const { username, password } = req.body ?? {};
-  const normalizedUsername = typeof username === "string" ? username.trim().toLowerCase() : "";
+  const { email, password } = req.body ?? {};
+  const normalizedEmail = typeof email === "string" ? normalizeAgentEmail(email) : "";
   const address = requestAddress(req);
   const ipScope = boundedAnonymousScope(`login-ip:${address}`);
   const loginDecision = await consumeFixedWindow(ipScope, "login-request", LOGIN_IP_LIMIT, LOGIN_WINDOW_SECONDS);
@@ -63,14 +89,14 @@ router.post("/auth/login", async (req, res) => {
     return;
   }
 
-  if (typeof username !== "string" || typeof password !== "string" || !normalizedUsername) {
-    res.status(400).json({ error: "username and password required" });
+  if (typeof email !== "string" || typeof password !== "string" || !normalizedEmail) {
+    res.status(400).json({ error: "email and password required" });
     return;
   }
 
   // The IP limiter limits distributed username guessing from one source. This
-  // independent account key also limits a distributed attack on one account.
-  const failureScope = boundedAnonymousScope(`login-failure:${normalizedUsername}`);
+  // independent normalized email key also limits a distributed attack on one account.
+  const failureScope = boundedAnonymousScope(`login-failure:${normalizedEmail}`);
   const existingFailures = await inspectFixedWindow(
     failureScope,
     "login-failure",
@@ -82,11 +108,7 @@ router.post("/auth/login", async (req, res) => {
     return;
   }
 
-  const [user] = await db
-    .select()
-    .from(portalUsersTable)
-    .where(eq(portalUsersTable.username, normalizedUsername))
-    .limit(1);
+  const user = await loadPortalUserByLoginEmail(normalizedEmail);
 
   const passwordValid = await bcrypt.compare(password, user?.active ? user.passwordHash : DUMMY_PASSWORD_HASH);
   if (!user?.active || !passwordValid) {
@@ -156,6 +178,8 @@ router.post("/auth/login", async (req, res) => {
           active: portalUsersTable.active,
           passwordHash: portalUsersTable.passwordHash,
           passwordPolicyVersion: portalUsersTable.passwordPolicyVersion,
+          role: portalUsersTable.role,
+          accessRole: portalUsersTable.accessRole,
         })
         .from(portalUsersTable)
         .where(eq(portalUsersTable.id, user.id))
@@ -167,17 +191,21 @@ router.post("/auth/login", async (req, res) => {
           .set({ passwordPolicyVersion: CURRENT_PASSWORD_POLICY_VERSION })
           .where(eq(portalUsersTable.id, user.id));
       }
-      return createRefreshSession(user.id, tx);
+      return createRefreshSession(user.id, tx, { tabBound: !isAdminAccount(current) });
     });
     if (!session) {
       logger.warn({ event: "auth.login.failed" }, "Authentication failed");
       res.status(401).json({ error: INVALID_CREDENTIALS });
       return;
     }
-    setRefreshCookie(res, session.token);
+    setRefreshCookie(res, session.token, !session.tabBound);
     const payload = authPayloadForAccess(access, session.id);
     res.setHeader("Cache-Control", "no-store");
-    res.json({ token: signToken(payload), user: publicAuthUser(payload) });
+    res.json({
+      token: signToken(payload),
+      user: publicAuthUser(payload),
+      ...(session.binding ? { sessionBinding: session.binding } : {}),
+    });
   } catch (error) {
     logger.error({ err: error }, "Authentication session creation failed");
     res.status(503).json({ error: "Authentication service is temporarily unavailable." });
@@ -254,6 +282,8 @@ router.post("/auth/password-upgrade", async (req, res) => {
           username: portalUsersTable.username,
           passwordHash: portalUsersTable.passwordHash,
           active: portalUsersTable.active,
+          role: portalUsersTable.role,
+          accessRole: portalUsersTable.accessRole,
         })
         .from(portalUsersTable)
         .where(eq(portalUsersTable.id, claims.userId))
@@ -275,7 +305,7 @@ router.post("/auth/password-upgrade", async (req, res) => {
         })
         .where(eq(portalUsersTable.id, current.id));
       await revokeUserSessions(current.id, tx);
-      const session = await createRefreshSession(current.id, tx);
+      const session = await createRefreshSession(current.id, tx, { tabBound: !isAdminAccount(current) });
       return { kind: "success" as const, session };
     });
 
@@ -295,10 +325,14 @@ router.post("/auth/password-upgrade", async (req, res) => {
       res.status(401).json({ error: INVALID_PASSWORD_UPGRADE_TOKEN });
       return;
     }
-    setRefreshCookie(res, replacement.session.token);
+    setRefreshCookie(res, replacement.session.token, !replacement.session.tabBound);
     const payload = authPayloadForAccess(refreshedAccess, replacement.session.id);
     res.setHeader("Cache-Control", "no-store");
-    res.json({ token: signToken(payload), user: publicAuthUser(payload) });
+    res.json({
+      token: signToken(payload),
+      user: publicAuthUser(payload),
+      ...(replacement.session.binding ? { sessionBinding: replacement.session.binding } : {}),
+    });
   } catch (error) {
     logger.error({ err: error }, "Password upgrade failed");
     res.status(503).json({ error: "Authentication service is temporarily unavailable." });
@@ -320,24 +354,45 @@ router.post("/auth/refresh", async (req, res) => {
     return;
   }
 
-  const session = await rotateRefreshSession(refreshToken);
-  const access = session ? await loadAuthenticatablePortalUser(session.userId) : null;
-  if (!session || !access) {
-    if (session) await revokeRefreshSession(session.token);
+  const sessionBinding = readSessionBinding(req) ?? undefined;
+  const rotatedSession = await rotateRefreshSession(refreshToken, sessionBinding);
+  const access = rotatedSession ? await loadAuthenticatablePortalUser(rotatedSession.userId) : null;
+  if (!rotatedSession || !access) {
+    if (rotatedSession) await revokeRefreshSession(rotatedSession.token, rotatedSession.binding);
     clearRefreshCookie(res);
     res.status(401).json({ error: "Invalid or expired session" });
     return;
   }
 
-  setRefreshCookie(res, session.token);
+  let session = rotatedSession;
+  const shouldBeTabBound = access.payload.role !== "admin";
+  if (!session.tabBound && shouldBeTabBound) {
+    await revokeRefreshSession(session.token);
+    clearRefreshCookie(res);
+    res.status(401).json({ error: "Invalid or expired session" });
+    return;
+  }
+  if (session.tabBound && !shouldBeTabBound) {
+    await revokeRefreshSession(session.token, session.binding);
+    session = {
+      ...await createRefreshSession(session.userId, db, { tabBound: false }),
+      userId: session.userId,
+    };
+  }
+
+  setRefreshCookie(res, session.token, !session.tabBound);
   const payload = authPayloadForAccess(access, session.id);
   res.setHeader("Cache-Control", "no-store");
-  res.json({ token: signToken(payload), user: publicAuthUser(payload) });
+  res.json({
+    token: signToken(payload),
+    user: publicAuthUser(payload),
+    ...(session.binding ? { sessionBinding: session.binding } : {}),
+  });
 });
 
 router.post("/auth/logout", async (req, res) => {
   const refreshToken = readRefreshCookie(req);
-  if (refreshToken) await revokeRefreshSession(refreshToken);
+  if (refreshToken) await revokeRefreshSession(refreshToken, readSessionBinding(req) ?? undefined);
   clearRefreshCookie(res);
   res.setHeader("Cache-Control", "no-store");
   res.json({ ok: true });

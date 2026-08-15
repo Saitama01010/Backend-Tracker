@@ -16,11 +16,11 @@ import {
 } from "./contracts.js";
 
 const baseUrl = process.env["BASELINE_SMOKE_BASE_URL"]?.replace(/\/$/, "");
-const username = process.env["BASELINE_SMOKE_USERNAME"] || "admin";
+const email = process.env["BASELINE_SMOKE_EMAIL"] || process.env["DASHBOARD_EMAIL"];
 const password = process.env["BASELINE_SMOKE_PASSWORD"] || process.env["DASHBOARD_PASSWORD"];
 const sheetId = process.env["BASELINE_SMOKE_SHEET_ID"];
 const sheetGid = process.env["BASELINE_SMOKE_SHEET_GID"];
-const enabled = Boolean(baseUrl && password);
+const enabled = Boolean(baseUrl && email && password);
 
 function isoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -65,7 +65,7 @@ test("live baseline smoke: login, dashboard, data workflows, filters, downloads,
     const login = authResponseSchema.parse(await json("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ email, password }),
     }));
     token = login.token;
     const identity = authResponseSchema.parse(await json("/api/auth/me", { headers: bearer(token) }));

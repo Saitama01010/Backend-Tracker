@@ -58,12 +58,13 @@ test("legacy password upgrading preserves authentication and session security", 
 
   async function insertUser(username: string, password: string, policyVersion: number, active = true) {
     const passwordHash = await bcrypt.hash(password, 10);
+    const email = `${username}@example.test`;
     const result = await pool.query<{ id: number; password_hash: string }>(
       `INSERT INTO portal_users
-        (username, password_hash, password_policy_version, role, permissions, active)
-       VALUES ($1, $2, $3, 'view', '["view_metrics"]', $4)
+        (username, email, email_normalized, password_hash, password_policy_version, role, permissions, active)
+       VALUES ($1, $2, $2, $3, $4, 'view', '["view_metrics"]', $5)
        RETURNING id, password_hash`,
-      [username, passwordHash, policyVersion, active],
+      [username, email, passwordHash, policyVersion, active],
     );
     return result.rows[0]!;
   }
@@ -71,7 +72,7 @@ test("legacy password upgrading preserves authentication and session security", 
   const login = (username: string, password: string) => fetch(`${origin}/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ email: `${username}@example.test`, password }),
   });
   const upgrade = (body: Record<string, unknown>) => fetch(`${origin}/auth/password-upgrade`, {
     method: "POST",

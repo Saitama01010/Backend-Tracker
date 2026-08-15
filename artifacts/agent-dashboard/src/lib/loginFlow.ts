@@ -1,9 +1,9 @@
 export type LoginFlowState =
-  | { mode: "login"; upgradeToken: null; username: null }
-  | { mode: "password-upgrade"; upgradeToken: string; username: string };
+  | { mode: "login"; upgradeToken: null; email: null }
+  | { mode: "password-upgrade"; upgradeToken: string; email: string };
 
 export type LoginFlowAction =
-  | { type: "password-upgrade-required"; upgradeToken: string; username: string }
+  | { type: "password-upgrade-required"; upgradeToken: string; email: string }
   | { type: "reset" };
 
 export interface PasswordUpgradeResponse {
@@ -11,17 +11,8 @@ export interface PasswordUpgradeResponse {
   upgradeToken: string;
 }
 
-export interface AuthenticatedSession<TUser> {
-  token: string;
-  user: TUser;
-}
-
-interface SessionStorageWriter {
-  setItem(key: string, value: string): void;
-}
-
 export function initialLoginFlowState(): LoginFlowState {
-  return { mode: "login", upgradeToken: null, username: null };
+  return { mode: "login", upgradeToken: null, email: null };
 }
 
 export function loginFlowReducer(state: LoginFlowState, action: LoginFlowAction): LoginFlowState {
@@ -29,7 +20,7 @@ export function loginFlowReducer(state: LoginFlowState, action: LoginFlowAction)
   return {
     mode: "password-upgrade",
     upgradeToken: action.upgradeToken,
-    username: action.username,
+    email: action.email,
   };
 }
 
@@ -53,12 +44,4 @@ export function validatePasswordUpgradeForm(
     return "Password must be no more than 72 UTF-8 bytes.";
   }
   return null;
-}
-
-export function persistAuthenticatedSession<TUser>(
-  storage: SessionStorageWriter,
-  session: AuthenticatedSession<TUser>,
-): void {
-  storage.setItem("tracker_token", session.token);
-  storage.setItem("tracker_user", JSON.stringify(session.user));
 }

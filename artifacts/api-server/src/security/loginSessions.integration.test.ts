@@ -55,6 +55,26 @@ test(
         "logout revocation invalidates access tokens for the session",
       );
       assert.equal(await sessionStore.rotateRefreshSession(winner.token), null);
+
+      const tabSession = await sessionStore.createRefreshSession(userId, undefined, { tabBound: true });
+      assert.equal(tabSession.tabBound, true);
+      assert.match(tabSession.binding ?? "", /^[A-Za-z0-9_-]{43}$/);
+      assert.equal(
+        await sessionStore.rotateRefreshSession(tabSession.token),
+        null,
+        "a session-only cookie cannot refresh without its tab binding",
+      );
+      const rotatedTabSession = await sessionStore.rotateRefreshSession(tabSession.token, tabSession.binding);
+      assert.ok(rotatedTabSession);
+      assert.equal(rotatedTabSession.tabBound, true);
+      assert.notEqual(rotatedTabSession.binding, tabSession.binding);
+      assert.equal(
+        await sessionStore.rotateRefreshSession(tabSession.token, tabSession.binding),
+        null,
+        "a tab-bound credential remains one-time-use",
+      );
+      await sessionStore.revokeRefreshSession(rotatedTabSession.token, rotatedTabSession.binding);
+      assert.equal(await sessionStore.isActiveAccessSession(tabSession.id, userId), false);
     } finally {
       await pool
         .query("DELETE FROM portal_users WHERE username = $1", [username])

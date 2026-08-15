@@ -66,7 +66,11 @@ test("canonical Portal access persists normalized grants and revokes deactivated
   const usernamePrefix = `canonical-access-${unique}`;
   const agentPrefix = `canonical access fixture ${unique}`;
   const initialAgentPassword = "correct horse battery staple 47";
-  const initialAgentEmail = `Canonical.Access.${unique}@Example.test`;
+  const rosterAgentEmail = `canonical-access-${unique}-agent@example.test`;
+  let agentLoginEmail = rosterAgentEmail;
+  const managerEmail = `canonical-access-${unique}-manager@example.test`;
+  const adminEmail = `canonical-access-${unique}-admin@example.test`;
+  const legacyEmail = `canonical-access-${unique}-legacy@example.test`;
   const resetAgentPassword = "reset horse battery staple 59";
 
   const postUser = (body: Record<string, unknown>) => fetch(`${origin}/users`, {
@@ -74,10 +78,10 @@ test("canonical Portal access persists normalized grants and revokes deactivated
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  const login = (username: string, password: string) => fetch(`${origin}/auth/login`, {
+  const login = (email: string, password: string) => fetch(`${origin}/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ email, password }),
   });
   const createAgent = async (suffix: string, active = true, team: "retention" | "nsf" | "cs" | "killers" = "retention") => {
     const result = await pool.query<{ id: number }>(
@@ -113,10 +117,10 @@ test("canonical Portal access persists normalized grants and revokes deactivated
     const legacyPassword = "legacy horse battery staple 83";
     const legacyHash = await bcrypt.hash(legacyPassword, 10);
     const legacyResult = await pool.query<{ id: number }>(
-      `INSERT INTO portal_users (username, password_hash, role, permissions, active)
-       VALUES ($1, $2, 'view', '["view_metrics"]', true)
+      `INSERT INTO portal_users (username, email, email_normalized, password_hash, role, permissions, active)
+       VALUES ($1, $2, $2, $3, 'view', '["view_metrics"]', true)
        RETURNING id`,
-      [`${usernamePrefix}-legacy`, legacyHash],
+      [`${usernamePrefix}-legacy`, legacyEmail, legacyHash],
     );
 
     await t.test("legacy rows remain NULL-linked and retain the legacy resolver", async () => {
@@ -133,7 +137,6 @@ test("canonical Portal access persists normalized grants and revokes deactivated
     await t.test("Agent creation links one active canonical identity without returning a password hash", async () => {
       const response = await postUser({
         username: `${usernamePrefix}-agent`,
-        email: initialAgentEmail,
         password: initialAgentPassword,
         accessRole: "agent",
         teamAgentId: agentId,
@@ -148,17 +151,15 @@ test("canonical Portal access persists normalized grants and revokes deactivated
       assert.equal(Object.prototype.hasOwnProperty.call(body, "passwordHash"), false);
       assert.equal(body["passwordPolicyVersion"], 1);
       assert.equal(typeof body["passwordChangedAt"], "string");
-      assert.equal(body["email"], initialAgentEmail);
+      assert.equal(body["email"], null);
+      assert.equal(body["loginEmail"], rosterAgentEmail);
       assert.equal(Object.prototype.hasOwnProperty.call(body, "emailNormalized"), false);
       assert.equal(body["accessRole"], "agent");
-      const storedEmail = await pool.query<{ email: string; email_normalized: string }>(
+      const storedEmail = await pool.query<{ email: string | null; email_normalized: string | null }>(
         "SELECT email, email_normalized FROM portal_users WHERE id = $1",
         [agentUserId],
       );
-      assert.deepEqual(storedEmail.rows, [{
-        email: initialAgentEmail,
-        email_normalized: initialAgentEmail.toLowerCase(),
-      }]);
+      assert.deepEqual(storedEmail.rows, [{ email: null, email_normalized: null }]);
       const access = await authUser.loadAuthenticatablePortalUser(agentUserId);
       assert.equal(access?.payload.selfAgentId, agentId);
       assert.equal(access?.payload.selfAgentTeam, "retention");
@@ -166,7 +167,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
       assert.deepEqual(new Set(access?.payload.allowedTabs), new Set(["retention", "violations"]));
     });
 
-    await t.test("Portal account email is optional, validated, unique, editable, and clearable without a roster link", async () => {
+    await t.test("Portal email can override and restore the authoritative Agent Roster login email", async () => {
       const invalid = await fetch(`${origin}/users/${agentUserId}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
@@ -176,7 +177,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
 
       const duplicate = await postUser({
         username: `${usernamePrefix}-email-duplicate`,
-        email: initialAgentEmail.toLowerCase(),
+        email: rosterAgentEmail,
         password: "duplicate email horse battery staple 91",
         accessRole: "manager",
         teamAgentId: null,
@@ -186,7 +187,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
         permissions: ["view_metrics"],
       });
       assert.equal(duplicate.status, 409);
-      assert.deepEqual(await duplicate.json(), { error: "Email is already assigned to another user" });
+      assert.deepEqual(await duplicate.json(), { error: "Email belongs to another Agent Roster identity" });
 
       const replacementEmail = `Updated.Canonical.${unique}@Example.test`;
       const updated = await fetch(`${origin}/users/${agentUserId}`, {
@@ -196,6 +197,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
       });
       assert.equal(updated.status, 200);
       assert.equal((await updated.json() as { email: string }).email, replacementEmail);
+      agentLoginEmail = replacementEmail;
 
       const cleared = await fetch(`${origin}/users/${agentUserId}`, {
         method: "PATCH",
@@ -203,7 +205,8 @@ test("canonical Portal access persists normalized grants and revokes deactivated
         body: JSON.stringify({ email: "" }),
       });
       assert.equal(cleared.status, 200);
-      assert.equal((await cleared.json() as { email: string | null }).email, null);
+      assert.equal((await cleared.json() as { loginEmail: string }).loginEmail, rosterAgentEmail);
+      agentLoginEmail = rosterAgentEmail;
       const clearedStored = await pool.query<{ email: string | null; email_normalized: string | null }>(
         "SELECT email, email_normalized FROM portal_users WHERE id = $1",
         [agentUserId],
@@ -214,6 +217,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
     await t.test("one canonical Agent cannot be assigned to two Portal accounts", async () => {
       const response = await postUser({
         username: `${usernamePrefix}-duplicate`,
+        email: `canonical-access-${unique}-duplicate@example.test`,
         password: "another correct horse battery staple",
         accessRole: "agent",
         teamAgentId: agentId,
@@ -228,6 +232,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
     await t.test("inactive Agent identities cannot receive new canonical access", async () => {
       const response = await postUser({
         username: `${usernamePrefix}-inactive`,
+        email: `canonical-access-${unique}-inactive@example.test`,
         password: "inactive correct horse battery staple",
         accessRole: "agent",
         teamAgentId: inactiveAgentId,
@@ -244,6 +249,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
     await t.test("Manager primary, extra-team, and extra-tab grants resolve centrally", async () => {
       const response = await postUser({
         username: `${usernamePrefix}-manager`,
+        email: managerEmail,
         password: managerPassword,
         accessRole: "manager",
         teamAgentId: null,
@@ -268,6 +274,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
     await t.test("Onboarding is accepted as a Manager primary team without granting metric-team scope", async () => {
       const response = await postUser({
         username: `${usernamePrefix}-onboarding-manager`,
+        email: `${usernamePrefix}-onboarding-manager@example.test`,
         password: "onboarding manager correct horse battery staple",
         accessRole: "manager",
         teamAgentId: null,
@@ -289,6 +296,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
     await t.test("Admin creation remains unrestricted without roster or primary-team linkage", async () => {
       const response = await postUser({
         username: `${usernamePrefix}-admin`,
+        email: adminEmail,
         password: adminPassword,
         accessRole: "admin",
         teamAgentId: null,
@@ -315,10 +323,14 @@ test("canonical Portal access persists normalized grants and revokes deactivated
     let adminToken = "";
     let legacyToken = "";
     await t.test("active Agent, Manager, Admin, and legacy authentication resolve through their correct models", async () => {
-      const agentLogin = await login(`${usernamePrefix}-agent`, initialAgentPassword);
+      const agentLogin = await login(agentLoginEmail, initialAgentPassword);
       assert.equal(agentLogin.status, 200);
-      const agentBody = await agentLogin.json() as { token: string; user: Record<string, unknown> };
+      const agentBody = await agentLogin.json() as { token: string; sessionBinding?: string; user: Record<string, unknown> };
       agentToken = agentBody.token;
+      assert.match(agentBody.sessionBinding ?? "", /^[A-Za-z0-9_-]{43}$/);
+      const agentCookie = agentLogin.headers.get("set-cookie") ?? "";
+      assert.match(agentCookie, /tracker_refresh=/);
+      assert.doesNotMatch(agentCookie, /Max-Age|Expires=/i);
       assert.equal(agentBody.user["accessRole"], "agent");
       assert.equal(agentBody.user["selfAgentId"], agentId);
       assert.equal((agentBody.user["allowedTabs"] as string[]).includes("onboarding"), false);
@@ -331,26 +343,45 @@ test("canonical Portal access persists normalized grants and revokes deactivated
         headers: { Authorization: `Bearer ${agentBody.token}`, "x-fixture-real-auth": "1" },
       });
       assert.equal(meResponse.status, 200);
+      const cookieHeader = agentCookie.split(";", 1)[0]!;
+      const unboundRefresh = await fetch(`${origin}/auth/refresh`, {
+        method: "POST",
+        headers: { Cookie: cookieHeader },
+      });
+      assert.equal(unboundRefresh.status, 401);
+      const boundRefresh = await fetch(`${origin}/auth/refresh`, {
+        method: "POST",
+        headers: { Cookie: cookieHeader, "X-Tracker-Session-Binding": agentBody.sessionBinding! },
+      });
+      assert.equal(boundRefresh.status, 200);
+      const boundRefreshBody = await boundRefresh.json() as { sessionBinding?: string };
+      assert.match(boundRefreshBody.sessionBinding ?? "", /^[A-Za-z0-9_-]{43}$/);
+      assert.notEqual(boundRefreshBody.sessionBinding, agentBody.sessionBinding);
 
-      const managerLogin = await login(`${usernamePrefix}-manager`, managerPassword);
+      const managerLogin = await login(managerEmail, managerPassword);
       assert.equal(managerLogin.status, 200);
-      const managerBody = await managerLogin.json() as { token: string; user: Record<string, unknown> };
+      const managerBody = await managerLogin.json() as { token: string; sessionBinding?: string; user: Record<string, unknown> };
       managerToken = managerBody.token;
+      assert.match(managerBody.sessionBinding ?? "", /^[A-Za-z0-9_-]{43}$/);
+      assert.doesNotMatch(managerLogin.headers.get("set-cookie") ?? "", /Max-Age|Expires=/i);
       assert.equal(managerBody.user["accessRole"], "manager");
       assert.equal(managerBody.user["selfAgentId"], null);
       assert.equal((managerBody.user["allowedTabs"] as string[]).includes("onboarding"), false);
 
-      const adminLogin = await login(`${usernamePrefix}-admin`, adminPassword);
+      const adminLogin = await login(adminEmail, adminPassword);
       assert.equal(adminLogin.status, 200);
-      const adminBody = await adminLogin.json() as { token: string; user: { accessRole: string } };
+      const adminBody = await adminLogin.json() as { token: string; sessionBinding?: string; user: { accessRole: string } };
       adminToken = adminBody.token;
       assert.equal(adminBody.user.accessRole, "admin");
+      assert.equal(adminBody.sessionBinding, undefined);
+      assert.match(adminLogin.headers.get("set-cookie") ?? "", /Max-Age=/i);
 
-      const legacyLogin = await login(`${usernamePrefix}-legacy`, legacyPassword);
+      const legacyLogin = await login(legacyEmail, legacyPassword);
       assert.equal(legacyLogin.status, 200);
-      const legacyBody = await legacyLogin.json() as { token: string; user: { accessModel: string } };
+      const legacyBody = await legacyLogin.json() as { token: string; sessionBinding?: string; user: { accessModel: string } };
       legacyToken = legacyBody.token;
       assert.equal(legacyBody.user.accessModel, "legacy");
+      assert.match(legacyBody.sessionBinding ?? "", /^[A-Za-z0-9_-]{43}$/);
     });
 
     await t.test("server-side metric filtering resists team parameter changes for Agent and Manager scopes", async () => {
@@ -520,6 +551,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
       ]) {
         const response = await postUser({
           username: `${usernamePrefix}-${suffix}`,
+          email: `canonical-access-${unique}-${suffix}@example.test`,
           password,
           accessRole: "manager",
           teamAgentId: null,
@@ -531,7 +563,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
         assert.equal(response.status, 400);
       }
 
-      const beforeResetLogin = await login(`${usernamePrefix}-agent`, initialAgentPassword);
+      const beforeResetLogin = await login(agentLoginEmail, initialAgentPassword);
       assert.equal(beforeResetLogin.status, 200);
       const beforeResetBody = await beforeResetLogin.json() as { token: string };
       const resetResponse = await fetch(`${origin}/users/${agentUserId}`, {
@@ -661,7 +693,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
     });
 
     await t.test("inactive Agent state denies login, refresh, auth-me, and protected requests; reactivation restores eligibility", async () => {
-      const authenticated = await login(`${usernamePrefix}-agent`, resetAgentPassword);
+      const authenticated = await login(agentLoginEmail, resetAgentPassword);
       assert.equal(authenticated.status, 200);
       const authenticatedBody = await authenticated.json() as { token: string };
       const refreshCookie = authenticated.headers.get("set-cookie");
@@ -687,11 +719,11 @@ test("canonical Portal access persists normalized grants and revokes deactivated
         headers: { Cookie: refreshCookie!, "x-fixture-real-auth": "1" },
       });
       assert.equal(refreshResponse.status, 401);
-      const inactiveLogin = await login(`${usernamePrefix}-agent`, resetAgentPassword);
+      const inactiveLogin = await login(agentLoginEmail, resetAgentPassword);
       assert.equal(inactiveLogin.status, 401);
       assert.deepEqual(await inactiveLogin.json(), { error: "Invalid credentials" });
-      assert.equal(await login(`${usernamePrefix}-manager`, managerPassword).then(({ status }) => status), 200);
-      assert.equal(await login(`${usernamePrefix}-admin`, adminPassword).then(({ status }) => status), 200);
+      assert.equal(await login(managerEmail, managerPassword).then(({ status }) => status), 200);
+      assert.equal(await login(adminEmail, adminPassword).then(({ status }) => status), 200);
 
       const reactivateResponse = await fetch(`${origin}/team-agents/${agentId}`, {
         method: "PATCH",
@@ -700,7 +732,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
       });
       assert.equal(reactivateResponse.status, 200);
       assert.ok(await authUser.loadAuthenticatablePortalUser(agentUserId));
-      const reactivatedLogin = await login(`${usernamePrefix}-agent`, resetAgentPassword);
+      const reactivatedLogin = await login(agentLoginEmail, resetAgentPassword);
       assert.equal(reactivatedLogin.status, 200);
       const reactivatedBody = await reactivatedLogin.json() as { token: string };
 
@@ -710,7 +742,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
         body: JSON.stringify({ active: false }),
       });
       assert.equal(deactivatePortal.status, 200);
-      assert.equal((await login(`${usernamePrefix}-agent`, resetAgentPassword)).status, 401);
+      assert.equal((await login(agentLoginEmail, resetAgentPassword)).status, 401);
       assert.equal((await fetch(`${origin}/protected-fixture`, {
         headers: { Authorization: `Bearer ${reactivatedBody.token}`, "x-fixture-real-auth": "1" },
       })).status, 401);
@@ -719,7 +751,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ active: true }),
       })).status, 200);
-      assert.equal((await login(`${usernamePrefix}-agent`, resetAgentPassword)).status, 200);
+      assert.equal((await login(agentLoginEmail, resetAgentPassword)).status, 200);
     });
   } finally {
     await pool.query("DELETE FROM portal_users WHERE username LIKE $1", [`${usernamePrefix}%`]);
