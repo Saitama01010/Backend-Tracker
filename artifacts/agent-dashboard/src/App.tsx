@@ -6141,7 +6141,6 @@ function LoginGate({ children }: { children: React.ReactNode }) {
       const validationError = validatePasswordUpgradeForm(
         newPassword,
         confirmPassword,
-        loginFlow.username,
       );
       if (validationError) {
         setError(validationError);
@@ -6385,7 +6384,6 @@ function LoginGate({ children }: { children: React.ReactNode }) {
                 <ul className="space-y-1 rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
                   <li>At least 15 characters</li>
                   <li>Maximum 72 UTF-8 bytes</li>
-                  <li>Must not contain your username</li>
                 </ul>
               </>
             )}

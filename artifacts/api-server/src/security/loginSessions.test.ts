@@ -135,15 +135,15 @@ test("authentication uses authoritative session and user state with generic fail
   }
 });
 
-test("new and changed passwords use the stronger policy without evaluating stored passwords", () => {
-  assert.equal(validateNewPassword("Long-Fake-Passphrase-47", "fixture-user"), null);
-  assert.equal(validateNewPassword("fifteen chars ok", "fixture-user"), null);
-  assert.equal(validateNewPassword("correct horse battery staple", "fixture-user"), null);
-  assert.equal(validateNewPassword("!".repeat(72), "fixture-user"), null);
-  assert.equal(validateNewPassword("é".repeat(37), "fixture-user"), PASSWORD_POLICY_MESSAGE);
-  assert.equal(validateNewPassword("short7!", "fixture-user"), PASSWORD_POLICY_MESSAGE);
-  assert.equal(validateNewPassword("fixture-user-Passphrase-47!", "fixture-user"), "Password must not contain the username.");
-  assert.equal(validateNewPassword(undefined, "fixture-user"), PASSWORD_POLICY_MESSAGE);
+test("new and changed passwords use the current length and UTF-8 byte policy without evaluating stored passwords", () => {
+  assert.equal(validateNewPassword("Long-Fake-Passphrase-47"), null);
+  assert.equal(validateNewPassword("fifteen chars ok"), null);
+  assert.equal(validateNewPassword("correct horse battery staple"), null);
+  assert.equal(validateNewPassword("!".repeat(72)), null);
+  assert.equal(validateNewPassword("é".repeat(37)), PASSWORD_POLICY_MESSAGE);
+  assert.equal(validateNewPassword("short7!"), PASSWORD_POLICY_MESSAGE);
+  assert.equal(validateNewPassword("fixture-user-Passphrase-47!"), null);
+  assert.equal(validateNewPassword(undefined), PASSWORD_POLICY_MESSAGE);
 });
 
 test("refresh cookies are HttpOnly, same-site, scoped, and raw tokens are only represented by hashes", () => {
@@ -212,7 +212,7 @@ test("auth logs and HTTP logger configuration contain no credential-bearing diag
 test("legacy policy validation happens only after successful bcrypt verification", async () => {
   const authSource = await readFile(new URL("../routes/auth.ts", import.meta.url), "utf8");
   const compareIndex = authSource.indexOf("await bcrypt.compare(password");
-  const policyIndex = authSource.indexOf("validateNewPassword(password, user.username)");
+  const policyIndex = authSource.indexOf("validateNewPassword(password)");
   const challengeIndex = authSource.indexOf("passwordChangeRequired: true");
   assert.ok(compareIndex >= 0);
   assert.ok(policyIndex > compareIndex);
