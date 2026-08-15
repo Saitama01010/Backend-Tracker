@@ -13,6 +13,9 @@ export type TeamAccess = typeof ALL_TEAM_ACCESS[number];
 export const CANONICAL_ACCESS_ROLES = ["agent", "manager", "admin"] as const;
 export type CanonicalAccessRole = typeof CANONICAL_ACCESS_ROLES[number];
 
+export const VALID_PRIMARY_TEAMS = [...VALID_TEAMS, "onboarding"] as const;
+export type PrimaryTeamSlug = typeof VALID_PRIMARY_TEAMS[number];
+
 export const portalUsersTable = pgTable("portal_users", {
   id: serial("id").primaryKey(),
   username: text("username").notNull().unique(),
@@ -42,7 +45,7 @@ export const portalUsersTable = pgTable("portal_users", {
   accessRole: text("access_role", { enum: CANONICAL_ACCESS_ROLES }),
   teamAgentId: integer("team_agent_id")
     .references(() => teamAgentsTable.id, { onDelete: "restrict" }),
-  primaryTeam: text("primary_team", { enum: VALID_TEAMS }),
+  primaryTeam: text("primary_team", { enum: VALID_PRIMARY_TEAMS }),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
@@ -66,7 +69,7 @@ export const portalUsersTable = pgTable("portal_users", {
   ),
   check(
     "portal_users_primary_team_check",
-    sql`${table.primaryTeam} is null or ${table.primaryTeam} in ('retention', 'nsf', 'cs', 'killers')`,
+    sql`${table.primaryTeam} is null or ${table.primaryTeam} in ('retention', 'nsf', 'cs', 'killers', 'onboarding')`,
   ),
   check(
     "portal_users_password_policy_version_check",

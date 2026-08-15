@@ -3,6 +3,7 @@ import type {
   CanonicalAccessRole,
   CanonicalDashboardTab,
   Permission,
+  PrimaryTeamSlug,
   TeamAccess,
   TeamSlug,
 } from "@workspace/db/schema";
@@ -24,7 +25,7 @@ export interface AuthPayload {
   selfAgentId?: number | null;
   selfAgentName?: string | null;
   selfAgentTeam?: TeamSlug | null;
-  primaryTeam?: TeamSlug | null;
+  primaryTeam?: PrimaryTeamSlug | null;
   fullTeamAccess?: TeamSlug[];
   tabGrants?: CanonicalDashboardTab[];
   sessionId?: string;
