@@ -14,6 +14,7 @@ import {
   createRefreshSession,
   rotateRefreshSession,
   revokeRefreshSession,
+  revokeUserSessions,
 } from "../lib/sessionStore.js";
 import {
   clearRefreshCookie,
@@ -29,6 +30,12 @@ import {
   type RateLimitDecision,
 } from "../lib/rateLimitStore.js";
 import { logger } from "../lib/logger.js";
+import { CURRENT_PASSWORD_POLICY_VERSION, validateNewPassword } from "../lib/passwordPolicy.js";
+import {
+  passwordCredentialStampMatches,
+  signPasswordUpgradeToken,
+  verifyPasswordUpgradeToken,
+} from "../lib/passwordUpgradeToken.js";
 
 const router = Router();
 const INVALID_CREDENTIALS = "Invalid credentials";
@@ -36,16 +43,13 @@ const DUMMY_PASSWORD_HASH = "$2b$10$cjArsAjWlR.lS7mPsVkMbuAKlNoYmFuzH.95QfojL5OZ
 const LOGIN_WINDOW_SECONDS = 15 * 60;
 const LOGIN_IP_LIMIT = 30;
 const LOGIN_FAILURE_LIMIT = 5;
+const PASSWORD_UPGRADE_WINDOW_SECONDS = 10 * 60;
+const PASSWORD_UPGRADE_IP_LIMIT = 30;
+const INVALID_PASSWORD_UPGRADE_TOKEN = "Invalid or expired password upgrade token";
 
 function rateLimited(res: Response, decision: RateLimitDecision): void {
   res.setHeader("Retry-After", String(decision.retryAfter));
   res.status(429).json({ error: "Too many attempts. Try again later." });
-}
-
-async function issueSession(userId: number, res: Response) {
-  const session = await createRefreshSession(userId);
-  setRefreshCookie(res, session.token);
-  return session.id;
 }
 
 router.post("/auth/login", async (req, res) => {
@@ -110,13 +114,193 @@ router.post("/auth/login", async (req, res) => {
   }
 
   await clearFixedWindow(failureScope, "login-failure");
+  const passwordPolicyError = validateNewPassword(password, user.username);
+  if (passwordPolicyError) {
+    try {
+      const verifiedPasswordHash = await db.transaction(async (tx) => {
+        const [current] = await tx
+          .select({
+            active: portalUsersTable.active,
+            passwordHash: portalUsersTable.passwordHash,
+          })
+          .from(portalUsersTable)
+          .where(eq(portalUsersTable.id, user.id))
+          .limit(1)
+          .for("update");
+        return current?.active && current.passwordHash === user.passwordHash
+          ? current.passwordHash
+          : null;
+      });
+      if (!verifiedPasswordHash) {
+        logger.warn({ event: "auth.login.failed" }, "Authentication failed");
+        res.status(401).json({ error: INVALID_CREDENTIALS });
+        return;
+      }
+      clearRefreshCookie(res);
+      res.setHeader("Cache-Control", "no-store");
+      res.json({
+        passwordChangeRequired: true,
+        upgradeToken: signPasswordUpgradeToken(user.id, verifiedPasswordHash),
+      });
+    } catch (error) {
+      logger.error({ err: error }, "Password upgrade challenge creation failed");
+      res.status(503).json({ error: "Authentication service is temporarily unavailable." });
+    }
+    return;
+  }
+
   try {
-    const sessionId = await issueSession(access.user.id, res);
-    const payload = authPayloadForAccess(access, sessionId);
+    const session = await db.transaction(async (tx) => {
+      const [current] = await tx
+        .select({
+          active: portalUsersTable.active,
+          passwordHash: portalUsersTable.passwordHash,
+          passwordPolicyVersion: portalUsersTable.passwordPolicyVersion,
+        })
+        .from(portalUsersTable)
+        .where(eq(portalUsersTable.id, user.id))
+        .limit(1)
+        .for("update");
+      if (!current?.active || current.passwordHash !== user.passwordHash) return null;
+      if (current.passwordPolicyVersion !== CURRENT_PASSWORD_POLICY_VERSION) {
+        await tx.update(portalUsersTable)
+          .set({ passwordPolicyVersion: CURRENT_PASSWORD_POLICY_VERSION })
+          .where(eq(portalUsersTable.id, user.id));
+      }
+      return createRefreshSession(user.id, tx);
+    });
+    if (!session) {
+      logger.warn({ event: "auth.login.failed" }, "Authentication failed");
+      res.status(401).json({ error: INVALID_CREDENTIALS });
+      return;
+    }
+    setRefreshCookie(res, session.token);
+    const payload = authPayloadForAccess(access, session.id);
     res.setHeader("Cache-Control", "no-store");
     res.json({ token: signToken(payload), user: publicAuthUser(payload) });
   } catch (error) {
     logger.error({ err: error }, "Authentication session creation failed");
+    res.status(503).json({ error: "Authentication service is temporarily unavailable." });
+  }
+});
+
+router.post("/auth/password-upgrade", async (req, res) => {
+  const addressScope = boundedAnonymousScope(`password-upgrade-ip:${requestAddress(req)}`);
+  const decision = await consumeFixedWindow(
+    addressScope,
+    "password-upgrade-request",
+    PASSWORD_UPGRADE_IP_LIMIT,
+    PASSWORD_UPGRADE_WINDOW_SECONDS,
+  );
+  if (!decision.allowed) {
+    rateLimited(res, decision);
+    return;
+  }
+
+  const { upgradeToken, newPassword, confirmPassword } = req.body ?? {};
+  if (
+    typeof upgradeToken !== "string"
+    || typeof newPassword !== "string"
+    || typeof confirmPassword !== "string"
+  ) {
+    res.status(400).json({ error: "upgradeToken, newPassword, and confirmPassword are required" });
+    return;
+  }
+
+  let claims;
+  try {
+    claims = verifyPasswordUpgradeToken(upgradeToken);
+  } catch {
+    res.status(401).json({ error: INVALID_PASSWORD_UPGRADE_TOKEN });
+    return;
+  }
+
+  const [user] = await db
+    .select({
+      id: portalUsersTable.id,
+      username: portalUsersTable.username,
+      passwordHash: portalUsersTable.passwordHash,
+      active: portalUsersTable.active,
+    })
+    .from(portalUsersTable)
+    .where(eq(portalUsersTable.id, claims.userId))
+    .limit(1);
+  const access = user?.active ? await loadAuthenticatablePortalUser(user.id) : null;
+  if (
+    !user?.active
+    || !access
+    || !passwordCredentialStampMatches(user.id, user.passwordHash, claims.credentialStamp)
+  ) {
+    res.status(401).json({ error: INVALID_PASSWORD_UPGRADE_TOKEN });
+    return;
+  }
+
+  if (newPassword !== confirmPassword) {
+    res.status(400).json({ error: "Passwords do not match." });
+    return;
+  }
+  const passwordError = validateNewPassword(newPassword, user.username);
+  if (passwordError) {
+    res.status(400).json({ error: passwordError });
+    return;
+  }
+
+  try {
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    const replacement = await db.transaction(async (tx) => {
+      const [current] = await tx
+        .select({
+          id: portalUsersTable.id,
+          username: portalUsersTable.username,
+          passwordHash: portalUsersTable.passwordHash,
+          active: portalUsersTable.active,
+        })
+        .from(portalUsersTable)
+        .where(eq(portalUsersTable.id, claims.userId))
+        .limit(1)
+        .for("update");
+      if (
+        !current?.active
+        || !passwordCredentialStampMatches(current.id, current.passwordHash, claims.credentialStamp)
+      ) return { kind: "invalid" as const };
+
+      const currentPasswordError = validateNewPassword(newPassword, current.username);
+      if (currentPasswordError) return { kind: "password-error" as const, error: currentPasswordError };
+
+      await tx.update(portalUsersTable)
+        .set({
+          passwordHash,
+          passwordPolicyVersion: CURRENT_PASSWORD_POLICY_VERSION,
+          passwordChangedAt: new Date(),
+        })
+        .where(eq(portalUsersTable.id, current.id));
+      await revokeUserSessions(current.id, tx);
+      const session = await createRefreshSession(current.id, tx);
+      return { kind: "success" as const, session };
+    });
+
+    if (replacement.kind === "invalid") {
+      res.status(401).json({ error: INVALID_PASSWORD_UPGRADE_TOKEN });
+      return;
+    }
+    if (replacement.kind === "password-error") {
+      res.status(400).json({ error: replacement.error });
+      return;
+    }
+
+    const refreshedAccess = await loadAuthenticatablePortalUser(user.id);
+    if (!refreshedAccess) {
+      await revokeRefreshSession(replacement.session.token);
+      clearRefreshCookie(res);
+      res.status(401).json({ error: INVALID_PASSWORD_UPGRADE_TOKEN });
+      return;
+    }
+    setRefreshCookie(res, replacement.session.token);
+    const payload = authPayloadForAccess(refreshedAccess, replacement.session.id);
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ token: signToken(payload), user: publicAuthUser(payload) });
+  } catch (error) {
+    logger.error({ err: error }, "Password upgrade failed");
     res.status(503).json({ error: "Authentication service is temporarily unavailable." });
   }
 });

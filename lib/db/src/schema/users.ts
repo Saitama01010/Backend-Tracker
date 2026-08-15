@@ -16,7 +16,11 @@ export type CanonicalAccessRole = typeof CANONICAL_ACCESS_ROLES[number];
 export const portalUsersTable = pgTable("portal_users", {
   id: serial("id").primaryKey(),
   username: text("username").notNull().unique(),
+  email: text("email"),
+  emailNormalized: text("email_normalized"),
   passwordHash: text("password_hash").notNull(),
+  passwordPolicyVersion: integer("password_policy_version").notNull().default(1),
+  passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
   role: text("role", { enum: ["admin", "edit", "view"] }).notNull().default("view"),
   permissions: text("permissions").notNull().default("[]"),
   // null = unrestricted (sees all teams); "retention"|"nsf"|"cs" = scoped to that team only
@@ -45,6 +49,17 @@ export const portalUsersTable = pgTable("portal_users", {
   uniqueIndex("portal_users_team_agent_id_uidx")
     .on(table.teamAgentId)
     .where(sql`${table.teamAgentId} is not null`),
+  uniqueIndex("portal_users_email_normalized_uidx")
+    .on(table.emailNormalized)
+    .where(sql`${table.emailNormalized} is not null`),
+  check(
+    "portal_users_email_identity_pair",
+    sql`(${table.email} is null and ${table.emailNormalized} is null)
+      or (${table.email} is not null
+        and ${table.emailNormalized} is not null
+        and ${table.emailNormalized} <> ''
+        and ${table.emailNormalized} = lower(btrim(${table.email})))`,
+  ),
   check(
     "portal_users_access_role_check",
     sql`${table.accessRole} is null or ${table.accessRole} in ('agent', 'manager', 'admin')`,
@@ -52,6 +67,10 @@ export const portalUsersTable = pgTable("portal_users", {
   check(
     "portal_users_primary_team_check",
     sql`${table.primaryTeam} is null or ${table.primaryTeam} in ('retention', 'nsf', 'cs', 'killers')`,
+  ),
+  check(
+    "portal_users_password_policy_version_check",
+    sql`${table.passwordPolicyVersion} >= 0`,
   ),
   check(
     "portal_users_canonical_access_shape_check",

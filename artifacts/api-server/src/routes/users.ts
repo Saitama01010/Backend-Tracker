@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
+import { isValidAgentEmail, normalizeAgentEmail } from "@workspace/api-zod/agent-identity";
 import { db } from "@workspace/db";
 import {
   ALL_PERMISSIONS,
@@ -19,7 +20,7 @@ import type {
 } from "@workspace/db/schema";
 import { asc, eq, getTableColumns } from "drizzle-orm";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { validateNewPassword } from "../lib/passwordPolicy.js";
+import { CURRENT_PASSWORD_POLICY_VERSION, validateNewPassword } from "../lib/passwordPolicy.js";
 import { revokeUserSessions } from "../lib/sessionStore.js";
 
 const router = Router();
@@ -35,6 +36,16 @@ function normalizeUsername(value: unknown): string {
     throw new UserRequestError(400, "Username is required");
   }
   return value.trim().toLowerCase();
+}
+
+function portalUserEmailIdentity(value: unknown): { email: string | null; emailNormalized: string | null } {
+  if (value == null || (typeof value === "string" && !value.trim())) {
+    return { email: null, emailNormalized: null };
+  }
+  if (typeof value !== "string" || !isValidAgentEmail(value)) {
+    throw new UserRequestError(400, "Enter a valid email address");
+  }
+  return { email: value.trim(), emailNormalized: normalizeAgentEmail(value) };
 }
 
 function parsePermissions(value: unknown, includeCoreMetrics: boolean): Permission[] {
@@ -192,7 +203,7 @@ async function listPortalUsers() {
   for (const grant of teamGrants) teamsByUser.set(grant.portalUserId, [...(teamsByUser.get(grant.portalUserId) ?? []), grant.team]);
   for (const grant of tabGrants) tabsByUser.set(grant.portalUserId, [...(tabsByUser.get(grant.portalUserId) ?? []), grant.tab]);
 
-  return users.map(({ passwordHash: _passwordHash, ...user }) => ({
+  return users.map(({ passwordHash: _passwordHash, emailNormalized: _emailNormalized, ...user }) => ({
     ...user,
     permissions: user.accessRole === "admin" || (!user.accessRole && user.role === "admin")
       ? [...ALL_PERMISSIONS]
@@ -256,12 +267,26 @@ function postgresCode(error: unknown): string | null {
   return null;
 }
 
+function postgresConstraint(error: unknown): string | null {
+  let candidate: unknown = error;
+  for (let depth = 0; depth < 5 && candidate && typeof candidate === "object"; depth += 1) {
+    const record = candidate as { constraint?: unknown; cause?: unknown };
+    if (typeof record.constraint === "string") return record.constraint;
+    candidate = record.cause;
+  }
+  return null;
+}
+
 function sendUserError(req: Request, res: Response, error: unknown): void {
   if (error instanceof UserRequestError) {
     res.status(error.status).json({ error: error.message });
     return;
   }
   if (postgresCode(error) === "23505") {
+    if (postgresConstraint(error) === "portal_users_email_normalized_uidx") {
+      res.status(409).json({ error: "Email is already assigned to another user" });
+      return;
+    }
     res.status(409).json({ error: "Username or canonical Agent is already assigned" });
     return;
   }
@@ -283,6 +308,7 @@ router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
       ? req.body as Record<string, unknown>
       : {};
     const username = normalizeUsername(body.username);
+    const emailIdentity = portalUserEmailIdentity(body.email);
     const passwordError = validateNewPassword(body.password, username);
     if (passwordError) throw new UserRequestError(400, passwordError);
     const access = await validateCanonicalInput(body);
@@ -291,7 +317,10 @@ router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
     const userId = await db.transaction(async (tx) => {
       const [user] = await tx.insert(portalUsersTable).values({
         username,
+        ...emailIdentity,
         passwordHash,
+        passwordPolicyVersion: CURRENT_PASSWORD_POLICY_VERSION,
+        passwordChangedAt: new Date(),
         role: access.compatibilityRole,
         permissions: JSON.stringify(access.permissions),
         teamAccess: null,
@@ -348,10 +377,14 @@ router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) =
 
     const updates: Partial<typeof portalUsersTable.$inferInsert> = {};
     if (Object.prototype.hasOwnProperty.call(body, "username")) updates.username = normalizeUsername(body.username);
-    if (typeof body.password === "string" && body.password.length > 0) {
+    if (Object.prototype.hasOwnProperty.call(body, "email")) Object.assign(updates, portalUserEmailIdentity(body.email));
+    const passwordWasChanged = typeof body.password === "string" && body.password.length > 0;
+    if (passwordWasChanged) {
       const passwordError = validateNewPassword(body.password, updates.username ?? existing.username);
       if (passwordError) throw new UserRequestError(400, passwordError);
-      updates.passwordHash = await bcrypt.hash(body.password, 10);
+      updates.passwordHash = await bcrypt.hash(body.password as string, 10);
+      updates.passwordPolicyVersion = CURRENT_PASSWORD_POLICY_VERSION;
+      updates.passwordChangedAt = new Date();
     } else if (body.password !== undefined && typeof body.password !== "string") {
       throw new UserRequestError(400, "Password must be a string");
     }
@@ -403,10 +436,10 @@ router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) =
         await tx.update(portalUsersTable).set(updates).where(eq(portalUsersTable.id, id));
       }
       if (access) await replaceGrants(tx, id, access);
+      if (passwordWasChanged || requestedActive === false) {
+        await revokeUserSessions(id, tx);
+      }
     });
-    if ((typeof body.password === "string" && body.password.length > 0) || requestedActive === false) {
-      await revokeUserSessions(id);
-    }
     const updated = (await listPortalUsers()).find((user) => user.id === id);
     res.json(updated);
   } catch (error) {

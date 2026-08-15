@@ -4,16 +4,21 @@ import { db } from "@workspace/db";
 import { authSessionsTable } from "@workspace/db/schema";
 import { hashRefreshToken } from "./sessionToken.js";
 
+type SessionStoreExecutor = Pick<typeof db, "insert" | "update">;
+
 function refreshLifetimeDays(): number {
   const configured = Number(process.env["AUTH_REFRESH_TOKEN_DAYS"] ?? 30);
   return Number.isFinite(configured) ? Math.min(90, Math.max(1, Math.floor(configured))) : 30;
 }
 
-export async function createRefreshSession(userId: number): Promise<{ id: string; token: string }> {
+export async function createRefreshSession(
+  userId: number,
+  executor: SessionStoreExecutor = db,
+): Promise<{ id: string; token: string }> {
   const id = randomUUID();
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + refreshLifetimeDays() * 24 * 60 * 60 * 1_000);
-  await db.insert(authSessionsTable).values({
+  await executor.insert(authSessionsTable).values({
     id,
     userId,
     refreshTokenHash: hashRefreshToken(token),
@@ -59,8 +64,11 @@ export async function revokeRefreshSession(token: string): Promise<void> {
     .where(eq(authSessionsTable.refreshTokenHash, hashRefreshToken(token)));
 }
 
-export async function revokeUserSessions(userId: number): Promise<void> {
-  await db.update(authSessionsTable)
+export async function revokeUserSessions(
+  userId: number,
+  executor: SessionStoreExecutor = db,
+): Promise<void> {
+  await executor.update(authSessionsTable)
     .set({ revokedAt: new Date() })
     .where(and(eq(authSessionsTable.userId, userId), isNull(authSessionsTable.revokedAt)));
 }

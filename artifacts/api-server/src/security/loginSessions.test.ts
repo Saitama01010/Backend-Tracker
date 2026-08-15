@@ -8,6 +8,11 @@ import type { AuthPayload, SessionAuthPayload } from "../middleware/authCore.js"
 import { createRequireAuth } from "../middleware/authCore.js";
 import { protectedActionForRequest } from "../middleware/abusePolicy.js";
 import { PASSWORD_POLICY_MESSAGE, validateNewPassword } from "../lib/passwordPolicy.js";
+import {
+  passwordCredentialStampMatches,
+  signPasswordUpgradeToken,
+  verifyPasswordUpgradeToken,
+} from "../lib/passwordUpgradeToken.js";
 import { hashRefreshToken, readRefreshCookie, refreshCookieOptions } from "../lib/sessionToken.js";
 import { isPublicApiRoute } from "../routes/apiPolicy.js";
 import { boundedAnonymousScope } from "../lib/privateScope.js";
@@ -70,6 +75,27 @@ test("sessionless legacy, malformed, invalid-signature, and unsupported-algorith
     assert.throws(() => verifyToken(unsupported), /algorithm/i);
     assert.throws(() => verifyToken(badSignature), /signature/i);
     assert.throws(() => verifyToken("not-a-jwt"));
+  } finally {
+    if (oldSecret === undefined) delete process.env["SESSION_SECRET"]; else process.env["SESSION_SECRET"] = oldSecret;
+  }
+});
+
+test("password-upgrade challenges are short-lived, password-bound, and purpose-separated from access tokens", () => {
+  const oldSecret = process.env["SESSION_SECRET"];
+  process.env["SESSION_SECRET"] = "fake-session-secret-long-enough-for-tests";
+  try {
+    const passwordHash = "$2b$10$fixture-password-hash-never-plaintext";
+    const upgradeToken = signPasswordUpgradeToken(fakeViewUser.userId, passwordHash);
+    const claims = verifyPasswordUpgradeToken(upgradeToken);
+    assert.equal(claims.userId, fakeViewUser.userId);
+    assert.equal(passwordCredentialStampMatches(fakeViewUser.userId, passwordHash, claims.credentialStamp), true);
+    assert.equal(passwordCredentialStampMatches(fakeViewUser.userId, `${passwordHash}-changed`, claims.credentialStamp), false);
+    assert.throws(() => verifyToken(upgradeToken), /signature|claims/i);
+
+    const accessToken = signToken(fakeViewUser);
+    assert.throws(() => verifyPasswordUpgradeToken(accessToken), /signature|audience|issuer|claims/i);
+    const expired = signPasswordUpgradeToken(fakeViewUser.userId, passwordHash, -1);
+    assert.throws(() => verifyPasswordUpgradeToken(expired), /expired/i);
   } finally {
     if (oldSecret === undefined) delete process.env["SESSION_SECRET"]; else process.env["SESSION_SECRET"] = oldSecret;
   }
@@ -144,6 +170,7 @@ test("refresh cookies are HttpOnly, same-site, scoped, and raw tokens are only r
 
 test("refresh and logout bypass bearer auth only because they validate or clear the session cookie", () => {
   assert.equal(isPublicApiRoute("POST", "/auth/login"), true);
+  assert.equal(isPublicApiRoute("POST", "/auth/password-upgrade"), true);
   assert.equal(isPublicApiRoute("POST", "/auth/refresh"), true);
   assert.equal(isPublicApiRoute("POST", "/auth/logout"), true);
   assert.equal(isPublicApiRoute("GET", "/auth/refresh"), false);
@@ -176,7 +203,31 @@ test("auth logs and HTTP logger configuration contain no credential-bearing diag
   assert.match(loggerSource, /req\.headers\.authorization/);
   assert.match(loggerSource, /req\.headers\.cookie/);
   assert.match(loggerSource, /set-cookie/);
+  assert.match(loggerSource, /upgradeToken/);
+  assert.match(loggerSource, /newPassword/);
+  assert.match(loggerSource, /confirmPassword/);
   assert.match(authSource, /Cache-Control", "no-store/);
+});
+
+test("legacy policy validation happens only after successful bcrypt verification", async () => {
+  const authSource = await readFile(new URL("../routes/auth.ts", import.meta.url), "utf8");
+  const compareIndex = authSource.indexOf("await bcrypt.compare(password");
+  const policyIndex = authSource.indexOf("validateNewPassword(password, user.username)");
+  const challengeIndex = authSource.indexOf("passwordChangeRequired: true");
+  assert.ok(compareIndex >= 0);
+  assert.ok(policyIndex > compareIndex);
+  assert.ok(challengeIndex > policyIndex);
+  assert.match(authSource, /Invalid credentials/);
+  assert.doesNotMatch(authSource, /passwordChangeRequired[^\n]+Invalid credentials/);
+});
+
+test("password replacement revokes old sessions before creating the replacement session", async () => {
+  const authSource = await readFile(new URL("../routes/auth.ts", import.meta.url), "utf8");
+  const upgradeRoute = authSource.slice(authSource.indexOf('router.post("/auth/password-upgrade"'));
+  assert.ok(upgradeRoute.indexOf("revokeUserSessions(current.id, tx)") >= 0);
+  assert.ok(upgradeRoute.indexOf("createRefreshSession(current.id, tx)") > upgradeRoute.indexOf("revokeUserSessions(current.id, tx)"));
+  assert.match(upgradeRoute, /\.for\("update"\)/);
+  assert.match(upgradeRoute, /passwordCredentialStampMatches/);
 });
 
 test("failed-login protection combines a per-IP request limit with an independent account limit", async () => {
@@ -207,4 +258,22 @@ test("session and rate-limit tables are supplied by an additive migration", asyn
   assert.match(migration, /CREATE TABLE IF NOT EXISTS "auth_sessions"/);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS "api_rate_limits"/);
   assert.match(migration, /ON DELETE cascade/);
+});
+
+test("legacy password metadata is additive and existing rows begin unverified while new rows default current", async () => {
+  const migration = await readFile(new URL("../../../../lib/db/drizzle/0015_legacy_password_upgrade.sql", import.meta.url), "utf8");
+  assert.match(migration, /password_policy_version[^;]+DEFAULT 0 NOT NULL/is);
+  assert.match(migration, /password_policy_version" SET DEFAULT 1/i);
+  assert.match(migration, /password_changed_at" timestamp with time zone/i);
+  assert.doesNotMatch(migration, /password_hash[^;]*(?:length|strength|policy)/i);
+});
+
+test("admin-created and reset passwords record current policy metadata without returning hashes", async () => {
+  const usersSource = await readFile(new URL("../routes/users.ts", import.meta.url), "utf8");
+  const startupSource = await readFile(new URL("../app/startupDatabase.ts", import.meta.url), "utf8");
+  assert.match(usersSource, /passwordPolicyVersion:\s*CURRENT_PASSWORD_POLICY_VERSION/);
+  assert.match(usersSource, /passwordChangedAt:\s*new Date\(\)/);
+  assert.match(usersSource, /\{ passwordHash: _passwordHash, emailNormalized: _emailNormalized, \.\.\.user \}/);
+  assert.match(startupSource, /passwordPolicyVersion:\s*CURRENT_PASSWORD_POLICY_VERSION/);
+  assert.match(startupSource, /passwordChangedAt:\s*new Date\(\)/);
 });

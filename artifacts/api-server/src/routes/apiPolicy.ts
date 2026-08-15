@@ -32,6 +32,12 @@ export const PUBLIC_API_ROUTES: readonly PublicApiRoute[] = [
   },
   {
     method: "POST",
+    path: "/auth/password-upgrade",
+    classification: "public health/login route",
+    reason: "A verified, short-lived password-upgrade challenge independently authorizes only this endpoint.",
+  },
+  {
+    method: "POST",
     path: "/auth/refresh",
     classification: "cookie-authenticated session route",
     reason: "Expired access tokens renew through a validated HttpOnly refresh-session cookie.",
