@@ -7,7 +7,7 @@ For canonical accounts, `access_role` is authoritative. The legacy `role` value 
 ## Effective scope
 
 - Agent: the linked `team_agents.id` only. A team grant, including a grant for the Agent's own team, adds full-team visibility.
-- Manager: every roster identity in `primary_team`, including inactive historical identities, plus every explicitly granted team.
+- Manager: every roster identity in a metrics-team `primary_team`, including inactive historical identities, plus every explicitly granted metrics team. `onboarding` is a primary-team-only global scope and does not imply roster or metrics-team access.
 - Admin: unrestricted.
 - Legacy: unchanged transitional behavior.
 
@@ -32,9 +32,9 @@ Provider records that are name-based are authorized only after the provider iden
 
 ## Privileged global Onboarding tab
 
-Onboarding is intentionally global rather than roster- or team-scoped. Canonical Admin accounts always receive the complete Onboarding view. Canonical Agent and Manager accounts receive the complete view only when an administrator explicitly grants the `onboarding` tab in User Management; without that grant, the server returns `403 Forbidden` for Onboarding report and analytics reads and downloads. Removing the grant takes effect on the next authenticated request because the current account is resolved from the database for every request. This grant does not alter Agent self scope, Manager primary-team scope, or any explicit extra-team grants elsewhere.
+Onboarding is intentionally global rather than roster- or metrics-team-scoped. Canonical Admin accounts always receive the complete Onboarding view. A canonical Manager whose Primary Team is `onboarding` receives that complete view without inheriting any roster or metrics-team scope. Other canonical Agent and Manager accounts receive the complete view only when an administrator explicitly grants the `onboarding` tab in User Management; without either source of access, the server returns `403 Forbidden` for Onboarding report and analytics reads and downloads. Removing the applicable grant or changing the Manager's Primary Team takes effect on the next authenticated request because the current account is resolved from the database for every request. Onboarding access does not alter Agent self scope, metrics-team Manager scope, or any explicit extra-team grants elsewhere.
 
-The centralized policy enforces the grant for `/ob-report/status`, `/ob-report/download`, `/ob-analytics`, and `/ob-analytics/download`. Onboarding refresh/reprocessing remains Admin-only, and the separately secret-protected import route is unchanged. Intentionally unmigrated legacy accounts retain their existing tab behavior.
+The centralized policy enforces Onboarding access for `/ob-report/status`, `/ob-report/download`, `/ob-analytics`, and `/ob-analytics/download`. Onboarding refresh/reprocessing remains Admin-only, and the separately secret-protected import route is unchanged. Intentionally unmigrated legacy accounts retain their existing tab behavior.
 
 Live-transfer export/status remains an explicit fail-closed exception for canonical Agent and Manager accounts because those datasets do not expose a reliable canonical roster identity on every row. Canonical Admin and legacy behavior remain unchanged for live transfers.
 

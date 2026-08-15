@@ -4,6 +4,7 @@ export type Permission = "view_metrics" | "view_attendance" | "edit_attendance" 
 export type TeamAccess = "retention" | "nsf" | "cs";
 export type CanonicalAccessRole = "agent" | "manager" | "admin";
 export type CanonicalTeam = TeamAccess | "killers";
+export type CanonicalPrimaryTeam = CanonicalTeam | "onboarding";
 
 export interface AuthUser {
   id: number;
@@ -21,7 +22,7 @@ export interface AuthUser {
   selfAgentId?: number | null;
   selfAgentName?: string | null;
   selfAgentTeam?: CanonicalTeam | null;
-  primaryTeam?: CanonicalTeam | null;
+  primaryTeam?: CanonicalPrimaryTeam | null;
   fullTeamAccess?: CanonicalTeam[];
   tabGrants?: string[];
 }
