@@ -271,6 +271,25 @@ test("canonical Portal access persists normalized grants and revokes deactivated
       assert.deepEqual(grants.rows, [{ team: "cs" }]);
     });
 
+    await t.test("Onboarding is accepted as a Manager primary team without granting metric-team scope", async () => {
+      const response = await postUser({
+        username: `${usernamePrefix}-onboarding-manager`,
+        password: "onboarding manager correct horse battery staple",
+        accessRole: "manager",
+        teamAgentId: null,
+        primaryTeam: "onboarding",
+        teamGrants: [],
+        tabGrants: [],
+        permissions: ["view_metrics"],
+      });
+      assert.equal(response.status, 201, await response.clone().text());
+      const manager = await response.json() as { id: number };
+      const access = await authUser.loadAuthenticatablePortalUser(manager.id);
+      assert.equal(access?.payload.primaryTeam, "onboarding");
+      assert.deepEqual(access?.payload.fullTeamAccess, []);
+      assert.deepEqual(access?.payload.allowedTabs, ["onboarding"]);
+    });
+
     const adminPassword = "admin correct horse battery staple";
     let adminUserId = 0;
     await t.test("Admin creation remains unrestricted without roster or primary-team linkage", async () => {

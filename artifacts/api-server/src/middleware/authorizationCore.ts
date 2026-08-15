@@ -1,5 +1,5 @@
-import { CANONICAL_DASHBOARD_TABS } from "@workspace/db/schema";
-import type { CanonicalDashboardTab, Permission, TeamSlug } from "@workspace/db/schema";
+import { CANONICAL_DASHBOARD_TABS, VALID_TEAMS } from "@workspace/db/schema";
+import type { CanonicalDashboardTab, Permission, PrimaryTeamSlug, TeamSlug } from "@workspace/db/schema";
 import type { AuthPayload } from "./authCore.js";
 import { businessDayWindow, formatCalendarDate } from "../lib/businessTime.js";
 
@@ -7,6 +7,10 @@ export const DASHBOARD_TABS = CANONICAL_DASHBOARD_TABS;
 
 export type DashboardTab = CanonicalDashboardTab;
 export type MetricTeam = TeamSlug;
+
+function isMetricTeam(team: PrimaryTeamSlug): team is MetricTeam {
+  return (VALID_TEAMS as readonly string[]).includes(team);
+}
 
 const TAB_TO_METRIC_TEAM: Partial<Record<DashboardTab, MetricTeam>> = {
   retention: "retention",
@@ -93,7 +97,7 @@ export function metricTeamsForUser(user: AuthPayload): Set<MetricTeam> | null {
   if (isCanonicalUser(user)) {
     const result = new Set<MetricTeam>(user.fullTeamAccess ?? []);
     if (user.accessRole === "agent" && user.selfAgentTeam) result.add(user.selfAgentTeam);
-    if (user.accessRole === "manager" && user.primaryTeam) result.add(user.primaryTeam);
+    if (user.accessRole === "manager" && user.primaryTeam && isMetricTeam(user.primaryTeam)) result.add(user.primaryTeam);
     return result;
   }
   const result = new Set<MetricTeam>();

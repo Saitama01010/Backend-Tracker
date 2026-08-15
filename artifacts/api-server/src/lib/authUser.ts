@@ -5,10 +5,12 @@ import {
   portalUserTabGrantsTable,
   portalUserTeamGrantsTable,
   teamAgentsTable,
+  VALID_TEAMS,
 } from "@workspace/db/schema";
 import type {
   CanonicalDashboardTab,
   Permission,
+  PrimaryTeamSlug,
   PortalUser,
   TeamAccess,
   TeamSlug,
@@ -47,12 +49,17 @@ function parseTeamAccess(raw: string | null | undefined): TeamAccess | null {
   return raw === "retention" || raw === "nsf" || raw === "cs" ? raw : null;
 }
 
-const TEAM_TAB: Record<TeamSlug, CanonicalDashboardTab> = {
+const PRIMARY_TEAM_TAB: Record<PrimaryTeamSlug, CanonicalDashboardTab> = {
   retention: "retention",
   nsf: "nsf",
   cs: "cs",
   killers: "rmk",
+  onboarding: "onboarding",
 };
+
+function isMetricTeam(team: PrimaryTeamSlug): team is TeamSlug {
+  return (VALID_TEAMS as readonly string[]).includes(team);
+}
 
 export interface ResolvedPortalAccess {
   user: PortalUser;
@@ -155,20 +162,23 @@ export async function loadAuthenticatablePortalUser(userId: number): Promise<Res
       ]);
 
   const grantedTeams = teamGrantRows.map(({ team }) => team);
+  const managerMetricTeam = user.accessRole === "manager" && user.primaryTeam && isMetricTeam(user.primaryTeam)
+    ? user.primaryTeam
+    : null;
   const fullTeamAccess = user.accessRole === "manager"
-    ? Array.from(new Set([user.primaryTeam!, ...grantedTeams]))
+    ? Array.from(new Set([...(managerMetricTeam ? [managerMetricTeam] : []), ...grantedTeams]))
     : grantedTeams;
-  const coreTeams = user.accessRole === "agent"
-    ? [row.linkedAgentTeam!]
+  const coreTabs = user.accessRole === "agent"
+    ? [PRIMARY_TEAM_TAB[row.linkedAgentTeam!]]
     : user.accessRole === "manager"
-      ? fullTeamAccess
+      ? [PRIMARY_TEAM_TAB[user.primaryTeam!]]
       : [];
   const tabGrants = tabGrantRows.map(({ tab }) => tab);
   const effectiveTabs = user.accessRole === "admin"
     ? null
     : Array.from(new Set([
-        ...coreTeams.map((team) => TEAM_TAB[team]),
-        ...grantedTeams.map((team) => TEAM_TAB[team]),
+        ...coreTabs,
+        ...grantedTeams.map((team) => PRIMARY_TEAM_TAB[team]),
         ...tabGrants,
       ]));
   const storedPermissions = parsePermissions(user.permissions, user.accessRole === "admin" ? "admin" : user.role);

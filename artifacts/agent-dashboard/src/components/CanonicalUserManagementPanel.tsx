@@ -11,16 +11,17 @@ import { validateOptionalPortalUserEmail, validateRequiredPortalUserEmail } from
 
 type AccessRole = "agent" | "manager" | "admin";
 type Team = "retention" | "nsf" | "cs" | "killers";
+type PrimaryTeam = Team | "onboarding";
 type TeamAgent = { id: number; name: string; email?: string | null; team: Team; active: boolean };
 type PortalUser = {
   id: number; username: string; email?: string | null; loginEmail?: string | null; role: "admin" | "edit" | "view"; permissions: Permission[]; active: boolean;
-  accessRole?: AccessRole | null; teamAgentId?: number | null; primaryTeam?: Team | null;
+  accessRole?: AccessRole | null; teamAgentId?: number | null; primaryTeam?: PrimaryTeam | null;
   teamGrants?: Team[]; tabGrants?: string[];
   canonicalAgent?: { id: number; name: string | null; team: Team | null; active: boolean | null } | null;
 };
 type UserForm = {
   username: string; email: string; password: string; accessRole: AccessRole | ""; teamAgentId: string;
-  primaryTeam: Team | ""; teamGrants: Team[]; tabGrants: string[]; permissions: Permission[];
+  primaryTeam: PrimaryTeam | ""; teamGrants: Team[]; tabGrants: string[]; permissions: Permission[];
 };
 
 const PERMISSIONS: { value: Permission; label: string; description: string }[] = [
@@ -35,6 +36,10 @@ const TEAMS: { value: Team; label: string }[] = [
   { value: "retention", label: "Retention" }, { value: "nsf", label: "NSF" },
   { value: "cs", label: "Internal CS" }, { value: "killers", label: "Ready-Mode Killers" },
 ];
+const PRIMARY_TEAMS: { value: PrimaryTeam; label: string }[] = [
+  ...TEAMS,
+  { value: "onboarding", label: "Onboarding" },
+];
 const TABS = [
   ["backend-stats", "Backend Statistics"], ["retention", "Retention"], ["cs", "Internal CS"],
   ["nsf", "NSF"], ["rmk", "Ready-Mode Killers"], ["missed-no-cb", "Missed / No Callback"],
@@ -46,8 +51,11 @@ const EMPTY_FORM: UserForm = {
   teamGrants: [], tabGrants: [], permissions: ["view_metrics"],
 };
 
-function teamLabel(team: Team | null | undefined) {
-  return TEAMS.find(({ value }) => value === team)?.label ?? team ?? "";
+function teamLabel(team: PrimaryTeam | null | undefined) {
+  return PRIMARY_TEAMS.find(({ value }) => value === team)?.label ?? team ?? "";
+}
+function isMetricTeam(team: PrimaryTeam): team is Team {
+  return TEAMS.some(({ value }) => value === team);
 }
 function roleLabel(role: AccessRole | null | undefined) {
   return role ? role[0]!.toUpperCase() + role.slice(1) : "Legacy / Unlinked";
@@ -173,14 +181,14 @@ export function CanonicalUserManagementPanel({ onClose }: { onClose: () => void 
 
   function roleFields({ form, setForm, allowLegacy = false }: { form: UserForm; setForm: Dispatch<SetStateAction<UserForm>>; allowLegacy?: boolean }) {
     const selectedAgent = agents.find(({ id }) => String(id) === form.teamAgentId);
-    const derivedTeams: Team[] = [
+    const derivedTeams: PrimaryTeam[] = [
       ...(form.accessRole === "agent" && selectedAgent ? [selectedAgent.team] : []),
       ...(form.accessRole === "manager" && form.primaryTeam ? [form.primaryTeam] : []),
     ];
-    const includedFullTeams: Team[] = form.accessRole === "manager" && form.primaryTeam
+    const includedFullTeams: Team[] = form.accessRole === "manager" && form.primaryTeam && isMetricTeam(form.primaryTeam)
       ? [form.primaryTeam]
       : [];
-    const effectiveTeams = Array.from(new Set<Team>([...derivedTeams, ...form.teamGrants]));
+    const effectiveTeams = Array.from(new Set<PrimaryTeam>([...derivedTeams, ...form.teamGrants]));
     return <div className="space-y-4">
       <label className="block space-y-1.5"><span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Access Role</span>
         <select value={form.accessRole} onChange={(event) => setForm((current) => ({ ...current,
@@ -206,12 +214,12 @@ export function CanonicalUserManagementPanel({ onClose }: { onClose: () => void 
       </div>}
       {form.accessRole === "agent" && <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-zinc-300"><strong>Default access:</strong> Own metrics only.</div>}
       {form.accessRole === "manager" && <label className="block space-y-1.5"><span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Primary Team</span>
-        <select value={form.primaryTeam} onChange={(event) => setForm((current) => ({ ...current, primaryTeam: event.target.value as Team }))}
+        <select value={form.primaryTeam} onChange={(event) => setForm((current) => ({ ...current, primaryTeam: event.target.value as PrimaryTeam }))}
           className="h-9 w-full rounded-lg border border-white/10 bg-zinc-900 px-3 text-sm text-white">
-          <option value="">Select primary team</option>{TEAMS.map((team) => <option key={team.value} value={team.value}>{team.label}</option>)}
+          <option value="">Select primary team</option>{PRIMARY_TEAMS.map((team) => <option key={team.value} value={team.value}>{team.label}</option>)}
         </select>
       </label>}
-      {form.accessRole === "manager" && <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-zinc-300"><strong>Default access:</strong> {form.primaryTeam ? `All agents in ${teamLabel(form.primaryTeam)}.` : "Select a Primary Team."}</div>}
+      {form.accessRole === "manager" && <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-zinc-300"><strong>Default access:</strong> {form.primaryTeam === "onboarding" ? "Complete Onboarding view." : form.primaryTeam ? `All agents in ${teamLabel(form.primaryTeam)}.` : "Select a Primary Team."}</div>}
       {form.accessRole && form.accessRole !== "admin" && <>
         <div><p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Extra Team Access</p>
           <p className="mt-1 text-[11px] text-zinc-500">Agents are self-only unless a team is checked. Managers already receive their Primary Team.</p>
@@ -219,7 +227,7 @@ export function CanonicalUserManagementPanel({ onClose }: { onClose: () => void 
             onChange={(values) => setForm((current) => ({ ...current, teamGrants: values.filter((team) => !includedFullTeams.includes(team)) }))} />
         </div>
         <div><p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Tab Access</p>
-          <p className="mt-1 text-[11px] text-zinc-500">Metric tabs for {effectiveTeams.length ? effectiveTeams.map(teamLabel).join(", ") : "the derived scope"} are automatic. Onboarding is a privileged global tab: checking it grants the complete Onboarding view without changing normal Agent or Manager team scope.</p>
+          <p className="mt-1 text-[11px] text-zinc-500">Tabs for {effectiveTeams.length ? effectiveTeams.map(teamLabel).join(", ") : "the derived scope"} are automatic. Onboarding is a privileged global tab: selecting it as a Manager's Primary Team or checking it here grants the complete Onboarding view without changing metrics-team scope.</p>
           <ToggleGrid values={form.tabGrants} options={TABS} onChange={(tabGrants) => setForm((current) => ({ ...current, tabGrants }))} />
         </div>
         <div><p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">Permissions</p>

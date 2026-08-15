@@ -10,12 +10,14 @@ import {
   portalUserTabGrantsTable,
   portalUserTeamGrantsTable,
   teamAgentsTable,
+  VALID_PRIMARY_TEAMS,
   VALID_TEAMS,
 } from "@workspace/db/schema";
 import type {
   CanonicalAccessRole,
   CanonicalDashboardTab,
   Permission,
+  PrimaryTeamSlug,
   TeamSlug,
 } from "@workspace/db/schema";
 import { asc, eq, getTableColumns } from "drizzle-orm";
@@ -84,10 +86,14 @@ function isTeam(value: unknown): value is TeamSlug {
   return typeof value === "string" && (VALID_TEAMS as readonly string[]).includes(value);
 }
 
+function isPrimaryTeam(value: unknown): value is PrimaryTeamSlug {
+  return typeof value === "string" && (VALID_PRIMARY_TEAMS as readonly string[]).includes(value);
+}
+
 type CanonicalInput = {
   accessRole: CanonicalAccessRole;
   teamAgentId: number | null;
-  primaryTeam: TeamSlug | null;
+  primaryTeam: PrimaryTeamSlug | null;
   teamGrants: TeamSlug[];
   tabGrants: CanonicalDashboardTab[];
   permissions: Permission[];
@@ -137,7 +143,7 @@ async function validateCanonicalInput(body: Record<string, unknown>): Promise<Ca
   }
 
   if (accessRole === "manager") {
-    if (!isTeam(body.primaryTeam)) throw new UserRequestError(400, "Primary Team is required");
+    if (!isPrimaryTeam(body.primaryTeam)) throw new UserRequestError(400, "Primary Team is required");
     if (body.teamAgentId != null && body.teamAgentId !== "") {
       throw new UserRequestError(400, "Manager accounts cannot link to a roster Agent");
     }
