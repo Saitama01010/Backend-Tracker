@@ -274,6 +274,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
     await t.test("Onboarding is accepted as a Manager primary team without granting metric-team scope", async () => {
       const response = await postUser({
         username: `${usernamePrefix}-onboarding-manager`,
+        email: `${usernamePrefix}-onboarding-manager@example.test`,
         password: "onboarding manager correct horse battery staple",
         accessRole: "manager",
         teamAgentId: null,
