@@ -17,6 +17,13 @@ import { API_SESSION_RENEWED_EVENT, API_UNAUTHORIZED_EVENT, apiFetch } from "@/l
 import { UserContext, authHeaders, canUserSeeTab, useUser, type AuthUser, type Permission, type TeamAccess } from "@/lib/authContext";
 import { unparseCsv } from "@/lib/csvExport";
 import { dashboardQueryClient, clearDashboardQueryCache } from "@/lib/dashboardQueryClient";
+import {
+  initialLoginFlowState,
+  isPasswordUpgradeResponse,
+  loginFlowReducer,
+  persistAuthenticatedSession,
+  validatePasswordUpgradeForm,
+} from "@/lib/loginFlow";
 import { accountQueryScope, pollingDelay, queryPollingInterval } from "@/lib/queryPolicy";
 import {
   validateRosterIdentity,
@@ -45,7 +52,7 @@ import companyLogo from "./assets/company-logo.jpeg";
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion, MotionConfig, useReducedMotion, type Variants } from "framer-motion";
-import { createContext, useContext, Fragment, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { createContext, useContext, Fragment, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef, useReducer } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -6069,6 +6076,9 @@ function LoginGate({ children }: { children: React.ReactNode }) {
   });
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [loginFlow, dispatchLoginFlow] = useReducer(loginFlowReducer, initialLoginFlowState());
   const [showPassword, setShowPassword] = useState(false);
   const [isTypingLogin, setIsTypingLogin] = useState(false);
   const [error, setError] = useState("");
@@ -6118,10 +6128,70 @@ function LoginGate({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener(API_SESSION_RENEWED_EVENT, applyRenewedSession);
   }, []);
 
+  function establishAuthenticatedSession(data: { token: string; user: AuthUser }) {
+    clearDashboardQueryCache();
+    persistAuthenticatedSession(localStorage, data);
+    setAuth(data);
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setLoading(true);
     setError("");
+    if (loginFlow.mode === "password-upgrade") {
+      const validationError = validatePasswordUpgradeForm(
+        newPassword,
+        confirmPassword,
+        loginFlow.username,
+      );
+      if (validationError) {
+        setError(validationError);
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const r = await apiFetch("/api/auth/password-upgrade", {
+          method: "POST",
+          auth: "none",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            upgradeToken: loginFlow.upgradeToken,
+            newPassword,
+            confirmPassword,
+          }),
+        });
+        if (r.ok) {
+          const data = await r.json() as { token: string; user: AuthUser };
+          establishAuthenticatedSession(data);
+          setNewPassword("");
+          setConfirmPassword("");
+          dispatchLoginFlow({ type: "reset" });
+        } else {
+          let message = "Password update failed. Try again.";
+          try {
+            const data = await r.json() as { error?: string };
+            if (r.status === 401) message = "Password upgrade session expired. Sign in again.";
+            else if (data.error) message = data.error;
+          } catch {
+            if (r.status === 401) message = "Password upgrade session expired. Sign in again.";
+          }
+          if (r.status === 401) {
+            setNewPassword("");
+            setConfirmPassword("");
+            setShowPassword(false);
+            dispatchLoginFlow({ type: "reset" });
+          }
+          setError(message);
+        }
+      } catch {
+        setError("Connection error. Try again.");
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    setLoading(true);
     try {
       const r = await apiFetch("/api/auth/login", {
         method: "POST",
@@ -6130,11 +6200,18 @@ function LoginGate({ children }: { children: React.ReactNode }) {
         body: JSON.stringify({ username: username.trim(), password }),
       });
       if (r.ok) {
-        const data = await r.json() as { token: string; user: AuthUser };
-        clearDashboardQueryCache();
-        localStorage.setItem("tracker_token", data.token);
-        localStorage.setItem("tracker_user", JSON.stringify(data.user));
-        setAuth(data);
+        const data = await r.json() as unknown;
+        if (isPasswordUpgradeResponse(data)) {
+          dispatchLoginFlow({
+            type: "password-upgrade-required",
+            upgradeToken: data.upgradeToken,
+            username: username.trim(),
+          });
+          setPassword("");
+          setShowPassword(false);
+        } else {
+          establishAuthenticatedSession(data as { token: string; user: AuthUser });
+        }
       } else {
         let message = "Login failed. Try again.";
         try {
@@ -6178,7 +6255,11 @@ function LoginGate({ children }: { children: React.ReactNode }) {
         </div>
 
         <div className="relative z-10 flex flex-1 items-end justify-center pb-8">
-          <LoginAnimation isTyping={isTypingLogin} passwordVisible={showPassword} hasPassword={password.length > 0} />
+          <LoginAnimation
+            isTyping={isTypingLogin}
+            passwordVisible={showPassword}
+            hasPassword={(loginFlow.mode === "password-upgrade" ? newPassword : password).length > 0}
+          />
         </div>
 
         <div className="relative z-10 max-w-md text-sm text-muted-foreground">
@@ -6196,59 +6277,130 @@ function LoginGate({ children }: { children: React.ReactNode }) {
               <img src={companyLogo} alt="Dial Expert logo" className="h-full w-full object-cover" />
             </div>
             <div>
-              <h1 className="text-3xl font-bold tracking-tight text-foreground">Welcome back</h1>
-              <p className="mt-2 text-sm text-muted-foreground">Sign in to Dial Expert Backend Tracker</p>
+              <h1 className="text-3xl font-bold tracking-tight text-foreground">
+                {loginFlow.mode === "password-upgrade" ? "Create your new password" : "Welcome back"}
+              </h1>
+              <p className="mt-2 text-sm text-muted-foreground">
+                {loginFlow.mode === "password-upgrade"
+                  ? "Update your password to continue to Dial Expert Backend Tracker"
+                  : "Sign in to Dial Expert Backend Tracker"}
+              </p>
             </div>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="tracker-username" className="text-sm font-medium">Username</Label>
-              <div className="relative">
-                <Users className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  id="tracker-username"
-                  placeholder="Username"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  onFocus={() => setIsTypingLogin(true)}
-                  onBlur={() => setIsTypingLogin(false)}
-                  className="h-12 pl-10"
-                  autoFocus
-                  autoComplete="username"
-                />
-              </div>
-            </div>
+            {loginFlow.mode === "login" ? (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="tracker-username" className="text-sm font-medium">Username</Label>
+                  <div className="relative">
+                    <Users className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      id="tracker-username"
+                      placeholder="Username"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      onFocus={() => setIsTypingLogin(true)}
+                      onBlur={() => setIsTypingLogin(false)}
+                      className="h-12 pl-10"
+                      autoFocus
+                      autoComplete="username"
+                    />
+                  </div>
+                </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="tracker-password" className="text-sm font-medium">Password</Label>
-              <div className="relative">
-                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  id="tracker-password"
-                  type={showPassword ? "text" : "password"}
-                  placeholder="Password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  onFocus={() => setIsTypingLogin(true)}
-                  onBlur={() => setIsTypingLogin(false)}
-                  className="h-12 pl-10 pr-11"
-                  autoComplete="current-password"
-                />
-                <button
-                  type="button"
-                  aria-label={showPassword ? "Hide password" : "Show password"}
-                  onClick={() => setShowPassword((v) => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
-            </div>
+                <div className="space-y-2">
+                  <Label htmlFor="tracker-password" className="text-sm font-medium">Password</Label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      id="tracker-password"
+                      type={showPassword ? "text" : "password"}
+                      placeholder="Password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      onFocus={() => setIsTypingLogin(true)}
+                      onBlur={() => setIsTypingLogin(false)}
+                      className="h-12 pl-10 pr-11"
+                      autoComplete="current-password"
+                    />
+                    <button
+                      type="button"
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                      onClick={() => setShowPassword((v) => !v)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="tracker-new-password" className="text-sm font-medium">New Password</Label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      id="tracker-new-password"
+                      type={showPassword ? "text" : "password"}
+                      placeholder="New Password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      onFocus={() => setIsTypingLogin(true)}
+                      onBlur={() => setIsTypingLogin(false)}
+                      className="h-12 pl-10 pr-11"
+                      autoFocus
+                      autoComplete="new-password"
+                    />
+                    <button
+                      type="button"
+                      aria-label={showPassword ? "Hide new passwords" : "Show new passwords"}
+                      onClick={() => setShowPassword((v) => !v)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="tracker-confirm-password" className="text-sm font-medium">Confirm New Password</Label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      id="tracker-confirm-password"
+                      type={showPassword ? "text" : "password"}
+                      placeholder="Confirm New Password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      onFocus={() => setIsTypingLogin(true)}
+                      onBlur={() => setIsTypingLogin(false)}
+                      className="h-12 pl-10"
+                      autoComplete="new-password"
+                    />
+                  </div>
+                </div>
+
+                <ul className="space-y-1 rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+                  <li>At least 15 characters</li>
+                  <li>Maximum 72 UTF-8 bytes</li>
+                  <li>Must not contain your username</li>
+                </ul>
+              </>
+            )}
 
             {error && <p className="rounded-lg border border-border bg-muted/50 px-3 py-2 text-center text-sm metric-bad">{error}</p>}
-            <Button type="submit" className="h-12 w-full text-base" disabled={loading || !username || !password}>
-              {loading ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Sign in"}
+            <Button
+              type="submit"
+              className="h-12 w-full text-base"
+              disabled={loading || (loginFlow.mode === "login"
+                ? !username || !password
+                : !newPassword || !confirmPassword)}
+            >
+              {loading
+                ? <RefreshCw className="h-4 w-4 animate-spin" />
+                : loginFlow.mode === "password-upgrade" ? "Update Password & Continue" : "Sign in"}
             </Button>
           </form>
         </div>

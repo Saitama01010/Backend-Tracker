@@ -3,7 +3,7 @@ import { portalUsersTable, ALL_PERMISSIONS, attendanceMembersTable, attendanceRe
 import { count, eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { logger } from "../lib/logger.js";
-import { validateNewPassword } from "../lib/passwordPolicy.js";
+import { CURRENT_PASSWORD_POLICY_VERSION, validateNewPassword } from "../lib/passwordPolicy.js";
 import { revokeUserSessions } from "../lib/sessionStore.js";
 
 function isProduction(environment: NodeJS.ProcessEnv): boolean {
@@ -28,6 +28,8 @@ async function seedAdminUser(environment: NodeJS.ProcessEnv) {
     await db.insert(portalUsersTable).values({
       username: "admin",
       passwordHash: hash,
+      passwordPolicyVersion: CURRENT_PASSWORD_POLICY_VERSION,
+      passwordChangedAt: new Date(),
       role: "admin",
       permissions: JSON.stringify([...ALL_PERMISSIONS]),
       active: true,
@@ -41,13 +43,20 @@ async function seedAdminUser(environment: NodeJS.ProcessEnv) {
     const passwordError = validateNewPassword(password, "admin");
     if (passwordError) throw new Error(`DASHBOARD_PASSWORD: ${passwordError}`);
     const hash = await bcrypt.hash(password, 10);
-    const [updated] = await db
-      .update(portalUsersTable)
-      .set({ passwordHash: hash })
-      .where(eq(portalUsersTable.username, "admin"))
-      .returning({ id: portalUsersTable.id });
+    const updated = await db.transaction(async (tx) => {
+      const [user] = await tx
+        .update(portalUsersTable)
+        .set({
+          passwordHash: hash,
+          passwordPolicyVersion: CURRENT_PASSWORD_POLICY_VERSION,
+          passwordChangedAt: new Date(),
+        })
+        .where(eq(portalUsersTable.username, "admin"))
+        .returning({ id: portalUsersTable.id });
+      if (user) await revokeUserSessions(user.id, tx);
+      return user;
+    });
     if (updated) {
-      await revokeUserSessions(updated.id);
       logger.info("Updated admin password from DASHBOARD_PASSWORD because RESET_ADMIN_PASSWORD_ON_BOOT=true");
     }
   }

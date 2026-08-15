@@ -19,7 +19,7 @@ import type {
 } from "@workspace/db/schema";
 import { asc, eq, getTableColumns } from "drizzle-orm";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { validateNewPassword } from "../lib/passwordPolicy.js";
+import { CURRENT_PASSWORD_POLICY_VERSION, validateNewPassword } from "../lib/passwordPolicy.js";
 import { revokeUserSessions } from "../lib/sessionStore.js";
 
 const router = Router();
@@ -292,6 +292,8 @@ router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
       const [user] = await tx.insert(portalUsersTable).values({
         username,
         passwordHash,
+        passwordPolicyVersion: CURRENT_PASSWORD_POLICY_VERSION,
+        passwordChangedAt: new Date(),
         role: access.compatibilityRole,
         permissions: JSON.stringify(access.permissions),
         teamAccess: null,
@@ -348,10 +350,13 @@ router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) =
 
     const updates: Partial<typeof portalUsersTable.$inferInsert> = {};
     if (Object.prototype.hasOwnProperty.call(body, "username")) updates.username = normalizeUsername(body.username);
-    if (typeof body.password === "string" && body.password.length > 0) {
+    const passwordWasChanged = typeof body.password === "string" && body.password.length > 0;
+    if (passwordWasChanged) {
       const passwordError = validateNewPassword(body.password, updates.username ?? existing.username);
       if (passwordError) throw new UserRequestError(400, passwordError);
-      updates.passwordHash = await bcrypt.hash(body.password, 10);
+      updates.passwordHash = await bcrypt.hash(body.password as string, 10);
+      updates.passwordPolicyVersion = CURRENT_PASSWORD_POLICY_VERSION;
+      updates.passwordChangedAt = new Date();
     } else if (body.password !== undefined && typeof body.password !== "string") {
       throw new UserRequestError(400, "Password must be a string");
     }
@@ -403,10 +408,10 @@ router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) =
         await tx.update(portalUsersTable).set(updates).where(eq(portalUsersTable.id, id));
       }
       if (access) await replaceGrants(tx, id, access);
+      if (passwordWasChanged || requestedActive === false) {
+        await revokeUserSessions(id, tx);
+      }
     });
-    if ((typeof body.password === "string" && body.password.length > 0) || requestedActive === false) {
-      await revokeUserSessions(id);
-    }
     const updated = (await listPortalUsers()).find((user) => user.id === id);
     res.json(updated);
   } catch (error) {

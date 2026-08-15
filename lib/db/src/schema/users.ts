@@ -17,6 +17,8 @@ export const portalUsersTable = pgTable("portal_users", {
   id: serial("id").primaryKey(),
   username: text("username").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
+  passwordPolicyVersion: integer("password_policy_version").notNull().default(1),
+  passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
   role: text("role", { enum: ["admin", "edit", "view"] }).notNull().default("view"),
   permissions: text("permissions").notNull().default("[]"),
   // null = unrestricted (sees all teams); "retention"|"nsf"|"cs" = scoped to that team only
@@ -52,6 +54,10 @@ export const portalUsersTable = pgTable("portal_users", {
   check(
     "portal_users_primary_team_check",
     sql`${table.primaryTeam} is null or ${table.primaryTeam} in ('retention', 'nsf', 'cs', 'killers')`,
+  ),
+  check(
+    "portal_users_password_policy_version_check",
+    sql`${table.passwordPolicyVersion} >= 0`,
   ),
   check(
     "portal_users_canonical_access_shape_check",

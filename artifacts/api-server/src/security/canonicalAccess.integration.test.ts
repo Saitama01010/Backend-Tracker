@@ -144,6 +144,8 @@ test("canonical Portal access persists normalized grants and revokes deactivated
       const body = await response.json() as Record<string, unknown> & { id: number };
       agentUserId = body.id;
       assert.equal(Object.prototype.hasOwnProperty.call(body, "passwordHash"), false);
+      assert.equal(body["passwordPolicyVersion"], 1);
+      assert.equal(typeof body["passwordChangedAt"], "string");
       assert.equal(body["accessRole"], "agent");
       const access = await authUser.loadAuthenticatablePortalUser(agentUserId);
       assert.equal(access?.payload.selfAgentId, agentId);
@@ -464,11 +466,20 @@ test("canonical Portal access persists normalized grants and revokes deactivated
       assert.equal(resetResponse.status, 200);
       const resetBody = await resetResponse.json() as Record<string, unknown>;
       assert.equal(Object.prototype.hasOwnProperty.call(resetBody, "passwordHash"), false);
-      const resetStored = await pool.query<{ password_hash: string }>("SELECT password_hash FROM portal_users WHERE id = $1", [agentUserId]);
+      const resetStored = await pool.query<{
+        password_hash: string;
+        password_policy_version: number;
+        password_changed_at: Date | null;
+      }>(
+        "SELECT password_hash, password_policy_version, password_changed_at FROM portal_users WHERE id = $1",
+        [agentUserId],
+      );
       const resetHash = resetStored.rows[0]!.password_hash;
       assert.notEqual(resetHash, initialHash);
       assert.notEqual(resetHash, resetAgentPassword);
       assert.equal(await bcrypt.compare(resetAgentPassword, resetHash), true);
+      assert.equal(resetStored.rows[0]!.password_policy_version, 1);
+      assert.ok(resetStored.rows[0]!.password_changed_at);
       assert.equal((await fetch(`${origin}/protected-fixture`, {
         headers: { Authorization: `Bearer ${beforeResetBody.token}`, "x-fixture-real-auth": "1" },
       })).status, 401);
