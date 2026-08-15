@@ -273,7 +273,7 @@ test("admin-created and reset passwords record current policy metadata without r
   const startupSource = await readFile(new URL("../app/startupDatabase.ts", import.meta.url), "utf8");
   assert.match(usersSource, /passwordPolicyVersion:\s*CURRENT_PASSWORD_POLICY_VERSION/);
   assert.match(usersSource, /passwordChangedAt:\s*new Date\(\)/);
-  assert.match(usersSource, /\{ passwordHash: _passwordHash, \.\.\.user \}/);
+  assert.match(usersSource, /\{ passwordHash: _passwordHash, emailNormalized: _emailNormalized, \.\.\.user \}/);
   assert.match(startupSource, /passwordPolicyVersion:\s*CURRENT_PASSWORD_POLICY_VERSION/);
   assert.match(startupSource, /passwordChangedAt:\s*new Date\(\)/);
 });

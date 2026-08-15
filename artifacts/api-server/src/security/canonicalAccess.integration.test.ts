@@ -66,6 +66,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
   const usernamePrefix = `canonical-access-${unique}`;
   const agentPrefix = `canonical access fixture ${unique}`;
   const initialAgentPassword = "correct horse battery staple 47";
+  const initialAgentEmail = `Canonical.Access.${unique}@Example.test`;
   const resetAgentPassword = "reset horse battery staple 59";
 
   const postUser = (body: Record<string, unknown>) => fetch(`${origin}/users`, {
@@ -132,6 +133,7 @@ test("canonical Portal access persists normalized grants and revokes deactivated
     await t.test("Agent creation links one active canonical identity without returning a password hash", async () => {
       const response = await postUser({
         username: `${usernamePrefix}-agent`,
+        email: initialAgentEmail,
         password: initialAgentPassword,
         accessRole: "agent",
         teamAgentId: agentId,
@@ -146,12 +148,67 @@ test("canonical Portal access persists normalized grants and revokes deactivated
       assert.equal(Object.prototype.hasOwnProperty.call(body, "passwordHash"), false);
       assert.equal(body["passwordPolicyVersion"], 1);
       assert.equal(typeof body["passwordChangedAt"], "string");
+      assert.equal(body["email"], initialAgentEmail);
+      assert.equal(Object.prototype.hasOwnProperty.call(body, "emailNormalized"), false);
       assert.equal(body["accessRole"], "agent");
+      const storedEmail = await pool.query<{ email: string; email_normalized: string }>(
+        "SELECT email, email_normalized FROM portal_users WHERE id = $1",
+        [agentUserId],
+      );
+      assert.deepEqual(storedEmail.rows, [{
+        email: initialAgentEmail,
+        email_normalized: initialAgentEmail.toLowerCase(),
+      }]);
       const access = await authUser.loadAuthenticatablePortalUser(agentUserId);
       assert.equal(access?.payload.selfAgentId, agentId);
       assert.equal(access?.payload.selfAgentTeam, "retention");
       assert.deepEqual(access?.payload.fullTeamAccess, []);
       assert.deepEqual(new Set(access?.payload.allowedTabs), new Set(["retention", "violations"]));
+    });
+
+    await t.test("Portal account email is optional, validated, unique, editable, and clearable without a roster link", async () => {
+      const invalid = await fetch(`${origin}/users/${agentUserId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "not-an-email" }),
+      });
+      assert.equal(invalid.status, 400);
+
+      const duplicate = await postUser({
+        username: `${usernamePrefix}-email-duplicate`,
+        email: initialAgentEmail.toLowerCase(),
+        password: "duplicate email horse battery staple 91",
+        accessRole: "manager",
+        teamAgentId: null,
+        primaryTeam: "retention",
+        teamGrants: [],
+        tabGrants: [],
+        permissions: ["view_metrics"],
+      });
+      assert.equal(duplicate.status, 409);
+      assert.deepEqual(await duplicate.json(), { error: "Email is already assigned to another user" });
+
+      const replacementEmail = `Updated.Canonical.${unique}@Example.test`;
+      const updated = await fetch(`${origin}/users/${agentUserId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: replacementEmail }),
+      });
+      assert.equal(updated.status, 200);
+      assert.equal((await updated.json() as { email: string }).email, replacementEmail);
+
+      const cleared = await fetch(`${origin}/users/${agentUserId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "" }),
+      });
+      assert.equal(cleared.status, 200);
+      assert.equal((await cleared.json() as { email: string | null }).email, null);
+      const clearedStored = await pool.query<{ email: string | null; email_normalized: string | null }>(
+        "SELECT email, email_normalized FROM portal_users WHERE id = $1",
+        [agentUserId],
+      );
+      assert.deepEqual(clearedStored.rows, [{ email: null, email_normalized: null }]);
     });
 
     await t.test("one canonical Agent cannot be assigned to two Portal accounts", async () => {

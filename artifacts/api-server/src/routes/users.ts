@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import bcrypt from "bcryptjs";
+import { isValidAgentEmail, normalizeAgentEmail } from "@workspace/api-zod/agent-identity";
 import { db } from "@workspace/db";
 import {
   ALL_PERMISSIONS,
@@ -35,6 +36,16 @@ function normalizeUsername(value: unknown): string {
     throw new UserRequestError(400, "Username is required");
   }
   return value.trim().toLowerCase();
+}
+
+function portalUserEmailIdentity(value: unknown): { email: string | null; emailNormalized: string | null } {
+  if (value == null || (typeof value === "string" && !value.trim())) {
+    return { email: null, emailNormalized: null };
+  }
+  if (typeof value !== "string" || !isValidAgentEmail(value)) {
+    throw new UserRequestError(400, "Enter a valid email address");
+  }
+  return { email: value.trim(), emailNormalized: normalizeAgentEmail(value) };
 }
 
 function parsePermissions(value: unknown, includeCoreMetrics: boolean): Permission[] {
@@ -192,7 +203,7 @@ async function listPortalUsers() {
   for (const grant of teamGrants) teamsByUser.set(grant.portalUserId, [...(teamsByUser.get(grant.portalUserId) ?? []), grant.team]);
   for (const grant of tabGrants) tabsByUser.set(grant.portalUserId, [...(tabsByUser.get(grant.portalUserId) ?? []), grant.tab]);
 
-  return users.map(({ passwordHash: _passwordHash, ...user }) => ({
+  return users.map(({ passwordHash: _passwordHash, emailNormalized: _emailNormalized, ...user }) => ({
     ...user,
     permissions: user.accessRole === "admin" || (!user.accessRole && user.role === "admin")
       ? [...ALL_PERMISSIONS]
@@ -256,12 +267,26 @@ function postgresCode(error: unknown): string | null {
   return null;
 }
 
+function postgresConstraint(error: unknown): string | null {
+  let candidate: unknown = error;
+  for (let depth = 0; depth < 5 && candidate && typeof candidate === "object"; depth += 1) {
+    const record = candidate as { constraint?: unknown; cause?: unknown };
+    if (typeof record.constraint === "string") return record.constraint;
+    candidate = record.cause;
+  }
+  return null;
+}
+
 function sendUserError(req: Request, res: Response, error: unknown): void {
   if (error instanceof UserRequestError) {
     res.status(error.status).json({ error: error.message });
     return;
   }
   if (postgresCode(error) === "23505") {
+    if (postgresConstraint(error) === "portal_users_email_normalized_uidx") {
+      res.status(409).json({ error: "Email is already assigned to another user" });
+      return;
+    }
     res.status(409).json({ error: "Username or canonical Agent is already assigned" });
     return;
   }
@@ -283,6 +308,7 @@ router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
       ? req.body as Record<string, unknown>
       : {};
     const username = normalizeUsername(body.username);
+    const emailIdentity = portalUserEmailIdentity(body.email);
     const passwordError = validateNewPassword(body.password, username);
     if (passwordError) throw new UserRequestError(400, passwordError);
     const access = await validateCanonicalInput(body);
@@ -291,6 +317,7 @@ router.post("/users", requireAuth, requireRole("admin"), async (req, res) => {
     const userId = await db.transaction(async (tx) => {
       const [user] = await tx.insert(portalUsersTable).values({
         username,
+        ...emailIdentity,
         passwordHash,
         passwordPolicyVersion: CURRENT_PASSWORD_POLICY_VERSION,
         passwordChangedAt: new Date(),
@@ -350,6 +377,7 @@ router.patch("/users/:id", requireAuth, requireRole("admin"), async (req, res) =
 
     const updates: Partial<typeof portalUsersTable.$inferInsert> = {};
     if (Object.prototype.hasOwnProperty.call(body, "username")) updates.username = normalizeUsername(body.username);
+    if (Object.prototype.hasOwnProperty.call(body, "email")) Object.assign(updates, portalUserEmailIdentity(body.email));
     const passwordWasChanged = typeof body.password === "string" && body.password.length > 0;
     if (passwordWasChanged) {
       const passwordError = validateNewPassword(body.password, updates.username ?? existing.username);
