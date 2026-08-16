@@ -1,5 +1,4 @@
 import { Router, type IRouter, type Response } from "express";
-import ExcelJS from "exceljs";
 import { canonicalAgentName } from "../integrations/quo/sync.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { AiRateLimitError, withDurableAiLimit } from "../lib/aiRateLimit.js";
@@ -47,6 +46,7 @@ import {
   QaReportingError,
   qaReportingService,
 } from "../modules/qa/qa.reporting.service.js";
+import { qaExportService } from "../modules/qa/qa.export.service.js";
 
 const router: IRouter = Router();
 
@@ -259,80 +259,15 @@ router.get("/qa/download", requireAuth, async (req, res) => {
     if (!parsedDateBasis.ok) return res.status(400).json({ error: parsedDateBasis.error });
     const { dateBasis } = parsedDateBasis;
     const agentScope = await qaAgentScope(req.user!);
-    const queriedRows = await qaRepository.listExportReviews({
+    const workbook = await qaExportService.buildWorkbook({
       from,
       to,
       dateBasis,
       departments: depts,
-      authorizedIdentities: agentScope.authorizedIdentities,
+      agentScope,
     });
-    const rows = queriedRows.filter((row) => agentScope.canAccess(row.agentName));
-
-    const wb = new ExcelJS.Workbook();
-    wb.creator = "Backend Tracker";
-    wb.created = new Date();
-    const TZ = "America/Los_Angeles";
-    const solid = (argb: string): ExcelJS.Fill => ({ type: "pattern", pattern: "solid", fgColor: { argb } });
-
-    const ws = wb.addWorksheet("QA Reviews", {
-      views: [{ state: "frozen", ySplit: 4 }],
-      pageSetup: { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
-    });
-    const headers = [
-      "Evaluated (Los Angeles)", "Call Date (Los Angeles)", "Agent", "Department", "Customer Phone",
-      "Score", "Protocol", "Soft Skills", "Result", "Critical Fail", "Mentions Tax", "AI Summary",
-    ];
-    const widths = [22, 22, 22, 14, 16, 8, 10, 11, 10, 12, 13, 60];
-    widths.forEach((w, i) => (ws.getColumn(i + 1).width = w));
-    const ncols = headers.length;
-
-    ws.mergeCells(1, 1, 1, ncols);
-    const titleCell = ws.getCell(1, 1);
-    titleCell.value = "QA Reviews — Tax Mentions Report";
-    titleCell.font = { bold: true, size: 16, color: { argb: "FF3B0764" } };
-    ws.mergeCells(2, 1, 2, ncols);
-    const taxCount = rows.filter((r) => r.mentionsTax).length;
-    ws.getCell(2, 1).value = `${rows.length} reviewed  •  ${taxCount} mention tax  •  Generated ${new Date().toLocaleString("en-US", { timeZone: TZ })} (LA)`;
-    ws.getCell(2, 1).font = { italic: true, size: 10, color: { argb: "FF666666" } };
-
-    const headerRow = ws.getRow(4);
-    headers.forEach((h, i) => {
-      const cell = headerRow.getCell(i + 1);
-      cell.value = h;
-      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-      cell.fill = solid("FF6D28D9");
-      cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
-    });
-    headerRow.commit();
-
-    let r = 5;
-    for (const row of rows) {
-      const xr = ws.getRow(r);
-      xr.getCell(1).value = new Date(row.evaluatedAt).toLocaleString("en-US", { timeZone: TZ });
-      xr.getCell(2).value = new Date(row.callDate).toLocaleString("en-US", { timeZone: TZ });
-      xr.getCell(3).value = row.agentName ?? "";
-      xr.getCell(4).value = row.department ?? "";
-      xr.getCell(5).value = row.phoneNumber ?? "";
-      xr.getCell(6).value = row.score ?? 0;
-      xr.getCell(7).value = row.protocolScore ?? 0;
-      xr.getCell(8).value = row.softSkillsScore ?? 0;
-      xr.getCell(9).value = row.pass ? "Pass" : "Fail";
-      xr.getCell(10).value = row.criticalFail ? "YES" : "";
-      const taxCell = xr.getCell(11);
-      taxCell.value = row.mentionsTax ? "YES" : "";
-      taxCell.alignment = { horizontal: "center" };
-      if (row.mentionsTax) {
-        taxCell.fill = solid("FFFEF3C7");
-        taxCell.font = { bold: true, color: { argb: "FF92400E" } };
-      }
-      xr.getCell(12).value = row.aiSummary ?? "";
-      xr.commit();
-      r++;
-    }
-    ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: Math.max(4, r - 1), column: ncols } };
-
     setPrivateDownloadHeaders(res, "QA_Reviews.xlsx");
-    await wb.xlsx.write(res);
+    await workbook.xlsx.write(res);
     res.end();
     return;
   } catch (err) {
