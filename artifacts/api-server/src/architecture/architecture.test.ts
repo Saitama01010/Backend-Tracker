@@ -83,6 +83,8 @@ test("migrated dashboard routes delegate provider transport and raw parsing to s
     quo,
     retentionQuoService,
     retentionQuoRepository,
+    retentionQuoLiveService,
+    retentionQuoLiveRepository,
     sheets,
     retentionService,
     retentionRepository,
@@ -93,6 +95,8 @@ test("migrated dashboard routes delegate provider transport and raw parsing to s
     source("routes/quo.ts"),
     source("modules/retention/retention.quo.service.ts"),
     source("modules/retention/retention.quo.repository.ts"),
+    source("modules/retention/retention.quo.live.service.ts"),
+    source("modules/retention/retention.quo.live.repository.ts"),
     source("routes/sheets.ts"),
     source("modules/retention/retention.service.ts"),
     source("modules/retention/retention.repository.ts"),
@@ -114,6 +118,17 @@ test("migrated dashboard routes delegate provider transport and raw parsing to s
   assert.doesNotMatch(retentionQuoService, /@workspace\/db|drizzle-orm/);
   assert.match(retentionQuoRepository, /loadPhoneStatsAggregates/);
   assert.doesNotMatch(retentionQuoRepository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  const optimizedLiveHandler = quo.slice(
+    quo.indexOf("export async function optimizedQuoLiveHandler"),
+    quo.indexOf('router.get("/quo/live", optimizedQuoLiveHandler)'),
+  );
+  assert.match(optimizedLiveHandler, /retentionQuoLiveService\.getLiveStatus/);
+  assert.doesNotMatch(optimizedLiveHandler, /@workspace\/db|durableRuntimeState|buildLiveStatusSnapshot/);
+  assert.match(retentionQuoLiveService, /retention\.quo\.live\.repository\.js/);
+  assert.doesNotMatch(retentionQuoLiveService, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  assert.doesNotMatch(retentionQuoLiveService, /@workspace\/db|drizzle-orm/);
+  assert.match(retentionQuoLiveRepository, /@workspace\/db/);
+  assert.doesNotMatch(retentionQuoLiveRepository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
 
   assert.match(sheets, /modules\/retention\/retention\.service\.js/);
   assert.doesNotMatch(sheets, /@workspace\/db|drizzle-orm|integrations\/googleSheets/);

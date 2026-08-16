@@ -1,6 +1,6 @@
 import { logger } from "./logger.js";
 import type { BackgroundJobHandlers } from "./durableBackgroundJobs.js";
-import { runLivePoll } from "../routes/quo.js";
+import { runLivePoll } from "../modules/retention/retention.quo.live.service.js";
 import { runScheduledQuoSync, runSync } from "../integrations/quo/sync.js";
 import { refreshCallHistory } from "../routes/vos.js";
 import { runOnboardingReportRefresh } from "../modules/onboarding/report.js";

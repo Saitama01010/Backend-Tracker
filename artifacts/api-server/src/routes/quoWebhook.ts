@@ -20,19 +20,19 @@ import {
   getDurableRuntimeStateIncludingExpired,
   putDurableRuntimeState,
 } from "../lib/durableRuntimeState.js";
+import {
+  retentionQuoLiveWebhookCalls,
+  type RetentionQuoLiveWebhookCall,
+} from "../modules/retention/retention.quo.live-state.js";
 
 const router: IRouter = Router();
 
-export interface LiveCallEntry {
-  agentName: string;
-  participant: string;
-  ringingSince: Date;
-}
+export type LiveCallEntry = RetentionQuoLiveWebhookCall;
 
 // This map remains a low-latency view only. Durable event receipt and completed
 // call persistence are database-backed, and /api/quo/live retains its existing
 // provider polling/database fallback behavior.
-export const liveWebhookCalls = new Map<string, LiveCallEntry>();
+export const liveWebhookCalls = retentionQuoLiveWebhookCalls;
 
 function purgeExpiredLiveCalls() {
   const cutoff = Date.now() - 2 * 60 * 60 * 1000;

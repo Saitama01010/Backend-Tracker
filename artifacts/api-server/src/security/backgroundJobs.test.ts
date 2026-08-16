@@ -301,8 +301,10 @@ test("server routes contain no process-local scheduler or post-response job laun
 });
 
 test("Quo live state stays lightweight while provider refresh remains request-driven and coalesced", async () => {
-  const [quo, quoClient] = await Promise.all([
+  const [quo, quoLiveService, quoLiveRepository, quoClient] = await Promise.all([
     readFile(new URL("../routes/quo.ts", import.meta.url), "utf8"),
+    readFile(new URL("../modules/retention/retention.quo.live.service.ts", import.meta.url), "utf8"),
+    readFile(new URL("../modules/retention/retention.quo.live.repository.ts", import.meta.url), "utf8"),
     readFile(new URL("../integrations/quo/client.ts", import.meta.url), "utf8"),
   ]);
   const liveHandler = quo.slice(
@@ -314,28 +316,28 @@ test("Quo live state stays lightweight while provider refresh remains request-dr
     quo.indexOf('router.get("/quo/calls"'),
   );
 
-  assert.match(quo, /LIVE_POLL_TTL_MS = 45_000/);
-  assert.match(quo, /LIVE_POLL_LEASE_MS = 105_000/);
+  assert.match(quoLiveService, /LIVE_POLL_TTL_MS = 45_000/);
+  assert.match(quoLiveService, /LIVE_POLL_LEASE_MS = 105_000/);
   assert.match(quoClient, /QUO_MIN_REQUEST_INTERVAL_MS = 400/);
   assert.match(quoClient, /QUO_MAX_RATE_LIMIT_RETRIES = 4/);
   assert.match(quoClient, /response\.status === 429/);
   assert.match(quoClient, /Date\.parse\(retryAfter\)/);
-  assert.match(quo, /const limit = 2/);
-  assert.match(quo, /fetchQuoConversationCalls\(/);
+  assert.match(quoLiveService, /const limit = 2/);
+  assert.match(quoLiveService, /fetchConversationCalls\(/);
   assert.match(quoClient, /&participants=\$\{encodeURIComponent\(participant\)\}/);
-  assert.doesNotMatch(`${quo}\n${quoClient}`, /participants\[\]/);
-  assert.match(quo, /recentCallFloor = new Date\(Date\.now\(\) - 4 \* 60 \* 60 \* 1000\)/);
-  assert.match(quo, /buildQuoPhoneCallRow\(call, line, participant, userMap\)/);
-  assert.match(quo, /upsertQuoPhoneCallRows\(completedRows, signal\)/);
-  assert.match(quo, /INSERT INTO durable_runtime_state/);
-  assert.match(quo, /durable_runtime_state\.expires_at <= now\(\)/);
-  assert.match(quo, /WHERE key = \$1 AND value->>'owner' = \$2/);
-  assert.doesNotMatch(quo, /withDatabaseLease\("quo_live_request_refresh"/);
-  assert.match(quo, /runLivePoll\(AbortSignal\.timeout\(LIVE_POLL_TIMEOUT_MS\)\)/);
-  assert.doesNotMatch(liveHandler, /requestDrivenLivePoll\(\)/);
-  assert.match(refreshRoute, /await requestDrivenLivePoll\(\)/);
+  assert.doesNotMatch(`${quo}\n${quoLiveService}\n${quoClient}`, /participants\[\]/);
+  assert.match(quoLiveService, /recentCallFloor = new Date\(startedAt\.getTime\(\) - 4 \* 60 \* 60 \* 1000\)/);
+  assert.match(quoLiveService, /buildPhoneCallRow\(call, line, participant, userMap\)/);
+  assert.match(quoLiveService, /persistCompletedCalls\(completedRows, signal\)/);
+  assert.match(quoLiveRepository, /INSERT INTO durable_runtime_state/);
+  assert.match(quoLiveRepository, /durable_runtime_state\.expires_at <= now\(\)/);
+  assert.match(quoLiveRepository, /WHERE key = \$1 AND value->>'owner' = \$2/);
+  assert.doesNotMatch(`${quo}\n${quoLiveService}`, /withDatabaseLease\("quo_live_request_refresh"/);
+  assert.match(quoLiveService, /runLivePoll\(AbortSignal\.timeout\(LIVE_POLL_TIMEOUT_MS\)\)/);
+  assert.doesNotMatch(liveHandler, /requestLiveRefresh\(\)/);
+  assert.match(refreshRoute, /await retentionQuoLiveService\.requestLiveRefresh\(\)/);
   assert.doesNotMatch(refreshRoute, /scheduledJobKey\("integration_live_refresh"/);
-  assert.doesNotMatch(quo, /fetchQuoJson<[^;]+>\([^;]+\)\.catch\(\(\) => \(\{ data: \[\]/s);
+  assert.doesNotMatch(`${quo}\n${quoLiveService}`, /fetchQuoJson<[^;]+>\([^;]+\)\.catch\(\(\) => \(\{ data: \[\]/s);
 });
 
 test("same-day Quo writes preserve the historical call classification", async () => {
