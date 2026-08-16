@@ -49,6 +49,13 @@ import {
   LIVE_STATUS_MAX_STALE_MS,
   type LiveStatusSource,
 } from "../lib/liveStatus.js";
+import { fetchQuoJson } from "../integrations/quo/client.js";
+import {
+  classifyDashboardLine,
+  dashboardAgentTeam,
+  inferDashboardAgentFromLine,
+  type QuoPhoneNumber,
+} from "../integrations/quo/dashboardMapper.js";
 
 const router: IRouter = Router();
 router.use("/quo", requireAuth);
@@ -86,170 +93,11 @@ function parseDateRange(from: string, to: string): { fromDate: Date; toDate: Dat
 
 const effectiveCallStatus = effectivePhoneCallStatus;
 
-const QUO_BASE = "https://api.openphone.com/v1";
-// Keep the live scan below Quo's shared workspace allowance. This route may
-// overlap with a scheduled/manual historical sync, so leave headroom rather
-// than attempting to consume the provider's documented ceiling.
-const QUO_MIN_REQUEST_INTERVAL_MS = 400;
-const QUO_MAX_RATE_LIMIT_RETRIES = 4;
-let nextQuoRequestAt = 0;
-let quoRequestGate: Promise<void> = Promise.resolve();
-
-async function delayForQuo(ms: number, signal?: AbortSignal): Promise<void> {
-  if (!signal) {
-    await new Promise((resolve) => setTimeout(resolve, ms));
-    return;
-  }
-  signal.throwIfAborted();
-  await new Promise<void>((resolve, reject) => {
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal.reason);
-    };
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-function quoHeaders(): Record<string, string> {
-  const key = (process.env["QUO_API_KEY"] ?? "")
-    .trim()
-    .replace(/^["']|["']$/g, "")
-    .replace(/^Bearer\s+/i, "")
-    .trim();
-  if (!key) throw new Error("QUO_API_KEY not configured");
-  return { Authorization: key, Accept: "application/json" };
-}
-
-async function waitForQuoRequestSlot(signal?: AbortSignal): Promise<void> {
-  let release!: () => void;
-  const previous = quoRequestGate;
-  quoRequestGate = new Promise<void>((resolve) => { release = resolve; });
-  await previous;
-  try {
-    signal?.throwIfAborted();
-    const waitMs = Math.max(0, nextQuoRequestAt - Date.now());
-    if (waitMs > 0) await delayForQuo(waitMs, signal);
-    nextQuoRequestAt = Date.now() + QUO_MIN_REQUEST_INTERVAL_MS;
-  } finally {
-    release();
-  }
-}
-
-async function quoFetch<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const request = async () => {
-    await waitForQuoRequestSlot(signal);
-    return fetch(`${QUO_BASE}${path}`, { headers: quoHeaders(), signal });
-  };
-
-  let res = await request();
-  for (let attempt = 0; res.status === 429 && attempt < QUO_MAX_RATE_LIMIT_RETRIES; attempt++) {
-    const retryAfter = res.headers.get("retry-after");
-    const seconds = retryAfter === null ? Number.NaN : Number(retryAfter);
-    const dateDelay = retryAfter && !Number.isFinite(seconds)
-      ? Date.parse(retryAfter) - Date.now()
-      : Number.NaN;
-    const providerDelay = Number.isFinite(seconds) ? seconds * 1_000 : dateDelay;
-    const retryDelayMs = Number.isFinite(providerDelay)
-      ? Math.min(30_000, Math.max(1_000, providerDelay))
-      : Math.min(8_000, 1_000 * (2 ** attempt));
-    await delayForQuo(retryDelayMs, signal);
-    res = await request();
-  }
-  if (!res.ok) {
-    throw new Error(`Quo API error ${res.status}`);
-  }
-  return res.json() as Promise<T>;
-}
-
-interface QuoPhoneNumber {
-  id: string;
-  name: string;
-  formattedNumber: string;
-  number: string;
-  users: { id: string; firstName: string; lastName: string; email: string }[];
-}
-
-// Exact line name → team (mirrors the Quo sync integration's LINE_TEAM_MAP)
-const LINE_TEAM_MAP = OPERATIONAL_CONFIG.lineTeamMap;
-
-function classifyLine(name: string): "retention" | "nsf" | "cs" | null {
-  const n = name.toLowerCase().trim();
-  if (n in LINE_TEAM_MAP) return LINE_TEAM_MAP[n];
-  if (/\bcs\b|customer support|talia|hiba|nourhan|rasha|bassant|ella monroe/.test(n) || name === "CS Team") return "cs";
-  if (/retention|ob|outbound|ryan|abdlrhman|rick|zeiad|zack|henry.?hart|katherine|karma/.test(n)) return "retention";
-  if (/nsf|national settlement|ellie|alex|katie|jenny|estella|rika|austin/.test(n)) return "nsf";
-  return null;
-}
-
-// Agent-name → team override. Calls are bucketed by who made them, not which line
-// they used. This ensures agents who call from shared/unclassified lines still
-// appear in the correct team bucket.
-const AGENT_TEAM: Record<string, "retention" | "nsf" | "cs"> = {
-  // Retention — current roster (May 2026)
-  "ryan henderson":    "retention",
-  "henry hart":        "retention",
-  "katherine adams":   "retention",
-  "jacob stephenson":  "retention",
-  "abdulrhman isawi":  "retention",
-  "rick miller":       "retention",
-  "zeiad fouad":       "retention",
-  "max francis":       "retention",
-  "mohammed ayman":    "retention",
-  "leo carter":        "cs",
-  "fares":             "cs",
-  // NSF
-  "alex cruz":         "nsf",
-  "austin white":      "nsf",
-  "rika hart":         "nsf",
-  "jenny morgan":      "nsf",
-  "estella cruz":      "nsf",
-  "katie miller":      "nsf",
-  "ellie moser":       "nsf",
-  // Retention — agents moved from CS
-  "ahmed ayman":       "retention",
-  "levi miller":       "retention",
-  "michael belfort":   "retention",
-  "talia morgan":      "retention",
-  // CS
-  "chase miller":      "cs",
-  "nour eldin atef":   "cs",
-  "youssef nady":      "cs",
-  "jacob xander":      "cs",
-  "ella monroe":       "cs",
-  "nora adam":         "cs",
-  "carla bennet":      "cs",
-};
-
-function agentTeam(agentName: string): "retention" | "nsf" | "cs" | null {
-  const key = agentName.toLowerCase().trim();
-  return AGENT_TEAM[key] ?? null;
-}
-
-function inferAgentFromLine(lineName: string): string | null {
-  const line = lineName.toLowerCase().replace(/\s+/g, " ").trim();
-  for (const name of Object.keys(AGENT_TEAM)) {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (new RegExp(`\\b${escaped}\\b`).test(line)) return name.replace(/\b\w/g, (c) => c.toUpperCase());
-  }
-  const mappedTeamLine = Object.keys(LINE_TEAM_MAP).find((known) => line.includes(known));
-  if (mappedTeamLine) {
-    const parts = mappedTeamLine.split("-").map((s) => s.trim()).filter(Boolean);
-    for (const part of parts) {
-      if (AGENT_TEAM[part]) return part.replace(/\b\w/g, (c) => c.toUpperCase());
-    }
-  }
-  return null;
-}
-
 router.get("/quo/lines", async (req, res) => {
   try {
-    const result = await quoFetch<{ data: QuoPhoneNumber[] }>("/phone-numbers");
+    const result = await fetchQuoJson<{ data: QuoPhoneNumber[] }>("/phone-numbers");
     const classified = (result.data ?? [])
-      .map((p) => ({ ...p, team: classifyLine(p.name) }))
+      .map((p) => ({ ...p, team: classifyDashboardLine(p.name) }))
       .filter((p) => p.team !== null);
     res.json({ data: classified });
   } catch (err) {
@@ -260,10 +108,10 @@ router.get("/quo/lines", async (req, res) => {
 
 router.get("/quo/all-lines", async (req, res) => {
   try {
-    const result = await quoFetch<{ data: QuoPhoneNumber[] }>("/phone-numbers");
+    const result = await fetchQuoJson<{ data: QuoPhoneNumber[] }>("/phone-numbers");
     const lines = (result.data ?? [])
       .filter((p) => !p.name.toLowerCase().includes("tax"))
-      .map((p) => ({ ...p, team: classifyLine(p.name) }));
+      .map((p) => ({ ...p, team: classifyDashboardLine(p.name) }));
     res.json({ data: lines });
   } catch (err) {
     req.log.error(err, "quo all-lines error");
@@ -425,8 +273,8 @@ export async function legacyQuoStatsHandler(req: Request, res: Response) {
     const directory = isAdministrator(req.user!) ? null : await loadAuthorizationAgentDirectory();
     const scopedRows = directory
       ? rows.filter((row) => {
-          const agentName = canonicalAgentName(row.agentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
-          const rawTeam = agentTeam(agentName) ?? row.lineTeam;
+          const agentName = canonicalAgentName(row.agentName) ?? inferDashboardAgentFromLine(row.lineName) ?? "Unknown";
+          const rawTeam = dashboardAgentTeam(agentName) ?? row.lineTeam;
           const fallbackTeam = rawTeam === "retention" || rawTeam === "nsf" || rawTeam === "cs" ? rawTeam : null;
           return canAccessMetricAgent(req.user!, agentName, directory, fallbackTeam);
         })
@@ -481,14 +329,14 @@ export async function legacyQuoStatsHandler(req: Request, res: Response) {
     const blocklist = await getBlockedNumbers();
     for (const row of scopedRows) {
       if (row.participant && blocklist.has(row.participant)) continue;
-      const agentName = canonicalAgentName(row.agentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
+      const agentName = canonicalAgentName(row.agentName) ?? inferDashboardAgentFromLine(row.lineName) ?? "Unknown";
       // Agent-based team takes priority over line-based. Calls that don't map to a
       // tracked team (e.g. Onboarding / unclassified lines) fall into "other" so
       // they are still counted and visible to Samia, instead of being silently
       // dropped (which made per-agent totals wildly undercount agents who work
       // mainly on unclassified lines). The dashboard reads fixed team keys
       // (retention/nsf/cs), so the extra "other" bucket does not affect it.
-      let team = agentTeam(agentName) ?? row.lineTeam ?? "other";
+      let team = dashboardAgentTeam(agentName) ?? row.lineTeam ?? "other";
       if (!(team in teamStats)) team = "other";
       const date = toCaDate(row.createdAt);
       const effectiveStatus = effectiveCallStatus(row);
@@ -709,8 +557,8 @@ export async function optimizedQuoStatsHandler(req: Request, res: Response) {
       timeZone: OPERATIONAL_CONFIG.businessTimeZone,
       blockedNumbers: blocklist,
       resolveDimension: (row) => {
-        const agentName = canonicalAgentName(row.rawAgentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
-        const rawTeam = agentTeam(agentName) ?? row.lineTeam;
+        const agentName = canonicalAgentName(row.rawAgentName) ?? inferDashboardAgentFromLine(row.lineName) ?? "Unknown";
+        const rawTeam = dashboardAgentTeam(agentName) ?? row.lineTeam;
         const fallbackTeam = rawTeam === "retention" || rawTeam === "nsf" || rawTeam === "cs" ? rawTeam : null;
         return {
           agentName,
@@ -958,7 +806,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
       do {
         const sep = basePath.includes("?") ? "&" : "?";
         const url: string = `${basePath}${sep}maxResults=50${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`;
-        const res = await quoFetch<{ data: T[]; nextPageToken?: string | null }>(url, signal);
+        const res = await fetchQuoJson<{ data: T[]; nextPageToken?: string | null }>(url, signal);
         out.push(...(res.data ?? []));
         pageToken = res.nextPageToken ?? null;
         page++;
@@ -983,7 +831,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
     const lineMap = new Map(linesAll.map((line) => [line.id, line]));
 
     // Conversations updated in last 5 minutes = potentially active calls
-    const convRes = await quoFetch<{
+    const convRes = await fetchQuoJson<{
       data: { id: string; phoneNumberId: string; participants: string[] }[];
     }>(`/conversations?updatedAfter=${encodeURIComponent(fiveMinAgo)}&updatedBefore=${encodeURIComponent(now)}&maxResults=100`, signal);
 
@@ -1008,7 +856,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
           // OpenPhone occasionally returns an array of user ids that handled the call.
           userIds?: string[];
         };
-        const callsRes = await quoFetch<{ data: LiveCall[] }>(
+        const callsRes = await fetchQuoJson<{ data: LiveCall[] }>(
           `/calls?phoneNumberId=${encodeURIComponent(c.phoneNumberId)}` +
           `&participants=${encodeURIComponent(participant)}` +
           `&createdAfter=${encodeURIComponent(recentCallFloor)}` +
@@ -1449,8 +1297,8 @@ router.get("/quo/calls", async (req, res) => {
       lineName: string;
       agentName: string | null;
     }) => {
-      const agentName = canonicalAgentName(row.agentName) ?? inferAgentFromLine(row.lineName) ?? "Unknown";
-      const rawTeam = agentTeam(agentName) ?? row.lineTeam;
+      const agentName = canonicalAgentName(row.agentName) ?? inferDashboardAgentFromLine(row.lineName) ?? "Unknown";
+      const rawTeam = dashboardAgentTeam(agentName) ?? row.lineTeam;
       const fallbackTeam = rawTeam === "retention" || rawTeam === "nsf" || rawTeam === "cs" ? rawTeam : null;
       if (!directory) return !team || rawTeam === team;
       const resolvedTeam = authorizationAgent(directory, agentName)?.team ?? fallbackTeam;

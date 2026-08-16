@@ -119,9 +119,10 @@ test("Google Sheets upstream payloads distinguish empty data from malformed resp
 
 test("Sheets, date ranges, probes, and pagination are wired through integration security policy", async () => {
   const base = new URL("../routes/", import.meta.url);
-  const [quo, quoSync, sheets, sheetsClient, readymode, readymodeProbe, vos, pbxClient] = await Promise.all([
+  const [quo, quoSync, quoClient, sheets, sheetsClient, readymode, readymodeProbe, vos, pbxClient] = await Promise.all([
     readFile(new URL("quo.ts", base), "utf8"),
     readFile(new URL("../integrations/quo/sync.ts", base), "utf8"),
+    readFile(new URL("../integrations/quo/client.ts", base), "utf8"),
     readFile(new URL("sheets.ts", base), "utf8"),
     readFile(new URL("../integrations/googleSheets/client.ts", base), "utf8"),
     readFile(new URL("readymode.ts", base), "utf8"),
@@ -132,6 +133,10 @@ test("Sheets, date ranges, probes, and pagination are wired through integration 
 
   assert.match(quo, /validateIntegrationDateRange/);
   assert.match(quo, /paginateAuthorizedBatches/);
+  assert.match(quo, /fetchQuoJson/);
+  assert.doesNotMatch(quo, /QUO_API_KEY|api\.openphone\.com|\bfetch\(/);
+  assert.match(quoClient, /QUO_API_KEY/);
+  assert.match(quoClient, /response\.status === 429/);
   assert.match(sheets, /isApprovedSheetSource/);
   assert.match(sheets, /const sheetRefreshes = new Map/);
   assert.match(sheetsClient, /const titleRefreshes = new Map/);

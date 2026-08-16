@@ -3,6 +3,11 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { buildQuoPhoneCallRow, type QuoCall, type QuoPhoneNumber } from "../integrations/quo/sync.js";
+import {
+  classifyDashboardLine,
+  dashboardAgentTeam,
+  inferDashboardAgentFromLine,
+} from "../integrations/quo/dashboardMapper.js";
 import { detectHeaderRow, parseGoogleSheetsValues } from "../integrations/googleSheets/mapper.js";
 import { parseReadymodeRows } from "../integrations/readymode/csvParser.js";
 import { parseAgentTable } from "../integrations/readymode/htmlParser.js";
@@ -50,6 +55,10 @@ test("QUO multi-page fixture preserves empty pages, duplicate IDs, optional fiel
     [...new Set(mapped.map((row) => row.createdAt.toISOString().slice(0, 10)))],
     ["2026-01-15", "2026-01-16", "2026-02-01"],
   );
+  assert.equal(classifyDashboardLine("Retention - Agent Alpha"), "retention");
+  assert.equal(classifyDashboardLine("NSF - Agent Beta"), "nsf");
+  assert.equal(dashboardAgentTeam("Leo Carter"), "cs");
+  assert.equal(inferDashboardAgentFromLine("Ryan Henderson Retention"), "Ryan Henderson");
 });
 
 test("ReadyMode CSV fixtures pin accepted rows, duplicate interpretation, empty rows, headers, dates, and duration parsing", async () => {
