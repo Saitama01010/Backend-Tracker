@@ -15,6 +15,28 @@ function parseSecs(value: string): number {
   return parts[0]!;
 }
 
+function textWithoutTags(value: string): string {
+  let text = "";
+  let insideTag = false;
+
+  // This is provider-controlled HTML. A single tag-replacement regex can
+  // leave tag delimiters behind when tags are malformed or nested. The state
+  // machine guarantees that parser output never contains HTML delimiters.
+  for (const char of value) {
+    if (insideTag) {
+      if (char === ">") insideTag = false;
+      continue;
+    }
+    if (char === "<") {
+      insideTag = true;
+      continue;
+    }
+    if (char !== ">") text += char;
+  }
+
+  return text.trim();
+}
+
 export function parseAgentTable(html: string): ReadyModeAgentStat[] {
   const tableMatch = html.match(/<table[^>]*>([\s\S]*?)<\/table>/gi);
   if (!tableMatch) return [];
@@ -26,7 +48,7 @@ export function parseAgentTable(html: string): ReadyModeAgentStat[] {
 
     const headerRow = rows[0]?.[1] ?? "";
     const headers = [...headerRow.matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)].map((match) =>
-      match[1]?.replace(/<[^>]+>/g, "").trim().toLowerCase() ?? ""
+      textWithoutTags(match[1] ?? "").toLowerCase()
     );
     const hasAgent = headers.some((header) => header.includes("agent") || header.includes("name"));
     const hasCalls = headers.some((header) => header.includes("dial") || header.includes("call") || header.includes("total"));
@@ -39,7 +61,7 @@ export function parseAgentTable(html: string): ReadyModeAgentStat[] {
 
     for (const row of rows.slice(1)) {
       const cells = [...row[1]!.matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)].map((match) =>
-        match[1]?.replace(/<[^>]+>/g, "").trim() ?? ""
+        textWithoutTags(match[1] ?? "")
       );
       if (cells.length < 2) continue;
 

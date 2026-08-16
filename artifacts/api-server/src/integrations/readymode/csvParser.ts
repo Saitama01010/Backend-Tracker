@@ -40,13 +40,49 @@ function parseCsv(text: string): string[][] {
 
 function parseDurationToSecs(value: string): number {
   if (!value || value === "-") return 0;
+  const normalized = value.toLowerCase();
   let total = 0;
-  const h = value.match(/(\d+)\s*hours?/i);
-  const m = value.match(/(\d+)\s*min\./i);
-  const sec = value.match(/([\d.]+)\s*s\./i);
-  if (h?.[1]) total += parseInt(h[1], 10) * 3600;
-  if (m?.[1]) total += parseInt(m[1], 10) * 60;
-  if (sec?.[1]) total += parseFloat(sec[1]);
+  let cursor = 0;
+  let foundHours = false;
+  let foundMinutes = false;
+  let foundSeconds = false;
+
+  // Provider values are untrusted and may be arbitrarily long. Scan each
+  // character once instead of applying backtracking numeric/unit regexes.
+  while (cursor < normalized.length) {
+    while (cursor < normalized.length) {
+      const char = normalized[cursor]!;
+      if ((char >= "0" && char <= "9") || char === ".") break;
+      cursor++;
+    }
+    if (cursor >= normalized.length) break;
+
+    const numberStart = cursor;
+    while (cursor < normalized.length) {
+      const char = normalized[cursor]!;
+      if (!((char >= "0" && char <= "9") || char === ".")) break;
+      cursor++;
+    }
+    const numericValue = normalized.slice(numberStart, cursor);
+    while (cursor < normalized.length && normalized[cursor]!.trim() === "") cursor++;
+
+    if (normalized.startsWith("hour", cursor)) {
+      const parsed = parseInt(numericValue, 10);
+      if (!foundHours && Number.isFinite(parsed)) total += parsed * 3600;
+      foundHours = true;
+      cursor += normalized.startsWith("hours", cursor) ? 5 : 4;
+    } else if (normalized.startsWith("min.", cursor)) {
+      const parsed = parseInt(numericValue, 10);
+      if (!foundMinutes && Number.isFinite(parsed)) total += parsed * 60;
+      foundMinutes = true;
+      cursor += 4;
+    } else if (normalized.startsWith("s.", cursor)) {
+      const parsed = parseFloat(numericValue);
+      if (!foundSeconds && Number.isFinite(parsed)) total += parsed;
+      foundSeconds = true;
+      cursor += 2;
+    }
+  }
   return Math.round(total);
 }
 

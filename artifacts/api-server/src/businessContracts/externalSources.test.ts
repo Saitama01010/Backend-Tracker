@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { buildQuoPhoneCallRow, type QuoCall, type QuoPhoneNumber } from "../integrations/quo/sync.js";
 import {
@@ -89,6 +90,35 @@ test("the retained ReadyMode HTML parser keeps current name, optional-cell, empt
     { agentName: "agent alpha - ALPHA", dialed: 4, connected: 2, talkTimeSecs: 250, avgTalkSecs: 125, connectRate: 50 },
   ]);
   assert.deepEqual(parseAgentTable(await text("pbx", "empty.html")), []);
+});
+
+test("ReadyMode parsing remains bounded and emits no tag delimiters for hostile source values", () => {
+  const repeatedDigits = "9".repeat(30_000);
+  const csv = [
+    "Day/date,Name,Logged calls,Ready:Talk Time",
+    `May 14,Agent Alpha,1,${repeatedDigits}`,
+  ].join("\n");
+  const startedAt = performance.now();
+  const parsedCsv = parseReadymodeRows(csv, quietLog, "hostile-fixture", "2026-05-14");
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.equal(parsedCsv[0]?.talkSecs, 0);
+  assert.ok(elapsedMs < 500, `hostile duration parsing took ${elapsedMs.toFixed(1)}ms`);
+
+  const duplicateUnits = parseReadymodeRows([
+    "Day/date,Name,Logged calls,Ready:Talk Time",
+    "May 14,Agent Alpha,1,1 hours 2 hours 3 min. 4 min. 5 s. 6 s.",
+  ].join("\n"), quietLog, "compatibility-fixture", "2026-05-14");
+  assert.equal(duplicateUnits[0]?.talkSecs, 3_785, "only the first value for each unit is retained");
+
+  const parsedHtml = parseAgentTable(`
+    <table>
+      <tr><th>Agent Name</th><th>Total Calls</th></tr>
+      <tr><td>Agent &lt;safe&gt; <<script>script>alert(1)</td><td>1</td></tr>
+    </table>
+  `);
+  assert.equal(parsedHtml.length, 1);
+  assert.doesNotMatch(parsedHtml[0]!.agentName, /[<>]/);
 });
 
 test("Google Sheet fixtures pin header discovery, empty rows, duplicate-looking rows, and malformed values", async () => {
