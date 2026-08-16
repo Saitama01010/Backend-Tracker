@@ -159,8 +159,10 @@ test("Sheets, date ranges, probes, and pagination are wired through integration 
   assert.doesNotMatch(readymode, /preview:\s*result\.body/);
   assert.doesNotMatch(readymodeProbe, /cookies:\s*cachedCookies/);
   assert.match(vos, /fetchPbxJson/);
-  assert.doesNotMatch(vos, /VOSLOGIC_EMAIL|VOSLOGIC_PASSWORD|\/api\/auth\/login/);
+  assert.match(vos, /fetchQuoDirectoryPhoneNumbers/);
+  assert.doesNotMatch(vos, /VOSLOGIC_EMAIL|VOSLOGIC_PASSWORD|QUO_API_KEY|api\.openphone\.com|\/api\/auth\/login|\bfetch\(/);
   assert.match(pbxClient, /VOSLOGIC_EMAIL/);
   assert.match(pbxClient, /res\.status === 401/);
+  assert.match(quoClient, /fetchQuoDirectoryPhoneNumbers/);
   assert.doesNotMatch(quoSync, /logger\.(?:info|warn|error)\([^\n]*participant/);
 });

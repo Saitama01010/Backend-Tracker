@@ -72,3 +72,20 @@ export async function fetchQuoJson<T>(path: string, signal?: AbortSignal): Promi
   if (!response.ok) throw new Error(`Quo API error ${response.status}`);
   return response.json() as Promise<T>;
 }
+
+export async function fetchQuoDirectoryPhoneNumbers(): Promise<string[]> {
+  const key = process.env["QUO_API_KEY"];
+  if (!key) return [];
+  try {
+    const response = await fetch(`${QUO_BASE_URL}/phone-numbers`, {
+      headers: { Authorization: key, Accept: "application/json" },
+    });
+    if (!response.ok) return [];
+    const payload = (await response.json()) as { data: { number?: string }[] };
+    return (payload.data ?? [])
+      .map((line) => line.number)
+      .filter((number): number is string => Boolean(number));
+  } catch {
+    return [];
+  }
+}

@@ -28,6 +28,7 @@ import {
   type VosRingGroup,
 } from "../integrations/pbx/client.js";
 import { teamFromRingGroupName } from "../integrations/pbx/mapper.js";
+import { fetchQuoDirectoryPhoneNumbers } from "../integrations/quo/client.js";
 
 const router = Router();
 router.use("/vos", requireAuth);
@@ -227,22 +228,9 @@ const KNOWN_GHOST_NUMBERS = new Set([
 // ─── Fetch our own OpenPhone line numbers ─────────────────────────────────────
 
 async function fetchQuoLineNumbers(): Promise<Set<string>> {
-  const key = process.env["QUO_API_KEY"];
-  if (!key) return new Set();
-  try {
-    const res = await fetch("https://api.openphone.com/v1/phone-numbers", {
-      headers: { Authorization: key, Accept: "application/json" },
-    });
-    if (!res.ok) return new Set();
-    const data = (await res.json()) as { data: { number?: string }[] };
-    const nums = new Set<string>();
-    for (const line of data.data ?? []) {
-      if (line.number) nums.add(normalizePhone(line.number));
-    }
-    return nums;
-  } catch {
-    return new Set();
-  }
+  const nums = new Set<string>();
+  for (const number of await fetchQuoDirectoryPhoneNumbers()) nums.add(normalizePhone(number));
+  return nums;
 }
 
 // Only these Quo/OpenPhone line names are team-shared lines.
