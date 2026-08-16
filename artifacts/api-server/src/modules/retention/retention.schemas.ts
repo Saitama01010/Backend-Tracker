@@ -1,6 +1,10 @@
 import { parseSheetGid } from "../../lib/externalIntegrationPolicy.js";
 import { validateIntegrationDateRange } from "../../lib/externalIntegrationPolicy.js";
-import type { RetentionReadyModeQuery, RetentionSheetQuery } from "./retention.types.js";
+import type {
+  RetentionQuoStatsQuery,
+  RetentionReadyModeQuery,
+  RetentionSheetQuery,
+} from "./retention.types.js";
 
 export type RetentionSheetQueryResult =
   | { ok: true; query: RetentionSheetQuery }
@@ -44,4 +48,25 @@ export function validateRetentionReadyModeQuery(
     if (!range.ok) return { ok: false, error: range.error };
   }
   return { ok: true, query };
+}
+
+export function retentionQuoStatsDateInput(
+  raw: Record<string, unknown>,
+  now = Date.now(),
+): RetentionQuoStatsQuery {
+  return {
+    from: typeof raw["from"] === "string"
+      ? raw["from"]
+      : new Date(now - 30 * 86_400_000).toISOString(),
+    to: typeof raw["to"] === "string" ? raw["to"] : new Date(now).toISOString(),
+  };
+}
+
+export function validateRetentionQuoStatsQuery(
+  query: RetentionQuoStatsQuery,
+): { ok: true; query: RetentionQuoStatsQuery } | { ok: false; error: string } {
+  const range = validateIntegrationDateRange(query.from, query.to);
+  return range.ok
+    ? { ok: true, query: { from: range.from, to: range.to } }
+    : { ok: false, error: range.error };
 }

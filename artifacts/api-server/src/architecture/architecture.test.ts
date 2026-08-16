@@ -79,8 +79,20 @@ test("Quo provider operations with established boundaries stay out of HTTP route
 });
 
 test("migrated dashboard routes delegate provider transport and raw parsing to source adapters", async () => {
-  const [quo, sheets, retentionService, retentionRepository, readymode, retentionReadyModeService, vos] = await Promise.all([
+  const [
+    quo,
+    retentionQuoService,
+    retentionQuoRepository,
+    sheets,
+    retentionService,
+    retentionRepository,
+    readymode,
+    retentionReadyModeService,
+    vos,
+  ] = await Promise.all([
     source("routes/quo.ts"),
+    source("modules/retention/retention.quo.service.ts"),
+    source("modules/retention/retention.quo.repository.ts"),
     source("routes/sheets.ts"),
     source("modules/retention/retention.service.ts"),
     source("modules/retention/retention.repository.ts"),
@@ -91,6 +103,17 @@ test("migrated dashboard routes delegate provider transport and raw parsing to s
 
   assert.match(quo, /integrations\/quo\/client\.js/);
   assert.doesNotMatch(quo, /api\.openphone\.com|QUO_API_KEY|fetchQuoJson|fetchAllQuoPages|nextPageToken|pageToken|\bfetch\s*\(/);
+  const optimizedStatsHandler = quo.slice(
+    quo.indexOf("export async function optimizedQuoStatsHandler"),
+    quo.indexOf('router.get("/quo/stats", optimizedQuoStatsHandler)'),
+  );
+  assert.match(optimizedStatsHandler, /retentionQuoStatsService\.getStats/);
+  assert.doesNotMatch(optimizedStatsHandler, /loadPhoneStatsAggregates|phoneStatsResponseCache|teamStats\s*:/);
+  assert.match(retentionQuoService, /retention\.quo\.repository\.js/);
+  assert.doesNotMatch(retentionQuoService, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  assert.doesNotMatch(retentionQuoService, /@workspace\/db|drizzle-orm/);
+  assert.match(retentionQuoRepository, /loadPhoneStatsAggregates/);
+  assert.doesNotMatch(retentionQuoRepository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
 
   assert.match(sheets, /modules\/retention\/retention\.service\.js/);
   assert.doesNotMatch(sheets, /@workspace\/db|drizzle-orm|integrations\/googleSheets/);

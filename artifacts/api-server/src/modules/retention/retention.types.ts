@@ -1,4 +1,5 @@
 import type { GoogleSheetData } from "../../integrations/googleSheets/mapper.js";
+import type { AuthPayload } from "../../middleware/authCore.js";
 
 export interface RetentionSheetQuery {
   spreadsheetId: string;
@@ -82,4 +83,71 @@ export interface RetentionReadyModeStatsResult {
   parseMs: number;
   authorizationMs: number;
   transformMs: number;
+}
+
+export interface RetentionQuoStatsQuery {
+  from: string;
+  to: string;
+}
+
+export type RetentionQuoStatsActor = Pick<
+  AuthPayload,
+  | "userId"
+  | "role"
+  | "permissions"
+  | "teamAccess"
+  | "allowedTabs"
+  | "allowedAgents"
+  | "lockToToday"
+  | "accessModel"
+  | "accessRole"
+  | "selfAgentId"
+  | "selfAgentName"
+  | "selfAgentTeam"
+  | "primaryTeam"
+  | "fullTeamAccess"
+  | "tabGrants"
+> & Pick<AuthPayload, "username">;
+
+export interface RetentionQuoStatsPayload {
+  teamStats: Record<string, Record<string, Record<string, RetentionQuoPhoneSlot>>>;
+  allAgentStats: Record<string, Record<string, RetentionQuoPhoneSlot>>;
+  lineInbound: Record<string, Record<string, RetentionQuoLineInboundSlot>>;
+  agentLastCall: Record<string, Record<string, string>>;
+  allAgentLastCall: Record<string, string>;
+  totalRows: number;
+  lastSyncedAt: Date | null;
+  isSyncing: boolean;
+}
+
+export interface RetentionQuoPhoneSlot {
+  outbound: number;
+  inbound: number;
+  answered: number;
+  missed: number;
+  voicemail: number;
+  vmBrief: number;
+  totalCalls: number;
+  talkSeconds: number;
+  uniqueContacts: number;
+}
+
+export interface RetentionQuoLineInboundSlot {
+  lineId: string;
+  lineName: string;
+  received: number;
+  answered: number;
+  missed: number;
+  voicemail: number;
+}
+
+export interface RetentionQuoStatsResult {
+  body: string;
+  cache: "hit" | "miss" | "bypass";
+  totalRows: number;
+  aggregateRows: number;
+  authorizationMs: number;
+  databaseMs: number;
+  transformMs: number;
+  serializeMs: number;
 }

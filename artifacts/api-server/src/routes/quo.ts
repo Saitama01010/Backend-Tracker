@@ -40,7 +40,7 @@ import {
 } from "../lib/durableRuntimeState.js";
 import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 import { businessDayWindow } from "../lib/businessTime.js";
-import { effectivePhoneCallStatus, loadPhoneStatsAggregates } from "../lib/phoneStatsAggregation.js";
+import { effectivePhoneCallStatus } from "../lib/phoneStatsAggregation.js";
 import {
   buildLiveStatusSnapshot,
   isSupersededLiveObservation,
@@ -60,6 +60,11 @@ import {
   inferDashboardAgentFromLine,
   type QuoPhoneNumber,
 } from "../integrations/quo/dashboardMapper.js";
+import {
+  retentionQuoStatsDateInput,
+  validateRetentionQuoStatsQuery,
+} from "../modules/retention/retention.schemas.js";
+import { retentionQuoStatsService } from "../modules/retention/retention.quo.service.js";
 
 const router: IRouter = Router();
 router.use("/quo", requireAuth);
@@ -458,229 +463,52 @@ export async function legacyQuoStatsHandler(req: Request, res: Response) {
   }
 }
 
-type SerializedPhoneSlot = {
-  outbound: number;
-  inbound: number;
-  answered: number;
-  missed: number;
-  voicemail: number;
-  vmBrief: number;
-  totalCalls: number;
-  talkSeconds: number;
-  uniqueContacts: number;
-};
-
 function roundedTiming(value: number): number {
   return Math.round(value * 100) / 100;
-}
-
-const PHONE_STATS_CACHE_TTL_MS = 15_000;
-const PHONE_STATS_CACHE_MAX_ENTRIES = 50;
-const phoneStatsResponseCache = new Map<string, {
-  body: string;
-  createdAt: number;
-  totalRows: number;
-  aggregateRows: number;
-}>();
-
-function phoneStatsCacheKey(req: Request, from: string, to: string): string {
-  const user = req.user!;
-  return JSON.stringify({
-    from,
-    to,
-    userId: user.userId,
-    role: user.role,
-    teamAccess: user.teamAccess ?? null,
-    allowedTabs: user.allowedTabs ?? null,
-    allowedAgents: user.allowedAgents ?? null,
-    lockToToday: user.lockToToday ?? false,
-  });
-}
-
-function putPhoneStatsCache(
-  key: string,
-  value: { body: string; totalRows: number; aggregateRows: number },
-): void {
-  const now = Date.now();
-  for (const [candidate, entry] of phoneStatsResponseCache) {
-    if (now - entry.createdAt > PHONE_STATS_CACHE_TTL_MS) phoneStatsResponseCache.delete(candidate);
-  }
-  if (phoneStatsResponseCache.size >= PHONE_STATS_CACHE_MAX_ENTRIES) {
-    const oldest = phoneStatsResponseCache.keys().next().value as string | undefined;
-    if (oldest) phoneStatsResponseCache.delete(oldest);
-  }
-  phoneStatsResponseCache.set(key, { ...value, createdAt: now });
 }
 
 export async function optimizedQuoStatsHandler(req: Request, res: Response) {
   const requestStartedAt = performance.now();
   try {
-    const from = typeof req.query["from"] === "string" ? req.query["from"] : new Date(Date.now() - 30 * 86400000).toISOString();
-    const to = typeof req.query["to"] === "string" ? req.query["to"] : new Date().toISOString();
-    if (!canAccessDateRange(req.user!, [from, to])) {
+    const input = retentionQuoStatsDateInput(req.query);
+    if (!canAccessDateRange(req.user!, [input.from, input.to])) {
       res.status(403).json({ error: "Forbidden" });
       return;
     }
 
-    const range = validateIntegrationDateRange(from, to);
-    if (!range.ok) {
-      res.status(400).json({ error: range.error });
+    const validation = validateRetentionQuoStatsQuery(input);
+    if (!validation.ok) {
+      res.status(400).json({ error: validation.error });
       return;
     }
-    const { fromDate, toDate } = parseDateRange(range.from, range.to);
-    // Non-admin scopes depend on the mutable authorization directory. Avoid a
-    // response cache there so a team/agent reassignment takes effect on the
-    // very next request instead of waiting for the TTL.
-    const cacheKey = isAdministrator(req.user!)
-      ? phoneStatsCacheKey(req, range.from, range.to)
-      : null;
-    const cached = cacheKey ? phoneStatsResponseCache.get(cacheKey) : undefined;
-    if (cached && Date.now() - cached.createdAt <= PHONE_STATS_CACHE_TTL_MS) {
-      const totalMs = roundedTiming(performance.now() - requestStartedAt);
-      res.setHeader("Server-Timing", `cache;desc=hit;dur=0, app;dur=${totalMs}`);
-      res.setHeader("X-Result-Rows", String(cached.totalRows));
-      res.setHeader("X-Aggregate-Rows", String(cached.aggregateRows));
-      res.setHeader("X-Cache", "hit");
-      res.type("application/json").send(cached.body);
-      return;
-    }
-    if (cached && cacheKey) phoneStatsResponseCache.delete(cacheKey);
-
-    const authorizationStartedAt = performance.now();
-    const [directory, blocklist] = await Promise.all([
-      isAdministrator(req.user!) ? Promise.resolve(null) : loadAuthorizationAgentDirectory(),
-      getBlockedNumbers(),
-    ]);
-    const authorizationLoadMs = roundedTiming(performance.now() - authorizationStartedAt);
-
-    const aggregation = await loadPhoneStatsAggregates({
-      fromDate,
-      toDate,
-      timeZone: OPERATIONAL_CONFIG.businessTimeZone,
-      blockedNumbers: blocklist,
-      resolveDimension: (row) => {
-        const agentName = canonicalAgentName(row.rawAgentName) ?? inferDashboardAgentFromLine(row.lineName) ?? "Unknown";
-        const rawTeam = dashboardAgentTeam(agentName) ?? row.lineTeam;
-        const fallbackTeam = rawTeam === "retention" || rawTeam === "nsf" || rawTeam === "cs" ? rawTeam : null;
-        return {
-          agentName,
-          team: fallbackTeam ?? "other",
-          authorized: directory ? canAccessMetricAgent(req.user!, agentName, directory, fallbackTeam) : true,
-        };
-      },
+    const result = await retentionQuoStatsService.getStats({
+      actor: req.user!,
+      query: validation.query,
     });
 
-    const syncStartedAt = performance.now();
-    const syncState = await getSyncState();
-    const syncQueryMs = roundedTiming(performance.now() - syncStartedAt);
-    const databaseMs = roundedTiming(aggregation.timings.databaseMs + syncQueryMs);
-
-    const transformStartedAt = performance.now();
-    const teamStats: Record<string, Record<string, Record<string, SerializedPhoneSlot>>> = {
-      retention: {}, nsf: {}, cs: {}, other: {},
-    };
-    const allAgentStats: Record<string, Record<string, SerializedPhoneSlot>> = {};
-    const lineInbound: Record<string, Record<string, {
-      lineId: string;
-      lineName: string;
-      received: number;
-      answered: number;
-      missed: number;
-      voicemail: number;
-    }>> = {};
-    const agentLastCall: Record<string, Record<string, string>> = {};
-    const allAgentLastCall: Record<string, string> = {};
-    let totalRows = 0;
-
-    for (const row of aggregation.rows) {
-      if (row.kind === "meta") {
-        totalRows = row.totalCalls;
-        continue;
-      }
-      if (row.kind === "line") {
-        if (!row.lineId || !row.lineName || !row.day) continue;
-        if (!lineInbound[row.lineId]) lineInbound[row.lineId] = {};
-        lineInbound[row.lineId][row.day] = {
-          lineId: row.lineId,
-          lineName: row.lineName,
-          received: row.totalCalls,
-          answered: row.answered,
-          missed: row.missed,
-          voicemail: row.voicemail,
-        };
-        continue;
-      }
-      if (!row.agentName || !row.day) continue;
-      const slot: SerializedPhoneSlot = {
-        outbound: row.outbound,
-        inbound: row.inbound,
-        answered: row.answered,
-        missed: row.missed,
-        voicemail: row.voicemail,
-        vmBrief: row.vmBrief,
-        totalCalls: row.totalCalls,
-        talkSeconds: row.talkSeconds,
-        uniqueContacts: row.uniqueContacts,
-      };
-      if (row.kind === "team") {
-        const team = row.resolvedTeam ?? "other";
-        if (!teamStats[team]) teamStats[team] = {};
-        if (!teamStats[team][row.agentName]) teamStats[team][row.agentName] = {};
-        teamStats[team][row.agentName][row.day] = slot;
-        if (row.lastCall) {
-          if (!agentLastCall[team]) agentLastCall[team] = {};
-          const previous = agentLastCall[team][row.agentName];
-          if (!previous || row.lastCall.getTime() > Date.parse(previous)) {
-            agentLastCall[team][row.agentName] = row.lastCall.toISOString();
-          }
-        }
-      } else {
-        if (!allAgentStats[row.agentName]) allAgentStats[row.agentName] = {};
-        allAgentStats[row.agentName][row.day] = slot;
-        if (row.lastCall) {
-          const previous = allAgentLastCall[row.agentName];
-          if (!previous || row.lastCall.getTime() > Date.parse(previous)) {
-            allAgentLastCall[row.agentName] = row.lastCall.toISOString();
-          }
-        }
-      }
+    if (result.cache === "hit") {
+      const totalMs = roundedTiming(performance.now() - requestStartedAt);
+      res.setHeader("Server-Timing", `cache;desc=hit;dur=0, app;dur=${totalMs}`);
+      res.setHeader("X-Result-Rows", String(result.totalRows));
+      res.setHeader("X-Aggregate-Rows", String(result.aggregateRows));
+      res.setHeader("X-Cache", "hit");
+      res.type("application/json").send(result.body);
+      return;
     }
-
-    const payload = {
-      teamStats,
-      allAgentStats,
-      lineInbound,
-      agentLastCall,
-      allAgentLastCall,
-      totalRows,
-      lastSyncedAt: syncState?.lastSyncedAt ?? null,
-      isSyncing: syncState?.isSyncing ?? false,
-    };
-    const transformMs = roundedTiming(performance.now() - transformStartedAt);
-    const serializeStartedAt = performance.now();
-    const body = JSON.stringify(payload);
-    const serializeMs = roundedTiming(performance.now() - serializeStartedAt);
     const totalMs = roundedTiming(performance.now() - requestStartedAt);
-    if (cacheKey) {
-      putPhoneStatsCache(cacheKey, {
-        body,
-        totalRows,
-        aggregateRows: aggregation.rows.length,
-      });
-    }
 
     res.setHeader("Server-Timing", [
-      `authz;dur=${authorizationLoadMs}`,
+      `authz;dur=${result.authorizationMs}`,
       `authn;dur=${req.authTimingMs ?? 0}`,
-      `db;dur=${databaseMs}`,
-      `transform;dur=${transformMs}`,
-      `serialize;dur=${serializeMs}`,
+      `db;dur=${result.databaseMs}`,
+      `transform;dur=${result.transformMs}`,
+      `serialize;dur=${result.serializeMs}`,
       `app;dur=${totalMs}`,
     ].join(", "));
-    res.setHeader("X-Result-Rows", String(totalRows));
-    res.setHeader("X-Aggregate-Rows", String(aggregation.rows.length));
-    res.setHeader("X-Cache", cacheKey ? "miss" : "bypass");
-    res.type("application/json").send(body);
+    res.setHeader("X-Result-Rows", String(result.totalRows));
+    res.setHeader("X-Aggregate-Rows", String(result.aggregateRows));
+    res.setHeader("X-Cache", result.cache);
+    res.type("application/json").send(result.body);
   } catch (err) {
     req.log.error(err, "quo stats error");
     res.status(500).json({ error: "Quo statistics are temporarily unavailable." });
