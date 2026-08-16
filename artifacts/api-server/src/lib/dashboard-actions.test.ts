@@ -122,7 +122,7 @@ test("invalid strict QA output is rejected and sanitized without transcript logg
 });
 
 test("manager queue reports open all-time and created-in-range totals separately", async () => {
-  const api = await routeSource("qa.ts");
+  const api = await moduleSource("qa/qa.reporting.service.ts");
   const ui = await dashboardSource();
   assert.match(api, /openManagerQueue/);
   assert.match(api, /managerTasksCreatedInRange/);

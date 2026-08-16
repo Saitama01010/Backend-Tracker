@@ -43,6 +43,10 @@ import {
   resolveQaAgentScope,
   type QaAgentScope,
 } from "../modules/qa/qa.authorization.js";
+import {
+  QaReportingError,
+  qaReportingService,
+} from "../modules/qa/qa.reporting.service.js";
 
 const router: IRouter = Router();
 
@@ -229,64 +233,13 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
     if (!parsedDateBasis.ok) return res.status(400).json({ error: parsedDateBasis.error });
     const { dateBasis } = parsedDateBasis;
     const agentScope = await qaAgentScope(req.user!);
-    const queriedRows = await qaRepository.listStatsReviews({
+    return res.json(await qaReportingService.getStats({
       from,
       to,
       dateBasis,
       departments: depts,
-      authorizedIdentities: agentScope.authorizedIdentities,
-    });
-    const rows = queriedRows.filter((row) => agentScope.canAccess(row.agentName));
-
-    const reviewed = rows.length;
-    const avgScore = reviewed ? Math.round(rows.reduce((a, r) => a + r.score, 0) / reviewed) : 0;
-    const avgProtocol = reviewed ? Math.round(rows.reduce((a, r) => a + (r.protocolScore || 0), 0) / reviewed) : 0;
-    const avgSoftSkills = reviewed ? Math.round(rows.reduce((a, r) => a + (r.softSkillsScore || 0), 0) / reviewed) : 0;
-    const failed = rows.filter((r) => !r.pass).length;
-    const criticalFails = rows.filter((r) => r.criticalFail).length;
-
-    // Per-department breakdown
-    const byDept: Record<string, { reviewed: number; avgScore: number; criticalFails: number; failed: number; taxMentions: number }> = {};
-    for (const r of rows) {
-      const d = r.department || "Unknown";
-      if (!byDept[d]) byDept[d] = { reviewed: 0, avgScore: 0, criticalFails: 0, failed: 0, taxMentions: 0 };
-      byDept[d].reviewed++;
-      byDept[d].avgScore += r.score;
-      if (r.criticalFail) byDept[d].criticalFails++;
-      if (!r.pass) byDept[d].failed++;
-      if (r.mentionsTax) byDept[d].taxMentions++;
-    }
-    for (const d of Object.keys(byDept)) {
-      const b = byDept[d];
-      b.avgScore = b.reviewed ? Math.round(b.avgScore / b.reviewed) : 0;
-    }
-
-    const taxMentions = rows.filter((row) => row.mentionsTax).length;
-    const tasks = (await qaRepository.listStatsTasks({
-      departments: depts,
-      authorizedIdentities: agentScope.authorizedIdentities,
-    }))
-      .filter((task) => agentScope.canAccess(task.agentName));
-    const openManagerQueue = tasks.filter((task) => task.status === "open").length;
-    const managerTasksCreatedInRange = tasks.filter((task) => task.createdAt >= from && task.createdAt <= to).length;
-    const variRows = tasks.filter((task) => task.status === "resolved"
-      && task.managerScore !== null
-      && task.createdAt >= from
-      && task.createdAt <= to);
-    const avgVariance = variRows.length
-      ? Math.round((variRows.reduce((a, r) => a + Math.abs(r.variance ?? 0), 0) / variRows.length) * 10) / 10
-      : 0;
-
-    return res.json({
-      reviewed, avgScore, avgProtocol, avgSoftSkills,
-      failed, criticalFails,
-      openManagerQueue,
-      managerTasksCreatedInRange,
-      avgVariance,
-      taxMentions,
-      byDept,
-      dateBasis,
-    });
+      agentScope,
+    }));
   } catch (err) {
     req.log.error(err, "qa stats error");
     return res.status(500).json({ error: "Unable to load QA statistics." });
@@ -403,20 +356,17 @@ router.get("/qa/reviews", requireAuth, async (req, res) => {
     if (!parsedDateBasis.ok) return res.status(400).json({ error: parsedDateBasis.error });
     const { dateBasis } = parsedDateBasis;
     const agentScope = await qaAgentScope(req.user!);
-    if (agent && !agentScope.canAccess(agent)) return res.status(403).json({ error: "Forbidden" });
-    const queriedRows = await qaRepository.listReviews({
+    return res.json(await qaReportingService.listReviews({
       from,
       to,
       dateBasis,
       departments: depts,
-      authorizedIdentities: agentScope.authorizedIdentities,
+      agentScope,
       agent,
       limit,
-    });
-    const rows = queriedRows.filter((row) => agentScope.canAccess(row.agentName));
-
-    return res.json({ reviews: rows, dateBasis });
+    }));
   } catch (err) {
+    if (err instanceof QaReportingError) return res.status(err.status).json(err.response);
     req.log.error(err, "qa reviews error");
     return res.status(500).json({ error: "Unable to load QA reviews." });
   }
@@ -425,17 +375,13 @@ router.get("/qa/reviews", requireAuth, async (req, res) => {
 router.get("/qa/reviews/:id", requireAuth, async (req, res) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const row = await qaRepository.getReview(id ?? "");
-    if (!row) return res.status(404).json({ error: "not found" });
-    const departmentScope = deptFilterArr(req);
-    if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
-    if (departmentScope.departments && !departmentScope.departments.includes(row.department as Department)) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-    const agentScope = await qaAgentScope(req.user!);
-    if (!agentScope.canAccess(row.agentName)) return res.status(403).json({ error: "Forbidden" });
-    return res.json(row);
+    return res.json(await qaReportingService.getReview({
+      id: id ?? "",
+      actor: req.user!,
+      department: req.query["department"],
+    }));
   } catch (err) {
+    if (err instanceof QaReportingError) return res.status(err.status).json(err.response);
     req.log.error(err, "qa review fetch error");
     return res.status(500).json({ error: "Unable to load QA review." });
   }
@@ -450,14 +396,12 @@ router.get("/qa/tasks", requireAuth, async (req, res) => {
     const depts = departmentScope.departments;
     const statuses = status === "all" ? ["open", "resolved"] : [status];
     const agentScope = await qaAgentScope(req.user!);
-    const queriedRows = await qaRepository.listManagerTasks({
+    return res.json(await qaReportingService.listTasks({
       statuses,
       departments: depts,
-      authorizedIdentities: agentScope.authorizedIdentities,
+      agentScope,
       limit,
-    });
-    const rows = queriedRows.filter((row) => agentScope.canAccess(row.agentName));
-    return res.json({ tasks: rows });
+    }));
   } catch (err) {
     req.log.error(err, "qa tasks error");
     return res.status(500).json({ error: "Unable to load QA tasks." });
@@ -469,26 +413,14 @@ router.post("/qa/tasks/:id/resolve", requireAuth, requireRole("admin"), async (r
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const resolvedBy = req.user!.username;
-    const { notes, comments, coachingComplete, managerScore } = parseQaTaskResolution(req.body);
-
-    // Fetch existing to compute variance + final
-    const existing = await qaRepository.getManagerTask(id ?? "");
-    if (!existing) return res.status(404).json({ error: "not found" });
-
-    const variance = managerScore !== null ? managerScore - existing.aiScore : null;
-    const finalScore = managerScore !== null ? managerScore : existing.aiScore;
-
-    const updated = await qaRepository.resolveManagerTask(id ?? "", {
+    const resolution = parseQaTaskResolution(req.body);
+    return res.json(await qaReportingService.resolveTask({
+      id: id ?? "",
       resolvedBy,
-      notes,
-      comments,
-      managerScore,
-      variance,
-      finalScore,
-      coachingComplete,
-    });
-    return res.json(updated);
+      resolution,
+    }));
   } catch (err) {
+    if (err instanceof QaReportingError) return res.status(err.status).json(err.response);
     req.log.error(err, "qa resolve error");
     return res.status(500).json({ error: "Unable to resolve QA task." });
   }
@@ -507,16 +439,13 @@ router.get("/qa/agents", requireAuth, async (req, res) => {
     if (!parsedDateBasis.ok) return res.status(400).json({ error: parsedDateBasis.error });
     const { dateBasis } = parsedDateBasis;
     const agentScope = await qaAgentScope(req.user!);
-    const queriedRows = await qaRepository.listAgentStats({
+    return res.json(await qaReportingService.listAgents({
       from,
       to,
       dateBasis,
       departments: depts,
-      authorizedIdentities: agentScope.authorizedIdentities,
-    });
-    const rows = queriedRows.filter((row) => agentScope.canAccess(row.agentName));
-
-    return res.json({ agents: rows, dateBasis });
+      agentScope,
+    }));
   } catch (err) {
     req.log.error(err, "qa agents error");
     return res.status(500).json({ error: "Unable to load QA agents." });
