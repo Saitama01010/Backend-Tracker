@@ -13,6 +13,7 @@
     "test:security": "tsx --test src/security/*.test.ts",
     "test:webhooks:integration": "tsx --test src/security/webhooks.integration.test.ts",
     "test:jobs:integration": "tsx --test src/security/backgroundJobs.integration.test.ts",
+    "test:nsf-readymode:integration": "tsx --test src/modules/nsf/nsf.readymode.characterization.integration.test.ts",
     "test:ai-reservations:integration": "tsx --test src/security/aiRequestReservations.integration.test.ts",
     "test:ai-cleanup:integration": "tsx --test src/security/aiReservationCleanup.integration.test.ts",
     "test:agent-roster:integration": "tsx --test src/routes/teamAgents.integration.test.ts",
