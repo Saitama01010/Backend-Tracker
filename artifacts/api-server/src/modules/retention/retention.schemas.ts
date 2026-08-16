@@ -1,7 +1,10 @@
 import { parseSheetGid } from "../../lib/externalIntegrationPolicy.js";
+import { parseBoundedInteger } from "../../lib/externalIntegrationPolicy.js";
 import { validateIntegrationDateRange } from "../../lib/externalIntegrationPolicy.js";
 import type {
   RetentionQuoStatsQuery,
+  RetentionQuoCallsInput,
+  RetentionQuoCallsQuery,
   RetentionReadyModeQuery,
   RetentionSheetQuery,
 } from "./retention.types.js";
@@ -69,4 +72,42 @@ export function validateRetentionQuoStatsQuery(
   return range.ok
     ? { ok: true, query: { from: range.from, to: range.to } }
     : { ok: false, error: range.error };
+}
+
+export type RetentionQuoCallsInputResult =
+  | { ok: true; input: RetentionQuoCallsInput }
+  | { ok: false; error: "Invalid pagination parameters." };
+
+export function retentionQuoCallsInput(
+  raw: Record<string, unknown>,
+  now = Date.now(),
+): RetentionQuoCallsInputResult {
+  const dates = retentionQuoStatsDateInput(raw, now);
+  const limit = parseBoundedInteger(raw["limit"], 500, { min: 1, max: 1_000 });
+  const offset = parseBoundedInteger(raw["offset"], 0, { min: 0, max: 1_000_000 });
+  if (limit === null || offset === null) {
+    return { ok: false, error: "Invalid pagination parameters." };
+  }
+  const team = typeof raw["team"] === "string" ? raw["team"] : undefined;
+  return {
+    ok: true,
+    input: {
+      ...dates,
+      team,
+      limit,
+      offset,
+    },
+  };
+}
+
+export function validateRetentionQuoCallsTeam(
+  input: RetentionQuoCallsInput,
+): { ok: true; query: RetentionQuoCallsQuery } | { ok: false; error: "Invalid team." } {
+  if (input.team && !["retention", "nsf", "cs", "killers"].includes(input.team)) {
+    return { ok: false, error: "Invalid team." };
+  }
+  return {
+    ok: true,
+    query: { ...input, team: input.team as RetentionQuoCallsQuery["team"] },
+  };
 }

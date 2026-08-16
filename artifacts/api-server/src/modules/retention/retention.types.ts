@@ -151,3 +151,32 @@ export interface RetentionQuoStatsResult {
   transformMs: number;
   serializeMs: number;
 }
+
+export interface RetentionQuoCallsInput extends RetentionQuoStatsQuery {
+  team?: string;
+  limit: number;
+  offset: number;
+}
+
+export interface RetentionQuoCallsQuery extends RetentionQuoStatsQuery {
+  team?: "retention" | "nsf" | "cs" | "killers";
+  limit: number;
+  offset: number;
+}
+
+export interface RetentionQuoCallRow {
+  id: string;
+  lineTeam: string;
+  lineName: string;
+  agentName: string | null;
+  participant: string;
+  direction: string;
+  status: string;
+  durationSeconds: number;
+  createdAt: Date;
+}
+
+export interface RetentionQuoCallsResult {
+  data: RetentionQuoCallRow[];
+  total: number;
+}

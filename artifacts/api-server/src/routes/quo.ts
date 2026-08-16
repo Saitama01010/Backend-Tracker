@@ -1,23 +1,20 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { performance } from "node:perf_hooks";
 import { db, phoneCallsTable } from "@workspace/db";
-import { and, eq, gte, lte, desc, ne } from "drizzle-orm";
+import { and, eq, gte, lte, ne } from "drizzle-orm";
 import {
   getSyncState,
   canonicalAgentName,
 } from "../integrations/quo/sync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { canAccessDateRange, canAccessMetricTeam, isAdministrator, type MetricTeam } from "../middleware/authorizationCore.js";
+import { canAccessDateRange, canAccessMetricTeam, isAdministrator } from "../middleware/authorizationCore.js";
 import {
-  authorizationAgent,
   canAccessMetricAgent,
   loadAuthorizationAgentDirectory,
 } from "../lib/authorizationScope.js";
 import {
   MAX_QUO_SYNC_DAYS,
-  paginateAuthorizedBatches,
-  parseBoundedInteger,
   validateIntegrationDateRange,
 } from "../lib/externalIntegrationPolicy.js";
 import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
@@ -33,10 +30,13 @@ import {
   type QuoPhoneNumber,
 } from "../integrations/quo/dashboardMapper.js";
 import {
+  retentionQuoCallsInput,
   retentionQuoStatsDateInput,
+  validateRetentionQuoCallsTeam,
   validateRetentionQuoStatsQuery,
 } from "../modules/retention/retention.schemas.js";
 import { retentionQuoStatsService } from "../modules/retention/retention.quo.service.js";
+import { retentionQuoCallsService } from "../modules/retention/retention.quo.calls.service.js";
 import {
   LivePollRefreshInProgressError,
   retentionQuoLiveService,
@@ -592,73 +592,38 @@ router.get("/quo/live/refresh", async (req, res) => {
 
 router.get("/quo/calls", async (req, res) => {
   try {
-    const from = typeof req.query["from"] === "string" ? req.query["from"] : new Date(Date.now() - 30 * 86400000).toISOString();
-    const to = typeof req.query["to"] === "string" ? req.query["to"] : new Date().toISOString();
-    const team = typeof req.query["team"] === "string" ? req.query["team"] : undefined;
-    const limitParam = parseBoundedInteger(req.query["limit"], 500, { min: 1, max: 1_000 });
-    const offsetParam = parseBoundedInteger(req.query["offset"], 0, { min: 0, max: 1_000_000 });
-    if (limitParam === null || offsetParam === null) {
-      res.status(400).json({ error: "Invalid pagination parameters." });
+    const parsed = retentionQuoCallsInput(req.query);
+    if (!parsed.ok) {
+      res.status(400).json({ error: parsed.error });
       return;
     }
-
-    if (!canAccessDateRange(req.user!, [from, to])) {
+    if (!canAccessDateRange(req.user!, [parsed.input.from, parsed.input.to])) {
       res.status(403).json({ error: "Forbidden" });
       return;
     }
-    const requestedTeam = team as MetricTeam | undefined;
-    if (requestedTeam && !["retention", "nsf", "cs", "killers"].includes(requestedTeam)) {
-      res.status(400).json({ error: "Invalid team." });
+
+    const teamValidation = validateRetentionQuoCallsTeam(parsed.input);
+    if (!teamValidation.ok) {
+      res.status(400).json({ error: teamValidation.error });
       return;
     }
     if (!isAdministrator(req.user!) && (
-      !requestedTeam
-      || !["retention", "nsf", "cs", "killers"].includes(requestedTeam)
-      || !canAccessMetricTeam(req.user!, requestedTeam)
+      !teamValidation.query.team
+      || !canAccessMetricTeam(req.user!, teamValidation.query.team)
     )) {
       res.status(403).json({ error: "Forbidden" });
       return;
     }
 
-    const range = validateIntegrationDateRange(from, to);
+    const range = validateRetentionQuoStatsQuery(teamValidation.query);
     if (!range.ok) {
       res.status(400).json({ error: range.error });
       return;
     }
-    const { fromDate, toDate } = parseDateRange(range.from, range.to);
-
-    const directory = isAdministrator(req.user!) ? null : await loadAuthorizationAgentDirectory();
-    const isAuthorized = (row: {
-      lineTeam: string;
-      lineName: string;
-      agentName: string | null;
-    }) => {
-      const agentName = canonicalAgentName(row.agentName) ?? inferDashboardAgentFromLine(row.lineName) ?? "Unknown";
-      const rawTeam = dashboardAgentTeam(agentName) ?? row.lineTeam;
-      const fallbackTeam = rawTeam === "retention" || rawTeam === "nsf" || rawTeam === "cs" ? rawTeam : null;
-      if (!directory) return !team || rawTeam === team;
-      const resolvedTeam = authorizationAgent(directory, agentName)?.team ?? fallbackTeam;
-      return (!requestedTeam || resolvedTeam === requestedTeam)
-        && canAccessMetricAgent(req.user!, agentName, directory, fallbackTeam);
-    };
-    const paged = await paginateAuthorizedBatches(async (databaseOffset, batchSize) => db
-      .select({
-        id: phoneCallsTable.id,
-        lineTeam: phoneCallsTable.lineTeam,
-        lineName: phoneCallsTable.lineName,
-        agentName: phoneCallsTable.agentName,
-        participant: phoneCallsTable.participant,
-        direction: phoneCallsTable.direction,
-        status: phoneCallsTable.status,
-        durationSeconds: phoneCallsTable.durationSeconds,
-        createdAt: phoneCallsTable.createdAt,
-      })
-      .from(phoneCallsTable)
-      .where(and(gte(phoneCallsTable.createdAt, fromDate), lte(phoneCallsTable.createdAt, toDate)))
-      .orderBy(desc(phoneCallsTable.createdAt), desc(phoneCallsTable.id))
-      .limit(batchSize)
-      .offset(databaseOffset), isAuthorized, offsetParam, limitParam);
-
+    const paged = await retentionQuoCallsService.listCalls({
+      actor: req.user!,
+      query: { ...teamValidation.query, ...range.query },
+    });
     res.json(paged);
   } catch (err) {
     req.log.error(err, "quo calls error");

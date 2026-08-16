@@ -116,6 +116,9 @@ test("QUO stats service preserves payload assembly and administrator cache count
       syncCalls += 1;
       return { lastSyncedAt: new Date("2026-08-16T11:00:00.000Z"), isSyncing: false };
     },
+    async loadCallBatch() {
+      assert.fail("stats service must not load detailed call rows");
+    },
   };
   let tick = 0;
   const service = new RetentionQuoStatsService({
@@ -196,6 +199,9 @@ test("QUO stats service bypasses cache and reapplies mutable non-admin scope", a
     },
     async loadSyncState() {
       return null;
+    },
+    async loadCallBatch() {
+      assert.fail("stats service must not load detailed call rows");
     },
   };
   const service = new RetentionQuoStatsService({

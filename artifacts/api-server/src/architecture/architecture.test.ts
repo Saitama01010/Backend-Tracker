@@ -85,6 +85,7 @@ test("migrated dashboard routes delegate provider transport and raw parsing to s
     retentionQuoRepository,
     retentionQuoLiveService,
     retentionQuoLiveRepository,
+    retentionQuoCallsService,
     sheets,
     retentionService,
     retentionRepository,
@@ -97,6 +98,7 @@ test("migrated dashboard routes delegate provider transport and raw parsing to s
     source("modules/retention/retention.quo.repository.ts"),
     source("modules/retention/retention.quo.live.service.ts"),
     source("modules/retention/retention.quo.live.repository.ts"),
+    source("modules/retention/retention.quo.calls.service.ts"),
     source("routes/sheets.ts"),
     source("modules/retention/retention.service.ts"),
     source("modules/retention/retention.repository.ts"),
@@ -129,6 +131,15 @@ test("migrated dashboard routes delegate provider transport and raw parsing to s
   assert.doesNotMatch(retentionQuoLiveService, /@workspace\/db|drizzle-orm/);
   assert.match(retentionQuoLiveRepository, /@workspace\/db/);
   assert.doesNotMatch(retentionQuoLiveRepository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  const callsHandler = quo.slice(
+    quo.indexOf('router.get("/quo/calls"'),
+    quo.indexOf("export { router as quoRouter }"),
+  );
+  assert.match(callsHandler, /retentionQuoCallsService\.listCalls/);
+  assert.doesNotMatch(callsHandler, /@workspace\/db|phoneCallsTable|paginateAuthorizedBatches/);
+  assert.match(retentionQuoCallsService, /retention\.quo\.repository\.js/);
+  assert.doesNotMatch(retentionQuoCallsService, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  assert.doesNotMatch(retentionQuoCallsService, /@workspace\/db|drizzle-orm/);
 
   assert.match(sheets, /modules\/retention\/retention\.service\.js/);
   assert.doesNotMatch(sheets, /@workspace\/db|drizzle-orm|integrations\/googleSheets/);
