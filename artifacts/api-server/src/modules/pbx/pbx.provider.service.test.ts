@@ -55,6 +55,32 @@ test("PBX provider agent pagination preserves date caps, status totals, callback
   assert.equal(result.callTimestamps.length, 3);
 });
 
+test("PBX refresh directory and line probe preserve provider paths and inbound filtering", async () => {
+  const paths: string[] = [];
+  const dashboard = { callsByAgent: [] };
+  const agents = [{ id: 7 }];
+  const ringGroups = [{ id: 3 }];
+  const service = new PbxProviderService(async <T>(path: string) => {
+    paths.push(path);
+    if (path === "/api/dashboard") return dashboard as T;
+    if (path === "/api/agents") return agents as T;
+    if (path === "/api/ring-groups") return ringGroups as T;
+    return { calls: [
+      call({ id: 20, createdAt: "2026-08-16T10:00:00.000Z", direction: "inbound", toNumber: "+12025550991" }),
+      call({ id: 21, createdAt: "2026-08-16T10:01:00.000Z", direction: "outbound", toNumber: "+12025550992" }),
+    ] } as T;
+  }, async () => []);
+
+  assert.deepEqual(await service.fetchRefreshDirectory(), { dashboard, agents, ringGroups });
+  assert.deepEqual(await service.probeAgentInboundLines(7), ["+12025550991"]);
+  assert.deepEqual(paths, [
+    "/api/dashboard",
+    "/api/agents",
+    "/api/ring-groups",
+    "/api/calls?agentId=7&limit=100&page=1",
+  ]);
+});
+
 test("PBX ring-group scan preserves line learning, exclusions, callback collection, and filters", async () => {
   const paths: string[] = [];
   const page = [

@@ -2,7 +2,7 @@ import { logger } from "./logger.js";
 import type { BackgroundJobHandlers } from "./durableBackgroundJobs.js";
 import { runLivePoll } from "../modules/retention/retention.quo.live.service.js";
 import { runScheduledQuoSync, runSync } from "../integrations/quo/sync.js";
-import { refreshCallHistory } from "../routes/vos.js";
+import { refreshPbxCallHistory } from "../modules/pbx/pbx.refresh.service.js";
 import { runOnboardingReportRefresh } from "../modules/onboarding/report.js";
 import { runLiveTransferRefresh } from "../modules/transfers/liveTransfers.js";
 import { runBiweeklyQa, runWeeklyAssignment } from "../modules/qa/qa.jobs.service.js";
@@ -24,7 +24,7 @@ export const backgroundJobHandlers: BackgroundJobHandlers = {
   async integration_live_refresh(_job, { signal }) {
     const [quo] = await Promise.all([
       runLivePoll(signal),
-      withDatabaseLease("vos_call_history_refresh", () => refreshCallHistory(logger, { signal })),
+      withDatabaseLease("vos_call_history_refresh", () => refreshPbxCallHistory(logger, { signal })),
     ]);
     return { quoActive: quo.active.length, pbxRefreshed: true };
   },
@@ -40,7 +40,7 @@ export const backgroundJobHandlers: BackgroundJobHandlers = {
   async vos_backfill(_job, { signal }) {
     await withDatabaseLease(
       "vos_call_history_refresh",
-      () => refreshCallHistory(logger, { deepBackfill: true, signal }),
+      () => refreshPbxCallHistory(logger, { deepBackfill: true, signal }),
     );
     return { backfilled: true };
   },

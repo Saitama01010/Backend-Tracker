@@ -1,6 +1,9 @@
 import {
   fetchPbxJson,
+  type VosAgent,
   type VosCallRaw,
+  type VosDashboard,
+  type VosRingGroup,
 } from "../../integrations/pbx/client.js";
 import { fetchQuoDirectoryPhoneNumbers } from "../../integrations/quo/client.js";
 import type { RetentionPbxRingGroupMissed } from "../retention/retention.pbx.types.js";
@@ -36,6 +39,12 @@ export type PbxRingGroupScan = {
   pbxOutboundCalls: Array<{ toNumber: string; createdAt: string }>;
 };
 
+export type PbxRefreshDirectory = {
+  dashboard: VosDashboard;
+  agents: VosAgent[];
+  ringGroups: VosRingGroup[];
+};
+
 const excludedRingGroups = new Set(["MX Retention"]);
 
 export class PbxProviderService {
@@ -48,6 +57,24 @@ export class PbxProviderService {
     const numbers = new Set<string>();
     for (const number of await this.fetchQuoDirectory()) numbers.add(normalizePhone(number));
     return numbers;
+  }
+
+  async fetchRefreshDirectory(): Promise<PbxRefreshDirectory> {
+    const [dashboard, agents, ringGroups] = await Promise.all([
+      this.fetchJson<VosDashboard>("/api/dashboard"),
+      this.fetchJson<VosAgent[]>("/api/agents"),
+      this.fetchJson<VosRingGroup[]>("/api/ring-groups"),
+    ]);
+    return { dashboard, agents, ringGroups };
+  }
+
+  async probeAgentInboundLines(agentId: number): Promise<string[]> {
+    const data = await this.fetchJson<{ calls: VosCallRaw[] }>(
+      `/api/calls?agentId=${agentId}&limit=100&page=1`,
+    );
+    return (data.calls ?? [])
+      .filter((call) => call.direction === "inbound" && call.toNumber)
+      .map((call) => call.toNumber!);
   }
 
   async fetchAgentCallsForDate(
