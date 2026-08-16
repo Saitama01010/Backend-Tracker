@@ -268,7 +268,7 @@ test("Attendance routes delegate application, source, and PostgreSQL work throug
   assert.doesNotMatch(callsService, /@workspace\/db|drizzle-orm|routes\/vos/);
   assert.match(recordService, /attendance\.repository\.js/);
   assert.doesNotMatch(recordService, /@workspace\/db|drizzle-orm|\bdb\.|attendanceMembersTable|attendanceRecordsTable/);
-  assert.match(pbxSource, /routes\/vos\.js/);
+  assert.match(pbxSource, /pbx\/pbx\.state\.js/);
   assert.doesNotMatch(pbxSource, /from ["']express["']|@workspace\/db|drizzle-orm/);
   assert.doesNotMatch(route, /attendanceRepository|@workspace\/db|drizzle-orm|routes\/vos/);
   assert.doesNotMatch(route, /loadAttendanceImportCandidates/);

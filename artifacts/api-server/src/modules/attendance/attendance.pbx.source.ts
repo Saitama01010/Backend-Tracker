@@ -1,15 +1,14 @@
-import { getCallHistoryCache, hydrateVosState } from "../../routes/vos.js";
+import { getCallHistoryCache, hydratePbxState } from "../pbx/pbx.state.js";
 
 export interface AttendancePbxFirstCall {
   agentName: string;
   firstCallAt: string | null;
 }
 
-// Compatibility adapter over the existing shared PBX cache. Moving that cache
-// itself belongs to the later VoS domain slice; this preserves its exact
-// hydration, staleness, and provider-call behavior for Attendance.
+// Attendance delegates to the canonical shared PBX durable runtime state while
+// preserving its exact hydration, staleness, and provider-call behavior.
 export async function loadAttendancePbxCallHistory(): Promise<AttendancePbxFirstCall[]> {
-  await hydrateVosState();
+  await hydratePbxState();
   return getCallHistoryCache().map((row) => ({
     agentName: row.agentName,
     firstCallAt: row.firstCallAt,

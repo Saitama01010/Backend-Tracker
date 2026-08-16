@@ -10,7 +10,6 @@ import {
 } from "../lib/externalIntegrationPolicy.js";
 import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
 import { manualJobKey, scheduledJobKey } from "../lib/durableBackgroundJobs.js";
-import { getDurableRuntimeState, putDurableRuntimeState } from "../lib/durableRuntimeState.js";
 import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 import { businessDayWindow, formatCalendarDate } from "../lib/businessTime.js";
 import type { AuthPayload } from "../middleware/authCore.js";
@@ -42,6 +41,15 @@ import {
   normalizePhone,
   phoneComparisonKeys,
 } from "../modules/pbx/pbx.phone.js";
+import {
+  getCallHistoryCache,
+  hydratePbxState,
+  pbxRuntimeState,
+  persistPbxState,
+  vosCallSpansCache,
+  vosCallTimestampsCache,
+  type MissedNoCallbackItem,
+} from "../modules/pbx/pbx.state.js";
 
 const router = Router();
 router.use("/vos", requireAuth);
@@ -54,28 +62,14 @@ router.use("/vos", requireAuth);
  * Per-agent completed-call spans from the most recent VoSLogic refresh.
  * Keyed by lowercase agent name. Consumed by violations.ts for busy detection.
  */
-export const vosCallSpansCache = new Map<string, Array<{ start: number; end: number }>>();
-export const vosCallTimestampsCache = new Map<string, Array<{ at: string; source: "pbx"; id: string }>>();
-
 export type VosCallHistoryStat = RetentionPbxCallHistoryStat;
 export type VosRingGroupMissed = RetentionPbxRingGroupMissed;
-
-export interface MissedNoCallbackItem {
-  id: string | number;
-  fromNumber: string;
-  toNumber: string;
-  createdAt: string;
-  ringGroupId: number;
-  ringGroupName: string;
-  team: "retention" | "nsf" | "cs" | "other";
-  source: "pbx" | "quo" | "readymode";
-  missedCallId?: string | number | null;
-  normalizedCustomerNumber?: string;
-  lineId?: string | null;
-  callbackFound?: boolean;
-  callbackId?: string | null;
-  debugReason?: string;
-}
+export {
+  getCallHistoryCache,
+  vosCallSpansCache,
+  vosCallTimestampsCache,
+} from "../modules/pbx/pbx.state.js";
+export { hydratePbxState as hydrateVosState } from "../modules/pbx/pbx.state.js";
 
 function scopeMissedItems(req: { user?: AuthPayload }, items: MissedNoCallbackItem[]): MissedNoCallbackItem[] {
   return scopeMissedItemsForUser(req.user, items);
@@ -430,76 +424,24 @@ async function scanRingGroupCalls(
 // Persistent line→ring group map: accumulates across refreshes within a server session.
 // Once a mapping is learned (e.g. +19498210062 → ring group 4) it is never lost, so
 // ring groups with no answered calls on a given day still get their missed calls counted.
-const persistentLineRgMap = new Map<string, number>();
-
-let callHistoryCache: VosCallHistoryStat[] = [];
-export function getCallHistoryCache(): VosCallHistoryStat[] { return callHistoryCache; }
-let callHistoryFetchedAt = 0;
-let callHistoryFetching = false;
-let ringGroupMissedCache: VosRingGroupMissed = {};
-let missedNoCallbackCache: MissedNoCallbackItem[] = [];
-let ringGroupNameCache = new Map<number, string>(); // rgId → name, updated each refresh
+const persistentLineRgMap = pbxRuntimeState.persistentLineRingGroups;
+const ringGroupNameCache = pbxRuntimeState.ringGroupNames;
 
 // Cumulative ring group missed counts — survive across refreshes within a server session.
 // VoSLogic's global /api/calls endpoint doesn't paginate (always returns the same recent
 // snapshot), so each refresh only sees the latest ~100 calls. By accumulating counts via
 // seenMissedCallIds we build up the true daily total across all 15-minute refresh cycles.
-const cumulativeRingGroupMissed: VosRingGroupMissed = {};
-const seenMissedCallIds = new Set<number>();
-let cumulativeDate = ""; // reset accumulators when date changes (midnight rollover)
+const cumulativeRingGroupMissed = pbxRuntimeState.cumulativeRingGroupMissed;
+const seenMissedCallIds = pbxRuntimeState.seenMissedCallIds;
 // Per-hour PBX missed breakdown (LA timezone), keyed by hour 0–23.
-const cumulativeMissedByHour: Record<number, { retention: number; cs: number; nsf: number }> = {};
-
-// Cached set of our own phone numbers (PBX lines + OpenPhone lines), updated each refresh cycle.
-// Used to exclude internal callers from the daily/hourly missed-call SQL queries.
-let cachedInternalNumbers: string[] = [];
-
-interface VosDurableSnapshot extends Record<string, unknown> {
-  callHistory: VosCallHistoryStat[];
-  fetchedAt: number;
-  ringGroupMissed: VosRingGroupMissed;
-  missedNoCallback: MissedNoCallbackItem[];
-  ringGroupNames: Array<[number, string]>;
-  internalNumbers: string[];
-  lineRingGroups: Array<[string, number]>;
-  seenMissedCallIds: number[];
-  cumulativeDate: string;
-  cumulativeMissedByHour: Record<number, { retention: number; cs: number; nsf: number }>;
-  callSpans: Array<[string, Array<{ start: number; end: number }>]>;
-  callTimestamps: Array<[string, Array<{ at: string; source: "pbx"; id: string }>]>;
-}
-
-export async function hydrateVosState(): Promise<void> {
-  const snapshot = await getDurableRuntimeState<VosDurableSnapshot>("vos:call-history");
-  if (!snapshot || snapshot.value.fetchedAt <= callHistoryFetchedAt) return;
-  const value = snapshot.value;
-  callHistoryCache = value.callHistory ?? [];
-  callHistoryFetchedAt = value.fetchedAt;
-  ringGroupMissedCache = value.ringGroupMissed ?? {};
-  for (const key of Object.keys(cumulativeRingGroupMissed)) delete cumulativeRingGroupMissed[Number(key)];
-  Object.assign(cumulativeRingGroupMissed, value.ringGroupMissed ?? {});
-  missedNoCallbackCache = value.missedNoCallback ?? [];
-  ringGroupNameCache = new Map(value.ringGroupNames ?? []);
-  cachedInternalNumbers = value.internalNumbers ?? [];
-  persistentLineRgMap.clear();
-  for (const [line, group] of value.lineRingGroups ?? []) persistentLineRgMap.set(line, group);
-  seenMissedCallIds.clear();
-  for (const id of value.seenMissedCallIds ?? []) seenMissedCallIds.add(id);
-  cumulativeDate = value.cumulativeDate ?? "";
-  for (const key of Object.keys(cumulativeMissedByHour)) delete cumulativeMissedByHour[Number(key)];
-  Object.assign(cumulativeMissedByHour, value.cumulativeMissedByHour ?? {});
-  vosCallSpansCache.clear();
-  for (const [agent, spans] of value.callSpans ?? []) vosCallSpansCache.set(agent, spans);
-  vosCallTimestampsCache.clear();
-  for (const [agent, calls] of value.callTimestamps ?? []) vosCallTimestampsCache.set(agent, calls);
-}
+const cumulativeMissedByHour = pbxRuntimeState.cumulativeMissedByHour;
 
 export async function refreshCallHistory(
   log?: Logger,
   options: { deepBackfill?: boolean; signal?: AbortSignal } = {},
 ): Promise<void> {
-  if (callHistoryFetching) return;
-  callHistoryFetching = true;
+  if (pbxRuntimeState.fetching) return;
+  pbxRuntimeState.fetching = true;
   // Clear the span cache before rebuilding so stale entries from previous day don't persist.
   vosCallSpansCache.clear();
   vosCallTimestampsCache.clear();
@@ -686,7 +628,7 @@ export async function refreshCallHistory(
       ...[...lineToRingGroupId.keys()].map(normalizePhone),
       ...quoLineNumbers,
     ]);
-    cachedInternalNumbers = Array.from(internalNumbers).filter(Boolean);
+    pbxRuntimeState.internalNumbers = Array.from(internalNumbers).filter(Boolean);
 
     const scanResult = await scanRingGroupCalls(lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600, agentToRingGroups, internalNumbers);
     options.signal?.throwIfAborted();
@@ -824,8 +766,8 @@ export async function refreshCallHistory(
 
     // ── Accumulate ring group missed counts across refreshes ──────────────────
     // Reset if date has changed (midnight rollover) to avoid counting yesterday's calls.
-    if (cumulativeDate !== today) {
-      cumulativeDate = today;
+    if (pbxRuntimeState.cumulativeDate !== today) {
+      pbxRuntimeState.cumulativeDate = today;
       for (const k of Object.keys(cumulativeRingGroupMissed)) delete cumulativeRingGroupMissed[k as unknown as number];
       for (const k of Object.keys(cumulativeMissedByHour)) delete cumulativeMissedByHour[k as unknown as number];
       seenMissedCallIds.clear();
@@ -875,30 +817,17 @@ export async function refreshCallHistory(
       log?.warn({ err: e }, "readymode queue merge failed");
     }
 
-    callHistoryCache = results;
-    callHistoryFetchedAt = Date.now();
-    ringGroupMissedCache = { ...cumulativeRingGroupMissed };
-    missedNoCallbackCache = missedNoCB;
+    pbxRuntimeState.callHistory = results;
+    pbxRuntimeState.fetchedAt = Date.now();
+    pbxRuntimeState.ringGroupMissed = { ...cumulativeRingGroupMissed };
+    pbxRuntimeState.missedNoCallback = missedNoCB;
     options.signal?.throwIfAborted();
-    await putDurableRuntimeState("vos:call-history", {
-      callHistory: callHistoryCache,
-      fetchedAt: callHistoryFetchedAt,
-      ringGroupMissed: ringGroupMissedCache,
-      missedNoCallback: missedNoCallbackCache,
-      ringGroupNames: [...ringGroupNameCache.entries()],
-      internalNumbers: cachedInternalNumbers,
-      lineRingGroups: [...persistentLineRgMap.entries()],
-      seenMissedCallIds: [...seenMissedCallIds],
-      cumulativeDate,
-      cumulativeMissedByHour,
-      callSpans: [...vosCallSpansCache.entries()],
-      callTimestamps: [...vosCallTimestampsCache.entries()],
-    } satisfies VosDurableSnapshot, 24 * 60 * 60_000);
+    await persistPbxState();
 
     log?.info(
       {
         agents: results.length,
-        ringGroupMissed: ringGroupMissedCache,
+        ringGroupMissed: pbxRuntimeState.ringGroupMissed,
         newMissedThisCycle: newCount,
         totalMissedAccumulated: seenMissedCallIds.size,
         missedNoCB: missedNoCB.length,
@@ -934,7 +863,7 @@ export async function refreshCallHistory(
     log?.error(err, "vos: call history refresh failed");
     throw err;
   } finally {
-    callHistoryFetching = false;
+    pbxRuntimeState.fetching = false;
   }
 }
 
@@ -958,13 +887,13 @@ router.post("/vos/refresh", requireRole("admin"), async (req, res) => {
 
 router.get("/vos/stats", async (req, res) => {
   try {
-    await hydrateVosState();
+    await hydratePbxState();
     const payload = await retentionPbxService.getStats({
       actor: req.user!,
       cache: {
-        callHistory: callHistoryCache,
-        fetchedAt: callHistoryFetchedAt,
-        ringGroupMissed: ringGroupMissedCache,
+        callHistory: pbxRuntimeState.callHistory,
+        fetchedAt: pbxRuntimeState.fetchedAt,
+        ringGroupMissed: pbxRuntimeState.ringGroupMissed,
       },
       log: req.log,
     });
@@ -984,8 +913,8 @@ router.get("/vos/stats", async (req, res) => {
  * When the PBX scan is still warming up, returns Quo-DB-only results immediately.
  */
 router.get("/vos/missed-no-callback", async (req, res) => {
-  await hydrateVosState();
-  const cacheAgeMs = callHistoryFetchedAt ? Date.now() - callHistoryFetchedAt : Infinity;
+  await hydratePbxState();
+  const cacheAgeMs = pbxRuntimeState.fetchedAt ? Date.now() - pbxRuntimeState.fetchedAt : Infinity;
   if (cacheAgeMs > 30 * 1000) {
     const minute = new Date().toISOString().slice(0, 16).replace(/[-T:]/g, "");
     await postgresBackgroundJobStore.enqueue({
@@ -997,17 +926,17 @@ router.get("/vos/missed-no-callback", async (req, res) => {
   }
   // Fast path: full cache is ready. Merge Readymode queue live so newly added
   // items appear immediately (cache only refreshes every ~15 min).
-  if (callHistoryFetchedAt > 0) {
+  if (pbxRuntimeState.fetchedAt > 0) {
     let extra: MissedNoCallbackItem[] = [];
     try { extra = await getActiveReadymodeItems(); } catch { /* best-effort */ }
     // Strip readymode items from the cache so Done clicks take effect immediately
     // instead of waiting for the 15-min cache refresh. Then append fresh active
     // readymode items (which already excludes anything marked done).
-    const cacheWithoutReadymode = missedNoCallbackCache.filter(
+    const cacheWithoutReadymode = pbxRuntimeState.missedNoCallback.filter(
       (i) => i.source !== "readymode",
     );
     const merged = [...cacheWithoutReadymode, ...extra];
-    return res.json({ items: scopeMissedItems(req, merged), fetchedAt: callHistoryFetchedAt });
+    return res.json({ items: scopeMissedItems(req, merged), fetchedAt: pbxRuntimeState.fetchedAt });
   }
   // PBX scan still in progress — serve Quo DB-only results so the page isn't empty
   try {
@@ -1076,7 +1005,7 @@ router.get("/vos/missed-no-callback", async (req, res) => {
 
     const blocklist = await getBlockedNumbers();
     const items: MissedNoCallbackItem[] = [];
-    const internalSet = new Set(cachedInternalNumbers);
+    const internalSet = new Set(pbxRuntimeState.internalNumbers);
     items.push(...buildPbxMissedNoCallbackItems(persistedPbxMissed, callbackTimes, blocklist, internalSet));
     const seenQuoMissed = new Set<string>();
     for (const row of quoMissed) {
@@ -1127,7 +1056,7 @@ router.get("/vos/missed-no-callback", async (req, res) => {
     return res.json({ items: scopeMissedItems(req, items), fetchedAt: 0 });
   } catch (err) {
     req.log.error(err, "vos missed-no-callback fallback error");
-    return res.json({ items: scopeMissedItems(req, missedNoCallbackCache), fetchedAt: callHistoryFetchedAt });
+    return res.json({ items: scopeMissedItems(req, pbxRuntimeState.missedNoCallback), fetchedAt: pbxRuntimeState.fetchedAt });
   }
 });
 
@@ -1140,7 +1069,7 @@ router.get("/vos/missed-hourly", async (req, res) => {
     }
     res.json(await pbxMissedReportingService.getHourly({
       query: parsed.value,
-      internalNumbers: cachedInternalNumbers,
+      internalNumbers: pbxRuntimeState.internalNumbers,
       livePbxByHour: cumulativeMissedByHour,
     }));
   } catch (err) {
@@ -1153,8 +1082,8 @@ router.get("/vos/missed-daily", async (req, res) => {
   try {
     res.json(await pbxMissedReportingService.getDaily({
       query: parsePbxDailyQuery(req.query),
-      internalNumbers: cachedInternalNumbers,
-      liveRingGroupMissed: ringGroupMissedCache,
+      internalNumbers: pbxRuntimeState.internalNumbers,
+      liveRingGroupMissed: pbxRuntimeState.ringGroupMissed,
       ringGroupNames: ringGroupNameCache,
     }));
   } catch (err) {
@@ -1173,7 +1102,7 @@ router.get("/vos/missed-breakdown", async (req, res) => {
     res.json(await pbxMissedReportingService.getBreakdown({
       actor: req.user!,
       query: parsed.value,
-      internalNumbers: cachedInternalNumbers,
+      internalNumbers: pbxRuntimeState.internalNumbers,
     }));
   } catch (err) {
     req.log.error(err, "vos missed-breakdown error");
@@ -1191,7 +1120,7 @@ router.get("/vos/callback-review", async (req, res) => {
     res.json(await pbxMissedReportingService.getCallbackReview({
       actor: req.user!,
       query: parsed.value,
-      internalNumbers: cachedInternalNumbers,
+      internalNumbers: pbxRuntimeState.internalNumbers,
     }));
   } catch (err) {
     req.log.error(err, "vos callback-review error");

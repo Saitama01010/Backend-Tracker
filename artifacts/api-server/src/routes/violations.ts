@@ -5,7 +5,7 @@ import {
   agentBreaksTable,
 } from "@workspace/db";
 import { and, gte, lte, or, eq, inArray } from "drizzle-orm";
-import { hydrateVosState, vosCallSpansCache, vosCallTimestampsCache } from "./vos";
+import { hydratePbxState, vosCallSpansCache, vosCallTimestampsCache } from "../modules/pbx/pbx.state.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import {
   canAccessAttendanceDepartment,
@@ -103,7 +103,7 @@ async function resolveMissedVerificationScope(key: string): Promise<{ department
 /** GET /api/violations?from=YYYY-MM-DD&to=YYYY-MM-DD */
 router.get("/violations", async (req, res) => {
   try {
-    await hydrateVosState();
+    await hydratePbxState();
     const todayLA = attendanceDate();
     const from = (req.query["from"] as string) || addAttendanceCalendarDays(todayLA, -7);
     const to   = (req.query["to"]   as string) || todayLA;
