@@ -20,6 +20,26 @@ export type PbxOutboundBreakdownRow = {
   durationSeconds: number;
   postAnswerSeconds: number | null;
 };
+export type PbxCallbackMissedWindow =
+  | { kind: "range"; from: string; to: string }
+  | { kind: "since"; since: Date };
+export type PbxQuoCallbackRow = {
+  id: string;
+  participant: string;
+  team: string;
+  lineName: string;
+  createdAt: Date;
+  durationSeconds: number | null;
+  ringDurationSeconds: number | null;
+  status: string;
+};
+export type PbxPersistedCallbackRow = {
+  id: number;
+  fromNumber: string;
+  team: string;
+  ringGroupName: string;
+  createdAt: Date;
+};
 
 export interface PbxMissedReportingRepository {
   listQuoHourly(input: {
@@ -52,6 +72,16 @@ export interface PbxMissedReportingRepository {
   listQuoBreakdown(input: { date: string; internalNumbers: string[] }): Promise<PbxQuoBreakdownRow[]>;
   listPbxBreakdown(date: string): Promise<PbxPersistedBreakdownRow[]>;
   listOutboundBreakdown(input: { date: string; participants: string[] }): Promise<PbxOutboundBreakdownRow[]>;
+  listQuoCallbackReview(input: {
+    window: PbxCallbackMissedWindow;
+    internalNumbers: string[];
+  }): Promise<PbxQuoCallbackRow[]>;
+  listPbxCallbackReview(window: PbxCallbackMissedWindow): Promise<PbxPersistedCallbackRow[]>;
+  listOutboundCallbackReview(input: {
+    from: Date;
+    to: Date;
+    participants: string[];
+  }): Promise<PbxOutboundBreakdownRow[]>;
 }
 
 const teamLines = [...OPERATIONAL_CONFIG.trackedTeamLines];
@@ -304,6 +334,102 @@ export class PostgresPbxMissedReportingRepository implements PbxMissedReportingR
       WHERE direction = 'outgoing'
         AND (created_at AT TIME ZONE 'America/Los_Angeles')::date >= ${input.date}::date
         AND (created_at AT TIME ZONE 'America/Los_Angeles')::date <= (${input.date}::date + interval '1 day')
+        AND participant IN (${participantList})
+      ORDER BY created_at ASC
+    `);
+    return (result.rows as Array<{
+      participant: string;
+      created_at: Date;
+      duration_seconds: number;
+      post_answer_seconds: number | null;
+    }>).map((row) => ({
+      participant: row.participant,
+      createdAt: new Date(row.created_at),
+      durationSeconds: row.duration_seconds,
+      postAnswerSeconds: row.post_answer_seconds,
+    }));
+  }
+
+  private missedWindowSql(window: PbxCallbackMissedWindow) {
+    return window.kind === "range"
+      ? sql`AND (created_at AT TIME ZONE 'America/Los_Angeles')::date BETWEEN ${window.from}::date AND ${window.to}::date`
+      : sql`AND created_at >= ${window.since}`;
+  }
+
+  async listQuoCallbackReview(input: {
+    window: PbxCallbackMissedWindow;
+    internalNumbers: string[];
+  }): Promise<PbxQuoCallbackRow[]> {
+    const result = await db.execute(sql`
+      SELECT id, participant, line_team, line_name, created_at, duration_seconds, ring_duration_seconds, status
+      FROM phone_calls
+      WHERE direction = 'incoming'
+        AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
+        AND line_name IN (${teamLineSql()})
+        ${this.missedWindowSql(input.window)}
+        AND participant ~ '^[^a-zA-Z]+$'
+        ${internalNumberSql(input.internalNumbers)}
+      ORDER BY created_at DESC
+      LIMIT 2000
+    `);
+    return (result.rows as Array<{
+      id: string;
+      participant: string;
+      line_team: string;
+      line_name: string;
+      created_at: Date;
+      duration_seconds: number | null;
+      ring_duration_seconds: number | null;
+      status: string;
+    }>).map((row) => ({
+      id: row.id,
+      participant: row.participant,
+      team: row.line_team,
+      lineName: row.line_name,
+      createdAt: new Date(row.created_at),
+      durationSeconds: row.duration_seconds,
+      ringDurationSeconds: row.ring_duration_seconds,
+      status: row.status,
+    }));
+  }
+
+  async listPbxCallbackReview(window: PbxCallbackMissedWindow): Promise<PbxPersistedCallbackRow[]> {
+    const result = await db.execute(sql`
+      SELECT id, from_number, team, ring_group_name, created_at
+      FROM pbx_missed_calls
+      WHERE 1=1
+        ${this.missedWindowSql(window)}
+        AND team IN ('retention', 'cs', 'nsf')
+      ORDER BY created_at DESC
+      LIMIT 2000
+    `);
+    return (result.rows as Array<{
+      id: number;
+      from_number: string;
+      team: string;
+      ring_group_name: string;
+      created_at: Date;
+    }>).map((row) => ({
+      id: row.id,
+      fromNumber: row.from_number,
+      team: row.team,
+      ringGroupName: row.ring_group_name,
+      createdAt: new Date(row.created_at),
+    }));
+  }
+
+  async listOutboundCallbackReview(input: {
+    from: Date;
+    to: Date;
+    participants: string[];
+  }): Promise<PbxOutboundBreakdownRow[]> {
+    const participantList = sql.join(input.participants.map((number) => sql`${number}`), sql`, `);
+    const result = await db.execute(sql`
+      SELECT participant, created_at, duration_seconds, post_answer_seconds
+      FROM phone_calls
+      WHERE direction = 'outgoing'
+        AND created_at >= ${input.from}
+        AND created_at <= ${input.to}
         AND participant IN (${participantList})
       ORDER BY created_at ASC
     `);

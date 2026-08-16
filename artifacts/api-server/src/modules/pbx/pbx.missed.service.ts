@@ -8,7 +8,12 @@ import { teamFromRingGroupName } from "../../integrations/pbx/mapper.js";
 import type { AuthPayload } from "../../middleware/authCore.js";
 import { canAccessFullTeam, isAdministrator, type MetricTeam } from "../../middleware/authorizationCore.js";
 import { isPbxGhostCall, KNOWN_GHOST_NUMBERS, normalizePhone } from "./pbx.phone.js";
-import type { PbxBreakdownQuery, PbxDailyQuery, PbxHourlyQuery } from "./pbx.schemas.js";
+import type {
+  PbxBreakdownQuery,
+  PbxCallbackReviewQuery,
+  PbxDailyQuery,
+  PbxHourlyQuery,
+} from "./pbx.schemas.js";
 
 type PbxTeam = "retention" | "cs" | "nsf";
 type SourceCounts = { quo: number; ghost: number; pbx: number };
@@ -35,6 +40,19 @@ export type PbxBreakdownNumber = {
   responseMinutes: number | null;
   ghostCount: number;
   isGhost: boolean;
+};
+export type PbxCallbackReviewItem = {
+  id: string;
+  fromNumber: string;
+  team: string;
+  source: "quo" | "pbx";
+  ringGroupName: string;
+  missedAt: string;
+  isGhost: boolean;
+  hasCallback: boolean;
+  callbackConnected: boolean;
+  callbackAt: string | null;
+  responseMinutes: number | null;
 };
 
 function emptyHour(): HourRow {
@@ -304,6 +322,132 @@ export class PbxMissedReportingService {
         connected,
         callbackRate: visibleNumbers.length > 0 ? Math.round(withCallback / visibleNumbers.length * 100) / 100 : 0,
         connectRate: withCallback > 0 ? Math.round(connected / withCallback * 100) / 100 : 0,
+      },
+    };
+  }
+
+  async getCallbackReview(input: {
+    actor: AuthPayload;
+    query: PbxCallbackReviewQuery;
+    internalNumbers: string[];
+  }) {
+    let missedWindow;
+    let callbackStart: Date;
+    let callbackEnd: Date;
+    if (input.query.kind === "range") {
+      missedWindow = { kind: "range" as const, from: input.query.from, to: input.query.to };
+      callbackStart = new Date(`${input.query.from}T00:00:00Z`);
+      callbackStart.setDate(callbackStart.getDate() - 1);
+      callbackEnd = new Date(`${input.query.to}T23:59:59Z`);
+      callbackEnd.setDate(callbackEnd.getDate() + 3);
+    } else {
+      const now = this.now();
+      callbackStart = new Date(now.getTime() - input.query.days * 24 * 60 * 60 * 1000);
+      missedWindow = { kind: "since" as const, since: callbackStart };
+      callbackEnd = new Date(now.getTime());
+      callbackEnd.setDate(callbackEnd.getDate() + 3);
+    }
+
+    const [blocklist, quoMissed, pbxMissed] = await Promise.all([
+      this.repository.loadBlockedNumbers(),
+      this.repository.listQuoCallbackReview({
+        window: missedWindow,
+        internalNumbers: input.internalNumbers,
+      }),
+      this.repository.listPbxCallbackReview(missedWindow),
+    ]);
+    const rawNumbers = new Set<string>();
+    for (const row of quoMissed) {
+      if (!blocklist.has(row.participant) && normalizePhone(row.participant)) rawNumbers.add(row.participant);
+    }
+    for (const row of pbxMissed) {
+      if (!blocklist.has(row.fromNumber) && normalizePhone(row.fromNumber)) rawNumbers.add(row.fromNumber);
+    }
+
+    const callbackMap = new Map<string, Array<{ date: Date; connected: boolean }>>();
+    if (rawNumbers.size > 0) {
+      const outbound = await this.repository.listOutboundCallbackReview({
+        from: callbackStart,
+        to: callbackEnd,
+        participants: [...rawNumbers],
+      });
+      for (const row of outbound) {
+        const normalized = normalizePhone(row.participant);
+        if (!normalized) continue;
+        const callbacks = callbackMap.get(normalized) ?? [];
+        const talkSeconds = row.postAnswerSeconds ?? row.durationSeconds ?? 0;
+        callbacks.push({ date: new Date(row.createdAt), connected: talkSeconds > 60 });
+        callbackMap.set(normalized, callbacks);
+      }
+    }
+
+    const items: PbxCallbackReviewItem[] = [];
+    for (const row of quoMissed) {
+      if (blocklist.has(row.participant)) continue;
+      const normalized = normalizePhone(row.participant);
+      if (!normalized) continue;
+      const missedAt = new Date(row.createdAt);
+      const callback = callbackMap.get(normalized)?.find((candidate) => candidate.date >= missedAt) ?? null;
+      items.push({
+        id: `quo-${row.id}`,
+        fromNumber: row.participant,
+        team: row.team,
+        source: "quo",
+        ringGroupName: row.lineName,
+        missedAt: missedAt.toISOString(),
+        isGhost: KNOWN_GHOST_NUMBERS.has(normalized)
+          || isPbxGhostCall(row.status, row.durationSeconds ?? 0, row.ringDurationSeconds),
+        hasCallback: Boolean(callback),
+        callbackConnected: callback?.connected ?? false,
+        callbackAt: callback?.date.toISOString() ?? null,
+        responseMinutes: callback ? Math.round((callback.date.getTime() - missedAt.getTime()) / 60_000) : null,
+      });
+    }
+    for (const row of pbxMissed) {
+      if (blocklist.has(row.fromNumber)) continue;
+      const normalized = normalizePhone(row.fromNumber);
+      if (!normalized) continue;
+      const missedAt = new Date(row.createdAt);
+      const callback = callbackMap.get(normalized)?.find((candidate) => candidate.date >= missedAt) ?? null;
+      items.push({
+        id: `pbx-${row.id}`,
+        fromNumber: row.fromNumber,
+        team: row.team,
+        source: "pbx",
+        ringGroupName: row.ringGroupName,
+        missedAt: missedAt.toISOString(),
+        isGhost: false,
+        hasCallback: Boolean(callback),
+        callbackConnected: callback?.connected ?? false,
+        callbackAt: callback?.date.toISOString() ?? null,
+        responseMinutes: callback ? Math.round((callback.date.getTime() - missedAt.getTime()) / 60_000) : null,
+      });
+    }
+    items.sort((left, right) => new Date(right.missedAt).getTime() - new Date(left.missedAt).getTime());
+
+    const visibleItems = isAdministrator(input.actor)
+      ? items
+      : items.filter((item) => (
+        item.team === "retention" || item.team === "nsf" || item.team === "cs" || item.team === "killers"
+      ) && canAccessFullTeam(input.actor, item.team as MetricTeam));
+    const realItems = visibleItems.filter((item) => !item.isGhost);
+    const withCallback = realItems.filter((item) => item.hasCallback).length;
+    const connected = realItems.filter((item) => item.callbackConnected).length;
+    const responseTimes = realItems
+      .filter((item) => item.responseMinutes !== null)
+      .map((item) => item.responseMinutes!);
+    return {
+      items: visibleItems,
+      stats: {
+        total: realItems.length,
+        ghost: visibleItems.filter((item) => item.isGhost).length,
+        withCallback,
+        connected,
+        rate: realItems.length > 0 ? Math.round(withCallback / realItems.length * 100) / 100 : 0,
+        connectRate: withCallback > 0 ? Math.round(connected / withCallback * 100) / 100 : 0,
+        avgResponseMinutes: responseTimes.length > 0
+          ? Math.round(responseTimes.reduce((sum, minutes) => sum + minutes, 0) / responseTimes.length)
+          : 0,
       },
     };
   }

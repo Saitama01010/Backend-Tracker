@@ -3,7 +3,12 @@ import test from "node:test";
 import type { AuthPayload } from "../../middleware/authCore.js";
 import { PbxMissedReportingService } from "./pbx.missed.service.js";
 import { isPbxGhostCall, normalizeCustomerPhone, normalizePhone, phoneComparisonKeys } from "./pbx.phone.js";
-import { parsePbxBreakdownQuery, parsePbxDailyQuery, parsePbxHourlyQuery } from "./pbx.schemas.js";
+import {
+  parsePbxBreakdownQuery,
+  parsePbxCallbackReviewQuery,
+  parsePbxDailyQuery,
+  parsePbxHourlyQuery,
+} from "./pbx.schemas.js";
 
 function breakdownStubs() {
   return {
@@ -11,6 +16,9 @@ function breakdownStubs() {
     async listQuoBreakdown() { return []; },
     async listPbxBreakdown() { return []; },
     async listOutboundBreakdown() { return []; },
+    async listQuoCallbackReview() { return []; },
+    async listPbxCallbackReview() { return []; },
+    async listOutboundCallbackReview() { return []; },
   };
 }
 
@@ -291,4 +299,68 @@ test("PBX breakdown preserves legacy empty shape and full-team authorization", a
     internalNumbers: [],
   });
   assert.deepEqual(scoped.numbers.map((number) => number.team), ["retention"]);
+});
+
+test("PBX callback parsing preserves range pairing, caps, and defaults", () => {
+  assert.deepEqual(parsePbxCallbackReviewQuery({ from: "2026-08-01" }), {
+    ok: false,
+    error: "Both from and to are required.",
+  });
+  assert.equal(parsePbxCallbackReviewQuery({ from: "2026-01-01", to: "2026-08-16" }).ok, false);
+  assert.deepEqual(parsePbxCallbackReviewQuery({ days: "1e3" }), {
+    ok: false,
+    error: "Invalid days; expected an integer from 1 to 90.",
+  });
+  assert.deepEqual(parsePbxCallbackReviewQuery({}), {
+    ok: true,
+    value: { kind: "days", days: 14 },
+  });
+  assert.deepEqual(parsePbxCallbackReviewQuery({ from: "2026-08-01", to: "2026-08-16" }), {
+    ok: true,
+    value: { kind: "range", from: "2026-08-01", to: "2026-08-16" },
+  });
+});
+
+test("PBX callback review preserves lookahead, ghost denominators, rates, and response averages", async () => {
+  const windows: Array<Record<string, unknown>> = [];
+  const outboundWindows: Array<{ from: Date; to: Date }> = [];
+  const repository = {
+    ...dailyStubs(),
+    async listQuoCallbackReview(input: { window: Record<string, unknown> }) {
+      windows.push(input.window);
+      return [
+        { id: "real", participant: "5550001000", team: "retention", lineName: "Retention Main", createdAt: new Date("2026-08-16T10:00:00Z"), durationSeconds: 5, ringDurationSeconds: 5, status: "missed" },
+        { id: "ghost", participant: "5550002000", team: "retention", lineName: "Retention Main", createdAt: new Date("2026-08-16T11:00:00Z"), durationSeconds: 0, ringDurationSeconds: null, status: "no-answer" },
+      ];
+    },
+    async listPbxCallbackReview(window: Record<string, unknown>) {
+      windows.push(window);
+      return [{ id: 3, fromNumber: "5550003000", team: "cs", ringGroupName: "CS Main", createdAt: new Date("2026-08-16T09:00:00Z") }];
+    },
+    async listOutboundCallbackReview(input: { from: Date; to: Date }) {
+      outboundWindows.push(input);
+      return [{ participant: "5550001000", createdAt: new Date("2026-08-16T10:12:00Z"), durationSeconds: 20, postAnswerSeconds: 61 }];
+    },
+  };
+  const now = new Date("2026-08-16T18:00:00Z");
+  const actor: AuthPayload = { userId: 1, username: "admin", role: "admin", permissions: [] };
+  const result = await new PbxMissedReportingService(repository, () => new Date(now)).getCallbackReview({
+    actor,
+    query: { kind: "days", days: 14 },
+    internalNumbers: ["15550000000"],
+  });
+  const since = now.getTime() - 14 * 24 * 60 * 60 * 1000;
+  assert.equal(windows.every((window) => window["kind"] === "since" && (window["since"] as Date).getTime() === since), true);
+  assert.equal(outboundWindows[0]?.from.getTime(), since);
+  assert.equal(outboundWindows[0]?.to.toISOString(), "2026-08-19T18:00:00.000Z");
+  assert.deepEqual(result.items.map((item) => item.id), ["quo-ghost", "quo-real", "pbx-3"]);
+  assert.deepEqual(result.stats, {
+    total: 2,
+    ghost: 1,
+    withCallback: 1,
+    connected: 1,
+    rate: 0.5,
+    connectRate: 1,
+    avgResponseMinutes: 12,
+  });
 });

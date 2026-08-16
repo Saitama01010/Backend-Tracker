@@ -1,14 +1,12 @@
 import { Router } from "express";
 import { db, phoneCallsTable, pbxMissedCallsTable } from "@workspace/db";
-import { and, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, lt } from "drizzle-orm";
 import type { Logger } from "pino";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { getActiveReadymodeItems } from "./nsfReadymode.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import {
   approvedVosDebugPath,
-  parseBoundedInteger,
-  validateIntegrationDateRange,
 } from "../lib/externalIntegrationPolicy.js";
 import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
 import { manualJobKey, scheduledJobKey } from "../lib/durableBackgroundJobs.js";
@@ -17,7 +15,7 @@ import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 import { businessDayWindow, formatCalendarDate } from "../lib/businessTime.js";
 import type { AuthPayload } from "../middleware/authCore.js";
 import { scopeMissedItemsForUser } from "../lib/missedCallScope.js";
-import { canAccessFullTeam, isAdministrator, type MetricTeam } from "../middleware/authorizationCore.js";
+import { isAdministrator } from "../middleware/authorizationCore.js";
 import {
   fetchPbxJson,
   type VosAgent,
@@ -32,10 +30,14 @@ import type {
   RetentionPbxCallHistoryStat,
   RetentionPbxRingGroupMissed,
 } from "../modules/retention/retention.pbx.types.js";
-import { parsePbxBreakdownQuery, parsePbxDailyQuery, parsePbxHourlyQuery } from "../modules/pbx/pbx.schemas.js";
+import {
+  parsePbxBreakdownQuery,
+  parsePbxCallbackReviewQuery,
+  parsePbxDailyQuery,
+  parsePbxHourlyQuery,
+} from "../modules/pbx/pbx.schemas.js";
 import { pbxMissedReportingService } from "../modules/pbx/pbx.missed.service.js";
 import {
-  KNOWN_GHOST_NUMBERS,
   normalizeCustomerPhone,
   normalizePhone,
   phoneComparisonKeys,
@@ -1181,207 +1183,16 @@ router.get("/vos/missed-breakdown", async (req, res) => {
 
 router.get("/vos/callback-review", async (req, res) => {
   try {
-    const fromParam = typeof req.query["from"] === "string" ? req.query["from"] : null;
-    const toParam = typeof req.query["to"] === "string" ? req.query["to"] : null;
-
-    let missedWhereTime: ReturnType<typeof sql>;
-    let cbWindowStart: Date;
-    let cbWindowEnd: Date;
-
-    if ((fromParam && !toParam) || (!fromParam && toParam)) {
-      res.status(400).json({ error: "Both from and to are required." });
+    const parsed = parsePbxCallbackReviewQuery(req.query);
+    if (!parsed.ok) {
+      res.status(400).json({ error: parsed.error });
       return;
     }
-
-    if (fromParam && toParam) {
-      const range = validateIntegrationDateRange(fromParam, toParam, 90);
-      if (!range.ok) {
-        res.status(400).json({ error: range.error });
-        return;
-      }
-      missedWhereTime = sql`AND (created_at AT TIME ZONE 'America/Los_Angeles')::date BETWEEN ${fromParam}::date AND ${toParam}::date`;
-      cbWindowStart = new Date(fromParam + "T00:00:00Z");
-      cbWindowStart.setDate(cbWindowStart.getDate() - 1);
-      cbWindowEnd = new Date(toParam + "T23:59:59Z");
-      cbWindowEnd.setDate(cbWindowEnd.getDate() + 3);
-    } else {
-      const days = parseBoundedInteger(req.query["days"], 14, { min: 1, max: 90 });
-      if (days === null) {
-        res.status(400).json({ error: "Invalid days; expected an integer from 1 to 90." });
-        return;
-      }
-      const windowStart = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-      missedWhereTime = sql`AND created_at >= ${windowStart}`;
-      cbWindowStart = windowStart;
-      cbWindowEnd = new Date();
-      cbWindowEnd.setDate(cbWindowEnd.getDate() + 3);
-    }
-
-    const blocklist = await getBlockedNumbers();
-
-    const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
-    const internalExclude = cachedInternalNumbers.length > 0
-      ? sql`AND participant NOT IN (${sql.join(cachedInternalNumbers.map(n => sql`${n}`), sql`, `)})`
-      : sql``;
-
-    // All Quo missed calls in window (excluding internal/blocked)
-    const quoMissedRaw = await db.execute(sql`
-      SELECT id, participant, line_team, line_name, created_at, duration_seconds, ring_duration_seconds, status
-      FROM phone_calls
-      WHERE direction = 'incoming'
-        AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
-        AND line_name IN (${teamLinesInList})
-        ${missedWhereTime}
-        AND participant ~ '^[^a-zA-Z]+$'
-        ${internalExclude}
-      ORDER BY created_at DESC
-      LIMIT 2000
-    `);
-
-    // All PBX missed calls in window
-    const pbxMissedRaw = await db.execute(sql`
-      SELECT id, from_number, team, ring_group_name, created_at
-      FROM pbx_missed_calls
-      WHERE 1=1
-        ${missedWhereTime}
-        AND team IN ('retention', 'cs', 'nsf')
-      ORDER BY created_at DESC
-      LIMIT 2000
-    `);
-
-    type QuoRow = { id: string; participant: string; line_team: string; line_name: string; created_at: Date; duration_seconds: number | null; ring_duration_seconds: number | null; status: string };
-    type PbxRow = { id: number; from_number: string; team: string; ring_group_name: string; created_at: Date };
-
-    const quoMissed = quoMissedRaw.rows as QuoRow[];
-    const pbxMissed = pbxMissedRaw.rows as PbxRow[];
-
-    // Collect unique normalized numbers (for callbackMap key) and raw values (for SQL IN clause)
-    const allNumbers = new Set<string>();   // normalized — used as callbackMap key
-    const allRawNumbers = new Set<string>(); // raw stored values — used in SQL IN clause
-    for (const r of quoMissed) {
-      if (!blocklist.has(r.participant)) {
-        const n = normalizePhone(r.participant);
-        if (n) { allNumbers.add(n); allRawNumbers.add(r.participant); }
-      }
-    }
-    for (const r of pbxMissed) {
-      if (!blocklist.has(r.from_number)) {
-        const n = normalizePhone(r.from_number);
-        if (n) { allNumbers.add(n); allRawNumbers.add(r.from_number); }
-      }
-    }
-
-    // Build callback lookup from Quo outbound calls (query by raw participant values)
-    type CbEntryReview = { date: Date; connected: boolean };
-    const callbackMap = new Map<string, CbEntryReview[]>();
-    if (allRawNumbers.size > 0) {
-      const rawList = sql.join(Array.from(allRawNumbers).map(n => sql`${n}`), sql`, `);
-      const outboundRaw = await db.execute(sql`
-        SELECT participant, created_at, duration_seconds, post_answer_seconds
-        FROM phone_calls
-        WHERE direction = 'outgoing'
-          AND created_at >= ${cbWindowStart}
-          AND created_at <= ${cbWindowEnd}
-          AND participant IN (${rawList})
-        ORDER BY created_at ASC
-      `);
-      type OutRow2 = { participant: string; created_at: Date; duration_seconds: number; post_answer_seconds: number | null };
-      for (const r of outboundRaw.rows as OutRow2[]) {
-        const norm = normalizePhone(r.participant);
-        if (!norm) continue;
-        if (!callbackMap.has(norm)) callbackMap.set(norm, []);
-        const talkSecs = r.post_answer_seconds ?? r.duration_seconds ?? 0;
-        callbackMap.get(norm)!.push({ date: new Date(r.created_at), connected: talkSecs > 60 });
-      }
-    }
-
-    type CbEntry2 = { date: Date; connected: boolean };
-    type ReviewItem = {
-      id: string; fromNumber: string; team: string; source: "quo" | "pbx";
-      ringGroupName: string; missedAt: string; isGhost: boolean; hasCallback: boolean;
-      callbackConnected: boolean; callbackAt: string | null; responseMinutes: number | null;
-    };
-    const items: ReviewItem[] = [];
-
-    for (const r of quoMissed) {
-      if (blocklist.has(r.participant)) continue;
-      const norm = normalizePhone(r.participant);
-      if (!norm) continue;
-      const missedAt = new Date(r.created_at);
-      const callbacks = callbackMap.get(norm) as CbEntry2[] | undefined;
-      const cbEntry = callbacks?.find(c => c.date >= missedAt) ?? null;
-      items.push({
-        id: `quo-${r.id}`,
-        fromNumber: r.participant,
-        team: r.line_team,
-        source: "quo",
-        ringGroupName: r.line_name,
-        missedAt: missedAt.toISOString(),
-        isGhost: KNOWN_GHOST_NUMBERS.has(norm) || (() => {
-          const ringDur = r.ring_duration_seconds;
-          if (ringDur != null) return ringDur <= 2;
-          const dur = r.duration_seconds ?? 0;
-          return (r.status === 'no-answer' && dur === 0) ||
-                 (r.status === 'voicemail' && dur === 0) ||
-                 (r.status === 'voicemail-brief' && dur <= 4);
-        })(),
-        hasCallback: !!cbEntry,
-        callbackConnected: cbEntry?.connected ?? false,
-        callbackAt: cbEntry?.date.toISOString() ?? null,
-        responseMinutes: cbEntry ? Math.round((cbEntry.date.getTime() - missedAt.getTime()) / 60000) : null,
-      });
-    }
-
-    for (const r of pbxMissed) {
-      if (blocklist.has(r.from_number)) continue;
-      const norm = normalizePhone(r.from_number);
-      if (!norm) continue;
-      const missedAt = new Date(r.created_at);
-      const callbacks = callbackMap.get(norm) as CbEntry2[] | undefined;
-      const cbEntry = callbacks?.find(c => c.date >= missedAt) ?? null;
-      items.push({
-        id: `pbx-${r.id}`,
-        fromNumber: r.from_number,
-        team: r.team,
-        source: "pbx",
-        ringGroupName: r.ring_group_name,
-        missedAt: missedAt.toISOString(),
-        isGhost: false,
-        hasCallback: !!cbEntry,
-        callbackConnected: cbEntry?.connected ?? false,
-        callbackAt: cbEntry?.date.toISOString() ?? null,
-        responseMinutes: cbEntry ? Math.round((cbEntry.date.getTime() - missedAt.getTime()) / 60000) : null,
-      });
-    }
-
-    items.sort((a, b) => new Date(b.missedAt).getTime() - new Date(a.missedAt).getTime());
-
-    const visibleItems = isAdministrator(req.user!)
-      ? items
-      : items.filter((item) => (
-          item.team === "retention" || item.team === "nsf" || item.team === "cs" || item.team === "killers"
-        ) && canAccessFullTeam(req.user!, item.team as MetricTeam));
-    const realItems = visibleItems.filter(i => !i.isGhost);
-    const withCallback = realItems.filter(i => i.hasCallback).length;
-    const connected = realItems.filter(i => i.callbackConnected).length;
-    const rate = realItems.length > 0 ? withCallback / realItems.length : 0;
-    const connectRate = withCallback > 0 ? connected / withCallback : 0;
-    const responseTimes = realItems.filter(i => i.responseMinutes !== null).map(i => i.responseMinutes!);
-    const avgResponseMinutes = responseTimes.length > 0
-      ? Math.round(responseTimes.reduce((s, m) => s + m, 0) / responseTimes.length)
-      : 0;
-
-    res.json({
-      items: visibleItems,
-      stats: {
-        total: realItems.length,
-        ghost: visibleItems.filter(i => i.isGhost).length,
-        withCallback, connected,
-        rate: Math.round(rate * 100) / 100,
-        connectRate: Math.round(connectRate * 100) / 100,
-        avgResponseMinutes,
-      },
-    });
+    res.json(await pbxMissedReportingService.getCallbackReview({
+      actor: req.user!,
+      query: parsed.value,
+      internalNumbers: cachedInternalNumbers,
+    }));
   } catch (err) {
     req.log.error(err, "vos callback-review error");
     res.status(500).json({ error: "PBX callback report is temporarily unavailable." });
