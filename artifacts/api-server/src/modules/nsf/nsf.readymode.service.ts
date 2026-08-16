@@ -2,6 +2,10 @@ import {
   nsfReadymodeRepository,
   type NsfReadymodeRepository,
 } from "./nsf.readymode.repository.js";
+import {
+  formatNsfReadymodePhone,
+  normalizeNsfReadymodePhone,
+} from "./nsf.readymode.schemas.js";
 
 export interface ReadymodeItem {
   id: string;
@@ -12,19 +16,6 @@ export interface ReadymodeItem {
   ringGroupName: string;
   team: "nsf";
   source: "readymode";
-}
-
-function normalizePhone(num: string): string {
-  const digits = (num ?? "").replace(/\D/g, "");
-  return digits.length >= 10 ? digits.slice(-10) : digits;
-}
-
-function formatPhone(num: string): string {
-  const digits = normalizePhone(num);
-  if (digits.length === 10) {
-    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
-  }
-  return num;
 }
 
 export class NsfReadymodeService {
@@ -44,7 +35,7 @@ export class NsfReadymodeService {
     const outbound = await this.repository.listOutboundSince(earliest);
     const callbackTimes = new Map<string, Date[]>();
     for (const row of outbound) {
-      const number = normalizePhone(row.participant);
+      const number = normalizeNsfReadymodePhone(row.participant);
       if (!number) continue;
       const times = callbackTimes.get(number) ?? [];
       times.push(new Date(row.createdAt));
@@ -54,7 +45,7 @@ export class NsfReadymodeService {
     const autoDone: number[] = [];
     const items: ReadymodeItem[] = [];
     for (const row of active) {
-      const normalized = normalizePhone(row.phoneNumber);
+      const normalized = normalizeNsfReadymodePhone(row.phoneNumber);
       const hasCallback = callbackTimes.get(normalized)?.some((time) => time >= row.addedAt) ?? false;
       if (hasCallback) {
         autoDone.push(row.id);
@@ -62,7 +53,7 @@ export class NsfReadymodeService {
       }
       items.push({
         id: `readymode-${row.id}`,
-        fromNumber: formatPhone(row.phoneNumber),
+        fromNumber: formatNsfReadymodePhone(row.phoneNumber),
         toNumber: "Readymode",
         createdAt: row.addedAt.toISOString(),
         ringGroupId: -1,
@@ -74,6 +65,30 @@ export class NsfReadymodeService {
 
     await this.repository.markDoneByIds(autoDone, this.now(), "auto:callback");
     return items;
+  }
+
+  async add(numbers: string[], addedBy: string) {
+    const existing = await this.repository.listExistingActiveNumbers(numbers);
+    const skipped = new Set(existing);
+    const inserted = await this.repository.insertQueueRows(
+      numbers
+        .filter((number) => !skipped.has(number))
+        .map((phoneNumber) => ({ phoneNumber, addedBy })),
+    );
+    return {
+      added: inserted.length,
+      skipped: skipped.size,
+      addedNumbers: inserted.map((row) => formatNsfReadymodePhone(row.phoneNumber)),
+      skippedNumbers: Array.from(skipped).map(formatNsfReadymodePhone),
+    };
+  }
+
+  async markDoneById(id: number, doneBy: string): Promise<void> {
+    await this.repository.markDoneById(id, this.now(), doneBy);
+  }
+
+  async markDoneByNumber(phoneNumber: string, doneBy: string): Promise<void> {
+    await this.repository.markDoneByNumber(phoneNumber, this.now(), doneBy);
   }
 }
 

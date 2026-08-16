@@ -388,6 +388,29 @@ test("QA routes delegate validation, authorization, application, persistence, an
   assert.match(backgroundHandlers, /modules\/qa\/qa\.jobs\.service\.js/);
 });
 
+test("NSF ReadyMode routes delegate queue policy and PostgreSQL work through service boundaries", async () => {
+  const [route, schemas, service, repository, refreshService] = await Promise.all([
+    source("routes/nsfReadymode.ts"),
+    source("modules/nsf/nsf.readymode.schemas.ts"),
+    source("modules/nsf/nsf.readymode.service.ts"),
+    source("modules/nsf/nsf.readymode.repository.ts"),
+    source("modules/pbx/pbx.refresh.service.ts"),
+  ]);
+
+  assert.match(route, /nsfReadymodeService\.(?:listActive|add|markDoneById|markDoneByNumber)/);
+  assert.match(route, /nsf\.readymode\.schemas\.js/);
+  assert.doesNotMatch(route, /@workspace\/db|drizzle-orm|\bdb\.|nsfReadymodeQueueTable|phoneCallsTable/);
+
+  for (const applicationSource of [schemas, service]) {
+    assert.doesNotMatch(applicationSource, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(|@workspace\/db|drizzle-orm/);
+  }
+  assert.match(service, /nsf\.readymode\.repository\.js/);
+  assert.match(repository, /@workspace\/db/);
+  assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(|integrations\//);
+  assert.match(refreshService, /nsfReadymodeService/);
+  assert.doesNotMatch(refreshService, /routes\/nsfReadymode\.js/);
+});
+
 test("the production API relative-import graph remains acyclic", async () => {
   const files = await productionTypeScriptFiles(sourceRoot);
   const known = new Set(files);

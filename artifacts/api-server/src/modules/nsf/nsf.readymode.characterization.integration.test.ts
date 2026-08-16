@@ -6,8 +6,9 @@ import {
   phoneCallsTable,
   pool,
 } from "@workspace/db";
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { getActiveReadymodeItems } from "../../routes/nsfReadymode.js";
+import { nsfReadymodeService } from "./nsf.readymode.service.js";
 
 const databaseUrl = process.env["NSF_READYMODE_TEST_DATABASE_URL"]?.trim();
 const activeDatabaseUrl = process.env["DATABASE_URL"]?.trim();
@@ -69,6 +70,44 @@ test("active ReadyMode queue preserves formatting and auto-clears later OpenPhon
   } finally {
     await db.delete(phoneCallsTable).where(inArray(phoneCallsTable.id, [callbackId]));
     await db.delete(nsfReadymodeQueueTable).where(inArray(nsfReadymodeQueueTable.id, queueIds));
+  }
+});
+
+test("ReadyMode queue commands preserve duplicate skipping and manual completion persistence", {
+  skip: enabled ? false : "DATABASE_URL and NSF_READYMODE_TEST_DATABASE_URL must match an isolated test database",
+}, async () => {
+  const marker = `nsf-command-${process.pid}-${Date.now()}`;
+  const newPhone = "2025550191";
+  const existingPhone = "2025550192";
+
+  await db.insert(nsfReadymodeQueueTable).values({ phoneNumber: existingPhone, addedBy: marker });
+  try {
+    assert.deepEqual(await nsfReadymodeService.add([newPhone, existingPhone], marker), {
+      added: 1,
+      skipped: 1,
+      addedNumbers: ["(202) 555-0191"],
+      skippedNumbers: ["(202) 555-0192"],
+    });
+
+    const rows = await db.select({
+      id: nsfReadymodeQueueTable.id,
+      phoneNumber: nsfReadymodeQueueTable.phoneNumber,
+    }).from(nsfReadymodeQueueTable).where(eq(nsfReadymodeQueueTable.addedBy, marker));
+    const inserted = rows.find((row) => row.phoneNumber === newPhone);
+    assert.ok(inserted);
+
+    await nsfReadymodeService.markDoneById(inserted.id, marker);
+    await nsfReadymodeService.markDoneByNumber(existingPhone, marker);
+
+    const completed = await db.select({
+      phoneNumber: nsfReadymodeQueueTable.phoneNumber,
+      doneAt: nsfReadymodeQueueTable.doneAt,
+      doneBy: nsfReadymodeQueueTable.doneBy,
+    }).from(nsfReadymodeQueueTable).where(eq(nsfReadymodeQueueTable.addedBy, marker));
+    assert.equal(completed.length, 2);
+    assert.ok(completed.every((row) => row.doneAt instanceof Date && row.doneBy === marker));
+  } finally {
+    await db.delete(nsfReadymodeQueueTable).where(eq(nsfReadymodeQueueTable.addedBy, marker));
   }
 });
 

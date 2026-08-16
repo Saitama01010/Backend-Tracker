@@ -1,13 +1,10 @@
 import { Router } from "express";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { db, nsfReadymodeQueueTable } from "@workspace/db";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import {
   nsfReadymodeService,
   type ReadymodeItem,
 } from "../modules/nsf/nsf.readymode.service.js";
 import {
-  formatNsfReadymodePhone,
   parseNsfReadymodeDoneNumber,
   parseNsfReadymodeId,
   parseNsfReadymodeNumbers,
@@ -45,38 +42,7 @@ router.post("/nsf/readymode-queue", requireRole("admin"), async (req, res) => {
     const norms = parsed.value;
     const addedBy = resolveNsfReadymodeActor(body.addedBy, req.user?.username, "samia");
 
-    // Skip numbers that already have an active entry.
-    const existing = await db
-      .select({ phoneNumber: nsfReadymodeQueueTable.phoneNumber })
-      .from(nsfReadymodeQueueTable)
-      .where(
-        and(
-          isNull(nsfReadymodeQueueTable.doneAt),
-          inArray(nsfReadymodeQueueTable.phoneNumber, norms),
-        ),
-      );
-    const skip = new Set(existing.map((e) => e.phoneNumber));
-    const toInsert = norms
-      .filter((n) => !skip.has(n))
-      .map((n) => ({ phoneNumber: n, addedBy }));
-
-    let inserted: { id: number; phoneNumber: string }[] = [];
-    if (toInsert.length > 0) {
-      inserted = await db
-        .insert(nsfReadymodeQueueTable)
-        .values(toInsert)
-        .returning({
-          id: nsfReadymodeQueueTable.id,
-          phoneNumber: nsfReadymodeQueueTable.phoneNumber,
-        });
-    }
-
-    return res.json({
-      added: inserted.length,
-      skipped: skip.size,
-      addedNumbers: inserted.map((i) => formatNsfReadymodePhone(i.phoneNumber)),
-      skippedNumbers: Array.from(skip).map(formatNsfReadymodePhone),
-    });
+    return res.json(await nsfReadymodeService.add(norms, addedBy));
   } catch (err) {
     req.log.error(err, "nsf readymode add error");
     return res.status(500).json({ error: "ReadyMode queue update failed." });
@@ -100,12 +66,7 @@ router.post("/nsf/readymode-queue/:id/done", async (req, res) => {
   const id = parseNsfReadymodeId(req.params["id"]);
   if (id === null) return res.status(400).json({ error: "Invalid id" });
   const doneBy = resolveNsfReadymodeActor(undefined, req.user?.username, "manual");
-  await db
-    .update(nsfReadymodeQueueTable)
-    .set({ doneAt: new Date(), doneBy })
-    .where(
-      and(eq(nsfReadymodeQueueTable.id, id), isNull(nsfReadymodeQueueTable.doneAt)),
-    );
+  await nsfReadymodeService.markDoneById(id, doneBy);
   return res.json({ ok: true });
 });
 
@@ -120,19 +81,8 @@ router.post("/nsf/readymode-queue/done-by-number", async (req, res) => {
   const norm = parseNsfReadymodeDoneNumber(body.number);
   if (norm === null) return res.status(400).json({ error: "Invalid number" });
   const doneBy = resolveNsfReadymodeActor(undefined, req.user?.username, "manual");
-  await db
-    .update(nsfReadymodeQueueTable)
-    .set({ doneAt: new Date(), doneBy })
-    .where(
-      and(
-        eq(nsfReadymodeQueueTable.phoneNumber, norm),
-        isNull(nsfReadymodeQueueTable.doneAt),
-      ),
-    );
+  await nsfReadymodeService.markDoneByNumber(norm, doneBy);
   return res.json({ ok: true });
 });
-
-// Avoid "unused import" warnings when not all helpers are referenced.
-void sql;
 
 export default router;

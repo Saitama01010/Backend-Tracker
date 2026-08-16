@@ -14,14 +14,29 @@ class FakeRepository implements NsfReadymodeRepository {
   outbound: ReadymodeOutboundRow[] = [];
   outboundSince: Date[] = [];
   marked: Array<{ ids: number[]; doneAt: Date; doneBy: string }> = [];
+  existing: string[] = [];
+  inserts: Array<{ phoneNumber: string; addedBy: string }> = [];
+  markedId: Array<{ id: number; doneAt: Date; doneBy: string }> = [];
+  markedNumber: Array<{ phoneNumber: string; doneAt: Date; doneBy: string }> = [];
 
   async listActive() { return this.active; }
   async listOutboundSince(earliest: Date) {
     this.outboundSince.push(earliest);
     return this.outbound;
   }
+  async listExistingActiveNumbers() { return this.existing; }
+  async insertQueueRows(rows: Array<{ phoneNumber: string; addedBy: string }>) {
+    this.inserts.push(...rows);
+    return rows.map((row, index) => ({ id: index + 100, phoneNumber: row.phoneNumber }));
+  }
   async markDoneByIds(ids: number[], doneAt: Date, doneBy: string) {
     this.marked.push({ ids, doneAt, doneBy });
+  }
+  async markDoneById(id: number, doneAt: Date, doneBy: string) {
+    this.markedId.push({ id, doneAt, doneBy });
+  }
+  async markDoneByNumber(phoneNumber: string, doneAt: Date, doneBy: string) {
+    this.markedNumber.push({ phoneNumber, doneAt, doneBy });
   }
 }
 
@@ -58,4 +73,34 @@ test("empty ReadyMode queue performs no callback scan or update", async () => {
   assert.deepEqual(await service.listActive(), []);
   assert.deepEqual(repository.outboundSince, []);
   assert.deepEqual(repository.marked, []);
+});
+
+test("ReadyMode add preserves active duplicate skipping and response formatting", async () => {
+  const repository = new FakeRepository();
+  repository.existing = ["2025550102"];
+  const service = new NsfReadymodeService(repository);
+
+  assert.deepEqual(await service.add(["2025550101", "2025550102"], "Samia"), {
+    added: 1,
+    skipped: 1,
+    addedNumbers: ["(202) 555-0101"],
+    skippedNumbers: ["(202) 555-0102"],
+  });
+  assert.deepEqual(repository.inserts, [{ phoneNumber: "2025550101", addedBy: "Samia" }]);
+});
+
+test("ReadyMode manual completion uses one service timestamp and preserves actor attribution", async () => {
+  const repository = new FakeRepository();
+  const completedAt = new Date("2026-08-16T12:00:00.000Z");
+  const service = new NsfReadymodeService(repository, () => completedAt);
+
+  await service.markDoneById(7, "admin");
+  await service.markDoneByNumber("2025550101", "admin");
+
+  assert.deepEqual(repository.markedId, [{ id: 7, doneAt: completedAt, doneBy: "admin" }]);
+  assert.deepEqual(repository.markedNumber, [{
+    phoneNumber: "2025550101",
+    doneAt: completedAt,
+    doneBy: "admin",
+  }]);
 });
