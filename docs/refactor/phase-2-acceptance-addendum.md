@@ -6,7 +6,7 @@ starting Phase 3 implementation.
 ## 1. Accepted branch and base
 
 - Branch: `refactor/phase-2-source-adapters`
-- Final tested implementation SHA: `e57b3500bb43b1f46c5bd2a1473b4ed4f0469509`
+- Final tested implementation SHA: `aec899ad91287737e640e819086c4fb3330c90db`
 - Fresh `origin/main` base SHA: `60f98d313c601b93651ae0ced6efc7f856d2a642`
 - `origin/main` is the exact merge base and an ancestor of the accepted
   implementation. No rebase was required.
@@ -16,12 +16,12 @@ starting Phase 3 implementation.
 
 ## 2. Complete `origin/main...HEAD` diff audit
 
-The accepted implementation diff contains 26 files, 1,777 insertions, and 982
+The accepted implementation diff contains 27 files, 1,873 insertions, and 982
 deletions before this addendum:
 
 - Production files: four compatibility routes, one integration-policy module,
   and eleven new source-adapter files.
-- Test/test-infrastructure files: nine.
+- Test/test-infrastructure files: ten.
 - Documentation files: `phase-2-report.md` plus this addendum.
 - Routes modified: `routes/sheets.ts`, `routes/readymode.ts`, `routes/vos.ts`,
   and `routes/quo.ts`.
@@ -206,19 +206,20 @@ The final of three consecutive accepted runs produced:
 
 | Benchmark | Phase 1 baseline | Operation p50 ms | Calibration p50 ms | Normalized | Actual regression | +10% maximum | Result |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| QUO mapping | 1.151 | 43.849 | 38.519 | 1.150 | -0.09% | 1.266 | pass |
-| PBX JSON parse/map | 1.171 | 44.871 | 40.652 | 1.104 | -5.72% | 1.288 | pass |
-| ReadyMode CSV parse | 1.107 | 36.143 | 35.538 | 1.017 | -8.13% | 1.218 | pass |
-| Google Sheets parse | 1.100 | 46.756 | 42.430 | 1.117 | +1.55% | 1.210 | pass |
-| Export generation | 1.116 | 43.420 | 44.178 | 1.039 | -6.90% | 1.228 | pass |
-| PostgreSQL duration | 1.145 | 21.059 | 20.968 | 1.060 | -7.42% | 1.260 | pass |
-| Aggregate API | 1.096 | 266.449 | 263.062 | 1.011 | -7.76% | 1.206 | pass |
-| Fixed-fixture data-ready batch | 1.141 | 138.345 | 135.181 | 0.987 | -13.50% | 1.255 | pass |
+| QUO mapping | 1.151 | 32.726 | 29.439 | 1.108 | -3.74% | 1.266 | pass |
+| PBX JSON parse/map | 1.171 | 34.561 | 32.044 | 1.066 | -8.97% | 1.288 | pass |
+| ReadyMode CSV parse | 1.107 | 26.637 | 27.262 | 0.947 | -14.45% | 1.218 | pass |
+| Google Sheets parse | 1.100 | 37.341 | 35.194 | 1.094 | -0.55% | 1.210 | pass |
+| Export generation | 1.116 | 38.028 | 36.857 | 0.992 | -11.11% | 1.228 | pass |
+| PostgreSQL duration | 1.145 | 15.897 | 14.543 | 1.081 | -5.59% | 1.260 | pass |
+| Aggregate API | 1.096 | 277.997 | 277.628 | 1.000 | -8.76% | 1.206 | pass |
+| Fixed-fixture data-ready batch | 1.141 | 153.976 | 152.045 | 1.068 | -6.40% | 1.255 | pass |
 
 Calibration is performed inside every pair. PostgreSQL additionally selects the
 recorded Windows platform baseline (`1.145`); no multiplicative platform factor
 is applied to the current sample. Other rows have no platform-baseline override.
-All three complete runs passed without changing thresholds.
+All three final complete runs on `aec899ad91287737e640e819086c4fb3330c90db`
+passed without changing thresholds.
 
 ## 14. Meaning of the reported Google Sheets `1.117`
 
@@ -226,14 +227,17 @@ All three complete runs passed without changing thresholds.
 same-run calibration workload. It does **not** mean Phase 2 was 11.7% slower than
 Phase 1. Relative to the accepted Phase 1 normalized baseline of `1.100`, the
 actual deterministic regression is `(1.117 / 1.100 - 1) * 100 = 1.55%`, inside
-the `1.210` maximum.
+the `1.210` maximum. The final security-remediated acceptance run measured
+`1.094` (`-0.55%`).
 
 ## 15. Meaning of the previously reported PostgreSQL `1.109`
 
 The earlier `1.109` was likewise a calibrated operation/control ratio, not a
 10.9% Phase 2 regression. Against the Windows Phase 1 baseline `1.145`, it
 represented `(1.109 / 1.145 - 1) * 100 = -3.14%`; the maximum remained `1.260`.
-The final acceptance run measured `1.060` (`-7.42%`). Query count stayed 1.
+The final pre-publication run measured `1.060` (`-7.42%`); the final
+security-remediated acceptance run measured `1.081` (`-5.59%`). Query count
+stayed 1.
 
 ## 16. Intentional performance-regression detection
 
@@ -279,6 +283,37 @@ count.
 `routes/samia.ts`, `lib/quoCall.ts`, Samia UI, prompts, capabilities, direct call
 analysis behavior, and stored-data behavior have no `origin/main...HEAD` diff.
 No Samia path was refactored.
+
+## 21. GitHub security-gate remediation
+
+The first published PR revision made pre-existing ReadyMode parsing logic visible
+to CodeQL at its new adapter paths. GitHub reported five high-severity alerts
+with two root causes: three polynomial regular expressions in provider-controlled
+CSV duration parsing and two incomplete multi-character sanitization alerts in
+the retained HTML parser.
+
+The reachable CSV path is configured/attached/uploaded ReadyMode text entering
+`parseReadymodeRows` before route aggregation or persistence. A 30,000-digit
+duration field reproduced about 3.2 seconds of regex backtracking. The replacement
+is a single-pass scanner that retains the first hours, minutes, and seconds value,
+matching the existing legitimate contract; the same adversarial value completes
+in about 3 ms. The HTML parser is a retained exported compatibility parser rather
+than a Phase 2 route transport path, but its provider-controlled cell values now
+pass through a single-pass state machine that guarantees no literal `<` or `>`
+can leave the parsing boundary. Normal ReadyMode CSV and HTML fixtures remain
+byte-for-byte equivalent, and a new hostile-input regression pins both controls.
+
+The browser acceptance fixture was also isolated from Google Fonts after its
+third-party stylesheet supplied a font URL that returned 404 and tripped the
+strict console-error assertion. The test now serves an empty local fixture for
+that stylesheet and exercises the application's existing fallback fonts; no
+Production frontend source or behavior changed.
+
+The performance benchmark and full-stack browser server use separate named
+disposable databases. A discarded setup attempt pointed both at one database,
+allowing the benchmark's intentionally reduced table to precede the normal-schema
+full-stack seed. The final three-run evidence uses the intended isolation and is
+fully green.
 
 ## Verification matrix and release boundary
 
