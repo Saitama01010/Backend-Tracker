@@ -321,8 +321,9 @@ test("Quo live state stays lightweight while provider refresh remains request-dr
   assert.match(quoClient, /response\.status === 429/);
   assert.match(quoClient, /Date\.parse\(retryAfter\)/);
   assert.match(quo, /const limit = 2/);
-  assert.match(quo, /&participants=\$\{encodeURIComponent\(participant\)\}/);
-  assert.doesNotMatch(quo, /participants\[\]/);
+  assert.match(quo, /fetchQuoConversationCalls\(/);
+  assert.match(quoClient, /&participants=\$\{encodeURIComponent\(participant\)\}/);
+  assert.doesNotMatch(`${quo}\n${quoClient}`, /participants\[\]/);
   assert.match(quo, /recentCallFloor = new Date\(Date\.now\(\) - 4 \* 60 \* 60 \* 1000\)/);
   assert.match(quo, /buildQuoPhoneCallRow\(call, line, participant, userMap\)/);
   assert.match(quo, /upsertQuoPhoneCallRows\(completedRows, signal\)/);
