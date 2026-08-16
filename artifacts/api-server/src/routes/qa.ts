@@ -11,13 +11,6 @@ import {
 } from "../lib/qaPolicy.js";
 import { setPrivateDownloadHeaders } from "../lib/sensitiveWorkflowPolicy.js";
 import type { AuthPayload } from "../middleware/authCore.js";
-import {
-  isAdministrator,
-  isCanonicalUser,
-  metricTeamsForUser,
-  normalizeAgentIdentity,
-} from "../middleware/authorizationCore.js";
-import { canAccessMetricAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
 import { validCronAuthorization } from "../lib/cronAuth.js";
 import {
   completeAiReservation,
@@ -47,6 +40,11 @@ import {
   runAdminBiweeklyQa,
   runWeeklyAssignment,
 } from "../modules/qa/qa.jobs.service.js";
+import {
+  authorizeQaDepartments,
+  resolveQaAgentScope,
+  type QaAgentScope,
+} from "../modules/qa/qa.authorization.js";
 
 const router: IRouter = Router();
 
@@ -55,69 +53,30 @@ function agentKey(value: string | null | undefined): string {
   return normalizeQaAgentKey(canonicalAgentName(value) ?? value ?? "");
 }
 // ── Helpers ─────────────────────────────────────────────────────────────────
-type QaDepartmentScope =
+type QaDepartmentRouteScope =
   | { ok: true; departments: Department[] | null }
   | { ok: false; status: 400 | 403; error: string };
 
-function deptFilterArr(req: { query: Record<string, unknown>; user?: AuthPayload }): QaDepartmentScope {
+function deptFilterArr(req: { query: Record<string, unknown>; user?: AuthPayload }): QaDepartmentRouteScope {
   const parsed = parseQaDepartment(req.query["department"]);
   if (!parsed.ok) return { ok: false, status: 400, error: parsed.error };
-  const { requested } = parsed;
-
-  if (req.user && isCanonicalUser(req.user)) {
-    if (isAdministrator(req.user)) return { ok: true, departments: requested ? [requested] : null };
-    const allowedTeams = metricTeamsForUser(req.user) ?? new Set();
-    const teamForDepartment: Record<Department, "retention" | "cs" | "nsf"> = {
-      Retention: "retention",
-      CS: "cs",
-      NSF: "nsf",
-    };
-    if (requested && !allowedTeams.has(teamForDepartment[requested])) {
-      return { ok: false, status: 403, error: "Forbidden" };
-    }
-    const departments = requested
-      ? [requested]
-      : (Object.keys(teamForDepartment) as Department[]).filter((department) =>
-          allowedTeams.has(teamForDepartment[department]));
-    return { ok: true, departments };
-  }
-
-  const team = req.user?.role === "admin" ? null : req.user?.teamAccess;
-  const allowed = team === "retention" ? "Retention" : team === "cs" ? "CS" : team === "nsf" ? "NSF" : null;
-  if (team && !allowed) return { ok: false, status: 403, error: "Forbidden" };
-  if (allowed && requested && requested !== allowed) return { ok: false, status: 403, error: "Forbidden" };
-  return { ok: true, departments: requested ? [requested] : allowed ? [allowed] : null };
+  return authorizeQaDepartments(req.user!, parsed.requested);
 }
 
-type QaAgentScope = {
-  canAccess: (agentName: string) => boolean;
-  predicateFor: (column: typeof qaReviewsTable.agentName | typeof managerQaTasksTable.agentName) => SQL | undefined;
-};
-
 async function qaAgentScope(user: AuthPayload): Promise<QaAgentScope> {
-  if (isAdministrator(user) || (!isCanonicalUser(user) && !user.allowedAgents?.length)) {
-    return { canAccess: () => true, predicateFor: () => undefined };
-  }
-  const directory = await loadAuthorizationAgentDirectory();
-  const canAccess = (agentName: string) => {
-    return canAccessMetricAgent(user, agentName, directory);
-  };
-  const authorizedIdentities = new Set(
-    isCanonicalUser(user) ? [] : (user.allowedAgents ?? []).map(normalizeAgentIdentity).filter(Boolean),
-  );
-  for (const agent of directory.agents) {
-    if (!canAccess(agent.name)) continue;
-    authorizedIdentities.add(normalizeAgentIdentity(agent.name));
-    if (agent.arabicName) authorizedIdentities.add(normalizeAgentIdentity(agent.arabicName));
-  }
-  const identities = [...authorizedIdentities].filter(Boolean);
-  return {
-    canAccess,
-    predicateFor: (column) => inArray(
+  return resolveQaAgentScope(user);
+}
+
+function qaAgentPredicateFor(
+  scope: QaAgentScope,
+  column: typeof qaReviewsTable.agentName | typeof managerQaTasksTable.agentName,
+): SQL | undefined {
+  return scope.authorizedIdentities === null
+    ? undefined
+    : inArray(
       sql<string>`regexp_replace(lower(trim(${column})), '[^a-z0-9]+', ' ', 'g')`,
-      identities,
-    ),
-  };
+      scope.authorizedIdentities,
+    );
 }
 
 function qaReviewDateColumn(dateBasis: "evaluated" | "call") {
@@ -297,7 +256,7 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
     if (depts) filters.push(inArray(qaReviewsTable.department, depts));
 
     const agentScope = await qaAgentScope(req.user!);
-    const reviewAgentPredicate = agentScope.predicateFor(qaReviewsTable.agentName);
+    const reviewAgentPredicate = qaAgentPredicateFor(agentScope, qaReviewsTable.agentName);
     if (reviewAgentPredicate) filters.push(reviewAgentPredicate);
     const queriedRows = await db
       .select({
@@ -341,7 +300,7 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
 
     const taxMentions = rows.filter((row) => row.mentionsTax).length;
     const taskFilters = depts ? [inArray(managerQaTasksTable.department, depts)] : [];
-    const taskAgentPredicate = agentScope.predicateFor(managerQaTasksTable.agentName);
+    const taskAgentPredicate = qaAgentPredicateFor(agentScope, managerQaTasksTable.agentName);
     if (taskAgentPredicate) taskFilters.push(taskAgentPredicate);
     const tasks = (await db.select({
       agentName: managerQaTasksTable.agentName,
@@ -395,7 +354,7 @@ router.get("/qa/download", requireAuth, async (req, res) => {
     if (depts) filters.push(inArray(qaReviewsTable.department, depts));
 
     const agentScope = await qaAgentScope(req.user!);
-    const agentPredicate = agentScope.predicateFor(qaReviewsTable.agentName);
+    const agentPredicate = qaAgentPredicateFor(agentScope, qaReviewsTable.agentName);
     if (agentPredicate) filters.push(agentPredicate);
     const queriedRows = await db
       .select({
@@ -512,7 +471,7 @@ router.get("/qa/reviews", requireAuth, async (req, res) => {
 
     const agentScope = await qaAgentScope(req.user!);
     if (agent && !agentScope.canAccess(agent)) return res.status(403).json({ error: "Forbidden" });
-    const agentPredicate = agentScope.predicateFor(qaReviewsTable.agentName);
+    const agentPredicate = qaAgentPredicateFor(agentScope, qaReviewsTable.agentName);
     if (agentPredicate) filters.push(agentPredicate);
     const queriedRows = await db
       .select()
@@ -560,7 +519,7 @@ router.get("/qa/tasks", requireAuth, async (req, res) => {
     if (depts) filters.push(inArray(managerQaTasksTable.department, depts));
 
     const agentScope = await qaAgentScope(req.user!);
-    const agentPredicate = agentScope.predicateFor(managerQaTasksTable.agentName);
+    const agentPredicate = qaAgentPredicateFor(agentScope, managerQaTasksTable.agentName);
     if (agentPredicate) filters.push(agentPredicate);
     const queriedRows = await db
       .select()
@@ -634,7 +593,7 @@ router.get("/qa/agents", requireAuth, async (req, res) => {
     if (depts) filters.push(inArray(qaReviewsTable.department, depts));
 
     const agentScope = await qaAgentScope(req.user!);
-    const agentPredicate = agentScope.predicateFor(qaReviewsTable.agentName);
+    const agentPredicate = qaAgentPredicateFor(agentScope, qaReviewsTable.agentName);
     if (agentPredicate) filters.push(agentPredicate);
     const queriedRows = await db
       .select({
