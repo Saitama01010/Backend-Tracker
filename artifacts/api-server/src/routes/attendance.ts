@@ -381,7 +381,7 @@ router.post("/attendance/import", requireAuth, requirePermission("manage_members
 // call history. Only needed where the name doesn't match directly.
 const MEMBER_TO_AGENT_NAMES = ATTENDANCE_MEMBER_ALIASES;
 
-function lateNote(minsLate: number): string {
+export function lateNote(minsLate: number): string {
   if (minsLate < 60) return `late ${minsLate}min`;
   const h = Math.floor(minsLate / 60);
   const m = minsLate % 60;
@@ -424,7 +424,7 @@ async function buildQuoCallsMap(dayStartUtc: Date, dayEndUtc: Date): Promise<Map
 // Uses dayStartUtc as the floor so agents who log in before their scheduled
 // shift are still detected as present.
 // shiftStartUtc=null means no shift — return null.
-function resolveFirstCall(
+export function resolveFirstCall(
   member: { name: string },
   dayStartUtc: Date,
   shiftStartUtc: Date | null,
