@@ -213,10 +213,10 @@
   },
   "externalInputs": [
     { "id": "quo", "formats": ["paginated JSON", "signed webhook JSON"], "fixture": "artifacts/api-server/src/businessContracts/fixtures/quo/api-pages.json" },
-    { "id": "pbx", "formats": ["authenticated JSON API", "sanitized HTML evidence fixture"], "fixture": "artifacts/api-server/src/businessContracts/fixtures/pbx" },
-    { "id": "readymode", "formats": ["CSV daily reports", "uploaded CSV", "retained HTML table parser/probe"], "fixture": "artifacts/api-server/src/businessContracts/fixtures/readymode" },
+    { "id": "pbx", "formats": ["cookie-backed web login at POST /api/auth/login", "authenticated JSON from /api/dashboard, /api/agents, /api/ring-groups, and /api/calls", "sanitized HTML evidence fixture that is not parsed by the production PBX path"], "fixture": "artifacts/api-server/src/businessContracts/fixtures/pbx" },
+    { "id": "readymode", "formats": ["CSV daily reports used by statistics", "uploaded CSV used by statistics", "separate retained HTML table parser/probe not used by statistics"], "fixture": "artifacts/api-server/src/businessContracts/fixtures/readymode" },
     { "id": "google-sheet-1", "formats": ["Sheets v4 values JSON for IDP Handled, Retained, Fixed"], "fixture": "artifacts/api-server/src/businessContracts/fixtures/sheets/google-sheet-1.json" },
-    { "id": "google-sheet-2", "formats": ["Sheets v4 values JSON for IDP Handled Retained"], "fixture": "artifacts/api-server/src/businessContracts/fixtures/sheets/google-sheet-2.json" }
+    { "id": "google-sheet-2", "formats": ["Sheets v4 values JSON", "aliases: idpCancelRetained, IDP Cancel Retained, idp-cancel-retained, IDP-Cancel-Retained, IDP Handled Retained"], "fixture": "artifacts/api-server/src/businessContracts/fixtures/sheets/google-sheet-2.json" }
   ],
   "backgroundJobs": [
     { "type": "quo_live_refresh", "scheduleKey": "UTC minute", "intendedCadence": "1 minute", "handler": "runLivePoll plus PBX refresh" },
@@ -245,9 +245,9 @@
     { "id": "violation-details", "entrypoint": "Violations", "format": "client CSV" }
   ],
   "knownInconsistencies": [
-    "The mission calls PBX an HTML scraper, but current vos.ts consumes authenticated JSON endpoints; the HTML fixture is retained as sanitized evidence and no new HTML ingestion rule is introduced.",
-    "readymode.ts retains an HTML table parser and probe client, while production statistics are currently composed from attached/configured/uploaded CSV sources.",
-    "Google Sheet 2 is named idpCancelRetained/IDP Cancel Retained in code; every valid routed row is forced to Retained even if note text says cancelled.",
+    "The mission calls PBX an HTML scraper, but current vos.ts establishes a cookie-backed session and consumes authenticated JSON endpoints; the HTML fixture is retained as sanitized evidence and no new HTML ingestion rule is introduced.",
+    "readymode.ts retains a separate HTML table parser and probe client, while production statistics are currently composed from attached/configured/uploaded CSV sources.",
+    "Google Sheet 2 is named idpCancelRetained, IDP Cancel Retained, idp-cancel-retained, IDP-Cancel-Retained, and IDP Handled Retained across current contexts; every valid routed row is forced to Retained even if note text says cancelled.",
     "IDP-Handled is a separate displayed status and also contributes to the established retention-rate numerator, but not to pure retained daily/monthly tiles."
   ]
 }

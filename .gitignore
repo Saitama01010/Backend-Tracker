@@ -62,5 +62,8 @@ attached_assets/
 .replit
 PRIVATE_KEYS_BACKUP_DO_NOT_UPLOAD.txt
 artifacts/db-backups/
+artifacts/agent-dashboard/test-results/
+artifacts/agent-dashboard/playwright-report/
+.artifacts/phase-1-staging-readonly/
 
 .vercel

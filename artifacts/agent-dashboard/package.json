@@ -12,6 +12,9 @@
     "test:data-correctness": "tsx --test src/lib/businessDate.test.ts",
     "test:business-contracts": "tsx --test src/businessContracts/goldenResponses.test.ts src/lib/businessDate.test.ts src/lib/authContext.test.ts src/lib/canonicalUserManagement.test.ts src/lib/sheetData.test.ts",
     "test:business-contracts:browser": "playwright test --config playwright.config.ts",
+    "test:business-contracts:full-stack": "playwright test --config playwright.full-stack.config.ts",
+    "test:business-contracts:browser-performance": "playwright test --config playwright.full-stack-performance.config.ts",
+    "test:staging-readonly": "playwright test --config playwright.staging-readonly.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

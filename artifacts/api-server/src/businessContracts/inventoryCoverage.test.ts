@@ -41,6 +41,22 @@ test("machine behavior map covers every current Express route declaration", asyn
   assert.ok(mapped.has("GET /healthz") && mapped.has("HEAD /healthz"));
 });
 
+test("the endpoint coverage matrix lists every declared route without presenting inventory-only rows as direct coverage", async () => {
+  const routeDir = path.join(repoRoot, "artifacts", "api-server", "src", "routes");
+  const matrix = await readFile(path.join(repoRoot, "docs", "refactor", "phase-1-endpoint-coverage-matrix.md"), "utf8");
+  const routeFiles = (await readdir(routeDir)).filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"));
+  const declared: string[] = [];
+  for (const file of routeFiles) {
+    const source = await readFile(path.join(routeDir, file), "utf8");
+    for (const match of source.matchAll(/router\.(get|post|put|patch|delete)\(\s*["']([^"']+)["']/g)) {
+      declared.push(`| ${match[1]!.toUpperCase()} | \`${match[2]!}\` |`);
+    }
+  }
+  assert.ok(declared.length > 90);
+  for (const rowPrefix of declared) assert.ok(matrix.includes(rowPrefix), `matrix missing ${rowPrefix}`);
+  assert.match(matrix, /“Inventory only” is not direct response or calculation regression coverage/);
+});
+
 test("every dashboard endpoint resolves to a traced route group and every page has smoke ownership", async () => {
   const map = await inventory();
   const routed = new Set(map.routeGroups.flatMap((group) => group.endpoints));

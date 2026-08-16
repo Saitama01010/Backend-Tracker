@@ -49,17 +49,18 @@ The Retention, CS, NSF, and RMK pages each expose the current By Call, By Files,
 
 ### PBX / VoS
 
-- `vos.ts` currently logs in and consumes authenticated JSON endpoints. It does not parse an HTML report into dashboard values.
+- `vos.ts` establishes the provider web session with `POST /api/auth/login`, retains the returned cookie, retries once with a renewed cookie after a 401, and consumes JSON from `/api/dashboard`, `/api/agents`, `/api/ring-groups`, and paginated `/api/calls`.
+- Dashboard PBX statistics and live values therefore come from the authenticated JSON API. The production PBX path does not parse an HTML report into dashboard values.
 - The adapter keeps process-local login cookies and mapping accelerators, but the authoritative cross-instance PBX snapshot is stored in `durable_runtime_state`.
 - Name matching currently includes an explicit two-entry PBX display-alias table, a separate directional sheet-to-PBX alias table, and roster-derived matching elsewhere in the browser. The tests pin the exact tables by digest without copying employee identities into fixtures or reports.
 - Both JSON and sanitized HTML evidence fixtures are present under `fixtures/pbx`. The HTML fixture covers inconsistent names, an empty report, and a missing optional cell without creating a new production ingestion path.
 
 ### ReadyMode
 
-- Statistics merge the first matching attached `Agent_report*.csv`, the configured Google CSV, persisted uploads, and date filters.
+- Statistics merge the first matching attached `Agent_report*.csv`, the configured Google CSV, persisted uploads, and date filters. This is the production statistics path.
 - Required CSV fields are Name/Agent plus Logged calls/Calls. Rows without an agent, summary/total rows, and rows without either a parsed date or caller fallback date are skipped.
 - Repeated rows remain repeated at parse time; database upload uniqueness and current conflict behavior remain the downstream boundary.
-- The code retains a best-effort HTML table parser and approved probe client, even though the statistics path is currently CSV-based.
+- Separately, the code retains a best-effort HTML table parser and approved `/readymode/probe` diagnostic client. The probe/parser does not supply the `/readymode/stats` CSV pipeline.
 - Fixtures cover valid, duplicate, empty, invalid-header, multiple-agent, multiple-date, quoted/duration, fallback-date, and HTML cases under `fixtures/readymode`.
 
 ### Google Sheet 1
@@ -74,7 +75,7 @@ The server discovers a likely header within the first ten rows, preserves unname
 
 ### Google Sheet 2
 
-- The code calls this source `idpCancelRetained` / `IDP Cancel Retained`; the mission calls it `IDP Handled Retained`.
+- Current aliases for this single source/tab are the configuration key `idpCancelRetained`, provider title `IDP Cancel Retained`, client tab/status mode `idp-cancel-retained`, internal row marker `IDP-Cancel-Retained`, and the mission/fixture label `IDP Handled Retained`.
 - Every valid row routed to Retention is forced to `Retained`, including a row whose note text contains “cancelled.” Keyword reclassification is intentionally not applied to this tab.
 - The exact contribution is covered by the source block pin, the aggregate invariant, the browser fixture flow, and `fixtures/sheets/google-sheet-2.json`.
 
@@ -182,9 +183,9 @@ Server XLSX endpoints are `/ob-report/download`, `/ob-analytics/download`, `/liv
 
 ## Discovered inconsistencies, preserved
 
-1. PBX is described as an HTML scraper in the mission, but the current production adapter consumes authenticated JSON. No HTML ingestion was introduced.
-2. ReadyMode retains an HTML parser/probe although the current statistics pipeline is CSV-based.
-3. Google Sheet 2 has two names in the brief/code. The current code behavior—not the label—is locked: all valid routed rows become `Retained`.
+1. PBX is described as an HTML scraper in the mission, but the current production adapter establishes a cookie-backed web session and consumes authenticated JSON. The sanitized HTML fixture is evidence only; no HTML ingestion was introduced.
+2. ReadyMode retains a separate HTML parser/probe although the current statistics pipeline is CSV-based.
+3. Google Sheet 2 has several naming aliases across the brief, configuration, UI, and row metadata. The current code behavior—not the label—is locked: all valid routed rows become `Retained`.
 4. IDP-Handled is displayed separately yet contributes to retention rate, while pure retained tiles exclude it.
 
 These findings are characterization results only. No production business calculation was corrected or reinterpreted.

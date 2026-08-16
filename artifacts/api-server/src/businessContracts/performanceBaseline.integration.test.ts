@@ -319,7 +319,7 @@ test("fixed Phase 1 dataset records the complete performance baseline and enforc
   };
   const server = await startGoldenServer(payloads);
   let apiLatency: { cold: Summary; warm: Summary; payloadBytes: number; errors: number };
-  let fullDashboardDataReady: { cold: Summary; warm: Summary; requestsPerLoad: number; payloadBytesPerLoad: number };
+  let fixedFixtureApiBatchDataReady: { cold: Summary; warm: Summary; requestsPerLoad: number; payloadBytesPerLoad: number };
   try {
     const coldApi: HttpSample[] = [];
     for (let iteration = 0; iteration < COLD_ITERATIONS; iteration++) coldApi.push(await fetchSample(server.baseUrl, "/api/quo/stats", true));
@@ -343,7 +343,7 @@ test("fixed Phase 1 dataset records the complete performance baseline and enforc
     for (let iteration = 0; iteration < COLD_ITERATIONS; iteration++) coldDashboard.push(await runDashboard(true));
     const warmDashboard = [];
     for (let iteration = 0; iteration < WARM_ITERATIONS; iteration++) warmDashboard.push(await runDashboard(false));
-    fullDashboardDataReady = {
+    fixedFixtureApiBatchDataReady = {
       cold: summarize(coldDashboard.map((sample) => sample.ms)),
       warm: summarize(warmDashboard.map((sample) => sample.ms)),
       requestsPerLoad: endpoints.length,
@@ -387,7 +387,7 @@ test("fixed Phase 1 dataset records the complete performance baseline and enforc
     fixedDataset: { quoCalls: quoCalls.length, databaseRows: database.fixedRows, largeDashboardCopies: 250 },
     apiLatency,
     database,
-    fullDashboardDataReady,
+    fixedFixtureApiBatchDataReady,
     frontendRequestsPerPage,
     responsePayloadBytes: Object.fromEntries(Object.entries(payloads).map(([endpoint, body]) => [endpoint, Buffer.byteLength(body)])),
     memory,

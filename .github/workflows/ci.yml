@@ -158,6 +158,12 @@ jobs:
           RUN_ATTENDANCE_NOTE_INTEGRATION_TEST: "1"
         run: pnpm run test:data-correctness
 
+      - name: Run Phase 1 real-stack browser contracts
+        env:
+          FULL_STACK_TEST_DATABASE_URL: postgresql://ci:ci@127.0.0.1:54329/backend_tracker_test
+          DATABASE_ENVIRONMENT: test
+        run: pnpm run test:business-contracts:full-stack
+
       - name: Run guarded live smoke tests
         run: pnpm run test:smoke
 
