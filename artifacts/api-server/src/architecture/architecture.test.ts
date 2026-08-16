@@ -292,6 +292,26 @@ test("Violations routes delegate authorization, calculations, and PostgreSQL wor
   assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(|integrations\//);
 });
 
+test("User Administration routes delegate account policy and persistence through accepted boundaries", async () => {
+  const [route, service, repository] = await Promise.all([
+    source("routes/users.ts"),
+    source("modules/users/users.service.ts"),
+    source("modules/users/users.repository.ts"),
+  ]);
+  for (const operation of ["listUsers", "createUser", "updateUser", "deleteUser"]) {
+    assert.match(route, new RegExp(`usersService\\.${operation}`));
+  }
+  assert.match(route, /requireRole\("admin"\)/);
+  assert.doesNotMatch(route, /@workspace\/db|drizzle-orm|\bdb\.|portalUsersTable|teamAgentsTable|revokeUserSessions|bcrypt/);
+  assert.doesNotMatch(service, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  assert.doesNotMatch(service, /@workspace\/db["']|drizzle-orm|\bdb\.|portalUsersTable|revokeUserSessions/);
+  assert.match(service, /users\.repository\.js/);
+  assert.match(service, /CURRENT_PASSWORD_POLICY_VERSION/);
+  assert.match(repository, /@workspace\/db/);
+  assert.match(repository, /revokeUserSessions\(input\.id, tx\)/);
+  assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(|bcrypt/);
+});
+
 test("Attendance routes delegate application, source, and PostgreSQL work through accepted boundaries", async () => {
   const [route, service, callsService, recordService, pbxSource, repository, importIntegration] = await Promise.all([
     source("routes/attendance.ts"),
