@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import { db, readymodeUploadsTable } from "@workspace/db";
 import { and, gte, lte } from "drizzle-orm";
 import type { Logger } from "pino";
+import { fetchConfiguredReadyModeCsv } from "../integrations/readymode/client.js";
 import { parseReadymodeRows, type ReadyModeDayRow } from "../integrations/readymode/csvParser.js";
 import { type ReadyModeAgentStat } from "../integrations/readymode/htmlParser.js";
 import { probeReadyModePath, resetReadyModeSession } from "../integrations/readymode/htmlProbe.js";
@@ -15,7 +16,6 @@ import {
   approvedReadyModeProbePath,
   validateIntegrationDateRange,
 } from "../lib/externalIntegrationPolicy.js";
-import { googleCsvUrl, OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 
 const router = Router();
 router.use("/readymode", requireAuth);
@@ -41,7 +41,6 @@ export interface RmStatsResponse {
 // scraper. The sheet is published with daily ReadyMode agent reports
 // (Day/date, Name, Ready (t), Break (t), Logged calls, Transfers,
 //  Ready:Avg wait, Ready:Avg wrap, Ready:Talk Time).
-const READYMODE_CSV_URL = googleCsvUrl(OPERATIONAL_CONFIG.readyModeSheet);
 
 type ReadyModeSourceSnapshot = {
   sources: { source: string; rows: ReadyModeDayRow[] }[];
@@ -108,10 +107,7 @@ async function refreshReadyModeSources(
   }
 
   try {
-    const csvRes = await fetch(READYMODE_CSV_URL, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(15_000),
-    });
+    const csvRes = await fetchConfiguredReadyModeCsv();
     if (csvRes.ok) {
       const text = await csvRes.text();
       if (text.trim()) ingest(text, "google-sheet");

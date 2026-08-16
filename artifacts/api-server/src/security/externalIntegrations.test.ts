@@ -119,13 +119,14 @@ test("Google Sheets upstream payloads distinguish empty data from malformed resp
 
 test("Sheets, date ranges, probes, and pagination are wired through integration security policy", async () => {
   const base = new URL("../routes/", import.meta.url);
-  const [quo, quoSync, quoClient, sheets, sheetsClient, readymode, readymodeProbe, vos, pbxClient] = await Promise.all([
+  const [quo, quoSync, quoClient, sheets, sheetsClient, readymode, readymodeClient, readymodeProbe, vos, pbxClient] = await Promise.all([
     readFile(new URL("quo.ts", base), "utf8"),
     readFile(new URL("../integrations/quo/sync.ts", base), "utf8"),
     readFile(new URL("../integrations/quo/client.ts", base), "utf8"),
     readFile(new URL("sheets.ts", base), "utf8"),
     readFile(new URL("../integrations/googleSheets/client.ts", base), "utf8"),
     readFile(new URL("readymode.ts", base), "utf8"),
+    readFile(new URL("../integrations/readymode/client.ts", base), "utf8"),
     readFile(new URL("../integrations/readymode/htmlProbe.ts", base), "utf8"),
     readFile(new URL("vos.ts", base), "utf8"),
     readFile(new URL("../integrations/pbx/client.ts", base), "utf8"),
@@ -148,7 +149,9 @@ test("Sheets, date ranges, probes, and pagination are wired through integration 
   assert.match(readymode, /approvedReadyModeProbePath/);
   assert.match(readymode, /const readyModeSourceCache = new Map/);
   assert.match(readymode, /const readyModeSourceRefreshes = new Map/);
-  assert.match(readymode, /AbortSignal\.timeout\(15_000\)/);
+  assert.match(readymode, /fetchConfiguredReadyModeCsv/);
+  assert.doesNotMatch(readymode, /READYMODE_CSV_URL|googleCsvUrl|\bfetch\(/);
+  assert.match(readymodeClient, /AbortSignal\.timeout\(15_000\)/);
   assert.match(readymode, /loadReadyModeSources[\s\S]*?loadAuthorizationAgentDirectory/);
   assert.match(readymode, /readyModeSourceCache\.clear\(\)/);
   assert.match(readymode, /probeReadyModePath/);
