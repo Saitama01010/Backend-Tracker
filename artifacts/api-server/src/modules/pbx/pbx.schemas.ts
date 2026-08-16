@@ -11,6 +11,8 @@ export type PbxDailyQuery = {
   mode: PbxMissedMode;
 };
 
+export type PbxBreakdownQuery = { date: string };
+
 export function parsePbxHourlyQuery(
   query: Record<string, unknown>,
   now = new Date(),
@@ -31,4 +33,15 @@ export function parsePbxHourlyQuery(
 
 export function parsePbxDailyQuery(query: Record<string, unknown>): PbxDailyQuery {
   return { mode: query["mode"] === "numbers" ? "numbers" : "times" };
+}
+
+export function parsePbxBreakdownQuery(
+  query: Record<string, unknown>,
+): { ok: true; value: PbxBreakdownQuery } | { ok: false; error: string } {
+  const date = typeof query["date"] === "string" ? query["date"] : null;
+  if (!date) return { ok: false, error: "date required (YYYY-MM-DD)" };
+  if (!validateIntegrationCalendarDate(date)) {
+    return { ok: false, error: "Invalid date; expected YYYY-MM-DD." };
+  }
+  return { ok: true, value: { date } };
 }

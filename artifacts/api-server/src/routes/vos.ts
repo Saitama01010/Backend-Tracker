@@ -8,7 +8,6 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 import {
   approvedVosDebugPath,
   parseBoundedInteger,
-  validateIntegrationCalendarDate,
   validateIntegrationDateRange,
 } from "../lib/externalIntegrationPolicy.js";
 import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
@@ -33,8 +32,14 @@ import type {
   RetentionPbxCallHistoryStat,
   RetentionPbxRingGroupMissed,
 } from "../modules/retention/retention.pbx.types.js";
-import { parsePbxDailyQuery, parsePbxHourlyQuery } from "../modules/pbx/pbx.schemas.js";
+import { parsePbxBreakdownQuery, parsePbxDailyQuery, parsePbxHourlyQuery } from "../modules/pbx/pbx.schemas.js";
 import { pbxMissedReportingService } from "../modules/pbx/pbx.missed.service.js";
+import {
+  KNOWN_GHOST_NUMBERS,
+  normalizeCustomerPhone,
+  normalizePhone,
+  phoneComparisonKeys,
+} from "../modules/pbx/pbx.phone.js";
 
 const router = Router();
 router.use("/vos", requireAuth);
@@ -75,29 +80,6 @@ function scopeMissedItems(req: { user?: AuthPayload }, items: MissedNoCallbackIt
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function normalizePhone(num: string): string {
-  const digits = (num ?? "").replace(/\D/g, "");
-  return digits.length >= 10 ? digits.slice(-10) : digits;
-}
-
-function normalizeCustomerPhone(num: string): string {
-  const raw = String(num ?? "").trim();
-  const digits = raw.replace(/\D/g, "");
-  if (!digits) return "";
-  if (raw.startsWith("+")) return `+${digits}`;
-  if (digits.length === 10) return `+1${digits}`;
-  return `+${digits}`;
-}
-
-function phoneComparisonKeys(num: string): string[] {
-  const keys = new Set<string>();
-  const last10 = normalizePhone(num);
-  const e164 = normalizeCustomerPhone(num);
-  if (last10) keys.add(last10);
-  if (e164) keys.add(e164);
-  return [...keys];
-}
 
 type CallbackEntry = { at: Date; id: string | null; source: "pbx" | "quo-outbound" | "quo-inbound" };
 
@@ -197,28 +179,6 @@ const EXCLUDED_RING_GROUPS = new Set(["MX Retention"]);
 
 // Numbers confirmed as ghost callers — always flagged regardless of call metadata.
 // Stored as last-10-digits (matches normalizePhone output).
-const KNOWN_GHOST_NUMBERS = new Set([
-  "2522688125",
-  "9083338704",
-  "2404861358",
-  "9496103598",
-  "4065646099",
-  "3234400324",
-  "5803517195",
-  "2174146873",
-  "4783875158",
-  "6164605310",
-  "9515524937",
-  "9492351784",
-  "8656432111",
-  // Added from today's CS missed call review (2026-05-13)
-  "5613693233",
-  "4075088747",
-  "4073401750",
-  "8709958183",
-  "7194692964",
-]);
-
 // ─── Fetch our own OpenPhone line numbers ─────────────────────────────────────
 
 async function fetchQuoLineNumbers(): Promise<Set<string>> {
@@ -1203,167 +1163,16 @@ router.get("/vos/missed-daily", async (req, res) => {
 
 router.get("/vos/missed-breakdown", async (req, res) => {
   try {
-    const dateParam = typeof req.query["date"] === "string" ? req.query["date"] : null;
-    if (!dateParam) {
-      res.status(400).json({ error: "date required (YYYY-MM-DD)" });
+    const parsed = parsePbxBreakdownQuery(req.query);
+    if (!parsed.ok) {
+      res.status(400).json({ error: parsed.error });
       return;
     }
-    if (!validateIntegrationCalendarDate(dateParam)) {
-      res.status(400).json({ error: "Invalid date; expected YYYY-MM-DD." });
-      return;
-    }
-
-    const blocklist = await getBlockedNumbers();
-    const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
-    const internalExclude = cachedInternalNumbers.length > 0
-      ? sql`AND participant NOT IN (${sql.join(cachedInternalNumbers.map(n => sql`${n}`), sql`, `)})`
-      : sql``;
-
-    const [quoRaw, pbxRaw] = await Promise.all([
-      db.execute(sql`
-        SELECT participant, line_team, created_at, status, duration_seconds, ring_duration_seconds
-        FROM phone_calls
-        WHERE direction = 'incoming'
-          AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
-          AND line_name IN (${teamLinesInList})
-          AND (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${dateParam}::date
-          AND participant ~ '^[^a-zA-Z]+$'
-          ${internalExclude}
-        ORDER BY created_at ASC
-      `),
-      db.execute(sql`
-        SELECT from_number, team, created_at
-        FROM pbx_missed_calls
-        WHERE (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${dateParam}::date
-          AND team IN ('retention', 'cs', 'nsf')
-        ORDER BY created_at ASC
-      `),
-    ]);
-
-    type QuoRow = { participant: string; line_team: string; created_at: Date; status: string; duration_seconds: number; ring_duration_seconds: number | null };
-    type PbxRow = { from_number: string; team: string; created_at: Date };
-
-    const isGhostCall = (status: string, duration: number, ringDur: number | null) => {
-      if (ringDur != null) return ringDur <= 2;
-      return (status === "no-answer" && duration === 0) ||
-             (status === "voicemail" && duration === 0) ||
-             (status === "voicemail-brief" && duration <= 4);
-    };
-
-    // numMap keyed by normalized number; also track raw participant strings for SQL lookup
-    type NumEntry = { fromNumber: string; team: string; sources: Set<"quo" | "pbx">; missedTimes: Date[]; rawParticipants: Set<string>; quoCalls: number; ghostCalls: number };
-    const numMap = new Map<string, NumEntry>();
-
-    for (const r of quoRaw.rows as QuoRow[]) {
-      if (blocklist.has(r.participant)) continue;
-      const norm = normalizePhone(r.participant);
-      if (!norm) continue;
-      if (!numMap.has(norm)) numMap.set(norm, { fromNumber: r.participant, team: r.line_team, sources: new Set(), missedTimes: [], rawParticipants: new Set(), quoCalls: 0, ghostCalls: 0 });
-      const e = numMap.get(norm)!;
-      e.sources.add("quo");
-      e.missedTimes.push(new Date(r.created_at));
-      e.rawParticipants.add(r.participant);
-      e.quoCalls++;
-      if (isGhostCall(r.status, r.duration_seconds, r.ring_duration_seconds)) e.ghostCalls++;
-    }
-    for (const r of pbxRaw.rows as PbxRow[]) {
-      if (blocklist.has(r.from_number)) continue;
-      const norm = normalizePhone(r.from_number);
-      if (!norm) continue;
-      if (!numMap.has(norm)) numMap.set(norm, { fromNumber: r.from_number, team: r.team, sources: new Set(), missedTimes: [], rawParticipants: new Set(), quoCalls: 0, ghostCalls: 0 });
-      const e = numMap.get(norm)!;
-      e.sources.add("pbx");
-      e.missedTimes.push(new Date(r.created_at));
-      e.rawParticipants.add(r.from_number);
-    }
-
-    if (numMap.size === 0) {
-      res.json({ date: dateParam, numbers: [], stats: { total: 0, withCallback: 0, rate: 0 } });
-      return;
-    }
-
-    // Use raw participant values (as stored in phone_calls) for the IN clause
-    const allRaw = new Set<string>();
-    for (const [, e] of numMap) for (const r of e.rawParticipants) allRaw.add(r);
-    const rawList = sql.join(Array.from(allRaw).map(n => sql`${n}`), sql`, `);
-
-    const outboundRaw = await db.execute(sql`
-      SELECT participant, created_at, duration_seconds, post_answer_seconds
-      FROM phone_calls
-      WHERE direction = 'outgoing'
-        AND (created_at AT TIME ZONE 'America/Los_Angeles')::date >= ${dateParam}::date
-        AND (created_at AT TIME ZONE 'America/Los_Angeles')::date <= (${dateParam}::date + interval '1 day')
-        AND participant IN (${rawList})
-      ORDER BY created_at ASC
-    `);
-
-    type OutRow = { participant: string; created_at: Date; duration_seconds: number; post_answer_seconds: number | null };
-    type CbEntry = { date: Date; connected: boolean };
-
-    // Normalize outbound results back to the same key as numMap
-    const callbackMap = new Map<string, CbEntry[]>();
-    for (const r of outboundRaw.rows as OutRow[]) {
-      const norm = normalizePhone(r.participant);
-      if (!norm) continue;
-      if (!callbackMap.has(norm)) callbackMap.set(norm, []);
-      const talkSecs = r.post_answer_seconds ?? r.duration_seconds ?? 0;
-      callbackMap.get(norm)!.push({ date: new Date(r.created_at), connected: talkSecs > 60 });
-    }
-
-    type NumberBreakdown = {
-      fromNumber: string; team: string; source: "quo" | "pbx" | "both";
-      missedCount: number; firstMissedAt: string; hasCallback: boolean;
-      callbackConnected: boolean; callbackAt: string | null; responseMinutes: number | null;
-      ghostCount: number; isGhost: boolean;
-    };
-    const numbers: NumberBreakdown[] = [];
-
-    for (const [norm, entry] of numMap) {
-      entry.missedTimes.sort((a, b) => a.getTime() - b.getTime());
-      const firstMissed = entry.missedTimes[0];
-      const callbacks = callbackMap.get(norm);
-      const cbEntry = callbacks?.find(c => c.date >= firstMissed) ?? null;
-      const srcArr = Array.from(entry.sources);
-      const isGhost = KNOWN_GHOST_NUMBERS.has(norm) ||
-        (entry.quoCalls > 0 && entry.ghostCalls === entry.quoCalls);
-      numbers.push({
-        fromNumber: entry.fromNumber,
-        team: entry.team,
-        source: srcArr.length === 2 ? "both" : srcArr[0]!,
-        missedCount: entry.missedTimes.length,
-        firstMissedAt: firstMissed.toISOString(),
-        hasCallback: !!cbEntry,
-        callbackConnected: cbEntry?.connected ?? false,
-        callbackAt: cbEntry?.date.toISOString() ?? null,
-        responseMinutes: cbEntry ? Math.round((cbEntry.date.getTime() - firstMissed.getTime()) / 60000) : null,
-        ghostCount: entry.ghostCalls,
-        isGhost,
-      });
-    }
-
-    // Not connected first, then not called, then connected — within each group by first missed time
-    numbers.sort((a, b) => {
-      const rankA = !a.hasCallback ? 0 : !a.callbackConnected ? 1 : 2;
-      const rankB = !b.hasCallback ? 0 : !b.callbackConnected ? 1 : 2;
-      if (rankA !== rankB) return rankA - rankB;
-      return new Date(a.firstMissedAt).getTime() - new Date(b.firstMissedAt).getTime();
-    });
-
-    const visibleNumbers = isAdministrator(req.user!)
-      ? numbers
-      : numbers.filter((number) => (
-          number.team === "retention" || number.team === "nsf" || number.team === "cs" || number.team === "killers"
-        ) && canAccessFullTeam(req.user!, number.team as MetricTeam));
-    const withCallback = visibleNumbers.filter(n => n.hasCallback).length;
-    const connected = visibleNumbers.filter(n => n.callbackConnected).length;
-    res.json({
-      date: dateParam, numbers: visibleNumbers,
-      stats: {
-        total: visibleNumbers.length, withCallback, connected,
-        callbackRate: visibleNumbers.length > 0 ? Math.round(withCallback / visibleNumbers.length * 100) / 100 : 0,
-        connectRate: withCallback > 0 ? Math.round(connected / withCallback * 100) / 100 : 0,
-      },
-    });
+    res.json(await pbxMissedReportingService.getBreakdown({
+      actor: req.user!,
+      query: parsed.value,
+      internalNumbers: cachedInternalNumbers,
+    }));
   } catch (err) {
     req.log.error(err, "vos missed-breakdown error");
     res.status(500).json({ error: "PBX historical breakdown is temporarily unavailable." });

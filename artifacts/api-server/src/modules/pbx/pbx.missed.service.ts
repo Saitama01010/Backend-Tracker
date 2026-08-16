@@ -5,7 +5,10 @@ import {
   type PbxMissedReportingRepository,
 } from "./pbx.missed.repository.js";
 import { teamFromRingGroupName } from "../../integrations/pbx/mapper.js";
-import type { PbxDailyQuery, PbxHourlyQuery } from "./pbx.schemas.js";
+import type { AuthPayload } from "../../middleware/authCore.js";
+import { canAccessFullTeam, isAdministrator, type MetricTeam } from "../../middleware/authorizationCore.js";
+import { isPbxGhostCall, KNOWN_GHOST_NUMBERS, normalizePhone } from "./pbx.phone.js";
+import type { PbxBreakdownQuery, PbxDailyQuery, PbxHourlyQuery } from "./pbx.schemas.js";
 
 type PbxTeam = "retention" | "cs" | "nsf";
 type SourceCounts = { quo: number; ghost: number; pbx: number };
@@ -18,6 +21,20 @@ export type PbxHourlyResponse = {
 
 export type PbxDailyResponse = {
   days: Array<{ date: string } & HourRow>;
+};
+
+export type PbxBreakdownNumber = {
+  fromNumber: string;
+  team: string;
+  source: "quo" | "pbx" | "both";
+  missedCount: number;
+  firstMissedAt: string;
+  hasCallback: boolean;
+  callbackConnected: boolean;
+  callbackAt: string | null;
+  responseMinutes: number | null;
+  ghostCount: number;
+  isGhost: boolean;
 };
 
 function emptyHour(): HourRow {
@@ -154,6 +171,140 @@ export class PbxMissedReportingService {
       days: [...dayMap.entries()]
         .sort(([left], [right]) => right.localeCompare(left))
         .map(([date, teams]) => ({ date, ...teams })),
+    };
+  }
+
+  async getBreakdown(input: {
+    actor: AuthPayload;
+    query: PbxBreakdownQuery;
+    internalNumbers: string[];
+  }) {
+    const [blocklist, quoRows, pbxRows] = await Promise.all([
+      this.repository.loadBlockedNumbers(),
+      this.repository.listQuoBreakdown({ date: input.query.date, internalNumbers: input.internalNumbers }),
+      this.repository.listPbxBreakdown(input.query.date),
+    ]);
+    type NumberEntry = {
+      fromNumber: string;
+      team: string;
+      sources: Set<"quo" | "pbx">;
+      missedTimes: Date[];
+      rawParticipants: Set<string>;
+      quoCalls: number;
+      ghostCalls: number;
+    };
+    const numbersByPhone = new Map<string, NumberEntry>();
+
+    for (const row of quoRows) {
+      if (blocklist.has(row.participant)) continue;
+      const normalized = normalizePhone(row.participant);
+      if (!normalized) continue;
+      const entry = numbersByPhone.get(normalized) ?? {
+        fromNumber: row.participant,
+        team: row.team,
+        sources: new Set<"quo" | "pbx">(),
+        missedTimes: [],
+        rawParticipants: new Set<string>(),
+        quoCalls: 0,
+        ghostCalls: 0,
+      };
+      entry.sources.add("quo");
+      entry.missedTimes.push(new Date(row.createdAt));
+      entry.rawParticipants.add(row.participant);
+      entry.quoCalls += 1;
+      if (isPbxGhostCall(row.status, row.durationSeconds, row.ringDurationSeconds)) entry.ghostCalls += 1;
+      numbersByPhone.set(normalized, entry);
+    }
+    for (const row of pbxRows) {
+      if (blocklist.has(row.fromNumber)) continue;
+      const normalized = normalizePhone(row.fromNumber);
+      if (!normalized) continue;
+      const entry = numbersByPhone.get(normalized) ?? {
+        fromNumber: row.fromNumber,
+        team: row.team,
+        sources: new Set<"quo" | "pbx">(),
+        missedTimes: [],
+        rawParticipants: new Set<string>(),
+        quoCalls: 0,
+        ghostCalls: 0,
+      };
+      entry.sources.add("pbx");
+      entry.missedTimes.push(new Date(row.createdAt));
+      entry.rawParticipants.add(row.fromNumber);
+      numbersByPhone.set(normalized, entry);
+    }
+
+    if (numbersByPhone.size === 0) {
+      return {
+        date: input.query.date,
+        numbers: [] as PbxBreakdownNumber[],
+        stats: { total: 0, withCallback: 0, rate: 0 },
+      };
+    }
+
+    const participants = new Set<string>();
+    for (const entry of numbersByPhone.values()) {
+      for (const participant of entry.rawParticipants) participants.add(participant);
+    }
+    const outbound = await this.repository.listOutboundBreakdown({
+      date: input.query.date,
+      participants: [...participants],
+    });
+    const callbacks = new Map<string, Array<{ date: Date; connected: boolean }>>();
+    for (const row of outbound) {
+      const normalized = normalizePhone(row.participant);
+      if (!normalized) continue;
+      const entries = callbacks.get(normalized) ?? [];
+      const talkSeconds = row.postAnswerSeconds ?? row.durationSeconds ?? 0;
+      entries.push({ date: new Date(row.createdAt), connected: talkSeconds > 60 });
+      callbacks.set(normalized, entries);
+    }
+
+    const numbers: PbxBreakdownNumber[] = [];
+    for (const [normalized, entry] of numbersByPhone) {
+      entry.missedTimes.sort((left, right) => left.getTime() - right.getTime());
+      const firstMissed = entry.missedTimes[0]!;
+      const callback = callbacks.get(normalized)?.find((candidate) => candidate.date >= firstMissed) ?? null;
+      const sources = [...entry.sources];
+      numbers.push({
+        fromNumber: entry.fromNumber,
+        team: entry.team,
+        source: sources.length === 2 ? "both" : sources[0]!,
+        missedCount: entry.missedTimes.length,
+        firstMissedAt: firstMissed.toISOString(),
+        hasCallback: Boolean(callback),
+        callbackConnected: callback?.connected ?? false,
+        callbackAt: callback?.date.toISOString() ?? null,
+        responseMinutes: callback ? Math.round((callback.date.getTime() - firstMissed.getTime()) / 60_000) : null,
+        ghostCount: entry.ghostCalls,
+        isGhost: KNOWN_GHOST_NUMBERS.has(normalized)
+          || (entry.quoCalls > 0 && entry.ghostCalls === entry.quoCalls),
+      });
+    }
+    numbers.sort((left, right) => {
+      const leftRank = !left.hasCallback ? 0 : !left.callbackConnected ? 1 : 2;
+      const rightRank = !right.hasCallback ? 0 : !right.callbackConnected ? 1 : 2;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      return new Date(left.firstMissedAt).getTime() - new Date(right.firstMissedAt).getTime();
+    });
+
+    const visibleNumbers = isAdministrator(input.actor)
+      ? numbers
+      : numbers.filter((number) => (
+        number.team === "retention" || number.team === "nsf" || number.team === "cs" || number.team === "killers"
+      ) && canAccessFullTeam(input.actor, number.team as MetricTeam));
+    const withCallback = visibleNumbers.filter((number) => number.hasCallback).length;
+    const connected = visibleNumbers.filter((number) => number.callbackConnected).length;
+    return {
+      date: input.query.date,
+      numbers: visibleNumbers,
+      stats: {
+        total: visibleNumbers.length,
+        withCallback,
+        connected,
+        callbackRate: visibleNumbers.length > 0 ? Math.round(withCallback / visibleNumbers.length * 100) / 100 : 0,
+        connectRate: withCallback > 0 ? Math.round(connected / withCallback * 100) / 100 : 0,
+      },
     };
   }
 }

@@ -5,6 +5,21 @@ import type { PbxMissedMode } from "./pbx.schemas.js";
 
 export type PbxHourlyCountRow = { hour: number; team: string; count: number };
 export type PbxDailyCountRow = { date: string; team: string; count: number };
+export type PbxQuoBreakdownRow = {
+  participant: string;
+  team: string;
+  createdAt: Date;
+  status: string;
+  durationSeconds: number;
+  ringDurationSeconds: number | null;
+};
+export type PbxPersistedBreakdownRow = { fromNumber: string; team: string; createdAt: Date };
+export type PbxOutboundBreakdownRow = {
+  participant: string;
+  createdAt: Date;
+  durationSeconds: number;
+  postAnswerSeconds: number | null;
+};
 
 export interface PbxMissedReportingRepository {
   listQuoHourly(input: {
@@ -33,6 +48,10 @@ export interface PbxMissedReportingRepository {
     from: Date;
     mode: PbxMissedMode;
   }): Promise<PbxDailyCountRow[]>;
+  loadBlockedNumbers(): Promise<Set<string>>;
+  listQuoBreakdown(input: { date: string; internalNumbers: string[] }): Promise<PbxQuoBreakdownRow[]>;
+  listPbxBreakdown(date: string): Promise<PbxPersistedBreakdownRow[]>;
+  listOutboundBreakdown(input: { date: string; participants: string[] }): Promise<PbxOutboundBreakdownRow[]>;
 }
 
 const teamLines = [...OPERATIONAL_CONFIG.trackedTeamLines];
@@ -219,6 +238,85 @@ export class PostgresPbxMissedReportingRepository implements PbxMissedReportingR
       date: calendarDate(row.day),
       team: row.team,
       count: row.cnt,
+    }));
+  }
+
+  async loadBlockedNumbers(): Promise<Set<string>> {
+    const { getBlockedNumbers } = await import("../../lib/blockedNumbers.js");
+    return getBlockedNumbers();
+  }
+
+  async listQuoBreakdown(input: {
+    date: string;
+    internalNumbers: string[];
+  }): Promise<PbxQuoBreakdownRow[]> {
+    const result = await db.execute(sql`
+      SELECT participant, line_team, created_at, status, duration_seconds, ring_duration_seconds
+      FROM phone_calls
+      WHERE direction = 'incoming'
+        AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
+        AND line_name IN (${teamLineSql()})
+        AND (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${input.date}::date
+        AND participant ~ '^[^a-zA-Z]+$'
+        ${internalNumberSql(input.internalNumbers)}
+      ORDER BY created_at ASC
+    `);
+    return (result.rows as Array<{
+      participant: string;
+      line_team: string;
+      created_at: Date;
+      status: string;
+      duration_seconds: number;
+      ring_duration_seconds: number | null;
+    }>).map((row) => ({
+      participant: row.participant,
+      team: row.line_team,
+      createdAt: new Date(row.created_at),
+      status: row.status,
+      durationSeconds: row.duration_seconds,
+      ringDurationSeconds: row.ring_duration_seconds,
+    }));
+  }
+
+  async listPbxBreakdown(date: string): Promise<PbxPersistedBreakdownRow[]> {
+    const result = await db.execute(sql`
+      SELECT from_number, team, created_at
+      FROM pbx_missed_calls
+      WHERE (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${date}::date
+        AND team IN ('retention', 'cs', 'nsf')
+      ORDER BY created_at ASC
+    `);
+    return (result.rows as Array<{ from_number: string; team: string; created_at: Date }>).map((row) => ({
+      fromNumber: row.from_number,
+      team: row.team,
+      createdAt: new Date(row.created_at),
+    }));
+  }
+
+  async listOutboundBreakdown(input: {
+    date: string;
+    participants: string[];
+  }): Promise<PbxOutboundBreakdownRow[]> {
+    const participantList = sql.join(input.participants.map((number) => sql`${number}`), sql`, `);
+    const result = await db.execute(sql`
+      SELECT participant, created_at, duration_seconds, post_answer_seconds
+      FROM phone_calls
+      WHERE direction = 'outgoing'
+        AND (created_at AT TIME ZONE 'America/Los_Angeles')::date >= ${input.date}::date
+        AND (created_at AT TIME ZONE 'America/Los_Angeles')::date <= (${input.date}::date + interval '1 day')
+        AND participant IN (${participantList})
+      ORDER BY created_at ASC
+    `);
+    return (result.rows as Array<{
+      participant: string;
+      created_at: Date;
+      duration_seconds: number;
+      post_answer_seconds: number | null;
+    }>).map((row) => ({
+      participant: row.participant,
+      createdAt: new Date(row.created_at),
+      durationSeconds: row.duration_seconds,
+      postAnswerSeconds: row.post_answer_seconds,
     }));
   }
 }

@@ -1,10 +1,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { AuthPayload } from "../../middleware/authCore.js";
 import { PbxMissedReportingService } from "./pbx.missed.service.js";
-import { parsePbxDailyQuery, parsePbxHourlyQuery } from "./pbx.schemas.js";
+import { isPbxGhostCall, normalizeCustomerPhone, normalizePhone, phoneComparisonKeys } from "./pbx.phone.js";
+import { parsePbxBreakdownQuery, parsePbxDailyQuery, parsePbxHourlyQuery } from "./pbx.schemas.js";
+
+function breakdownStubs() {
+  return {
+    async loadBlockedNumbers() { return new Set<string>(); },
+    async listQuoBreakdown() { return []; },
+    async listPbxBreakdown() { return []; },
+    async listOutboundBreakdown() { return []; },
+  };
+}
+
+function hourlyStubs() {
+  return {
+    async listQuoHourly() { return []; },
+    async listQuoGhostHourly() { return []; },
+    async listPbxHourly() { return []; },
+  };
+}
 
 function dailyStubs() {
   return {
+    ...hourlyStubs(),
+    ...breakdownStubs(),
     async listQuoDaily() { return []; },
     async listQuoGhostDaily() { return []; },
     async listPbxDaily() { return []; },
@@ -30,6 +51,7 @@ test("PBX hourly parsing preserves date validation and mode defaults", () => {
 test("PBX hourly reporting preserves source buckets, ordering, and live-today behavior", async () => {
   let historicalQueries = 0;
   const repository = {
+    ...breakdownStubs(),
     ...dailyStubs(),
     async listQuoHourly() {
       return [
@@ -78,6 +100,7 @@ test("PBX hourly reporting preserves source buckets, ordering, and live-today be
 test("PBX hourly historical and numbers modes query persisted PBX rows", async () => {
   const calls: Array<{ date: string; mode: string }> = [];
   const repository = {
+    ...breakdownStubs(),
     ...dailyStubs(),
     async listQuoHourly() { return []; },
     async listQuoGhostHourly() { return []; },
@@ -101,6 +124,7 @@ test("PBX daily reporting preserves 14-day queries, descending dates, and live-c
   assert.deepEqual(parsePbxDailyQuery({ mode: "invalid" }), { mode: "times" });
   const fromValues: number[] = [];
   const repository = {
+    ...breakdownStubs(),
     async listQuoHourly() { return []; },
     async listQuoGhostHourly() { return []; },
     async listPbxHourly() { return []; },
@@ -141,6 +165,7 @@ test("PBX daily reporting preserves 14-day queries, descending dates, and live-c
 
 test("PBX daily numbers mode never overlays the live accumulator", async () => {
   const repository = {
+    ...breakdownStubs(),
     async listQuoHourly() { return []; },
     async listQuoGhostHourly() { return []; },
     async listPbxHourly() { return []; },
@@ -156,4 +181,114 @@ test("PBX daily numbers mode never overlays the live accumulator", async () => {
     ringGroupNames: new Map([[10, "Retention Main"]]),
   });
   assert.equal(result.days[0]?.retention.pbx, 2);
+});
+
+test("PBX phone matching and ghost rules retain their exact compatibility behavior", () => {
+  assert.equal(normalizePhone("+1 (555) 000-3000"), "5550003000");
+  assert.equal(normalizeCustomerPhone("555-000-3000"), "+15550003000");
+  assert.deepEqual(phoneComparisonKeys("+1 (555) 000-3000"), ["5550003000", "+15550003000"]);
+  assert.equal(isPbxGhostCall("no-answer", 0, null), true);
+  assert.equal(isPbxGhostCall("voicemail", 0, null), true);
+  assert.equal(isPbxGhostCall("voicemail-brief", 4, null), true);
+  assert.equal(isPbxGhostCall("missed", 0, 2), true);
+  assert.equal(isPbxGhostCall("missed", 0, 3), false);
+});
+
+test("PBX breakdown parsing preserves required and invalid date errors", () => {
+  assert.deepEqual(parsePbxBreakdownQuery({}), { ok: false, error: "date required (YYYY-MM-DD)" });
+  assert.deepEqual(parsePbxBreakdownQuery({ date: "2026-02-30" }), {
+    ok: false,
+    error: "Invalid date; expected YYYY-MM-DD.",
+  });
+  assert.deepEqual(parsePbxBreakdownQuery({ date: "2026-08-16" }), {
+    ok: true,
+    value: { date: "2026-08-16" },
+  });
+});
+
+test("PBX breakdown preserves deduplication, callback ranking, ghost flags, and statistics", async () => {
+  const repository = {
+    ...dailyStubs(),
+    async loadBlockedNumbers() { return new Set(["blocked-number"]); },
+    async listQuoBreakdown() {
+      return [
+        { participant: "+1 (555) 000-3000", team: "retention", createdAt: new Date("2026-08-16T10:00:00Z"), status: "no-answer", durationSeconds: 0, ringDurationSeconds: null },
+        { participant: "15550003000", team: "retention", createdAt: new Date("2026-08-16T10:05:00Z"), status: "missed", durationSeconds: 5, ringDurationSeconds: 5 },
+        { participant: "+1 555 000 4000", team: "cs", createdAt: new Date("2026-08-16T09:00:00Z"), status: "missed", durationSeconds: 5, ringDurationSeconds: 5 },
+        { participant: "2522688125", team: "nsf", createdAt: new Date("2026-08-16T08:00:00Z"), status: "missed", durationSeconds: 5, ringDurationSeconds: 5 },
+        { participant: "blocked-number", team: "retention", createdAt: new Date("2026-08-16T07:00:00Z"), status: "missed", durationSeconds: 5, ringDurationSeconds: 5 },
+      ];
+    },
+    async listPbxBreakdown() {
+      return [{ fromNumber: "5550003000", team: "retention", createdAt: new Date("2026-08-16T10:10:00Z") }];
+    },
+    async listOutboundBreakdown() {
+      return [
+        { participant: "15550003000", createdAt: new Date("2026-08-16T10:20:00Z"), durationSeconds: 30, postAnswerSeconds: 61 },
+        { participant: "+1 555 000 4000", createdAt: new Date("2026-08-16T09:05:00Z"), durationSeconds: 30, postAnswerSeconds: null },
+      ];
+    },
+  };
+  const actor: AuthPayload = { userId: 1, username: "admin", role: "admin", permissions: [] };
+  const service = new PbxMissedReportingService(repository);
+  const result = await service.getBreakdown({
+    actor,
+    query: { date: "2026-08-16" },
+    internalNumbers: [],
+  });
+
+  assert.deepEqual(result.numbers.map((number) => number.team), ["nsf", "cs", "retention"]);
+  assert.equal(result.numbers[0]?.isGhost, true);
+  assert.equal(result.numbers[1]?.hasCallback, true);
+  assert.equal(result.numbers[1]?.callbackConnected, false);
+  assert.equal(result.numbers[2]?.source, "both");
+  assert.equal(result.numbers[2]?.missedCount, 3);
+  assert.equal(result.numbers[2]?.ghostCount, 1);
+  assert.equal(result.numbers[2]?.responseMinutes, 20);
+  assert.deepEqual(result.stats, {
+    total: 3,
+    withCallback: 2,
+    connected: 1,
+    callbackRate: 0.67,
+    connectRate: 0.5,
+  });
+});
+
+test("PBX breakdown preserves legacy empty shape and full-team authorization", async () => {
+  const emptyRepository = {
+    ...dailyStubs(),
+  };
+  const legacyActor: AuthPayload = {
+    userId: 2,
+    username: "retention-viewer",
+    role: "view",
+    permissions: ["view_missed_tables"],
+    allowedTabs: ["retention"],
+  };
+  const empty = await new PbxMissedReportingService(emptyRepository).getBreakdown({
+    actor: legacyActor,
+    query: { date: "2026-08-16" },
+    internalNumbers: [],
+  });
+  assert.deepEqual(empty, {
+    date: "2026-08-16",
+    numbers: [],
+    stats: { total: 0, withCallback: 0, rate: 0 },
+  });
+
+  const scopedRepository = {
+    ...dailyStubs(),
+    async listQuoBreakdown() {
+      return [
+        { participant: "5550001000", team: "retention", createdAt: new Date("2026-08-16T10:00:00Z"), status: "missed", durationSeconds: 5, ringDurationSeconds: 5 },
+        { participant: "5550002000", team: "cs", createdAt: new Date("2026-08-16T11:00:00Z"), status: "missed", durationSeconds: 5, ringDurationSeconds: 5 },
+      ];
+    },
+  };
+  const scoped = await new PbxMissedReportingService(scopedRepository).getBreakdown({
+    actor: legacyActor,
+    query: { date: "2026-08-16" },
+    internalNumbers: [],
+  });
+  assert.deepEqual(scoped.numbers.map((number) => number.team), ["retention"]);
 });
