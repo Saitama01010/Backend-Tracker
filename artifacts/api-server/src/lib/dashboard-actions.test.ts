@@ -98,7 +98,7 @@ test("QA frontend checks non-200 responses, displays results, and immediately in
 });
 
 test("QA evaluation uses forced strict Anthropic tool output and validates before persistence", async () => {
-  const source = await routeSource("qa.ts");
+  const source = await moduleSource("qa/qa.evaluation.service.ts");
   const repository = await moduleSource("qa/qa.repository.ts");
   const schema = qaEvaluationToolInputSchema("CS");
   assert.equal(schema.additionalProperties, false);
@@ -115,7 +115,7 @@ test("QA evaluation uses forced strict Anthropic tool output and validates befor
 
 test("invalid strict QA output is rejected and sanitized without transcript logging", async () => {
   assert.equal(validateQaResult({ ...validCsEvaluation, categoryScores: { raw: 100 } }, "CS"), null);
-  const source = await routeSource("qa.ts");
+  const source = await moduleSource("qa/qa.evaluation.service.ts");
   assert.match(source, /validationReason:/);
   assert.doesNotMatch(source.slice(source.indexOf("validationReason:"), source.indexOf("return null", source.indexOf("validationReason:"))), /transcript/);
 });

@@ -178,7 +178,7 @@ test("AI routes preserve authentication and fixed internal requests ignore Host 
 });
 
 test("all runtime provider prompts apply the shared untrusted-data boundary", async () => {
-  for (const relative of ["routes/samia.ts", "routes/qa.ts", "modules/transfers/liveTransfers.ts", "modules/onboarding/report.ts"]) {
+  for (const relative of ["routes/samia.ts", "modules/qa/qa.evaluation.service.ts", "modules/transfers/liveTransfers.ts", "modules/onboarding/report.ts"]) {
     const text = await source(relative);
     assert.match(text, /AI_UNTRUSTED_DATA_SYSTEM_POLICY/, relative);
     assert.match(text, /wrap|dataProtector/, relative);
