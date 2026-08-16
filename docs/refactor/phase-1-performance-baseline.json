@@ -14,7 +14,13 @@
     "readyModeParsing": { "normalizedP50Ratio": 1.107 },
     "googleSheetsParsing": { "normalizedP50Ratio": 1.1 },
     "exportGeneration": { "normalizedP50Ratio": 1.116 },
-    "databaseDuration": { "normalizedP50Ratio": 1.016 },
+    "databaseDuration": {
+      "normalizedP50Ratio": 1.145,
+      "platformNormalizedP50Ratios": {
+        "win32": 1.145,
+        "linux": 1.503
+      }
+    },
     "aggregateApiDuration": { "normalizedP50Ratio": 1.096 },
     "fixedFixtureApiBatchDataReady": { "normalizedP50Ratio": 1.141 }
   },

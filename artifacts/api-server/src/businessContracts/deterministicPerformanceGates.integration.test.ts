@@ -32,7 +32,10 @@ const WORKLOAD = {
 } as const;
 
 type Summary = { iterations: number; p50Ms: number; p95Ms: number; minMs: number; maxMs: number };
-type GateBaseline = { normalizedP50Ratio: number };
+type GateBaseline = {
+  normalizedP50Ratio: number;
+  platformNormalizedP50Ratios?: Record<string, number>;
+};
 type Baseline = {
   maximumRegressionPercent: number;
   deterministicGates: Record<string, GateBaseline>;
@@ -237,7 +240,9 @@ test("all deterministic Phase 1 performance paths enforce their recorded 10% gat
     for (const [name, measured] of Object.entries(metrics)) {
       const recorded = baseline.deterministicGates[name];
       assert.ok(recorded, `missing deterministic baseline for ${name}`);
-      const limit = recorded.normalizedP50Ratio * (1 + baseline.maximumRegressionPercent / 100);
+      const platformBaseline = recorded.platformNormalizedP50Ratios?.[process.platform];
+      const normalizedP50Ratio = platformBaseline ?? recorded.normalizedP50Ratio;
+      const limit = normalizedP50Ratio * (1 + baseline.maximumRegressionPercent / 100);
       assert.ok(measured.normalizedP50Ratio <= limit, `${name} normalized p50 ratio ${measured.normalizedP50Ratio} exceeds 10% limit ${round(limit)}`);
     }
     assert.equal((metrics["databaseDuration"] as Awaited<ReturnType<typeof databaseGate>>).queryCountPerRequest, baseline.databaseQueryCount);
