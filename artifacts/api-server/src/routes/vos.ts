@@ -18,7 +18,6 @@ import {
   type VosRingGroup,
 } from "../integrations/pbx/client.js";
 import { teamFromRingGroupName } from "../integrations/pbx/mapper.js";
-import { fetchQuoDirectoryPhoneNumbers } from "../integrations/quo/client.js";
 import { retentionPbxService } from "../modules/retention/retention.pbx.service.js";
 import type {
   RetentionPbxCallHistoryStat,
@@ -39,6 +38,7 @@ import {
   type CallbackEntry,
 } from "../modules/pbx/pbx.no-callback.service.js";
 import { nsfReadymodeService } from "../modules/nsf/nsf.readymode.service.js";
+import { pbxProviderService } from "../modules/pbx/pbx.provider.service.js";
 import {
   normalizePhone,
 } from "../modules/pbx/pbx.phone.js";
@@ -74,254 +74,9 @@ export { hydratePbxState as hydrateVosState } from "../modules/pbx/pbx.state.js"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// Ring groups whose missed calls should never appear in the missed-no-callback panel.
-const EXCLUDED_RING_GROUPS = new Set(["MX Retention"]);
-
-// Numbers confirmed as ghost callers — always flagged regardless of call metadata.
-// Stored as last-10-digits (matches normalizePhone output).
-// ─── Fetch our own OpenPhone line numbers ─────────────────────────────────────
-
-async function fetchQuoLineNumbers(): Promise<Set<string>> {
-  const nums = new Set<string>();
-  for (const number of await fetchQuoDirectoryPhoneNumbers()) nums.add(normalizePhone(number));
-  return nums;
-}
-
 // Only these Quo/OpenPhone line names are team-shared lines.
 // Personal agent lines (e.g. "Rick Miller RT OB", "Jenny NSF") are excluded.
 const TEAM_QUO_LINES = [...OPERATIONAL_CONFIG.trackedTeamLines];
-
-// ─── Per-agent status breakdown ───────────────────────────────────────────────
-
-async function fetchAgentCallsForDate(
-  agentId: number,
-  expectedCount: number,
-  today: string,
-  yesterday: string
-): Promise<{
-  answered: number;
-  missed: number;
-  voicemail: number;
-  durationSeconds: number;
-  lastCallAt: string | null;
-  firstCallAt: string | null;
-  inboundToNumbers: string[];
-  outboundCallbacks: Array<{ toNumber: string; createdAt: string }>;
-  inboundAnsweredFrom: Array<{ fromNumber: string; createdAt: string }>;
-  callSpans: Array<{ start: number; end: number }>;
-  callTimestamps: Array<{ at: string; source: "pbx"; id: string }>;
-}> {
-  let answered = 0, missed = 0, voicemail = 0, durationSeconds = 0;
-  const callSpans: Array<{ start: number; end: number }> = [];
-  let lastCallAt: string | null = null;
-  let firstCallAt: string | null = null;
-  const inboundToNumbers: string[] = [];
-  const outboundCallbacks: Array<{ toNumber: string; createdAt: string }> = [];
-  const inboundAnsweredFrom: Array<{ fromNumber: string; createdAt: string }> = [];
-  const callTimestamps: Array<{ at: string; source: "pbx"; id: string }> = [];
-  let totalSeen = 0;
-  const cap = expectedCount;
-  let page = 1;
-
-  while (page <= 20) {
-    const data = await fetchPbxJson<{ calls: VosCallRaw[] }>(
-      `/api/calls?agentId=${agentId}&limit=100&page=${page}`
-    );
-    if (!data.calls?.length) break;
-
-    let done = false;
-    for (const call of data.calls) {
-      const dateStr = call.createdAt.slice(0, 10);
-      if (dateStr > today) continue;
-      // Accept today OR yesterday — the VoSLogic backend uses its own local timezone
-      // which may be a full day behind the server's UTC date in the late-evening hours.
-      if (dateStr < yesterday) { done = true; break; }
-
-      if (totalSeen >= cap) { done = true; break; }
-      totalSeen++;
-
-      if (call.status === "active" || call.status === "ringing") continue;
-      callTimestamps.push({ at: call.createdAt, source: "pbx", id: `pbx:${call.id}` });
-
-      // Track call span for busy detection (used by violations.ts).
-      // In-progress calls use a 3-hour fallback so they register as busy.
-      // Matches violations.ts INPROGRESS_FALLBACK_S — see the comment there
-      // (warm-transfer/coaching call legs can stay "in-progress" in upstream
-      // dialer APIs long after they actually end).
-      const INPROGRESS_FALLBACK_VOS = 3 * 3600;
-      const spanDur = (call.duration && call.duration > 0)
-        ? call.duration
-        : (call.status === "in-progress" ? INPROGRESS_FALLBACK_VOS : 0);
-      if (spanDur > 0) {
-        const s = new Date(call.createdAt).getTime();
-        callSpans.push({ start: s, end: s + spanDur * 1000 });
-      }
-
-      const callEndAt = call.duration ? new Date(new Date(call.createdAt).getTime() + call.duration * 1000).toISOString() : call.createdAt;
-      if (!lastCallAt) lastCallAt = callEndAt;
-      if (callEndAt > lastCallAt) lastCallAt = callEndAt;
-      // Track earliest call (API returns newest-first, so the last one seen is earliest)
-      if (!firstCallAt || call.createdAt < firstCallAt) firstCallAt = call.createdAt;
-      if (call.status === "completed") answered++;
-      if (call.status === "no-answer" || call.status === "missed") missed++;
-      if (call.status === "voicemail") voicemail++;
-      if (call.duration) durationSeconds += call.duration;
-
-      if (call.direction === "inbound" && call.toNumber && call.status === "completed") {
-        inboundToNumbers.push(call.toNumber);
-      }
-
-      // Collect every outbound call this agent made today for callback detection.
-      // Use direction !== "inbound" to be safe regardless of the exact enum value.
-      if (call.direction !== "inbound" && call.toNumber) {
-        outboundCallbacks.push({ toNumber: call.toNumber, createdAt: call.createdAt });
-      }
-
-      // Also collect inbound answered calls — if the customer called back and was answered
-      // that counts as resolved too (fromNumber = customer's number).
-      if (call.direction === "inbound" && call.fromNumber && call.status === "completed") {
-        inboundAnsweredFrom.push({ fromNumber: call.fromNumber, createdAt: call.createdAt });
-      }
-    }
-
-    if (done) break;
-    page++;
-  }
-
-  return { answered, missed, voicemail, durationSeconds, lastCallAt, firstCallAt, inboundToNumbers, outboundCallbacks, inboundAnsweredFrom, callSpans, callTimestamps };
-}
-
-/**
- * Scan recent unfiltered call pages for:
- *  1. Inbound voicemail/no-answer (agentId=null) → ring group missed counts + individual records
- *  2. All outbound completed calls → PBX callback numbers (for missed-no-callback detection)
- */
-async function scanRingGroupCalls(
-  lineToRingGroupId: Map<string, number>,
-  ringGroupIdToName: Map<number, string>,
-  totalCallsToday: number,
-  agentToRingGroups: Map<number, number[]>,
-  internalNumbers: Set<string>,
-  maxPages?: number
-): Promise<{
-  missedCounts: VosRingGroupMissed;
-  missedRecords: Array<{ id: number; fromNumber: string; toNumber: string; createdAt: string; ringGroupId: number; ringGroupName: string }>;
-  pbxOutboundCalls: Array<{ toNumber: string; createdAt: string }>;
-}> {
-  const blocklist = await getBlockedNumbers();
-  const missedCounts: VosRingGroupMissed = {};
-  const missedRecords: Array<{ id: number; fromNumber: string; toNumber: string; createdAt: string; ringGroupId: number; ringGroupName: string }> = [];
-  const pbxOutboundCalls: Array<{ toNumber: string; createdAt: string }> = [];
-  const seenCallIds = new Set<number>();
-
-  const pagesToScan = maxPages ?? Math.max(10, Math.min(20, Math.ceil((totalCallsToday * 1.5) / 100) + 2));
-
-  // Layer 1: start with per-agent-derived map
-  // Layer 2: merge persistent cache so previously-learned mappings survive days with no answered calls
-  const lineMap = new Map(lineToRingGroupId);
-  for (const [line, rgId] of persistentLineRgMap) {
-    if (!lineMap.has(line)) lineMap.set(line, rgId);
-  }
-
-  // Helper: record a new line→ring group mapping into both lineMap and the persistent cache
-  const learnLine = (line: string, rgId: number) => {
-    if (!lineMap.has(line)) lineMap.set(line, rgId);
-    if (!persistentLineRgMap.has(line)) persistentLineRgMap.set(line, rgId);
-  };
-
-  // Calls whose toNumber wasn't in lineMap when first seen — retried after full scan
-  const pendingMissed: VosCallRaw[] = [];
-
-  for (let page = 1; page <= pagesToScan; page++) {
-    const data = await fetchPbxJson<{ calls: VosCallRaw[] }>(
-      `/api/calls?limit=100&page=${page}`
-    );
-    if (!data.calls?.length) break;
-
-    for (const call of data.calls) {
-      if (call.direction !== "inbound" && call.toNumber) {
-        pbxOutboundCalls.push({ toNumber: call.toNumber, createdAt: call.createdAt });
-      }
-
-      // Layer 3a: if the API returns ringGroupId directly on the call record, learn it immediately
-      if (call.toNumber && call.ringGroupId != null && ringGroupIdToName.has(call.ringGroupId)) {
-        learnLine(call.toNumber, call.ringGroupId);
-      }
-
-      // Layer 3b: seed from answered inbound calls via agent→ring group membership
-      if (
-        call.direction === "inbound" &&
-        call.agentId != null &&
-        call.toNumber
-      ) {
-        const rgIds = agentToRingGroups.get(call.agentId);
-        if (rgIds?.length) learnLine(call.toNumber, rgIds[0]);
-      }
-
-      // Ring group missed: inbound, no agent, unanswered
-      if (call.agentId != null) continue;
-      if (call.direction !== "inbound") continue;
-      if (call.status !== "voicemail" && call.status !== "no-answer" && call.status !== "missed") continue;
-      if (!call.toNumber) continue;
-
-      // Layer 3c: if the missed call itself carries a ringGroupId, learn it now
-      if (call.ringGroupId != null && ringGroupIdToName.has(call.ringGroupId)) {
-        learnLine(call.toNumber, call.ringGroupId);
-      }
-      // Layer 3d: if the missed call has a ringGroupName, resolve it to an id
-      if (call.ringGroupName && !lineMap.has(call.toNumber)) {
-        for (const [rgId, rgName] of ringGroupIdToName) {
-          if (rgName === call.ringGroupName) { learnLine(call.toNumber, rgId); break; }
-        }
-      }
-
-      const rgId = lineMap.get(call.toNumber);
-      if (rgId === undefined) {
-        pendingMissed.push(call);
-        continue;
-      }
-
-      if (seenCallIds.has(call.id)) continue;
-      seenCallIds.add(call.id);
-      const rgName = ringGroupIdToName.get(rgId) ?? String(rgId);
-      missedCounts[rgId] = (missedCounts[rgId] ?? 0) + 1;
-      if (call.fromNumber && !EXCLUDED_RING_GROUPS.has(rgName) && !blocklist.has(call.fromNumber) && !internalNumbers.has(normalizePhone(call.fromNumber))) {
-        missedRecords.push({
-          id: call.id,
-          fromNumber: call.fromNumber,
-          toNumber: call.toNumber,
-          createdAt: call.createdAt,
-          ringGroupId: rgId,
-          ringGroupName: rgName,
-        });
-      }
-    }
-  }
-
-  // Second pass: retry calls that were pending because their line wasn't known yet
-  for (const call of pendingMissed) {
-    if (!call.toNumber || !call.fromNumber) continue;
-    if (blocklist.has(call.fromNumber)) continue;
-    if (internalNumbers.has(normalizePhone(call.fromNumber))) continue;
-    const rgId = lineMap.get(call.toNumber);
-    if (rgId === undefined) continue;
-    const rgName = ringGroupIdToName.get(rgId) ?? String(rgId);
-    if (EXCLUDED_RING_GROUPS.has(rgName)) continue;
-    if (seenCallIds.has(call.id)) continue;
-    seenCallIds.add(call.id);
-    missedCounts[rgId] = (missedCounts[rgId] ?? 0) + 1;
-    missedRecords.push({
-      id: call.id,
-      fromNumber: call.fromNumber,
-      toNumber: call.toNumber,
-      createdAt: call.createdAt,
-      ringGroupId: rgId,
-      ringGroupName: rgName,
-    });
-  }
-
-  return { missedCounts, missedRecords, pbxOutboundCalls };
-}
 
 // ─── Call history — background-refreshed cache ───────────────────────────────
 
@@ -415,7 +170,7 @@ export async function refreshCallHistory(
               callTimestamps: [] as Array<{ at: string; source: "pbx"; id: string }>,
             };
           }
-          const detail = await fetchAgentCallsForDate(agentId, a.calls, today, yesterday);
+          const detail = await pbxProviderService.fetchAgentCallsForDate(agentId, a.calls, today, yesterday);
           const rgIds = agentToRingGroups.get(agentId) ?? [];
           for (const line of detail.inboundToNumbers) {
             if (!lineRingGroupCounts.has(line)) lineRingGroupCounts.set(line, new Map());
@@ -527,14 +282,22 @@ export async function refreshCallHistory(
 
     // Build a set of all our own internal numbers (PBX lines + OpenPhone lines).
     // Any missed call FROM one of these numbers is an internal call and should be excluded.
-    const quoLineNumbers = await fetchQuoLineNumbers();
+    const quoLineNumbers = await pbxProviderService.fetchQuoLineNumbers();
     const internalNumbers = new Set<string>([
       ...[...lineToRingGroupId.keys()].map(normalizePhone),
       ...quoLineNumbers,
     ]);
     pbxRuntimeState.internalNumbers = Array.from(internalNumbers).filter(Boolean);
 
-    const scanResult = await scanRingGroupCalls(lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600, agentToRingGroups, internalNumbers);
+    const scanResult = await pbxProviderService.scanRingGroupCalls({
+      lineToRingGroupId,
+      ringGroupIdToName,
+      totalCallsToday: dashboard.totalCallsToday ?? 600,
+      agentToRingGroups,
+      internalNumbers,
+      persistentLineRingGroups: persistentLineRgMap,
+      blocklist: await getBlockedNumbers(),
+    });
     options.signal?.throwIfAborted();
 
     // ── Cross-reference missed records against callbacks ──────────────────────
@@ -713,10 +476,16 @@ export async function refreshCallHistory(
     if (options.deepBackfill) {
       options.signal?.throwIfAborted();
       log?.info("vos: durable PBX backfill starting (100 pages)");
-      const deep = await scanRingGroupCalls(
-        lineToRingGroupId, ringGroupIdToName, dashboard.totalCallsToday ?? 600,
-        agentToRingGroups, internalNumbers, 100,
-      );
+      const deep = await pbxProviderService.scanRingGroupCalls({
+        lineToRingGroupId,
+        ringGroupIdToName,
+        totalCallsToday: dashboard.totalCallsToday ?? 600,
+        agentToRingGroups,
+        internalNumbers,
+        persistentLineRingGroups: persistentLineRgMap,
+        blocklist: await getBlockedNumbers(),
+        maxPages: 100,
+      });
       if (deep.missedRecords.length > 0) {
         const rows = deep.missedRecords.map((rec) => ({
           id: rec.id,
