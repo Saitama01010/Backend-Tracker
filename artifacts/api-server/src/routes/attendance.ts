@@ -1,10 +1,4 @@
 import { Router } from "express";
-import { db, phoneCallsTable } from "@workspace/db";
-import {
-  attendanceMembersTable,
-  attendanceRecordsTable,
-} from "@workspace/db";
-import { eq, and, or, gte, lte, inArray, ilike, isNotNull, sql } from "drizzle-orm";
 import { getCallHistoryCache, hydrateVosState } from "./vos";
 import { requireAuth, requirePermission } from "../middleware/auth.js";
 import {
@@ -17,15 +11,12 @@ import {
 } from "../lib/attendancePolicy.js";
 import {
   activeAttendanceMembers,
-  attendanceRecordDate,
-  attendanceRecordSelection,
   resolveActiveAttendanceMember,
   resolveActiveAttendanceMemberFromList,
   setAttendanceRecord,
   setAttendanceRecords,
 } from "../lib/attendanceService.js";
 import {
-  attendanceImportMemberKey,
   buildAttendanceImportPlan,
   buildQuoFirstCallMap,
   type AttendanceImportCandidate,
@@ -49,12 +40,15 @@ import {
   type AuthorizationAgentDirectory,
 } from "../lib/authorizationScope.js";
 import {
-  escapeLikePattern,
   validateOptionalWorkflowRange,
   validateWorkflowCalendarDate,
 } from "../lib/sensitiveWorkflowPolicy.js";
 import { attendanceShiftStart, parseBusinessTimestampCompatibility } from "../lib/businessTime.js";
 import { googleCsvUrl, OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
+import {
+  attendanceRepository,
+  type AttendanceRecordInsert,
+} from "../modules/attendance/attendance.repository.js";
 
 const router = Router();
 router.use("/attendance", requireAuth);
@@ -139,26 +133,13 @@ router.get("/attendance", async (req, res) => {
       return;
     }
 
-    const allMembers = await db
-      .select()
-      .from(attendanceMembersTable)
-      .where(includeInactive ? undefined : eq(attendanceMembersTable.active, true))
-      .orderBy(attendanceMembersTable.department, attendanceMembersTable.name);
+    const allMembers = await attendanceRepository.listMembers({ includeInactive, order: "department" });
 
     const directory = await loadAuthorizationAgentDirectory();
     const members = allMembers.filter((member) => canAccessAttendanceMember(req.user!, member, directory));
     const records =
       members.length > 0
-        ? await db
-            .select(attendanceRecordSelection)
-            .from(attendanceRecordsTable)
-            .where(
-              and(
-                inArray(attendanceRecordsTable.memberId, members.map((m) => m.id)),
-                gte(attendanceRecordDate, from),
-                lte(attendanceRecordDate, to),
-              ),
-            )
+        ? await attendanceRepository.listRecordsInRange(members.map((member) => member.id), from, to)
         : [];
 
     res.json({ members, records, timezone: ATTENDANCE_TIMEZONE });
@@ -180,10 +161,12 @@ router.post("/attendance/members", requireAuth, requirePermission("manage_member
       res.status(403).json({ error: "Forbidden" });
       return;
     }
-    const [member] = await db
-      .insert(attendanceMembersTable)
-      .values({ name: name.trim(), shift: shift?.trim() ?? "", shiftHours: shiftHours?.trim() ?? "8", department: department?.trim() ?? "" })
-      .returning();
+    const member = await attendanceRepository.createMember({
+      name: name.trim(),
+      shift: shift?.trim() ?? "",
+      shiftHours: shiftHours?.trim() ?? "8",
+      department: department?.trim() ?? "",
+    });
     res.json(member);
   } catch (err) {
     req.log.error(err, "attendance POST member error");
@@ -199,7 +182,7 @@ router.patch("/attendance/members/:id", requireAuth, requirePermission("manage_m
       return;
     }
     const body = req.body as Partial<{ name: string; shift: string; shiftHours: string; department: string; active: boolean }>;
-    const [existing] = await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.id, id)).limit(1);
+    const existing = await attendanceRepository.findMemberById(id);
     if (!existing) {
       res.status(404).json({ error: "Attendance member not found" });
       return;
@@ -218,7 +201,7 @@ router.patch("/attendance/members/:id", requireAuth, requirePermission("manage_m
     if (body.shiftHours !== undefined) upd.shiftHours = body.shiftHours.trim();
     if (body.department !== undefined) upd.department = body.department.trim();
     if (body.active !== undefined) upd.active = body.active;
-    const [member] = await db.update(attendanceMembersTable).set(upd).where(eq(attendanceMembersTable.id, id)).returning();
+    const member = await attendanceRepository.updateMember(id, upd);
     res.json(member);
   } catch (err) {
     req.log.error(err, "attendance PATCH member error");
@@ -318,49 +301,8 @@ router.post("/attendance/import", requireAuth, requirePermission("manage_members
     }
 
     const importPlan = buildAttendanceImportPlan(importCandidates);
-    const importedMembers = new Map(importPlan.members.map((member) => [member.key, member]));
     const totalRecords = importPlan.totalRecords;
-
-    const totalMembers = await db.transaction(async (tx) => {
-      const existingMembers = await tx.select().from(attendanceMembersTable)
-        .orderBy(attendanceMembersTable.id);
-      const memberIds = new Map<string, number>();
-      for (const member of existingMembers) {
-        const key = attendanceImportMemberKey(member.department, member.name);
-        if (!memberIds.has(key)) memberIds.set(key, member.id);
-      }
-
-      const missingMembers = [...importedMembers].filter(([key]) => !memberIds.has(key));
-      if (missingMembers.length > 0) {
-        const insertedMembers = await tx.insert(attendanceMembersTable)
-          .values(missingMembers.map(([, member]) => ({
-            name: member.name,
-            shift: member.shift,
-            department: member.department,
-          })))
-          .returning({
-            id: attendanceMembersTable.id,
-            name: attendanceMembersTable.name,
-            department: attendanceMembersTable.department,
-        });
-        for (const member of insertedMembers) {
-          memberIds.set(attendanceImportMemberKey(member.department, member.name), member.id);
-        }
-      }
-
-      const pendingRecords = [...importedMembers].flatMap(([key, member]) => {
-        const memberId = memberIds.get(key);
-        if (memberId === undefined) throw new Error("Attendance import member persistence failed");
-        return member.records.map((record) => ({ memberId, ...record, dateValue: record.date }));
-      });
-      const chunkSize = 500;
-      for (let offset = 0; offset < pendingRecords.length; offset += chunkSize) {
-        await tx.insert(attendanceRecordsTable)
-          .values(pendingRecords.slice(offset, offset + chunkSize))
-          .onConflictDoNothing();
-      }
-      return missingMembers.length;
-    });
+    const totalMembers = await attendanceRepository.persistImport(importPlan.members);
 
     res.json({ success: true, totalMembers, totalRecords });
   } catch (err) {
@@ -399,24 +341,7 @@ function parsePdt(s: string): Date {
 //   - Outbound calls (agent dialed out, any status)
 //   - Inbound calls answered by the agent (direction=incoming, status=completed)
 async function buildQuoCallsMap(dayStartUtc: Date, dayEndUtc: Date): Promise<Map<string, Date>> {
-  const rows = await db
-    .select({
-      agentName: phoneCallsTable.agentName,
-      firstCallAt: sql<Date | null>`min(${phoneCallsTable.createdAt})`,
-    })
-    .from(phoneCallsTable)
-    .where(
-      and(
-        gte(phoneCallsTable.createdAt, dayStartUtc),
-        lte(phoneCallsTable.createdAt, dayEndUtc),
-        isNotNull(phoneCallsTable.agentName),
-        or(
-          eq(phoneCallsTable.direction, "outgoing"),
-          and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed")),
-        ),
-      ),
-    )
-    .groupBy(phoneCallsTable.agentName);
+  const rows = await attendanceRepository.listFirstQuoCalls(dayStartUtc, dayEndUtc);
   return buildQuoFirstCallMap(rows);
 }
 
@@ -491,16 +416,11 @@ router.get("/attendance/call-logs", async (req, res) => {
     const quoCalls = await buildQuoCallsMap(dayStartUtc, dayEndUtc);
 
     const directory = await loadAuthorizationAgentDirectory();
-    const members = (await db
-      .select()
-      .from(attendanceMembersTable)
-      .where(eq(attendanceMembersTable.active, true))
-      .orderBy(attendanceMembersTable.department, attendanceMembersTable.name))
+    const members = (await attendanceRepository.listMembers({ includeInactive: false, order: "department" }))
       .filter((member) => canAccessAttendanceMember(req.user!, member, directory));
 
     const existingRecords = members.length > 0
-      ? await db.select(attendanceRecordSelection).from(attendanceRecordsTable)
-          .where(and(inArray(attendanceRecordsTable.memberId, members.map((m) => m.id)), eq(attendanceRecordDate, date)))
+      ? await attendanceRepository.listRecordsForDate(members.map((member) => member.id), date)
       : [];
     const existingMap = new Map(existingRecords.map((r) => [r.memberId, r]));
 
@@ -656,16 +576,13 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
     const quoCalls = await buildQuoCallsMap(dayStartUtc, dayEndUtc);
 
     const directory = await loadAuthorizationAgentDirectory();
-    const members = (await db.select().from(attendanceMembersTable).where(eq(attendanceMembersTable.active, true)))
+    const members = (await attendanceRepository.listMembers({ includeInactive: false, order: "name" }))
       .filter((member) => canAccessAttendanceMember(req.user!, member, directory));
 
-    const existingRecords = await db.select({ memberId: attendanceRecordsTable.memberId })
-      .from(attendanceRecordsTable)
-      .where(eq(attendanceRecordDate, targetDate));
-    const existingSet = new Set(existingRecords.map((r) => r.memberId));
+    const existingSet = new Set(await attendanceRepository.listRecordedMemberIds(targetDate));
 
     const results: { name: string; status: string; note: string; skipped?: string }[] = [];
-    const pending: Array<typeof attendanceRecordsTable.$inferInsert> = [];
+    const pending: AttendanceRecordInsert[] = [];
 
     for (const member of members) {
       const shiftNum = parseInt(member.shift || "0");
@@ -702,9 +619,7 @@ router.post("/attendance/auto-mark", requireAuth, requirePermission("edit_attend
       results.push({ name: member.name, status, note });
     }
 
-    if (pending.length > 0) {
-      await db.insert(attendanceRecordsTable).values(pending).onConflictDoNothing();
-    }
+    await attendanceRepository.insertRecordsIfMissing(pending);
 
     res.json({ success: true, date: targetDate, results });
   } catch (err) {
@@ -769,24 +684,7 @@ router.get("/attendance/agent-contacts", async (req, res) => {
     }
 
     // Fetch all matching rows from phone_calls
-    const matchingRows = await db
-      .select({
-        participant:     phoneCallsTable.participant,
-        direction:       phoneCallsTable.direction,
-        status:          phoneCallsTable.status,
-        durationSeconds: phoneCallsTable.durationSeconds,
-        createdAt:       phoneCallsTable.createdAt,
-        agentName:       phoneCallsTable.agentName,
-      })
-      .from(phoneCallsTable)
-      .where(
-        and(
-          ilike(phoneCallsTable.agentName, `%${escapeLikePattern(agentParam)}%`),
-          gte(phoneCallsTable.createdAt, dayStartUtc),
-          lte(phoneCallsTable.createdAt, dayEndUtc),
-        ),
-      )
-      .orderBy(sql`${phoneCallsTable.createdAt} asc`);
+    const matchingRows = await attendanceRepository.listAgentContactCalls(agentParam, dayStartUtc, dayEndUtc);
 
     const rows = matchingRows.filter((row) => !!row.agentName && canAccessLiveAgent(req.user!, row.agentName, directory));
 

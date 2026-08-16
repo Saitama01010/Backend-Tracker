@@ -161,7 +161,7 @@ test("agent-contact route wires independent controls before contact aggregation"
   const requestAgentScope = route.indexOf(
     "matchingAgents.some((agent) => canAccessLiveAgent",
   );
-  const databaseQuery = route.indexOf("const matchingRows = await db");
+  const databaseQuery = route.indexOf("const matchingRows = await attendanceRepository");
   const rowScope = route.indexOf("const rows = matchingRows.filter");
   const aggregation = route.indexOf("const contactMap = new Map");
   assert.ok(dateScope >= 0);

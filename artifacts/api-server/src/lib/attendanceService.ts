@@ -1,6 +1,10 @@
 import { attendanceMembersTable, attendanceRecordsTable, db } from "@workspace/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
+  attendanceRecordDate,
+  attendanceRecordSelection,
+} from "../modules/attendance/attendance.repository.js";
+import {
   attendanceNoteForWrite,
   canonicalAttendanceStatus,
   resolveAttendanceMember,
@@ -48,17 +52,7 @@ export interface AttendanceRecordView {
   updatedAt: Date;
 }
 
-export const attendanceRecordDate = sql<string>`coalesce(${attendanceRecordsTable.dateValue}::text, ${attendanceRecordsTable.date})`;
-
-export const attendanceRecordSelection = {
-  id: attendanceRecordsTable.id,
-  memberId: attendanceRecordsTable.memberId,
-  date: attendanceRecordDate,
-  status: attendanceRecordsTable.status,
-  note: attendanceRecordsTable.note,
-  coaching: attendanceRecordsTable.coaching,
-  updatedAt: attendanceRecordsTable.updatedAt,
-};
+export { attendanceRecordDate, attendanceRecordSelection };
 
 export type AttendanceBatchWriteResult =
   | {

@@ -237,6 +237,19 @@ test("live-transfer reporting keeps HTTP concerns out of its application module"
   assert.match(backgroundHandlers, /modules\/transfers\/liveTransfers\.js/);
 });
 
+test("Attendance route delegates PostgreSQL access to its focused repository", async () => {
+  const [route, repository] = await Promise.all([
+    source("routes/attendance.ts"),
+    source("modules/attendance/attendance.repository.ts"),
+  ]);
+
+  assert.match(route, /attendanceRepository/);
+  assert.doesNotMatch(route, /@workspace\/db|drizzle-orm|\bdb\.|attendanceMembersTable|attendanceRecordsTable|phoneCallsTable/);
+  assert.match(repository, /@workspace\/db/);
+  assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  assert.doesNotMatch(repository, /integrations\//);
+});
+
 test("the production API relative-import graph remains acyclic", async () => {
   const files = await productionTypeScriptFiles(sourceRoot);
   const known = new Set(files);
