@@ -1,21 +1,16 @@
 import { Router } from "express";
-import { and, eq, gte, inArray, isNull, sql } from "drizzle-orm";
-import { db, nsfReadymodeQueueTable, phoneCallsTable } from "@workspace/db";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { db, nsfReadymodeQueueTable } from "@workspace/db";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import {
+  nsfReadymodeService,
+  type ReadymodeItem,
+} from "../modules/nsf/nsf.readymode.service.js";
 
 const router = Router();
 router.use("/nsf", requireAuth);
 
-export interface ReadymodeItem {
-  id: string;
-  fromNumber: string;
-  toNumber: string;
-  createdAt: string;
-  ringGroupId: number;
-  ringGroupName: string;
-  team: "nsf";
-  source: "readymode";
-}
+export type { ReadymodeItem } from "../modules/nsf/nsf.readymode.service.js";
 
 function normalizePhone(num: string): string {
   const digits = (num ?? "").replace(/\D/g, "");
@@ -35,70 +30,7 @@ function formatPhone(num: string): string {
  * straight into the existing missed-no-callback list.
  */
 export async function getActiveReadymodeItems(): Promise<ReadymodeItem[]> {
-  const active = await db
-    .select()
-    .from(nsfReadymodeQueueTable)
-    .where(isNull(nsfReadymodeQueueTable.doneAt));
-
-  if (active.length === 0) return [];
-
-  // Build a set of normalized numbers we have outbound calls for, since the
-  // earliest addedAt in the queue (cheap, single scan).
-  const earliest = active.reduce(
-    (min, r) => (r.addedAt < min ? r.addedAt : min),
-    active[0]!.addedAt,
-  );
-  const outbound = await db
-    .select({
-      participant: phoneCallsTable.participant,
-      createdAt: phoneCallsTable.createdAt,
-    })
-    .from(phoneCallsTable)
-    .where(
-      and(
-        eq(phoneCallsTable.direction, "outgoing"),
-        gte(phoneCallsTable.createdAt, earliest),
-      ),
-    );
-
-  const callbackTimes = new Map<string, Date[]>();
-  for (const o of outbound) {
-    const n = normalizePhone(o.participant);
-    if (!n) continue;
-    if (!callbackTimes.has(n)) callbackTimes.set(n, []);
-    callbackTimes.get(n)!.push(new Date(o.createdAt));
-  }
-
-  const autoDone: number[] = [];
-  const items: ReadymodeItem[] = [];
-  for (const row of active) {
-    const norm = normalizePhone(row.phoneNumber);
-    const times = callbackTimes.get(norm);
-    const hasCallback = times?.some((t) => t >= row.addedAt) ?? false;
-    if (hasCallback) {
-      autoDone.push(row.id);
-      continue;
-    }
-    items.push({
-      id: `readymode-${row.id}`,
-      fromNumber: formatPhone(row.phoneNumber),
-      toNumber: "Readymode",
-      createdAt: row.addedAt.toISOString(),
-      ringGroupId: -1,
-      ringGroupName: "Readymode",
-      team: "nsf",
-      source: "readymode",
-    });
-  }
-
-  if (autoDone.length > 0) {
-    await db
-      .update(nsfReadymodeQueueTable)
-      .set({ doneAt: new Date(), doneBy: "auto:callback" })
-      .where(inArray(nsfReadymodeQueueTable.id, autoDone));
-  }
-
-  return items;
+  return nsfReadymodeService.listActive();
 }
 
 /**
