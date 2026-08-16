@@ -7,7 +7,6 @@ import {
   addAttendanceCalendarDays,
   attendanceDate,
   attendanceStartOfDay,
-  canonicalAttendanceStatus,
 } from "../lib/attendancePolicy.js";
 import {
   activeAttendanceMembers,
@@ -19,7 +18,6 @@ import {
 import {
   buildAttendanceImportPlan,
   buildQuoFirstCallMap,
-  type AttendanceImportCandidate,
 } from "../lib/databasePerformance.js";
 import {
   attendanceDepartmentForUser,
@@ -44,49 +42,19 @@ import {
   validateWorkflowCalendarDate,
 } from "../lib/sensitiveWorkflowPolicy.js";
 import { attendanceShiftStart, parseBusinessTimestampCompatibility } from "../lib/businessTime.js";
-import { googleCsvUrl, OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 import {
   attendanceRepository,
   type AttendanceRecordInsert,
 } from "../modules/attendance/attendance.repository.js";
+import {
+  AttendanceImportSourceError,
+  loadAttendanceImportCandidates,
+} from "../integrations/googleSheets/attendanceImport.js";
+
+export { parseAttendanceImportDate } from "../integrations/googleSheets/attendanceImport.js";
 
 const router = Router();
 router.use("/attendance", requireAuth);
-
-class AttendanceImportSourceError extends Error {}
-
-const MONTH_MAP: Record<string, string> = {
-  Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",
-  Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12",
-};
-
-export function parseAttendanceImportDate(raw: string, year = OPERATIONAL_CONFIG.attendanceImportYear): string | null {
-  const m = raw.trim().match(/^(\d{1,2})-([A-Za-z]{3})$/);
-  if (!m) return null;
-  const mon = MONTH_MAP[m[2]];
-  if (!mon) return null;
-  const day = m[1].padStart(2, "0");
-  const date = `${year}-${mon}-${day}`;
-  return validateWorkflowCalendarDate(date) ? date : null;
-}
-
-function parseCSV(text: string): string[][] {
-  const rows: string[][] = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    const cells: string[] = [];
-    let cur = "";
-    let inQ = false;
-    for (const ch of line) {
-      if (ch === '"') { inQ = !inQ; }
-      else if (ch === "," && !inQ) { cells.push(cur); cur = ""; }
-      else { cur += ch; }
-    }
-    cells.push(cur);
-    rows.push(cells);
-  }
-  return rows;
-}
 
 // ─── Timezone helpers ─────────────────────────────────────────────────────────
 //
@@ -257,50 +225,7 @@ router.post("/attendance/import", requireAuth, requirePermission("manage_members
       res.status(403).json({ error: "Forbidden", reason: "The attendance import spans multiple departments." });
       return;
     }
-    const SHEETS = OPERATIONAL_CONFIG.attendanceImportSources.map((source) => ({
-      url: googleCsvUrl(source),
-      department: source.department,
-    }));
-
-    const sourceRows = await Promise.all(SHEETS.map(async ({ url, department }) => {
-      const response = await fetch(url);
-      if (!response.ok) throw new AttendanceImportSourceError();
-      const rows = parseCSV(await response.text());
-      if (rows.length < 2 || rows[0].length < 3) throw new AttendanceImportSourceError();
-      return { rows, department };
-    }));
-
-    const importCandidates: AttendanceImportCandidate[] = [];
-
-    for (const { rows, department } of sourceRows) {
-
-      const header = rows[0];
-      const dateIndices: { idx: number; iso: string }[] = [];
-      for (let i = 2; i < header.length; i++) {
-        const iso = parseAttendanceImportDate(header[i] ?? "");
-        if (iso) dateIndices.push({ idx: i, iso });
-      }
-      if (dateIndices.length === 0) throw new AttendanceImportSourceError();
-
-      for (let r = 1; r < rows.length; r++) {
-        const row = rows[r];
-        const shift = row[0]?.trim() ?? "";
-        const name = row[1]?.trim() ?? "";
-        if (!name || !shift || shift === '"' || name.toUpperCase() === "NA" || !/^\d+$/.test(shift)) continue;
-
-        const records: Array<{ date: string; status: string }> = [];
-        for (const { idx, iso } of dateIndices) {
-          const rawStatus = row[idx]?.trim() ?? "";
-          if (!rawStatus) continue;
-          const status = canonicalAttendanceStatus(rawStatus);
-          if (!status) throw new AttendanceImportSourceError();
-          records.push({ date: iso, status });
-        }
-        importCandidates.push({ name, shift, department, records });
-      }
-    }
-
-    const importPlan = buildAttendanceImportPlan(importCandidates);
+    const importPlan = buildAttendanceImportPlan(await loadAttendanceImportCandidates());
     const totalRecords = importPlan.totalRecords;
     const totalMembers = await attendanceRepository.persistImport(importPlan.members);
 

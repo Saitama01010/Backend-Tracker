@@ -238,9 +238,10 @@ test("live-transfer reporting keeps HTTP concerns out of its application module"
 });
 
 test("Attendance route delegates PostgreSQL access to its focused repository", async () => {
-  const [route, repository] = await Promise.all([
+  const [route, repository, importIntegration] = await Promise.all([
     source("routes/attendance.ts"),
     source("modules/attendance/attendance.repository.ts"),
+    source("integrations/googleSheets/attendanceImport.ts"),
   ]);
 
   assert.match(route, /attendanceRepository/);
@@ -248,6 +249,9 @@ test("Attendance route delegates PostgreSQL access to its focused repository", a
   assert.match(repository, /@workspace\/db/);
   assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
   assert.doesNotMatch(repository, /integrations\//);
+  assert.match(route, /loadAttendanceImportCandidates/);
+  assert.doesNotMatch(route, /googleCsvUrl|attendanceImportSources|parseCsv|\bfetch\s*\(/i);
+  assert.doesNotMatch(importIntegration, /from ["']express["']|@workspace\/db|drizzle-orm/);
 });
 
 test("the production API relative-import graph remains acyclic", async () => {
