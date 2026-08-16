@@ -37,6 +37,64 @@ async function authenticatedFetch(page: Page, path: string, init?: { method?: st
   }, { path, init });
 }
 
+const phaseOneSensitivePrivateEndpoints = [
+  ["POST", "/api/attendance/auto-mark"],
+  ["POST", "/api/attendance/members"],
+  ["PATCH", "/api/attendance/members/1"],
+  ["PUT", "/api/attendance/record"],
+  ["POST", "/api/attendance/set"],
+  ["GET", "/api/breaks"],
+  ["DELETE", "/api/breaks/1"],
+  ["POST", "/api/breaks/end"],
+  ["POST", "/api/breaks/log"],
+  ["POST", "/api/breaks/start"],
+  ["GET", "/api/csv-proxy"],
+  ["GET", "/api/jobs"],
+  ["GET", "/api/jobs/1"],
+  ["GET", "/api/jobs/scheduler-health"],
+  ["POST", "/api/live-transfers/refresh"],
+  ["GET", "/api/nsf/readymode-queue"],
+  ["POST", "/api/nsf/readymode-queue"],
+  ["POST", "/api/nsf/readymode-queue/1/done"],
+  ["POST", "/api/nsf/readymode-queue/done-by-number"],
+  ["POST", "/api/ob-report/refresh"],
+  ["POST", "/api/qa/assign-weekly"],
+  ["POST", "/api/qa/biweekly-run"],
+  ["POST", "/api/qa/evaluate"],
+  ["POST", "/api/qa/process"],
+  ["POST", "/api/qa/tasks/phase1-task/resolve"],
+  ["GET", "/api/quo/live/refresh"],
+  ["POST", "/api/quo/sync"],
+  ["GET", "/api/quo/sync-state"],
+  ["GET", "/api/readymode/probe"],
+  ["POST", "/api/readymode/session/reset"],
+  ["DELETE", "/api/violations/verify"],
+  ["POST", "/api/violations/verify"],
+  ["GET", "/api/vos/debug/calls"],
+  ["GET", "/api/vos/debug/proxy"],
+  ["POST", "/api/vos/refresh"],
+] as const;
+
+test("sensitive Phase 1 endpoint inventory has direct HTTP authorization and cron-secret protection", async ({ request }) => {
+  for (const [method, endpoint] of phaseOneSensitivePrivateEndpoints) {
+    const response = await request.fetch(`http://127.0.0.1:8080${endpoint}`, {
+      method,
+      ...(method === "GET" ? {} : { data: {} }),
+    });
+    expect(response.status(), `${method} ${endpoint}`).toBe(401);
+    expect(await response.json(), `${method} ${endpoint}`).toMatchObject({
+      error: "Unauthorized",
+      code: "UNAUTHORIZED",
+    });
+  }
+
+  for (const endpoint of ["/api/jobs/cron", "/api/qa/biweekly-run"]) {
+    const response = await request.get(`http://127.0.0.1:8080${endpoint}`);
+    expect(response.status(), `GET ${endpoint}`).toBe(503);
+    expect(await response.json(), `GET ${endpoint}`).toMatchObject({ error: "Service is temporarily unavailable." });
+  }
+});
+
 test("real frontend, Express API, session, authorization, PostgreSQL, sources, filters, refresh, tables, and exports work together", async ({ page, request }) => {
   const unexpectedApiFailures: string[] = [];
   const pageErrors: string[] = [];

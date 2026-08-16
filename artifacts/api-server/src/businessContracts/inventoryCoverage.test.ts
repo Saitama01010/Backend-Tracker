@@ -55,6 +55,23 @@ test("the endpoint coverage matrix lists every declared route without presenting
   assert.ok(declared.length > 90);
   for (const rowPrefix of declared) assert.ok(matrix.includes(rowPrefix), `matrix missing ${rowPrefix}`);
   assert.match(matrix, /“Inventory only” is not direct response or calculation regression coverage/);
+  assert.match(matrix, /\*\*89 with direct Phase 1 behavior\/HTTP protection\*\*, \*\*3 inventory-only/);
+
+  const hardeningStart = matrix.indexOf("## Acceptance-hardening disposition");
+  const mainMatrixStart = matrix.indexOf("\n| Method | Route |", hardeningStart);
+  assert.ok(hardeningStart > 0 && mainMatrixStart > hardeningStart);
+  const hardeningSection = matrix.slice(hardeningStart, mainMatrixStart);
+  const hardenedEndpointRows = hardeningSection.match(/^\| (?:GET|POST|PUT|PATCH|DELETE) \| `\//gm) ?? [];
+  assert.equal(hardenedEndpointRows.length, 37);
+  assert.doesNotMatch(hardeningSection, /inventory only/i);
+
+  const inventoryRows = matrix.split("\n").filter((line) => line.includes("authorization; inventory only"));
+  assert.equal(inventoryRows.length, 3);
+  assert.deepEqual(inventoryRows.map((line) => line.match(/`([^`]+)`/)?.[1]), [
+    "/blocked-numbers",
+    "/blocked-numbers",
+    "/blocked-numbers/:number",
+  ]);
 });
 
 test("every dashboard endpoint resolves to a traced route group and every page has smoke ownership", async () => {

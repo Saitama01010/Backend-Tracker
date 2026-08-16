@@ -76,6 +76,46 @@ const goldenNumberRoutes = new Set([
   "GET /ob-analytics",
 ]);
 
+const acceptanceHardenedRoutes = new Map([
+  ["POST /attendance/auto-mark", "Permission/date/team/agent access control"],
+  ["POST /attendance/members", "Permission/date/team/agent access control"],
+  ["PATCH /attendance/members/:id", "Permission/date/team/agent access control"],
+  ["PUT /attendance/record", "Permission/date/team/agent access control"],
+  ["POST /attendance/set", "Permission/date/team/agent access control"],
+  ["GET /breaks", "Permission/date/team/agent access control"],
+  ["DELETE /breaks/:id", "Permission/date/team/agent access control"],
+  ["POST /breaks/end", "Permission/date/team/agent access control"],
+  ["POST /breaks/log", "Permission/date/team/agent access control"],
+  ["POST /breaks/start", "Permission/date/team/agent access control"],
+  ["GET /csv-proxy", "Google Sheets"],
+  ["GET /jobs", "Background job affecting visible dashboard data"],
+  ["GET /jobs/:id", "Background job affecting visible dashboard data"],
+  ["GET /jobs/cron", "Background job affecting visible dashboard data"],
+  ["GET /jobs/scheduler-health", "Background job affecting visible dashboard data"],
+  ["POST /live-transfers/refresh", "Background job affecting visible dashboard data"],
+  ["GET /nsf/readymode-queue", "ReadyMode; visible dashboard queue"],
+  ["POST /nsf/readymode-queue", "ReadyMode; visible dashboard queue"],
+  ["POST /nsf/readymode-queue/:id/done", "ReadyMode; visible dashboard queue"],
+  ["POST /nsf/readymode-queue/done-by-number", "ReadyMode; visible dashboard queue"],
+  ["POST /ob-report/refresh", "Background job affecting visible dashboard data"],
+  ["POST /qa/assign-weekly", "Background job affecting visible dashboard data"],
+  ["GET /qa/biweekly-run", "Background job affecting visible dashboard data"],
+  ["POST /qa/biweekly-run", "Background job affecting visible dashboard data"],
+  ["POST /qa/evaluate", "Background job affecting visible dashboard data"],
+  ["POST /qa/process", "Background job affecting visible dashboard data"],
+  ["POST /qa/tasks/:id/resolve", "Background job affecting visible dashboard data"],
+  ["GET /quo/live/refresh", "QUO; background refresh affecting visible dashboard data"],
+  ["POST /quo/sync", "QUO; background refresh affecting visible dashboard data"],
+  ["GET /quo/sync-state", "QUO; background refresh affecting visible dashboard data"],
+  ["GET /readymode/probe", "ReadyMode"],
+  ["POST /readymode/session/reset", "ReadyMode"],
+  ["DELETE /violations/verify", "Google Sheets; permission/date/team/agent access control"],
+  ["POST /violations/verify", "Google Sheets; permission/date/team/agent access control"],
+  ["GET /vos/debug/calls", "PBX"],
+  ["GET /vos/debug/proxy", "PBX"],
+  ["POST /vos/refresh", "PBX; background refresh affecting visible dashboard data"],
+]);
+
 function authorizationFor(key, route) {
   if (publicRoutes.has(key)) return publicRoutes.get(key);
   if (route.startsWith("/samia")) return "administrator";
@@ -107,6 +147,14 @@ function coverageFor(key, sourceName) {
   }
   if (importRoutes.has(key)) return ["authorization", "dashboard-full-stack.spec.ts; authorization.test.ts", "Direct HTTP boundary protection; success-path mutation is intentionally outside read-only acceptance."];
   if (accessControlRoutes.has(key)) return ["integration; authorization", "canonicalAccess.integration.test.ts; teamAgents.integration.test.ts; dashboard-full-stack.spec.ts", ""];
+  if (acceptanceHardenedRoutes.has(key)) {
+    const cron = key === "GET /jobs/cron" || key === "GET /qa/biweekly-run";
+    const background = acceptanceHardenedRoutes.get(key).includes("Background job") || acceptanceHardenedRoutes.get(key).includes("background refresh");
+    const tests = ["dashboard-full-stack.spec.ts", "authorization.test.ts"];
+    if (background) tests.push("backgroundJobs.test.ts");
+    if (cron) tests.push("backgroundJobs.integration.test.ts");
+    return [cron ? "integration; HTTP secret boundary" : "integration; HTTP authorization", tests.join("; "), "Direct real-Express response assertion added during acceptance hardening; runtime behavior is unchanged."];
+  }
   if (directNumberRoutePatterns.some((pattern) => pattern.test(key))) {
     const golden = goldenNumberRoutes.has(key);
     return [golden ? "integration; golden; browser" : "integration; browser", golden ? "dashboard-full-stack.spec.ts; goldenResponses.test.ts" : "dashboard-full-stack.spec.ts", ""];
@@ -142,6 +190,10 @@ const direct = endpoints.filter(({ coverage }) => !coverage.includes("inventory 
 const inventoryOnly = endpoints.filter(({ coverage }) => coverage.includes("inventory only")).length;
 const excluded = endpoints.filter(({ coverage }) => coverage.includes("excluded")).length;
 const rows = endpoints.map((endpoint) => `| ${endpoint.method} | \`${endpoint.route}\` | ${escapeCell(endpoint.workflow)} | ${escapeCell(endpoint.dataSource)} | ${escapeCell(endpoint.tables)} | ${escapeCell(endpoint.authorization)} | ${escapeCell(endpoint.tests)} | ${escapeCell(endpoint.coverage)} | ${escapeCell(endpoint.reason || "—")} |`).join("\n");
+const hardenedRows = endpoints
+  .filter(({ method, route }) => acceptanceHardenedRoutes.has(`${method} ${route}`))
+  .map(({ method, route }) => `| ${method} | \`${route}\` | ${escapeCell(acceptanceHardenedRoutes.get(`${method} ${route}`))} | \`dashboard-full-stack.spec.ts\` asserts the real Express authorization/secret response |`)
+  .join("\n");
 const document = `# Phase 1 endpoint coverage matrix
 
 Generated from the route declarations under \`artifacts/api-server/src/routes\` by \`scripts/generate-phase1-endpoint-matrix.mjs\`. \`inventoryCoverage.test.ts\` fails when a declared method/path is missing from this matrix.
@@ -149,6 +201,14 @@ Generated from the route declarations under \`artifacts/api-server/src/routes\` 
 Coverage summary at generation time: **${endpoints.length} declared endpoints**, **${direct} with direct Phase 1 behavior/HTTP protection**, **${inventoryOnly} inventory-only beyond their central authorization assertion**, and **${excluded} explicitly excluded from business-behavior hardening**. “Inventory only” is not direct response or calculation regression coverage. A row may include authorization coverage and still remain inventory-only for its response body.
 
 All private routes are also protected by the central default-deny middleware and \`authorization.test.ts\`. The coverage column describes the strongest direct Phase 1 evidence, not every repository test that may touch the route.
+
+## Acceptance-hardening disposition
+
+The pre-hardening matrix had no inventory-only authentication/session, export, or standalone number-producing dashboard endpoints. The 37 inventory-only endpoints that did match the requested QUO, PBX, ReadyMode, Google Sheets, access-control, or visible-data background-processing categories are listed below. Each now has a direct assertion through the real Express stack. The two public cron routes assert their configured-secret failure response; every other row asserts the private HTTP authorization response. Provider, database, scheduler, and calculation behavior already covered by the additional tests named in the main matrix remains unchanged.
+
+| Method | Endpoint | Requested category | Focused direct protection |
+|---|---|---|---|
+${hardenedRows}
 
 | Method | Route | Dashboard/workflow | Data source | Database tables | Authorization policy | Test protecting it | Coverage type | Exclusion/inventory reason |
 |---|---|---|---|---|---|---|---|---|
