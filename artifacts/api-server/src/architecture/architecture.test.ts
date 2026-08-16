@@ -79,9 +79,11 @@ test("Quo provider operations with established boundaries stay out of HTTP route
 });
 
 test("migrated dashboard routes delegate provider transport and raw parsing to source adapters", async () => {
-  const [quo, sheets, readymode, vos] = await Promise.all([
+  const [quo, sheets, retentionService, retentionRepository, readymode, vos] = await Promise.all([
     source("routes/quo.ts"),
     source("routes/sheets.ts"),
+    source("modules/retention/retention.service.ts"),
+    source("modules/retention/retention.repository.ts"),
     source("routes/readymode.ts"),
     source("routes/vos.ts"),
   ]);
@@ -89,8 +91,15 @@ test("migrated dashboard routes delegate provider transport and raw parsing to s
   assert.match(quo, /integrations\/quo\/client\.js/);
   assert.doesNotMatch(quo, /api\.openphone\.com|QUO_API_KEY|fetchQuoJson|fetchAllQuoPages|nextPageToken|pageToken|\bfetch\s*\(/);
 
-  assert.match(sheets, /integrations\/googleSheets\/(?:client|mapper)\.js/);
+  assert.match(sheets, /modules\/retention\/retention\.service\.js/);
+  assert.doesNotMatch(sheets, /@workspace\/db|drizzle-orm|integrations\/googleSheets/);
   assert.doesNotMatch(sheets, /sheets\.googleapis\.com|oauth2\.googleapis\.com|GOOGLE_(?:SA|SERVICE_ACCOUNT)|\bfetch\s*\(/);
+  assert.match(retentionService, /integrations\/googleSheets\/(?:client|mapper)\.js/);
+  assert.match(retentionService, /retention\.repository\.js/);
+  assert.doesNotMatch(retentionService, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  assert.doesNotMatch(retentionService, /@workspace\/db|drizzle-orm/);
+  assert.match(retentionRepository, /@workspace\/db/);
+  assert.doesNotMatch(retentionRepository, /from ["']express["']|integrations\//);
 
   assert.match(readymode, /integrations\/readymode\/(?:client|csvParser|htmlProbe|importer)\.js/);
   assert.doesNotMatch(readymode, /icydeals\.readymode\.com|READYMODE_(?:USERNAME|PASSWORD|CSV_URL)|login_new|node:fs|node:path|\bfetch\s*\(/);
