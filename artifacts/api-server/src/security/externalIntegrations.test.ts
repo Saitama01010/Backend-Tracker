@@ -150,8 +150,10 @@ test("Sheets, date ranges, probes, and pagination are wired through integration 
   assert.match(readymode, /const readyModeSourceCache = new Map/);
   assert.match(readymode, /const readyModeSourceRefreshes = new Map/);
   assert.match(readymode, /fetchConfiguredReadyModeCsv/);
-  assert.doesNotMatch(readymode, /READYMODE_CSV_URL|googleCsvUrl|\bfetch\(/);
+  assert.match(readymode, /loadAttachedReadyModeCsv/);
+  assert.doesNotMatch(readymode, /READYMODE_CSV_URL|googleCsvUrl|node:fs|node:path|fs\.readdir|fs\.readFile|path\.resolve|\bfetch\(/);
   assert.match(readymodeClient, /AbortSignal\.timeout\(15_000\)/);
+  assert.match(readymodeClient, /Agent_report/);
   assert.match(readymode, /loadReadyModeSources[\s\S]*?loadAuthorizationAgentDirectory/);
   assert.match(readymode, /readyModeSourceCache\.clear\(\)/);
   assert.match(readymode, /probeReadyModePath/);

@@ -3,7 +3,7 @@ import { performance } from "node:perf_hooks";
 import { db, readymodeUploadsTable } from "@workspace/db";
 import { and, gte, lte } from "drizzle-orm";
 import type { Logger } from "pino";
-import { fetchConfiguredReadyModeCsv } from "../integrations/readymode/client.js";
+import { fetchConfiguredReadyModeCsv, loadAttachedReadyModeCsv } from "../integrations/readymode/client.js";
 import { parseReadymodeRows, type ReadyModeDayRow } from "../integrations/readymode/csvParser.js";
 import { type ReadyModeAgentStat } from "../integrations/readymode/htmlParser.js";
 import { probeReadyModePath, resetReadyModeSession } from "../integrations/readymode/htmlProbe.js";
@@ -82,29 +82,8 @@ async function refreshReadyModeSources(
   };
 
   const sourceStartedAt = performance.now();
-  const fs = await import("node:fs/promises");
-  const path = await import("node:path");
-  const candidates = [
-    path.resolve(process.cwd(), "..", "..", "attached_assets"),
-    path.resolve(process.cwd(), "attached_assets"),
-    "/home/runner/workspace/attached_assets",
-  ];
-  for (const root of candidates) {
-    try {
-      const files = await fs.readdir(root);
-      const csvFiles = files
-        .filter((file) => /^Agent_report.*\.csv$/i.test(file))
-        .sort()
-        .reverse();
-      if (csvFiles.length > 0) {
-        const picked = path.join(root, csvFiles[0]!);
-        ingest(await fs.readFile(picked, "utf8"), `attached-asset:${csvFiles[0]}`);
-        break;
-      }
-    } catch {
-      // Try the next known local asset location.
-    }
-  }
+  const attachedCsv = await loadAttachedReadyModeCsv();
+  if (attachedCsv) ingest(attachedCsv.text, attachedCsv.source);
 
   try {
     const csvRes = await fetchConfiguredReadyModeCsv();
