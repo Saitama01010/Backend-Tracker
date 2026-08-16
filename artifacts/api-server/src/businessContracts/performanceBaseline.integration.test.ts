@@ -8,7 +8,7 @@ import pg from "pg";
 import { buildQuoPhoneCallRow, type QuoCall, type QuoPhoneNumber } from "../integrations/quo/sync.js";
 import { parseGoogleSheetsValues } from "../integrations/googleSheets/mapper.js";
 import { parseReadymodeRows } from "../integrations/readymode/csvParser.js";
-import { parseAgentTable } from "../routes/readymode.js";
+import { parseAgentTable } from "../integrations/readymode/htmlParser.js";
 import { teamFromRingGroupName } from "../routes/vos.js";
 
 const { Client } = pg;

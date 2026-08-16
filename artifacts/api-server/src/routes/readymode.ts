@@ -4,6 +4,8 @@ import { db, readymodeUploadsTable } from "@workspace/db";
 import { and, gte, lte } from "drizzle-orm";
 import type { Logger } from "pino";
 import { parseReadymodeRows, type ReadyModeDayRow } from "../integrations/readymode/csvParser.js";
+import { type ReadyModeAgentStat } from "../integrations/readymode/htmlParser.js";
+import { probeReadyModePath, resetReadyModeSession } from "../integrations/readymode/htmlProbe.js";
 import { persistReadyModeUpload, prepareReadyModeUpload } from "../integrations/readymode/importer.js";
 import { logger as rootLogger } from "../lib/logger";
 import { requireAuth, requireRole } from "../middleware/auth.js";
@@ -18,153 +20,10 @@ import { googleCsvUrl, OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 const router = Router();
 router.use("/readymode", requireAuth);
 
-const RM_BASE = "https://icydeals.readymode.com";
-const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-
-// ─── Session ─────────────────────────────────────────────────────────────────
-
-let cachedCookies = "";
-let cookieExpiry = 0;
-let loginBackoffUntil = 0; // don't attempt login before this timestamp
-
-async function getSession(): Promise<string> {
-  if (cachedCookies && Date.now() < cookieExpiry) return cachedCookies;
-
-  // Respect backoff: if a recent login attempt failed, wait before retrying
-  const now = Date.now();
-  if (now < loginBackoffUntil) {
-    const waitSecs = Math.ceil((loginBackoffUntil - now) / 1000);
-    throw new Error(`ReadyMode login cooling down — retry in ${waitSecs}s`);
-  }
-
-  const username = process.env["READYMODE_USERNAME"];
-  const password = process.env["READYMODE_PASSWORD"];
-  if (!username || !password) throw new Error("READYMODE_USERNAME / READYMODE_PASSWORD not set");
-
-  // Step 1: GET login page to obtain a fresh PHPSESSID (required by PHP session validation)
-  const getRes = await fetch(`${RM_BASE}/login_new/`, {
-    headers: { "User-Agent": UA, "Accept": "text/html" },
-    redirect: "manual",
-  });
-  const initialCookies = (getRes.headers.getSetCookie?.() ?? []).map((c) => c.split(";")[0]).join("; ");
-
-  // Step 2: POST credentials with that PHPSESSID in cookie header
-  const params = new URLSearchParams();
-  params.set("login_account", username);
-  params.set("login_password", password);
-  params.set("then", "");
-  params.set("use_phone_module", "auto");
-  params.set("user_tz", OPERATIONAL_CONFIG.businessTimeZone);
-
-  const postRes = await fetch(`${RM_BASE}/login_new/`, {
-    method: "POST",
-    headers: {
-      "User-Agent": UA,
-      "Content-Type": "application/x-www-form-urlencoded",
-      "Cookie": initialCookies,
-      "Referer": `${RM_BASE}/login_new/`,
-      "Accept": "text/html,application/xhtml+xml,*/*",
-    },
-    body: params.toString(),
-    redirect: "manual",
-  });
-
-  if (postRes.status !== 302) {
-    const body = await postRes.text();
-    const errMsg = body.match(/class="[^"]*error[^"]*"[^>]*>([^<]+)/i)?.[1]?.trim() ?? `HTTP ${postRes.status}`;
-    // Back off 15 minutes to let the account lockout expire
-    loginBackoffUntil = Date.now() + 15 * 60 * 1000;
-    throw new Error(`ReadyMode login failed: ${errMsg}`);
-  }
-
-  // Merge initial session cookie with new auth cookies from login response
-  const authCookies = (postRes.headers.getSetCookie?.() ?? []).map((c) => c.split(";")[0]);
-  const allCookies = new Map<string, string>();
-  for (const kv of [...initialCookies.split("; "), ...authCookies]) {
-    const eq = kv.indexOf("=");
-    if (eq > 0) allCookies.set(kv.slice(0, eq), kv.slice(eq + 1));
-  }
-
-  cachedCookies = [...allCookies.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
-  cookieExpiry = Date.now() + 4 * 60 * 60 * 1000;
-  rootLogger.info("ReadyMode session established");
-  return cachedCookies;
-}
-
-async function rmFetch(path: string, maxRedirects = 5): Promise<{ status: number; body: string; isJson: boolean; finalUrl: string }> {
-  await getSession(); // ensures cachedCookies is populated
-  let currentPath = path;
-  let hops = 0;
-
-  while (hops < maxRedirects) {
-    const res = await fetch(`${RM_BASE}${currentPath}`, {
-      headers: { "User-Agent": UA, "Accept": "text/html,application/json,*/*", "Cookie": cachedCookies },
-      redirect: "manual",
-    });
-
-    if (res.status === 302 || res.status === 301) {
-      const location = res.headers.get("location") ?? "";
-      // If redirected to login page → session expired, invalidate and re-login once
-      if (location.includes("login_new") || location.includes("login.php")) {
-        if (hops > 0) throw new Error("ReadyMode session expired (redirected to login after re-auth)");
-        rootLogger.info({ location }, "ReadyMode session expired, re-authenticating");
-        cachedCookies = "";
-        cookieExpiry = 0;
-        await new Promise((r) => setTimeout(r, 1500)); // brief pause to avoid rate-limit
-        await getSession();
-        hops++;
-        continue;
-      }
-      // Otherwise it's a normal app redirect — follow it
-      if (location.startsWith("http")) {
-        // Absolute URL — extract path component
-        try {
-          const u = new URL(location);
-          currentPath = u.pathname + u.search;
-        } catch { currentPath = location; }
-      } else {
-        currentPath = location;
-      }
-      rootLogger.info({ from: path, to: currentPath }, "ReadyMode redirect followed");
-      hops++;
-      continue;
-    }
-
-    const body = await res.text();
-    const ct = res.headers.get("content-type") ?? "";
-    return { status: res.status, body, isJson: ct.includes("application/json"), finalUrl: currentPath };
-  }
-
-  throw new Error(`ReadyMode: too many redirects from ${path}`);
-}
-
-async function probeReadyModePath(path: string): Promise<{ status: number; isJson: boolean; bodyLength: number }> {
-  await getSession();
-  const res = await fetch(`${RM_BASE}${path}`, {
-    headers: { "User-Agent": UA, "Accept": "text/html,application/json,*/*", "Cookie": cachedCookies },
-    redirect: "manual",
-  });
-  if (res.status >= 300 && res.status < 400) {
-    throw new Error("ReadyMode probe redirect rejected");
-  }
-  const body = await res.text();
-  const contentType = res.headers.get("content-type") ?? "";
-  return { status: res.status, isJson: contentType.includes("application/json"), bodyLength: body.length };
-}
-
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface RmAgentStat {
-  agentName: string;
-  dialed: number;
-  connected: number;
-  talkTimeSecs: number;
-  avgTalkSecs: number;
-  connectRate: number;
-}
-
 export interface RmStatsResponse {
-  agents: RmAgentStat[];
+  agents: ReadyModeAgentStat[];
   totals: {
     dialed: number;
     connected: number;
@@ -174,89 +33,6 @@ export interface RmStatsResponse {
   updatedAt: string;
   raw?: string;
 }
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function parseSecs(val: string): number {
-  // Parses "H:MM:SS", "M:SS", or plain seconds string
-  const parts = val.trim().split(":").map(Number);
-  if (parts.some(isNaN)) return 0;
-  if (parts.length === 3) return parts[0]! * 3600 + parts[1]! * 60 + parts[2]!;
-  if (parts.length === 2) return parts[0]! * 60 + parts[1]!;
-  return parts[0]!;
-}
-
-/**
- * Attempt to parse agent rows from a ReadyMode HTML report table.
- * ReadyMode renders data in <table> elements with <tr> rows.
- * This is a best-effort parser; it returns an empty array when the structure
- * cannot be recognized so the caller can fall back gracefully.
- */
-export function parseAgentTable(html: string): RmAgentStat[] {
-  // Look for a table that has agent names and numeric call counts
-  // Typical pattern: rows of <td> with agent name, dialed, connected, talk time
-  const tableMatch = html.match(/<table[^>]*>([\s\S]*?)<\/table>/gi);
-  if (!tableMatch) return [];
-
-  const agents: RmAgentStat[] = [];
-
-  for (const table of tableMatch) {
-    const rows = [...table.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
-    if (rows.length < 2) continue;
-
-    // Find header row to understand column positions
-    const headerRow = rows[0]?.[1] ?? "";
-    const headers = [...headerRow.matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)].map((m) =>
-      m[1]?.replace(/<[^>]+>/g, "").trim().toLowerCase() ?? ""
-    );
-
-    // Detect if this looks like a dialer report
-    const hasAgent = headers.some((h) => h.includes("agent") || h.includes("name"));
-    const hasCalls = headers.some((h) => h.includes("dial") || h.includes("call") || h.includes("total"));
-    if (!hasAgent || !hasCalls) continue;
-
-    const nameIdx = headers.findIndex((h) => h.includes("agent") || h.includes("name"));
-    const dialIdx = headers.findIndex((h) => h.includes("dial") || h.includes("total call") || h.includes("calls"));
-    const connIdx = headers.findIndex((h) => h.includes("connect") || h.includes("answer") || h.includes("talk"));
-    const timeIdx = headers.findIndex((h) => h.includes("time") || h.includes("duration") || h.includes("talk"));
-
-    for (const row of rows.slice(1)) {
-      const cells = [...row[1]!.matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)].map((m) =>
-        m[1]?.replace(/<[^>]+>/g, "").trim() ?? ""
-      );
-      if (cells.length < 2) continue;
-
-      const name = cells[nameIdx] ?? cells[0] ?? "";
-      if (!name || name.toLowerCase().includes("total") || name.toLowerCase().includes("summary")) continue;
-
-      const dialedRaw = cells[dialIdx] ?? cells[1] ?? "0";
-      const connRaw = connIdx >= 0 ? (cells[connIdx] ?? "0") : "0";
-      const timeRaw = timeIdx >= 0 ? (cells[timeIdx] ?? "0") : "0";
-
-      const dialed = parseInt(dialedRaw.replace(/[^0-9]/g, ""), 10) || 0;
-      const connected = connIdx >= 0 ? parseInt(connRaw.replace(/[^0-9]/g, ""), 10) || 0 : 0;
-      const talkTimeSecs = timeRaw.includes(":") ? parseSecs(timeRaw) : parseInt(timeRaw.replace(/[^0-9]/g, ""), 10) || 0;
-      const connectRate = dialed > 0 ? Math.round((connected / dialed) * 1000) / 10 : 0;
-      const avgTalkSecs = connected > 0 ? Math.round(talkTimeSecs / connected) : 0;
-
-      if (dialed > 0 || connected > 0) {
-        agents.push({ agentName: name, dialed, connected, talkTimeSecs, avgTalkSecs, connectRate });
-      }
-    }
-
-    if (agents.length > 0) break;
-  }
-
-  return agents;
-}
-
-// Paths to probe in order for agent call data (ReadyMode/XenCALL)
-const REPORT_PROBE_PATHS = [
-  "/supervisor/",
-  "/reporting/",
-  "/report/",
-  "/",
-];
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
@@ -529,7 +305,7 @@ router.get("/readymode/stats", async (req, res) => {
       included++;
     }
 
-    const allAgents: RmAgentStat[] = [...agg.entries()]
+    const allAgents: ReadyModeAgentStat[] = [...agg.entries()]
       .filter(([, v]) => v.dialed > 0 || v.talkTimeSecs > 0)
       .map(([agentName, v]) => ({
         agentName,
@@ -665,10 +441,7 @@ router.post("/readymode/upload", requireAuth, requireRole("admin", "edit"), asyn
  * Clears cached session so the next request triggers a fresh login.
  */
 router.post("/readymode/session/reset", requireRole("admin"), (_req, res) => {
-  cachedCookies = "";
-  cookieExpiry = 0;
-  loginBackoffUntil = 0;
-  rootLogger.info("ReadyMode session cache cleared");
+  resetReadyModeSession();
   res.json({ ok: true });
 });
 

@@ -5,8 +5,8 @@ import test from "node:test";
 import { buildQuoPhoneCallRow, type QuoCall, type QuoPhoneNumber } from "../integrations/quo/sync.js";
 import { detectHeaderRow, parseGoogleSheetsValues } from "../integrations/googleSheets/mapper.js";
 import { parseReadymodeRows } from "../integrations/readymode/csvParser.js";
+import { parseAgentTable } from "../integrations/readymode/htmlParser.js";
 import { prepareReadyModeUpload } from "../integrations/readymode/importer.js";
-import { parseAgentTable } from "../routes/readymode.js";
 import { teamFromRingGroupName } from "../routes/vos.js";
 
 const fixtures = path.join(import.meta.dirname, "fixtures");

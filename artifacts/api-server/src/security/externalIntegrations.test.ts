@@ -119,12 +119,13 @@ test("Google Sheets upstream payloads distinguish empty data from malformed resp
 
 test("Sheets, date ranges, probes, and pagination are wired through integration security policy", async () => {
   const base = new URL("../routes/", import.meta.url);
-  const [quo, quoSync, sheets, sheetsClient, readymode] = await Promise.all([
+  const [quo, quoSync, sheets, sheetsClient, readymode, readymodeProbe] = await Promise.all([
     readFile(new URL("quo.ts", base), "utf8"),
     readFile(new URL("../integrations/quo/sync.ts", base), "utf8"),
     readFile(new URL("sheets.ts", base), "utf8"),
     readFile(new URL("../integrations/googleSheets/client.ts", base), "utf8"),
     readFile(new URL("readymode.ts", base), "utf8"),
+    readFile(new URL("../integrations/readymode/htmlProbe.ts", base), "utf8"),
   ]);
 
   assert.match(quo, /validateIntegrationDateRange/);
@@ -143,7 +144,9 @@ test("Sheets, date ranges, probes, and pagination are wired through integration 
   assert.match(readymode, /AbortSignal\.timeout\(15_000\)/);
   assert.match(readymode, /loadReadyModeSources[\s\S]*?loadAuthorizationAgentDirectory/);
   assert.match(readymode, /readyModeSourceCache\.clear\(\)/);
+  assert.match(readymode, /probeReadyModePath/);
+  assert.match(readymodeProbe, /READYMODE_USERNAME/);
   assert.doesNotMatch(readymode, /preview:\s*result\.body/);
-  assert.doesNotMatch(readymode, /cookies:\s*cachedCookies/);
+  assert.doesNotMatch(readymodeProbe, /cookies:\s*cachedCookies/);
   assert.doesNotMatch(quoSync, /logger\.(?:info|warn|error)\([^\n]*participant/);
 });
