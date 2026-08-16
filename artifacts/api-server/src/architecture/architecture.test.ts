@@ -185,16 +185,21 @@ test("migrated dashboard routes delegate provider transport and raw parsing to s
   assert.doesNotMatch(retentionPbxRepository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
 });
 
-test("onboarding analytics keeps HTTP concerns out of its application module", async () => {
-  const [route, analytics] = await Promise.all([
+test("onboarding analytics delegates PostgreSQL work through its repository boundary", async () => {
+  const [route, analytics, repository] = await Promise.all([
     source("routes/obAnalytics.ts"),
     source("modules/onboarding/analytics.ts"),
+    source("modules/onboarding/onboarding.analytics.repository.ts"),
   ]);
   assert.match(route, /computeOnboardingAnalytics/);
   assert.match(route, /buildOnboardingAnalyticsWorkbook/);
   assert.doesNotMatch(route, /@workspace\/db|drizzle-orm|ExcelJS/);
   assert.doesNotMatch(analytics, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
   assert.doesNotMatch(analytics, /router\.(?:get|post|put|patch|delete)\(/);
+  assert.doesNotMatch(analytics, /@workspace\/db|drizzle-orm|\bdb\.|phoneCallsTable|onboardingClassificationsTable/);
+  assert.match(analytics, /onboarding\.analytics\.repository\.js/);
+  assert.match(repository, /@workspace\/db/);
+  assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(|integrations\//);
 });
 
 test("onboarding reporting keeps HTTP concerns out of its application module", async () => {

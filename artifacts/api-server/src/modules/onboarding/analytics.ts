@@ -1,10 +1,11 @@
 import ExcelJS from "exceljs";
-import { db, phoneCallsTable, onboardingClassificationsTable } from "@workspace/db";
-import { and, eq, gte, lte, ne } from "drizzle-orm";
 import { canonicalAgentName } from "../../integrations/quo/sync.js";
-import { getBlockedNumbers } from "../../lib/blockedNumbers.js";
 import { businessDayWindow } from "../../lib/businessTime.js";
 import { OPERATIONAL_CONFIG } from "../../lib/operationalConfig.js";
+import {
+  onboardingAnalyticsRepository,
+  type OnboardingAnalyticsRepository,
+} from "./onboarding.analytics.repository.js";
 
 // ─── Onboarding line ──────────────────────────────────────────────────────────
 const LINE_ID = OPERATIONAL_CONFIG.lineIds.onboarding;
@@ -119,20 +120,6 @@ interface FirstRingDetail {
   source: "OpenPhone/QUO";
 }
 
-interface CallRow {
-  id: string;
-  agentName: string | null;
-  participant: string;
-  lineName: string;
-  direction: string;
-  status: string;
-  durationSeconds: number;
-  postAnswerSeconds: number | null;
-  createdAt: Date;
-  callType: string | null;
-  mentionsTax: boolean | null;
-}
-
 interface Hourly {
   hour: number;
   calls: number;
@@ -236,36 +223,17 @@ function normalizePhoneForGrouping(value: string): string {
   return digits.length > 10 ? digits.slice(-10) : digits;
 }
 
-export async function computeOnboardingAnalytics(from?: string, to?: string): Promise<Analytics> {
+export async function computeOnboardingAnalytics(
+  from?: string,
+  to?: string,
+  repository: OnboardingAnalyticsRepository = onboardingAnalyticsRepository,
+): Promise<Analytics> {
   const { fromDate, toDate } = parseRange(from, to);
-
-  const rows = (await db
-    .select({
-      id: phoneCallsTable.id,
-      agentName: phoneCallsTable.agentName,
-      participant: phoneCallsTable.participant,
-      lineName: phoneCallsTable.lineName,
-      direction: phoneCallsTable.direction,
-      status: phoneCallsTable.status,
-      durationSeconds: phoneCallsTable.durationSeconds,
-      postAnswerSeconds: phoneCallsTable.postAnswerSeconds,
-      createdAt: phoneCallsTable.createdAt,
-      callType: onboardingClassificationsTable.callType,
-      mentionsTax: onboardingClassificationsTable.mentionsTax,
-    })
-    .from(phoneCallsTable)
-    .leftJoin(onboardingClassificationsTable, eq(onboardingClassificationsTable.callId, phoneCallsTable.id))
-    .where(
-      and(
-        eq(phoneCallsTable.lineId, LINE_ID),
-        gte(phoneCallsTable.createdAt, fromDate),
-        lte(phoneCallsTable.createdAt, toDate),
-        ne(phoneCallsTable.status, "in-progress"),
-      ),
-    )
-    .orderBy(phoneCallsTable.createdAt)) as CallRow[];
-
-  const blocklist = await getBlockedNumbers();
+  const { rows, blockedNumbers: blocklist } = await repository.load({
+    lineId: LINE_ID,
+    fromDate,
+    toDate,
+  });
 
   const agents = new Map<string, AgentAgg>();
   const hourly: Hourly[] = Array.from({ length: 24 }, (_, h) => ({
