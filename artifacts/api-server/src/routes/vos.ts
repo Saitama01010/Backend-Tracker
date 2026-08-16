@@ -1,8 +1,5 @@
 import { Router } from "express";
-import { approvedVosDebugPath } from "../lib/externalIntegrationPolicy.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { fetchPbxJson, type VosCallRaw } from "../integrations/pbx/client.js";
-import { retentionPbxService } from "../modules/retention/retention.pbx.service.js";
 import type {
   RetentionPbxCallHistoryStat,
   RetentionPbxRingGroupMissed,
@@ -13,13 +10,13 @@ import {
   parsePbxDailyQuery,
   parsePbxHourlyQuery,
 } from "../modules/pbx/pbx.schemas.js";
-import { pbxMissedReportingService } from "../modules/pbx/pbx.missed.service.js";
+import { pbxDashboardService } from "../modules/pbx/pbx.dashboard.service.js";
+import {
+  PbxDiagnosticPathError,
+  pbxDiagnosticsService,
+} from "../modules/pbx/pbx.diagnostics.service.js";
 import { pbxNoCallbackService } from "../modules/pbx/pbx.no-callback.service.js";
 import { pbxRefreshService } from "../modules/pbx/pbx.refresh.service.js";
-import {
-  hydratePbxState,
-  pbxRuntimeState,
-} from "../modules/pbx/pbx.state.js";
 
 const router = Router();
 router.use("/vos", requireAuth);
@@ -46,17 +43,7 @@ router.post("/vos/refresh", requireRole("admin"), async (req, res) => {
 
 router.get("/vos/stats", async (req, res) => {
   try {
-    await hydratePbxState();
-    const payload = await retentionPbxService.getStats({
-      actor: req.user!,
-      cache: {
-        callHistory: pbxRuntimeState.callHistory,
-        fetchedAt: pbxRuntimeState.fetchedAt,
-        ringGroupMissed: pbxRuntimeState.ringGroupMissed,
-      },
-      log: req.log,
-    });
-    res.json(payload);
+    res.json(await pbxDashboardService.getStats(req.user!, req.log));
   } catch (error) {
     req.log.error(error, "vos stats error");
     res.status(500).json({ error: "PBX statistics are temporarily unavailable." });
@@ -74,11 +61,7 @@ router.get("/vos/missed-hourly", async (req, res) => {
       res.status(400).json({ error: parsed.error });
       return;
     }
-    res.json(await pbxMissedReportingService.getHourly({
-      query: parsed.value,
-      internalNumbers: pbxRuntimeState.internalNumbers,
-      livePbxByHour: pbxRuntimeState.cumulativeMissedByHour,
-    }));
+    res.json(await pbxDashboardService.getHourly(parsed.value));
   } catch (error) {
     req.log.error(error, "vos missed-hourly error");
     res.status(500).json({ error: "PBX hourly report is temporarily unavailable." });
@@ -87,12 +70,7 @@ router.get("/vos/missed-hourly", async (req, res) => {
 
 router.get("/vos/missed-daily", async (req, res) => {
   try {
-    res.json(await pbxMissedReportingService.getDaily({
-      query: parsePbxDailyQuery(req.query),
-      internalNumbers: pbxRuntimeState.internalNumbers,
-      liveRingGroupMissed: pbxRuntimeState.ringGroupMissed,
-      ringGroupNames: pbxRuntimeState.ringGroupNames,
-    }));
+    res.json(await pbxDashboardService.getDaily(parsePbxDailyQuery(req.query)));
   } catch (error) {
     req.log.error(error, "vos missed-daily error");
     res.status(500).json({ error: "PBX daily report is temporarily unavailable." });
@@ -106,11 +84,7 @@ router.get("/vos/missed-breakdown", async (req, res) => {
       res.status(400).json({ error: parsed.error });
       return;
     }
-    res.json(await pbxMissedReportingService.getBreakdown({
-      actor: req.user!,
-      query: parsed.value,
-      internalNumbers: pbxRuntimeState.internalNumbers,
-    }));
+    res.json(await pbxDashboardService.getBreakdown(req.user!, parsed.value));
   } catch (error) {
     req.log.error(error, "vos missed-breakdown error");
     res.status(500).json({ error: "PBX historical breakdown is temporarily unavailable." });
@@ -124,11 +98,7 @@ router.get("/vos/callback-review", async (req, res) => {
       res.status(400).json({ error: parsed.error });
       return;
     }
-    res.json(await pbxMissedReportingService.getCallbackReview({
-      actor: req.user!,
-      query: parsed.value,
-      internalNumbers: pbxRuntimeState.internalNumbers,
-    }));
+    res.json(await pbxDashboardService.getCallbackReview(req.user!, parsed.value));
   } catch (error) {
     req.log.error(error, "vos callback-review error");
     res.status(500).json({ error: "PBX callback report is temporarily unavailable." });
@@ -137,7 +107,7 @@ router.get("/vos/callback-review", async (req, res) => {
 
 router.get("/vos/live", async (req, res) => {
   try {
-    res.json(await retentionPbxService.getLive(req.user!));
+    res.json(await pbxDashboardService.getLive(req.user!));
   } catch (error) {
     req.log.error(error, "vos live error");
     res.status(500).json({ error: "PBX live calls are temporarily unavailable." });
@@ -146,11 +116,7 @@ router.get("/vos/live", async (req, res) => {
 
 router.get("/vos/debug/calls", requireRole("admin"), async (req, res) => {
   try {
-    const query = new URLSearchParams(req.query as Record<string, string>).toString();
-    const data = await fetchPbxJson<{ calls: VosCallRaw[]; total: number }>(
-      `/api/calls${query ? `?${query}` : ""}`,
-    );
-    res.json({ total: data.total, calls: data.calls });
+    res.json(await pbxDiagnosticsService.getCalls(req.query as Record<string, string>));
   } catch (error) {
     req.log.error(error, "vos debug error");
     res.status(500).json({ error: "PBX diagnostic request failed." });
@@ -159,13 +125,12 @@ router.get("/vos/debug/calls", requireRole("admin"), async (req, res) => {
 
 router.get("/vos/debug/proxy", requireRole("admin"), async (req, res) => {
   try {
-    const path = approvedVosDebugPath(req.query["path"] ?? "/api/calls?limit=1");
-    if (!path) {
-      res.status(400).json({ error: "PBX diagnostic path is not approved." });
+    res.json(await pbxDiagnosticsService.proxy(req.query["path"]));
+  } catch (error) {
+    if (error instanceof PbxDiagnosticPathError) {
+      res.status(400).json({ error: error.message });
       return;
     }
-    res.json(await fetchPbxJson<unknown>(path));
-  } catch (error) {
     req.log.error(error, "vos debug proxy error");
     res.status(500).json({ error: "PBX diagnostic request failed." });
   }

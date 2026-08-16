@@ -164,7 +164,7 @@ test("migrated dashboard routes delegate provider transport and raw parsing to s
   assert.doesNotMatch(retentionReadyModeService, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
   assert.doesNotMatch(retentionReadyModeService, /@workspace\/db|drizzle-orm/);
 
-  assert.match(vos, /integrations\/pbx\/(?:client|mapper)\.js/);
+  assert.match(vos, /modules\/pbx\/pbx\.dashboard\.service\.js/);
   assert.doesNotMatch(vos, /phonesystem\.voslogic\.com|VOSLOGIC_(?:EMAIL|PASSWORD)|\/api\/auth\/login|\bfetch\s*\(/);
   const statsHandler = vos.slice(
     vos.indexOf('router.get("/vos/stats"'),
@@ -174,8 +174,8 @@ test("migrated dashboard routes delegate provider transport and raw parsing to s
     vos.indexOf('router.get("/vos/live"'),
     vos.indexOf('router.get("/vos/debug/calls"'),
   );
-  assert.match(statsHandler, /retentionPbxService\.getStats/);
-  assert.match(liveHandler, /retentionPbxService\.getLive/);
+  assert.match(statsHandler, /pbxDashboardService\.getStats/);
+  assert.match(liveHandler, /pbxDashboardService\.getLive/);
   assert.doesNotMatch(`${statsHandler}\n${liveHandler}`, /fetchPbxJson|canAccess(?:Metric|Live)Agent|loadAuthorizationAgentDirectory/);
   assert.match(retentionPbxService, /retention\.pbx\.repository\.js/);
   assert.match(retentionPbxService, /integrations\/pbx\/client\.js/);
@@ -274,6 +274,57 @@ test("Attendance routes delegate application, source, and PostgreSQL work throug
   assert.doesNotMatch(route, /loadAttendanceImportCandidates/);
   assert.doesNotMatch(route, /googleCsvUrl|attendanceImportSources|parseCsv|\bfetch\s*\(/i);
   assert.doesNotMatch(importIntegration, /from ["']express["']|@workspace\/db|drizzle-orm/);
+});
+
+test("PBX routes delegate reporting, refresh, diagnostics, state, and persistence through accepted boundaries", async () => {
+  const [
+    route,
+    dashboardService,
+    diagnosticsService,
+    noCallbackService,
+    refreshService,
+    providerService,
+    missedRepository,
+    noCallbackRepository,
+    refreshRepository,
+    backgroundHandlers,
+  ] = await Promise.all([
+    source("routes/vos.ts"),
+    source("modules/pbx/pbx.dashboard.service.ts"),
+    source("modules/pbx/pbx.diagnostics.service.ts"),
+    source("modules/pbx/pbx.no-callback.service.ts"),
+    source("modules/pbx/pbx.refresh.service.ts"),
+    source("modules/pbx/pbx.provider.service.ts"),
+    source("modules/pbx/pbx.missed.repository.ts"),
+    source("modules/pbx/pbx.no-callback.repository.ts"),
+    source("modules/pbx/pbx.refresh.repository.ts"),
+    source("lib/backgroundJobHandlers.ts"),
+  ]);
+
+  for (const operation of ["pbxDashboardService", "pbxNoCallbackService", "pbxRefreshService", "pbxDiagnosticsService"]) {
+    assert.match(route, new RegExp(`\\b${operation}\\b`));
+  }
+  assert.doesNotMatch(
+    route,
+    /@workspace\/db|drizzle-orm|integrations\/|fetchPbxJson|approvedVosDebugPath|pbxRuntimeState|pbxMissedReportingService|retentionPbxService/,
+  );
+
+  for (const service of [dashboardService, noCallbackService, refreshService]) {
+    assert.doesNotMatch(service, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(|@workspace\/db|drizzle-orm/);
+  }
+  assert.doesNotMatch(refreshService, /integrations\/pbx\/client|integrations\/quo\/client/);
+  assert.match(providerService, /integrations\/pbx\/client\.js/);
+  assert.match(providerService, /integrations\/quo\/client\.js/);
+  assert.doesNotMatch(providerService, /from ["']express["']|@workspace\/db|drizzle-orm/);
+  assert.match(diagnosticsService, /integrations\/pbx\/client\.js/);
+  assert.doesNotMatch(diagnosticsService, /from ["']express["']|@workspace\/db|drizzle-orm/);
+
+  for (const repository of [missedRepository, noCallbackRepository, refreshRepository]) {
+    assert.match(repository, /@workspace\/db/);
+    assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(|integrations\//);
+  }
+  assert.match(backgroundHandlers, /modules\/pbx\/pbx\.refresh\.service\.js/);
+  assert.doesNotMatch(backgroundHandlers, /routes\/vos\.js/);
 });
 
 test("QA routes delegate validation, authorization, application, persistence, and integration work", async () => {
