@@ -299,6 +299,8 @@ missing number was replaced by zero.
 - Canonical access passed 15/15 database-backed tests, including active and
   inactive accounts, session revocation, password changes, grants, and server-side
   scope filtering.
+- Refresh-session rotation/revocation passed its explicit opt-in PostgreSQL
+  integration test, including concurrent single-use rotation.
 - Password upgrade passed 13/13. Agent roster identity/concurrency passed 14/14.
 - User Administration session revocation remains inside the same short update
   transaction as the account mutation.
@@ -452,6 +454,7 @@ Final verification matrix:
 | Agent roster identity/concurrency | 14/14 |
 | Legacy password upgrade | 13/13 |
 | Canonical access/session integration | 15/15 |
+| Refresh-session rotation/revocation integration | 1/1 |
 | Schema contract | 79/79 objects |
 | Release readiness on disposable DB | 4/4 |
 | Data correctness | applicable tests pass |
