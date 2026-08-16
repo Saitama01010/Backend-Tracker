@@ -33,6 +33,8 @@ import type {
   RetentionPbxCallHistoryStat,
   RetentionPbxRingGroupMissed,
 } from "../modules/retention/retention.pbx.types.js";
+import { parsePbxHourlyQuery } from "../modules/pbx/pbx.schemas.js";
+import { pbxMissedReportingService } from "../modules/pbx/pbx.missed.service.js";
 
 const router = Router();
 router.use("/vos", requireAuth);
@@ -1169,122 +1171,16 @@ router.get("/vos/missed-no-callback", async (req, res) => {
 
 router.get("/vos/missed-hourly", async (req, res) => {
   try {
-    const todayLA = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-    // Accept optional ?date=YYYY-MM-DD; fall back to today.
-    const dateParam = typeof req.query["date"] === "string" ? req.query["date"] : todayLA;
-    if (!validateIntegrationCalendarDate(dateParam)) {
-      res.status(400).json({ error: "Invalid date; expected YYYY-MM-DD." });
+    const parsed = parsePbxHourlyQuery(req.query);
+    if (!parsed.ok) {
+      res.status(400).json({ error: parsed.error });
       return;
     }
-    const isToday = dateParam === todayLA;
-    const mode = req.query["mode"] === "numbers" ? "numbers" : "times";
-
-    const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
-    const internalExclude = cachedInternalNumbers.length > 0
-      ? sql`AND participant NOT IN (${sql.join(cachedInternalNumbers.map(n => sql`${n}`), sql`, `)})`
-      : sql``;
-    const quoCountExpr = mode === "numbers" ? sql`COUNT(DISTINCT participant)::int` : sql`COUNT(*)::int`;
-    const rows = await db.execute(sql`
-      SELECT
-        EXTRACT(HOUR FROM (created_at AT TIME ZONE 'America/Los_Angeles'))::int AS hour,
-        line_team,
-        ${quoCountExpr} AS cnt
-      FROM phone_calls
-      WHERE direction = 'incoming'
-        AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
-        AND line_name IN (${teamLinesInList})
-        AND (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${dateParam}::date
-        AND participant ~ '^[^a-zA-Z]+$'
-        ${internalExclude}
-      GROUP BY hour, line_team
-      ORDER BY hour
-    `);
-
-    // Ghost counts per hour (Quo missed calls that rang ≤2 seconds)
-    const ghostRows = await db.execute(sql`
-      SELECT
-        EXTRACT(HOUR FROM (created_at AT TIME ZONE 'America/Los_Angeles'))::int AS hour,
-        line_team,
-        COUNT(*)::int AS cnt
-      FROM phone_calls
-      WHERE direction = 'incoming'
-        AND status IN ('no-answer', 'voicemail-brief', 'voicemail', 'missed')
-        AND (
-          (ring_duration_seconds IS NOT NULL AND ring_duration_seconds <= 2)
-          OR (ring_duration_seconds IS NULL AND duration_seconds = 0 AND status = 'no-answer')
-          OR (ring_duration_seconds IS NULL AND duration_seconds <= 4 AND status = 'voicemail-brief')
-        )
-        AND line_name IN (${teamLinesInList})
-        AND (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${dateParam}::date
-        AND participant ~ '^[^a-zA-Z]+$'
-        ${internalExclude}
-      GROUP BY hour, line_team
-      ORDER BY hour
-    `);
-
-    // Build hour map 0–23 with separate quo/ghost/pbx buckets per team
-    type HourRow = { retention: { quo: number; ghost: number; pbx: number }; cs: { quo: number; ghost: number; pbx: number }; nsf: { quo: number; ghost: number; pbx: number } };
-    const hourMap = new Map<number, HourRow>();
-    const getHour = (h: number): HourRow => {
-      if (!hourMap.has(h)) hourMap.set(h, {
-        retention: { quo: 0, ghost: 0, pbx: 0 },
-        cs: { quo: 0, ghost: 0, pbx: 0 },
-        nsf: { quo: 0, ghost: 0, pbx: 0 },
-      });
-      return hourMap.get(h)!;
-    };
-
-    // Populate Quo data from DB
-    for (const r of rows.rows as { hour: number; line_team: string; cnt: number }[]) {
-      const row = getHour(r.hour);
-      if (r.line_team === "retention") row.retention.quo += r.cnt;
-      else if (r.line_team === "cs") row.cs.quo += r.cnt;
-      else if (r.line_team === "nsf") row.nsf.quo += r.cnt;
-    }
-
-    // Populate ghost counts
-    for (const r of ghostRows.rows as { hour: number; line_team: string; cnt: number }[]) {
-      const row = getHour(r.hour);
-      if (r.line_team === "retention") row.retention.ghost += r.cnt;
-      else if (r.line_team === "cs") row.cs.ghost += r.cnt;
-      else if (r.line_team === "nsf") row.nsf.ghost += r.cnt;
-    }
-
-    if (isToday && mode === "times") {
-      // Today + times: use fast in-memory accumulator
-      for (const [h, pbx] of Object.entries(cumulativeMissedByHour)) {
-        const row = getHour(Number(h));
-        row.retention.pbx += pbx.retention;
-        row.cs.pbx += pbx.cs;
-        row.nsf.pbx += pbx.nsf;
-      }
-    } else {
-      // Historical date OR numbers mode: query pbx_missed_calls table
-      const pbxCountExpr = mode === "numbers" ? sql`COUNT(DISTINCT from_number)::int` : sql`COUNT(*)::int`;
-      const pbxRows = await db.execute(sql`
-        SELECT
-          EXTRACT(HOUR FROM (created_at AT TIME ZONE 'America/Los_Angeles'))::int AS hour,
-          team,
-          ${pbxCountExpr} AS cnt
-        FROM pbx_missed_calls
-        WHERE (created_at AT TIME ZONE 'America/Los_Angeles')::date = ${dateParam}::date
-          AND team IN ('retention', 'cs', 'nsf')
-        GROUP BY hour, team
-        ORDER BY hour
-      `);
-      for (const r of pbxRows.rows as { hour: number; team: string; cnt: number }[]) {
-        const row = getHour(r.hour);
-        if (r.team === "retention") row.retention.pbx += r.cnt;
-        else if (r.team === "cs") row.cs.pbx += r.cnt;
-        else if (r.team === "nsf") row.nsf.pbx += r.cnt;
-      }
-    }
-
-    const hours = Array.from(hourMap.entries())
-      .sort(([a], [b]) => a - b)
-      .map(([hour, teams]) => ({ hour, ...teams }));
-
-    res.json({ hours, date: dateParam });
+    res.json(await pbxMissedReportingService.getHourly({
+      query: parsed.value,
+      internalNumbers: cachedInternalNumbers,
+      livePbxByHour: cumulativeMissedByHour,
+    }));
   } catch (err) {
     req.log.error(err, "vos missed-hourly error");
     res.status(500).json({ error: "PBX hourly report is temporarily unavailable." });
