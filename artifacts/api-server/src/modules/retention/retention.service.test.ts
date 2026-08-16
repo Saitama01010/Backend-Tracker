@@ -29,6 +29,9 @@ function dependencies(overrides: Partial<RetentionServiceDependencies> = {}) {
           { id: 12, name: "Agent Beta", arabicName: null, team: "cs", active: true },
         ]);
       },
+      async loadReadyModeUploads() {
+        return [];
+      },
     },
     isApprovedSource: () => true,
     titleForGid: async () => "Retention",

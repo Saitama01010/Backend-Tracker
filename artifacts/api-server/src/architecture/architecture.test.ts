@@ -79,12 +79,13 @@ test("Quo provider operations with established boundaries stay out of HTTP route
 });
 
 test("migrated dashboard routes delegate provider transport and raw parsing to source adapters", async () => {
-  const [quo, sheets, retentionService, retentionRepository, readymode, vos] = await Promise.all([
+  const [quo, sheets, retentionService, retentionRepository, readymode, retentionReadyModeService, vos] = await Promise.all([
     source("routes/quo.ts"),
     source("routes/sheets.ts"),
     source("modules/retention/retention.service.ts"),
     source("modules/retention/retention.repository.ts"),
     source("routes/readymode.ts"),
+    source("modules/retention/retention.readymode.service.ts"),
     source("routes/vos.ts"),
   ]);
 
@@ -101,8 +102,14 @@ test("migrated dashboard routes delegate provider transport and raw parsing to s
   assert.match(retentionRepository, /@workspace\/db/);
   assert.doesNotMatch(retentionRepository, /from ["']express["']|integrations\//);
 
-  assert.match(readymode, /integrations\/readymode\/(?:client|csvParser|htmlProbe|importer)\.js/);
+  assert.match(readymode, /modules\/retention\/retention\.readymode\.service\.js/);
+  assert.match(readymode, /integrations\/readymode\/(?:csvParser|htmlProbe|importer)\.js/);
+  assert.doesNotMatch(readymode, /@workspace\/db|drizzle-orm|integrations\/readymode\/client\.js/);
   assert.doesNotMatch(readymode, /icydeals\.readymode\.com|READYMODE_(?:USERNAME|PASSWORD|CSV_URL)|login_new|node:fs|node:path|\bfetch\s*\(/);
+  assert.match(retentionReadyModeService, /integrations\/readymode\/(?:client|csvParser)\.js/);
+  assert.match(retentionReadyModeService, /retention\.repository\.js/);
+  assert.doesNotMatch(retentionReadyModeService, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  assert.doesNotMatch(retentionReadyModeService, /@workspace\/db|drizzle-orm/);
 
   assert.match(vos, /integrations\/pbx\/(?:client|mapper)\.js/);
   assert.doesNotMatch(vos, /phonesystem\.voslogic\.com|VOSLOGIC_(?:EMAIL|PASSWORD)|\/api\/auth\/login|\bfetch\s*\(/);
