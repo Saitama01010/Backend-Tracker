@@ -12,6 +12,31 @@ export type AttendanceMember = typeof attendanceMembersTable.$inferSelect;
 export type AttendanceMemberInsert = typeof attendanceMembersTable.$inferInsert;
 export type AttendanceRecordInsert = typeof attendanceRecordsTable.$inferInsert;
 
+export interface AttendanceRecordView {
+  id: number;
+  memberId: number;
+  date: string;
+  status: string;
+  note: string | null;
+  coaching: boolean;
+  updatedAt: Date;
+}
+
+export interface AttendanceRecordWrite {
+  memberId: number;
+  date: string;
+  dateValue: string;
+  status: string;
+  note: string | null;
+  coaching: boolean;
+  updatedAt: Date;
+}
+
+export interface AttendanceBatchTransaction {
+  existingRows: AttendanceRecordView[];
+  persistAndVerify(writes: ReadonlyMap<string, AttendanceRecordWrite>): Promise<void>;
+}
+
 export const attendanceRecordDate = sql<string>`coalesce(${attendanceRecordsTable.dateValue}::text, ${attendanceRecordsTable.date})`;
 
 export const attendanceRecordSelection = {
@@ -56,6 +81,75 @@ export const attendanceRepository = {
     const [member] = await db.update(attendanceMembersTable).set(values)
       .where(eq(attendanceMembersTable.id, id)).returning();
     return member;
+  },
+
+  async getRecord(memberId: number, date: string): Promise<AttendanceRecordView | null> {
+    const [record] = await db.select(attendanceRecordSelection).from(attendanceRecordsTable).where(and(
+      eq(attendanceRecordsTable.memberId, memberId),
+      eq(attendanceRecordDate, date),
+    )).limit(1);
+    return record ?? null;
+  },
+
+  async upsertRecord(values: AttendanceRecordInsert) {
+    await db.insert(attendanceRecordsTable).values(values).onConflictDoUpdate({
+      target: [attendanceRecordsTable.memberId, attendanceRecordsTable.date],
+      set: {
+        dateValue: values.dateValue,
+        status: values.status,
+        note: values.note,
+        coaching: values.coaching,
+        updatedAt: new Date(),
+      },
+    });
+  },
+
+  async updateRecordNote(id: number, note: string) {
+    await db.update(attendanceRecordsTable)
+      .set({ note, updatedAt: new Date() })
+      .where(eq(attendanceRecordsTable.id, id));
+  },
+
+  async withBatchWriteTransaction<T>(
+    input: { memberIds: readonly number[]; dates: readonly string[] },
+    work: (transaction: AttendanceBatchTransaction) => Promise<T>,
+  ): Promise<T> {
+    return db.transaction(async (tx) => {
+      const existingRows = await tx.select(attendanceRecordSelection).from(attendanceRecordsTable).where(and(
+        inArray(attendanceRecordsTable.memberId, [...input.memberIds]),
+        inArray(attendanceRecordDate, [...input.dates]),
+      ));
+      return work({
+        existingRows,
+        async persistAndVerify(writes) {
+          if (writes.size === 0) return;
+          await tx.insert(attendanceRecordsTable).values([...writes.values()]).onConflictDoUpdate({
+            target: [attendanceRecordsTable.memberId, attendanceRecordsTable.date],
+            set: {
+              dateValue: sql`excluded.attendance_date`,
+              status: sql`excluded.status`,
+              note: sql`excluded.note`,
+              coaching: sql`excluded.coaching`,
+              updatedAt: sql`excluded.updated_at`,
+            },
+          });
+          const verifiedRows = await tx.select(attendanceRecordSelection).from(attendanceRecordsTable).where(and(
+            inArray(attendanceRecordsTable.memberId, [...input.memberIds]),
+            inArray(attendanceRecordDate, [...input.dates]),
+          ));
+          const verified = new Map(verifiedRows.map((row) => [`${row.memberId}:${row.date}`, row]));
+          for (const [key, expected] of writes) {
+            const actual = verified.get(key);
+            if (!actual
+              || actual.status !== expected.status
+              || actual.note !== expected.note
+              || actual.coaching !== expected.coaching) {
+              throw new Error("Attendance persistence verification failed");
+            }
+          }
+        },
+      });
+    });
   },
 
   async listRecordsInRange(memberIds: readonly number[], from: string, to: string) {

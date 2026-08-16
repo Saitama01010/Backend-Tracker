@@ -175,9 +175,11 @@ test("attendance conflict policy requires confirmation even when replacement lan
 
 test("attendance writes are read back before success and return mutation metadata", async () => {
   const service = await readFile(path.join(libDir, "attendanceService.ts"), "utf8");
+  const repository = await readFile(path.join(libDir, "../modules/attendance/attendance.repository.ts"), "utf8");
   const samia = await routeSource("samia.ts");
-  assert.ok(service.indexOf("const persisted = await getAttendanceRecord") > service.indexOf("onConflictDoUpdate"));
-  assert.match(service, /Attendance persistence verification failed/);
+  assert.ok(service.indexOf("const persisted = await getAttendanceRecord") > service.indexOf("attendanceRepository.upsertRecord"));
+  assert.match(repository, /onConflictDoUpdate/);
+  assert.match(repository, /Attendance persistence verification failed/);
   assert.match(samia, /resource: "attendance"/);
   assert.match(samia, /memberId: write\.member\.id/);
   assert.match(samia, /invalidateQueryKeys/);
