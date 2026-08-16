@@ -6,22 +6,18 @@ import {
   nsfReadymodeService,
   type ReadymodeItem,
 } from "../modules/nsf/nsf.readymode.service.js";
+import {
+  formatNsfReadymodePhone,
+  parseNsfReadymodeDoneNumber,
+  parseNsfReadymodeId,
+  parseNsfReadymodeNumbers,
+  resolveNsfReadymodeActor,
+} from "../modules/nsf/nsf.readymode.schemas.js";
 
 const router = Router();
 router.use("/nsf", requireAuth);
 
 export type { ReadymodeItem } from "../modules/nsf/nsf.readymode.service.js";
-
-function normalizePhone(num: string): string {
-  const digits = (num ?? "").replace(/\D/g, "");
-  return digits.length >= 10 ? digits.slice(-10) : digits;
-}
-
-function formatPhone(num: string): string {
-  const d = normalizePhone(num);
-  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
-  return num;
-}
 
 /**
  * Returns active NSF Readymode queue items, after auto-clearing any whose
@@ -42,22 +38,12 @@ export async function getActiveReadymodeItems(): Promise<ReadymodeItem[]> {
 router.post("/nsf/readymode-queue", requireRole("admin"), async (req, res) => {
   try {
     const body = req.body as { numbers?: unknown; addedBy?: unknown };
-    const raw = Array.isArray(body.numbers) ? body.numbers : [];
-    const addedBy =
-      typeof body.addedBy === "string" && body.addedBy.trim()
-        ? body.addedBy.trim()
-        : ((req as { user?: { username?: string } }).user?.username ?? "samia");
-
-    const norms = Array.from(
-      new Set(
-        raw
-          .map((n) => (typeof n === "string" ? normalizePhone(n) : ""))
-          .filter((n) => n.length === 10),
-      ),
-    );
-    if (norms.length === 0) {
-      return res.status(400).json({ error: "No valid 10-digit numbers provided." });
+    const parsed = parseNsfReadymodeNumbers(body.numbers);
+    if (!parsed.ok) {
+      return res.status(400).json({ error: parsed.error });
     }
+    const norms = parsed.value;
+    const addedBy = resolveNsfReadymodeActor(body.addedBy, req.user?.username, "samia");
 
     // Skip numbers that already have an active entry.
     const existing = await db
@@ -88,8 +74,8 @@ router.post("/nsf/readymode-queue", requireRole("admin"), async (req, res) => {
     return res.json({
       added: inserted.length,
       skipped: skip.size,
-      addedNumbers: inserted.map((i) => formatPhone(i.phoneNumber)),
-      skippedNumbers: Array.from(skip).map(formatPhone),
+      addedNumbers: inserted.map((i) => formatNsfReadymodePhone(i.phoneNumber)),
+      skippedNumbers: Array.from(skip).map(formatNsfReadymodePhone),
     });
   } catch (err) {
     req.log.error(err, "nsf readymode add error");
@@ -111,10 +97,9 @@ router.get("/nsf/readymode-queue", async (_req, res) => {
  * Manually mark a queue entry as done.
  */
 router.post("/nsf/readymode-queue/:id/done", async (req, res) => {
-  const id = Number(req.params["id"]);
-  if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: "Invalid id" });
-  const doneBy =
-    (req as { user?: { username?: string } }).user?.username ?? "manual";
+  const id = parseNsfReadymodeId(req.params["id"]);
+  if (id === null) return res.status(400).json({ error: "Invalid id" });
+  const doneBy = resolveNsfReadymodeActor(undefined, req.user?.username, "manual");
   await db
     .update(nsfReadymodeQueueTable)
     .set({ doneAt: new Date(), doneBy })
@@ -132,10 +117,9 @@ router.post("/nsf/readymode-queue/:id/done", async (req, res) => {
  */
 router.post("/nsf/readymode-queue/done-by-number", async (req, res) => {
   const body = req.body as { number?: unknown };
-  const norm = typeof body.number === "string" ? normalizePhone(body.number) : "";
-  if (norm.length !== 10) return res.status(400).json({ error: "Invalid number" });
-  const doneBy =
-    (req as { user?: { username?: string } }).user?.username ?? "manual";
+  const norm = parseNsfReadymodeDoneNumber(body.number);
+  if (norm === null) return res.status(400).json({ error: "Invalid number" });
+  const doneBy = resolveNsfReadymodeActor(undefined, req.user?.username, "manual");
   await db
     .update(nsfReadymodeQueueTable)
     .set({ doneAt: new Date(), doneBy })
