@@ -6,7 +6,7 @@ import { performance } from "node:perf_hooks";
 import test from "node:test";
 import pg from "pg";
 import { buildQuoPhoneCallRow, type QuoCall, type QuoPhoneNumber } from "../integrations/quo/sync.js";
-import { parseGoogleSheetsValues } from "../lib/externalIntegrationPolicy.js";
+import { parseGoogleSheetsValues } from "../integrations/googleSheets/mapper.js";
 import { parseAgentTable, parseReadymodeRows } from "../routes/readymode.js";
 import { teamFromRingGroupName } from "../routes/vos.js";
 

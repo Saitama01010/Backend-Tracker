@@ -3,9 +3,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { buildQuoPhoneCallRow, type QuoCall, type QuoPhoneNumber } from "../integrations/quo/sync.js";
-import { parseGoogleSheetsValues } from "../lib/externalIntegrationPolicy.js";
+import { detectHeaderRow, parseGoogleSheetsValues } from "../integrations/googleSheets/mapper.js";
 import { parseAgentTable, parseReadymodeRows } from "../routes/readymode.js";
-import { detectHeaderRow } from "../routes/sheets.js";
 import { teamFromRingGroupName } from "../routes/vos.js";
 
 const fixtures = path.join(import.meta.dirname, "fixtures");

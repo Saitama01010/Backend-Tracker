@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { parseGoogleSheetsValues } from "../integrations/googleSheets/mapper.js";
 import type { AuthPayload } from "../middleware/authCore.js";
 import {
   approvedReadyModeProbePath,
@@ -9,7 +10,6 @@ import {
   paginateAuthorizedBatches,
   paginateAfterAuthorization,
   parseBoundedInteger,
-  parseGoogleSheetsValues,
   parseSheetGid,
   validateIntegrationCalendarDate,
   validateIntegrationDateRange,
@@ -119,10 +119,11 @@ test("Google Sheets upstream payloads distinguish empty data from malformed resp
 
 test("Sheets, date ranges, probes, and pagination are wired through integration security policy", async () => {
   const base = new URL("../routes/", import.meta.url);
-  const [quo, quoSync, sheets, readymode] = await Promise.all([
+  const [quo, quoSync, sheets, sheetsClient, readymode] = await Promise.all([
     readFile(new URL("quo.ts", base), "utf8"),
     readFile(new URL("../integrations/quo/sync.ts", base), "utf8"),
     readFile(new URL("sheets.ts", base), "utf8"),
+    readFile(new URL("../integrations/googleSheets/client.ts", base), "utf8"),
     readFile(new URL("readymode.ts", base), "utf8"),
   ]);
 
@@ -130,8 +131,9 @@ test("Sheets, date ranges, probes, and pagination are wired through integration 
   assert.match(quo, /paginateAuthorizedBatches/);
   assert.match(sheets, /isApprovedSheetSource/);
   assert.match(sheets, /const sheetRefreshes = new Map/);
-  assert.match(sheets, /const titleRefreshes = new Map/);
-  assert.match(sheets, /AbortSignal\.timeout\(15_000\)/);
+  assert.match(sheetsClient, /const titleRefreshes = new Map/);
+  assert.match(sheetsClient, /AbortSignal\.timeout\(15_000\)/);
+  assert.match(sheets, /mapGoogleSheetValues/);
   assert.match(sheets, /format === "rows-v1"/);
   assert.match(sheets, /scopeSheetData[\s\S]*?JSON\.stringify\(responsePayload\)/);
   assert.match(sheets, /SHEET_MAX_STALE_MS = 5 \* 60_000/);
