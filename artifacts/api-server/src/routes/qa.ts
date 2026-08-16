@@ -1,7 +1,5 @@
 import { Router, type IRouter, type Response } from "express";
 import ExcelJS from "exceljs";
-import { db, qaReviewsTable, managerQaTasksTable } from "@workspace/db";
-import { and, desc, eq, gte, lte, sql, inArray, type SQL } from "drizzle-orm";
 import { canonicalAgentName } from "../integrations/quo/sync.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { AiRateLimitError, withDurableAiLimit } from "../lib/aiRateLimit.js";
@@ -66,26 +64,6 @@ function deptFilterArr(req: { query: Record<string, unknown>; user?: AuthPayload
 async function qaAgentScope(user: AuthPayload): Promise<QaAgentScope> {
   return resolveQaAgentScope(user);
 }
-
-function qaAgentPredicateFor(
-  scope: QaAgentScope,
-  column: typeof qaReviewsTable.agentName | typeof managerQaTasksTable.agentName,
-): SQL | undefined {
-  return scope.authorizedIdentities === null
-    ? undefined
-    : inArray(
-      sql<string>`regexp_replace(lower(trim(${column})), '[^a-z0-9]+', ' ', 'g')`,
-      scope.authorizedIdentities,
-    );
-}
-
-function qaReviewDateColumn(dateBasis: "evaluated" | "call") {
-  return dateBasis === "evaluated" ? qaReviewsTable.evaluatedAt : qaReviewsTable.callDate;
-}
-
-// POSIX word-boundary regex matching "tax" or "taxes" (case-insensitive) inside a
-// transcript — used both for QA stats counts and the per-review export flag.
-const TAX_REGEX = String.raw`\ytax(es)?\y`;
 
 // ── Routes ──────────────────────────────────────────────────────────────────
 
@@ -250,29 +228,14 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
     const parsedDateBasis = parseQaDateBasisQuery(req.query["dateBasis"]);
     if (!parsedDateBasis.ok) return res.status(400).json({ error: parsedDateBasis.error });
     const { dateBasis } = parsedDateBasis;
-    const dateColumn = qaReviewDateColumn(dateBasis);
-
-    const filters = [gte(dateColumn, from), lte(dateColumn, to)];
-    if (depts) filters.push(inArray(qaReviewsTable.department, depts));
-
     const agentScope = await qaAgentScope(req.user!);
-    const reviewAgentPredicate = qaAgentPredicateFor(agentScope, qaReviewsTable.agentName);
-    if (reviewAgentPredicate) filters.push(reviewAgentPredicate);
-    const queriedRows = await db
-      .select({
-        id: qaReviewsTable.id,
-        agentName: qaReviewsTable.agentName,
-        score: qaReviewsTable.score,
-        softSkillsScore: qaReviewsTable.softSkillsScore,
-        protocolScore: qaReviewsTable.protocolScore,
-        pass: qaReviewsTable.pass,
-        criticalFail: qaReviewsTable.criticalFail,
-        managerReviewRequired: qaReviewsTable.managerReviewRequired,
-        department: qaReviewsTable.department,
-        mentionsTax: sql<boolean>`(${qaReviewsTable.transcript} ~* ${TAX_REGEX})`,
-      })
-      .from(qaReviewsTable)
-      .where(and(...filters));
+    const queriedRows = await qaRepository.listStatsReviews({
+      from,
+      to,
+      dateBasis,
+      departments: depts,
+      authorizedIdentities: agentScope.authorizedIdentities,
+    });
     const rows = queriedRows.filter((row) => agentScope.canAccess(row.agentName));
 
     const reviewed = rows.length;
@@ -299,16 +262,10 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
     }
 
     const taxMentions = rows.filter((row) => row.mentionsTax).length;
-    const taskFilters = depts ? [inArray(managerQaTasksTable.department, depts)] : [];
-    const taskAgentPredicate = qaAgentPredicateFor(agentScope, managerQaTasksTable.agentName);
-    if (taskAgentPredicate) taskFilters.push(taskAgentPredicate);
-    const tasks = (await db.select({
-      agentName: managerQaTasksTable.agentName,
-      status: managerQaTasksTable.status,
-      managerScore: managerQaTasksTable.managerScore,
-      variance: managerQaTasksTable.variance,
-      createdAt: managerQaTasksTable.createdAt,
-    }).from(managerQaTasksTable).where(taskFilters.length ? and(...taskFilters) : undefined))
+    const tasks = (await qaRepository.listStatsTasks({
+      departments: depts,
+      authorizedIdentities: agentScope.authorizedIdentities,
+    }))
       .filter((task) => agentScope.canAccess(task.agentName));
     const openManagerQueue = tasks.filter((task) => task.status === "open").length;
     const managerTasksCreatedInRange = tasks.filter((task) => task.createdAt >= from && task.createdAt <= to).length;
@@ -348,32 +305,14 @@ router.get("/qa/download", requireAuth, async (req, res) => {
     const parsedDateBasis = parseQaDateBasisQuery(req.query["dateBasis"]);
     if (!parsedDateBasis.ok) return res.status(400).json({ error: parsedDateBasis.error });
     const { dateBasis } = parsedDateBasis;
-    const dateColumn = qaReviewDateColumn(dateBasis);
-
-    const filters = [gte(dateColumn, from), lte(dateColumn, to)];
-    if (depts) filters.push(inArray(qaReviewsTable.department, depts));
-
     const agentScope = await qaAgentScope(req.user!);
-    const agentPredicate = qaAgentPredicateFor(agentScope, qaReviewsTable.agentName);
-    if (agentPredicate) filters.push(agentPredicate);
-    const queriedRows = await db
-      .select({
-        evaluatedAt: qaReviewsTable.evaluatedAt,
-        callDate: qaReviewsTable.callDate,
-        agentName: qaReviewsTable.agentName,
-        department: qaReviewsTable.department,
-        phoneNumber: qaReviewsTable.phoneNumber,
-        score: qaReviewsTable.score,
-        protocolScore: qaReviewsTable.protocolScore,
-        softSkillsScore: qaReviewsTable.softSkillsScore,
-        pass: qaReviewsTable.pass,
-        criticalFail: qaReviewsTable.criticalFail,
-        aiSummary: qaReviewsTable.aiSummary,
-        mentionsTax: sql<boolean>`(${qaReviewsTable.transcript} ~* ${TAX_REGEX})`,
-      })
-      .from(qaReviewsTable)
-      .where(and(...filters))
-      .orderBy(desc(dateColumn));
+    const queriedRows = await qaRepository.listExportReviews({
+      from,
+      to,
+      dateBasis,
+      departments: depts,
+      authorizedIdentities: agentScope.authorizedIdentities,
+    });
     const rows = queriedRows.filter((row) => agentScope.canAccess(row.agentName));
 
     const wb = new ExcelJS.Workbook();
@@ -463,22 +402,17 @@ router.get("/qa/reviews", requireAuth, async (req, res) => {
     const parsedDateBasis = parseQaDateBasisQuery(req.query["dateBasis"]);
     if (!parsedDateBasis.ok) return res.status(400).json({ error: parsedDateBasis.error });
     const { dateBasis } = parsedDateBasis;
-    const dateColumn = qaReviewDateColumn(dateBasis);
-
-    const filters = [gte(dateColumn, from), lte(dateColumn, to)];
-    if (agent) filters.push(sql`lower(${qaReviewsTable.agentName}) = ${agent.toLowerCase()}`);
-    if (depts) filters.push(inArray(qaReviewsTable.department, depts));
-
     const agentScope = await qaAgentScope(req.user!);
     if (agent && !agentScope.canAccess(agent)) return res.status(403).json({ error: "Forbidden" });
-    const agentPredicate = qaAgentPredicateFor(agentScope, qaReviewsTable.agentName);
-    if (agentPredicate) filters.push(agentPredicate);
-    const queriedRows = await db
-      .select()
-      .from(qaReviewsTable)
-      .where(and(...filters))
-      .orderBy(desc(dateColumn))
-      .limit(limit);
+    const queriedRows = await qaRepository.listReviews({
+      from,
+      to,
+      dateBasis,
+      departments: depts,
+      authorizedIdentities: agentScope.authorizedIdentities,
+      agent,
+      limit,
+    });
     const rows = queriedRows.filter((row) => agentScope.canAccess(row.agentName));
 
     return res.json({ reviews: rows, dateBasis });
@@ -491,7 +425,7 @@ router.get("/qa/reviews", requireAuth, async (req, res) => {
 router.get("/qa/reviews/:id", requireAuth, async (req, res) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const [row] = await db.select().from(qaReviewsTable).where(eq(qaReviewsTable.id, id ?? "")).limit(1);
+    const row = await qaRepository.getReview(id ?? "");
     if (!row) return res.status(404).json({ error: "not found" });
     const departmentScope = deptFilterArr(req);
     if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
@@ -515,18 +449,13 @@ router.get("/qa/tasks", requireAuth, async (req, res) => {
     if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
     const depts = departmentScope.departments;
     const statuses = status === "all" ? ["open", "resolved"] : [status];
-    const filters: any[] = [inArray(managerQaTasksTable.status, statuses)];
-    if (depts) filters.push(inArray(managerQaTasksTable.department, depts));
-
     const agentScope = await qaAgentScope(req.user!);
-    const agentPredicate = qaAgentPredicateFor(agentScope, managerQaTasksTable.agentName);
-    if (agentPredicate) filters.push(agentPredicate);
-    const queriedRows = await db
-      .select()
-      .from(managerQaTasksTable)
-      .where(and(...filters))
-      .orderBy(desc(managerQaTasksTable.createdAt))
-      .limit(limit);
+    const queriedRows = await qaRepository.listManagerTasks({
+      statuses,
+      departments: depts,
+      authorizedIdentities: agentScope.authorizedIdentities,
+      limit,
+    });
     const rows = queriedRows.filter((row) => agentScope.canAccess(row.agentName));
     return res.json({ tasks: rows });
   } catch (err) {
@@ -543,31 +472,21 @@ router.post("/qa/tasks/:id/resolve", requireAuth, requireRole("admin"), async (r
     const { notes, comments, coachingComplete, managerScore } = parseQaTaskResolution(req.body);
 
     // Fetch existing to compute variance + final
-    const [existing] = await db
-      .select()
-      .from(managerQaTasksTable)
-      .where(eq(managerQaTasksTable.id, id ?? ""))
-      .limit(1);
+    const existing = await qaRepository.getManagerTask(id ?? "");
     if (!existing) return res.status(404).json({ error: "not found" });
 
     const variance = managerScore !== null ? managerScore - existing.aiScore : null;
     const finalScore = managerScore !== null ? managerScore : existing.aiScore;
 
-    const [updated] = await db
-      .update(managerQaTasksTable)
-      .set({
-        status: "resolved",
-        resolvedBy,
-        resolvedAt: new Date(),
-        notes,
-        comments,
-        managerScore,
-        variance,
-        finalScore,
-        coachingComplete,
-      })
-      .where(eq(managerQaTasksTable.id, id ?? ""))
-      .returning();
+    const updated = await qaRepository.resolveManagerTask(id ?? "", {
+      resolvedBy,
+      notes,
+      comments,
+      managerScore,
+      variance,
+      finalScore,
+      coachingComplete,
+    });
     return res.json(updated);
   } catch (err) {
     req.log.error(err, "qa resolve error");
@@ -587,29 +506,14 @@ router.get("/qa/agents", requireAuth, async (req, res) => {
     const parsedDateBasis = parseQaDateBasisQuery(req.query["dateBasis"]);
     if (!parsedDateBasis.ok) return res.status(400).json({ error: parsedDateBasis.error });
     const { dateBasis } = parsedDateBasis;
-    const dateColumn = qaReviewDateColumn(dateBasis);
-
-    const filters = [gte(dateColumn, from), lte(dateColumn, to)];
-    if (depts) filters.push(inArray(qaReviewsTable.department, depts));
-
     const agentScope = await qaAgentScope(req.user!);
-    const agentPredicate = qaAgentPredicateFor(agentScope, qaReviewsTable.agentName);
-    if (agentPredicate) filters.push(agentPredicate);
-    const queriedRows = await db
-      .select({
-        agentName: qaReviewsTable.agentName,
-        department: qaReviewsTable.department,
-        reviewed: sql<number>`cast(count(*) as int)`,
-        avgScore: sql<number>`cast(round(avg(${qaReviewsTable.score})) as int)`,
-        avgProtocol: sql<number>`cast(round(avg(${qaReviewsTable.protocolScore})) as int)`,
-        avgSoftSkills: sql<number>`cast(round(avg(${qaReviewsTable.softSkillsScore})) as int)`,
-        criticalFails: sql<number>`cast(sum(case when ${qaReviewsTable.criticalFail} then 1 else 0 end) as int)`,
-        failed: sql<number>`cast(sum(case when ${qaReviewsTable.pass} = false then 1 else 0 end) as int)`,
-      })
-      .from(qaReviewsTable)
-      .where(and(...filters))
-      .groupBy(qaReviewsTable.agentName, qaReviewsTable.department)
-      .orderBy(sql`avg(${qaReviewsTable.score}) asc`);
+    const queriedRows = await qaRepository.listAgentStats({
+      from,
+      to,
+      dateBasis,
+      departments: depts,
+      authorizedIdentities: agentScope.authorizedIdentities,
+    });
     const rows = queriedRows.filter((row) => agentScope.canAccess(row.agentName));
 
     return res.json({ agents: rows, dateBasis });

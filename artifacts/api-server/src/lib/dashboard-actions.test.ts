@@ -70,7 +70,8 @@ test("QA dateBasis defaults to evaluated and explicitly supports call date", () 
 
 test("QA routes consistently select evaluatedAt or callDate", async () => {
   const source = await routeSource("qa.ts");
-  assert.match(source, /dateBasis === "evaluated" \? qaReviewsTable\.evaluatedAt : qaReviewsTable\.callDate/);
+  const repository = await moduleSource("qa/qa.repository.ts");
+  assert.match(repository, /dateBasis === "evaluated" \? qaReviewsTable\.evaluatedAt : qaReviewsTable\.callDate/);
   for (const route of ["stats", "download", "reviews", "agents"]) {
     const start = source.indexOf(`router.get("/qa/${route}"`);
     assert.ok(start > 0, route);

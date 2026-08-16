@@ -70,7 +70,7 @@ test("legitimate reads, downloads, attendance writes, and administration retain 
 
 test("violation actor attribution, strict inputs, import failures, and private downloads are wired in production", async () => {
   const routes = new URL("../routes/", import.meta.url);
-  const [attendance, attendanceService, attendanceImport, violations, obReport, obAnalytics, liveTransfers, qa, qaAuthorization] = await Promise.all([
+  const [attendance, attendanceService, attendanceImport, violations, obReport, obAnalytics, liveTransfers, qa, qaAuthorization, qaRepository] = await Promise.all([
     readFile(new URL("attendance.ts", routes), "utf8"),
     readFile(new URL("../modules/attendance/attendance.service.ts", routes), "utf8"),
     readFile(new URL("../integrations/googleSheets/attendanceImport.ts", routes), "utf8"),
@@ -80,6 +80,7 @@ test("violation actor attribution, strict inputs, import failures, and private d
     readFile(new URL("liveTransfers.ts", routes), "utf8"),
     readFile(new URL("qa.ts", routes), "utf8"),
     readFile(new URL("../modules/qa/qa.authorization.ts", routes), "utf8"),
+    readFile(new URL("../modules/qa/qa.repository.ts", routes), "utf8"),
   ]);
 
   assert.doesNotMatch(violations, /verifiedBy\s*=\s*["']admin["']/);
@@ -91,8 +92,9 @@ test("violation actor attribution, strict inputs, import failures, and private d
   assert.match(attendanceService, /allowedAgents\?\.length/);
   assert.match(qa, /const resolvedBy = req\.user!\.username/);
   assert.match(qa, /qaAgentScope/);
-  assert.match(qa, /qaAgentPredicateFor/);
   assert.match(qaAuthorization, /resolveQaAgentScope/);
+  assert.match(qaRepository, /identityPredicate/);
+  assert.match(qaRepository, /regexp_replace\(lower\(trim/);
   assert.match(qa, /departmentScope\.departments/);
   for (const source of [obReport, obAnalytics, liveTransfers, qa]) {
     assert.match(source, /setPrivateDownloadHeaders/);
