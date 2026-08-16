@@ -1,0 +1,8 @@
+Day/date,Name,Ready (t),Break (t),Logged calls,Transfers,Ready:Avg wait,Ready:Avg wrap,Ready:Talk Time
+May 14,Agent Alpha,1 hours 2 min. 3 s.,5 min. 0 s.,12,2,1.2 s.,3.5 s.,20 min. 30 s.
+May 14,Agent Beta,45 min. 0 s.,-,7,1,2 s.,4 s.,10 min. 0 s.
+May 15,Agent Alpha,30 min. 0 s.,1 min. 0 s.,5,0,1 s.,2 s.,8 min. 5.5 s.
+Thursday,Agent Gamma,20 min. 0 s.,-,3,0,1 s.,2 s.,2 min. 10 s.
+May 15,,10 min. 0 s.,-,8,0,1 s.,2 s.,1 min. 0 s.
+May 15,Summary,2 hours 0 min. 0 s.,-,27,3,1 s.,2 s.,40 min. 45.5 s.
+,,,,,,,,

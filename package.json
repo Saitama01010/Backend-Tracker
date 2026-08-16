@@ -13,6 +13,7 @@
     "test": "pnpm --filter @workspace/api-server run test",
     "test:baseline": "pnpm --filter @workspace/api-server run test:baseline",
     "test:smoke": "pnpm --filter @workspace/api-server run test:smoke",
+    "test:business-contracts": "pnpm --filter @workspace/api-server run test:business-contracts && pnpm --filter @workspace/agent-dashboard run test:business-contracts && pnpm --filter @workspace/api-server run test:business-contracts:performance && pnpm --filter @workspace/agent-dashboard run test:business-contracts:browser",
     "test:security": "pnpm --filter @workspace/agent-dashboard run test:security && pnpm --filter @workspace/api-server run test:security",
     "test:performance": "pnpm --filter @workspace/api-server run test:performance",
     "test:frontend-performance": "pnpm --filter @workspace/agent-dashboard run test:performance",

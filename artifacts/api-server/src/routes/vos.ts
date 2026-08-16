@@ -314,7 +314,7 @@ async function fetchQuoLineNumbers(): Promise<Set<string>> {
 // Personal agent lines (e.g. "Rick Miller RT OB", "Jenny NSF") are excluded.
 const TEAM_QUO_LINES = [...OPERATIONAL_CONFIG.trackedTeamLines];
 
-function teamFromRingGroupName(name: string): "retention" | "nsf" | "cs" | "other" {
+export function teamFromRingGroupName(name: string): "retention" | "nsf" | "cs" | "other" {
   const n = name.toLowerCase();
   if (n.includes("retention")) return "retention";
   if (n.includes("back") || n.includes("nsf")) return "nsf";

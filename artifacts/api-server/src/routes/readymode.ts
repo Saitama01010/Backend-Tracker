@@ -192,7 +192,7 @@ function parseSecs(val: string): number {
  * This is a best-effort parser; it returns an empty array when the structure
  * cannot be recognized so the caller can fall back gracefully.
  */
-function parseAgentTable(html: string): RmAgentStat[] {
+export function parseAgentTable(html: string): RmAgentStat[] {
   // Look for a table that has agent names and numeric call counts
   // Typical pattern: rows of <td> with agent name, dialed, connected, talk time
   const tableMatch = html.match(/<table[^>]*>([\s\S]*?)<\/table>/gi);
@@ -342,7 +342,7 @@ function dayToIso(day: string, yearHint?: number): string | null {
  * callers can skip a bad source gracefully. Shared by /readymode/stats and the
  * /readymode/upload endpoint.
  */
-function parseReadymodeRows(
+export function parseReadymodeRows(
   text: string,
   log: Logger,
   source: string,

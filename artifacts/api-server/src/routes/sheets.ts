@@ -71,7 +71,7 @@ function looksLikeHeaderRow(row: unknown[]): boolean {
   return matches >= 2;
 }
 
-function detectHeaderRow(values: unknown[][]): number {
+export function detectHeaderRow(values: unknown[][]): number {
   const limit = Math.min(values.length, 10);
   for (let i = 0; i < limit; i++) {
     if (looksLikeHeaderRow(values[i] ?? [])) return i;

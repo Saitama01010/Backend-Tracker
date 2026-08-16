@@ -93,6 +93,15 @@ jobs:
       - name: Run unit tests
         run: pnpm run test
 
+      - name: Install Chromium for Phase 1 browser contracts
+        run: pnpm --filter @workspace/agent-dashboard exec playwright install --with-deps chromium
+
+      - name: Run Phase 1 business contracts
+        env:
+          BUSINESS_CONTRACT_DATABASE_URL: postgresql://ci:ci@127.0.0.1:54329/backend_tracker_test
+          DATABASE_ENVIRONMENT: test
+        run: pnpm run test:business-contracts
+
       - name: Run baseline regression tests
         run: pnpm run test:baseline
 

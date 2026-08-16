@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "fixedDataset": "sanitized Phase 1 external fixtures plus 20000 temporary database rows",
+  "iterations": { "cold": 3, "warm": 10 },
+  "regressionGate": {
+    "metric": "median of paired QUO mapping duration divided by fixed JSON calibration duration",
+    "baselineNormalizedMedianRatio": 1.156,
+    "maximumRegressionPercent": 10
+  }
+}
