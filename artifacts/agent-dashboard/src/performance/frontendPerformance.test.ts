@@ -63,8 +63,19 @@ test("major metrics navigation paints before the expensive panel tree changes", 
   assert.match(app, /memo\.rosterVersion === roster\.version/);
   assert.match(app, /const resolvedAgentCache = new Map<string, RosterAgent \| null>\(\)/);
   assert.match(app, /const resolvedSubmissionAgentCache = new Map/);
-  assert.match(app, /const resolvedKillerAgentCache = new Map/);
   assert.doesNotMatch(app, /<TabsContent value="retention">[\s\S]*?<RetentionPanel \/>/);
+});
+
+test("Ready-Mode Killers uses the shared team sheet loaders", async () => {
+  const app = await readFile(path.join(srcRoot, "App.tsx"), "utf8");
+  const loader = app.match(/async function fetchRMKSubmissionsForRoster[\s\S]*?\r?\n}\r?\n\r?\nfunction ReadyModeKillersPanel/)?.[0] ?? "";
+
+  assert.match(loader, /fetchNewSheetForTeam\(teamNames, roster, "killers", backendSheet\)/);
+  assert.match(loader, /fetchIDPSheetForTeam\(teamNames, roster, "killers", idpSheet\)/);
+  assert.match(loader, /resolved\?\.team !== "killers" \|\| resolved\.active === false/);
+  assert.match(loader, /canonicalize\(\[\.\.\.newRows, \.\.\.retentionRows, \.\.\.idpRows, \.\.\.idpCancelRows\]\)/);
+  assert.doesNotMatch(app, /async function fetchRMKSubmissions\(\)/);
+  assert.doesNotMatch(loader, /resolvedKillerAgentCache|addSheetRow/);
 });
 
 test("PBX request failures remain explicit instead of becoming zero-valued dashboard data", async () => {
