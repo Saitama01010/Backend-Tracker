@@ -237,15 +237,16 @@ test("live-transfer reporting keeps HTTP concerns out of its application module"
   assert.match(backgroundHandlers, /modules\/transfers\/liveTransfers\.js/);
 });
 
-test("Attendance core routes delegate application and PostgreSQL work through accepted boundaries", async () => {
-  const [route, service, repository, importIntegration] = await Promise.all([
+test("Attendance routes delegate application, source, and PostgreSQL work through accepted boundaries", async () => {
+  const [route, service, callsService, pbxSource, repository, importIntegration] = await Promise.all([
     source("routes/attendance.ts"),
     source("modules/attendance/attendance.service.ts"),
+    source("modules/attendance/attendance.calls.service.ts"),
+    source("modules/attendance/attendance.pbx.source.ts"),
     source("modules/attendance/attendance.repository.ts"),
     source("integrations/googleSheets/attendanceImport.ts"),
   ]);
 
-  assert.match(route, /attendanceRepository/);
   assert.doesNotMatch(route, /@workspace\/db|drizzle-orm|\bdb\.|attendanceMembersTable|attendanceRecordsTable|phoneCallsTable/);
   assert.match(repository, /@workspace\/db/);
   assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
@@ -257,6 +258,16 @@ test("Attendance core routes delegate application and PostgreSQL work through ac
   assert.match(service, /integrations\/googleSheets\/attendanceImport\.js/);
   assert.doesNotMatch(service, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
   assert.doesNotMatch(service, /@workspace\/db|drizzle-orm/);
+  for (const operation of ["getCallLogs", "autoMark", "getAgentContacts"]) {
+    assert.match(route, new RegExp(`attendanceCallsService\\.${operation}`));
+  }
+  assert.match(callsService, /attendance\.repository\.js/);
+  assert.match(callsService, /attendance\.pbx\.source\.js/);
+  assert.doesNotMatch(callsService, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  assert.doesNotMatch(callsService, /@workspace\/db|drizzle-orm|routes\/vos/);
+  assert.match(pbxSource, /routes\/vos\.js/);
+  assert.doesNotMatch(pbxSource, /from ["']express["']|@workspace\/db|drizzle-orm/);
+  assert.doesNotMatch(route, /attendanceRepository|@workspace\/db|drizzle-orm|routes\/vos/);
   assert.doesNotMatch(route, /loadAttendanceImportCandidates/);
   assert.doesNotMatch(route, /googleCsvUrl|attendanceImportSources|parseCsv|\bfetch\s*\(/i);
   assert.doesNotMatch(importIntegration, /from ["']express["']|@workspace\/db|drizzle-orm/);

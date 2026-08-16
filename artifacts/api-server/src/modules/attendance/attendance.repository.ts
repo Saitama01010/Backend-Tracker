@@ -118,8 +118,8 @@ export const attendanceRepository = {
     });
   },
 
-  listFirstQuoCalls(dayStartUtc: Date, dayEndUtc: Date) {
-    return db.select({
+  async listFirstQuoCalls(dayStartUtc: Date, dayEndUtc: Date) {
+    return await db.select({
       agentName: phoneCallsTable.agentName,
       firstCallAt: sql<Date | null>`min(${phoneCallsTable.createdAt})`,
     }).from(phoneCallsTable).where(and(
@@ -144,8 +144,8 @@ export const attendanceRepository = {
     await db.insert(attendanceRecordsTable).values([...records]).onConflictDoNothing();
   },
 
-  listAgentContactCalls(agent: string, dayStartUtc: Date, dayEndUtc: Date) {
-    return db.select({
+  async listAgentContactCalls(agent: string, dayStartUtc: Date, dayEndUtc: Date) {
+    return await db.select({
       participant: phoneCallsTable.participant,
       direction: phoneCallsTable.direction,
       status: phoneCallsTable.status,
