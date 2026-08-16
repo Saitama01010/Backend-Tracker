@@ -134,10 +134,15 @@ test("Sheets, date ranges, probes, and pagination are wired through integration 
 
   assert.match(quo, /validateIntegrationDateRange/);
   assert.match(quo, /paginateAuthorizedBatches/);
-  assert.match(quo, /fetchQuoJson/);
-  assert.doesNotMatch(quo, /QUO_API_KEY|api\.openphone\.com|\bfetch\(/);
+  assert.match(quo, /fetchQuoPhoneNumbers/);
+  assert.match(quo, /fetchQuoLiveDirectory/);
+  assert.match(quo, /fetchQuoRecentConversations/);
+  assert.match(quo, /fetchQuoConversationCalls/);
+  assert.doesNotMatch(quo, /fetchQuoJson|fetchAllQuoPages|QUO_API_KEY|api\.openphone\.com|nextPageToken|pageToken|\bfetch\(/);
   assert.match(quoClient, /QUO_API_KEY/);
   assert.match(quoClient, /response\.status === 429/);
+  assert.match(quoClient, /fetchAllQuoPages/);
+  assert.match(quoClient, /nextPageToken/);
   assert.match(sheets, /isApprovedSheetSource/);
   assert.match(sheets, /const sheetRefreshes = new Map/);
   assert.match(sheetsClient, /const titleRefreshes = new Map/);

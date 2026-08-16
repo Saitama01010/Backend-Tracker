@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 
 const fixedRange = {
@@ -250,4 +251,19 @@ test("real frontend, Express API, session, authorization, PostgreSQL, sources, f
   });
   expect(revokedSession).toEqual({ logoutStatus: 200, meAfterLogoutStatus: 401 });
   expect(unexpectedApiFailures.at(-1)).toBe("401 GET /api/auth/me");
+
+  const providerCountsFile = process.env["PHASE2_PROVIDER_COUNTS_FILE"];
+  expect(providerCountsFile).toBeTruthy();
+  const providerCounts = JSON.parse(await readFile(providerCountsFile!, "utf8")) as Record<string, number>;
+  expect(providerCounts).toEqual({
+    googleAuth: 1,
+    googleMetadata: 2,
+    googleSheet1: 3,
+    googleSheet2: 1,
+    readyModeCsv: 2,
+    readyModeHtml: 0,
+    pbx: 9,
+    quo: 6,
+  });
+  console.log(`PHASE2_PROVIDER_CALL_COUNTS ${JSON.stringify(providerCounts)}`);
 });

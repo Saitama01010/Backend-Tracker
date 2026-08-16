@@ -1,12 +1,7 @@
 import { OPERATIONAL_CONFIG } from "../../lib/operationalConfig.js";
+import type { QuoPhoneNumber } from "./client.js";
 
-export interface QuoPhoneNumber {
-  id: string;
-  name: string;
-  formattedNumber: string;
-  number: string;
-  users: { id: string; firstName: string; lastName: string; email: string }[];
-}
+export type { QuoPhoneNumber } from "./client.js";
 
 const LINE_TEAM_MAP = OPERATIONAL_CONFIG.lineTeamMap;
 

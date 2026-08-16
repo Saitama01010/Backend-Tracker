@@ -1,4 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
@@ -30,8 +31,34 @@ function jsonResponse(value: unknown, init: ResponseInit = {}): Response {
   });
 }
 
-function installProviderFixtures(sheet1: Record<string, { values: unknown[][] }>, sheet2: { idpHandledRetained: { values: unknown[][] } }, readyModeCsv: string): void {
+type ProviderCallCounts = {
+  googleAuth: number;
+  googleMetadata: number;
+  googleSheet1: number;
+  googleSheet2: number;
+  readyModeCsv: number;
+  readyModeHtml: number;
+  pbx: number;
+  quo: number;
+};
+
+function installProviderFixtures(sheet1: Record<string, { values: unknown[][] }>, sheet2: { idpHandledRetained: { values: unknown[][] } }, readyModeCsv: string): ProviderCallCounts {
   const originalFetch = globalThis.fetch;
+  const providerCountsFile = process.env["PHASE2_PROVIDER_COUNTS_FILE"]?.trim();
+  const counts: ProviderCallCounts = {
+    googleAuth: 0,
+    googleMetadata: 0,
+    googleSheet1: 0,
+    googleSheet2: 0,
+    readyModeCsv: 0,
+    readyModeHtml: 0,
+    pbx: 0,
+    quo: 0,
+  };
+  const record = (key: keyof ProviderCallCounts): void => {
+    counts[key]++;
+    if (providerCountsFile) writeFileSync(providerCountsFile, JSON.stringify(counts));
+  };
   const sheetTitles = new Map<number, string>([
     [0, "Primary"],
     [837_339_339, "Retention Current"],
@@ -84,19 +111,25 @@ function installProviderFixtures(sheet1: Record<string, { values: unknown[][] }>
   globalThis.fetch = async (input, init) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
     if (url.hostname === "oauth2.googleapis.com") {
+      record("googleAuth");
       return jsonResponse({ access_token: "sanitized-fixture-token", expires_in: 3600 });
     }
     if (url.hostname === "sheets.googleapis.com") {
       if (!url.pathname.includes("/values/")) {
+        record("googleMetadata");
         return jsonResponse({ sheets: [...sheetTitles].map(([sheetId, title]) => ({ properties: { sheetId, title } })) });
       }
       const title = decodeURIComponent(url.pathname.split("/values/")[1] ?? "Primary");
+      record(title === "IDP Cancel Retained" ? "googleSheet2" : "googleSheet1");
       return jsonResponse({ values: sheetValuesByTitle.get(title) ?? defaultSheetValues });
     }
     if (url.hostname === "docs.google.com" && url.pathname.includes("/export")) {
+      record("readyModeCsv");
       return new Response(readyModeCsv, { headers: { "content-type": "text/csv" } });
     }
+    if (url.hostname === "icydeals.readymode.com") record("readyModeHtml");
     if (url.hostname === "phonesystem.voslogic.com") {
+      record("pbx");
       if (url.pathname === "/api/auth/login") {
         return jsonResponse({ ok: true }, { headers: { "set-cookie": "phase1_fixture=1; Path=/; HttpOnly" } });
       }
@@ -116,12 +149,15 @@ function installProviderFixtures(sheet1: Record<string, { values: unknown[][] }>
       return jsonResponse({});
     }
     if (url.hostname === "api.openphone.com") {
+      record("quo");
       if (url.pathname.includes("phone-numbers")) return jsonResponse({ data: [] });
       if (url.pathname.includes("users")) return jsonResponse({ data: [] });
       return jsonResponse({ data: [], totalItems: 0 });
     }
     return originalFetch(input, init);
   };
+  if (providerCountsFile) writeFileSync(providerCountsFile, JSON.stringify(counts));
+  return counts;
 }
 
 async function resetAndSeed(connectionString: string): Promise<void> {

@@ -2,6 +2,7 @@ const PBX_BASE_URL = "https://phonesystem.voslogic.com";
 
 let cachedCookie = "";
 let cookieExpiry = 0;
+let sessionRefresh: Promise<string> | null = null;
 
 export interface VosDashboard {
   activeCalls: number;
@@ -48,9 +49,7 @@ export interface VosCallRaw {
   ringGroupName?: string | null;
 }
 
-async function getPbxSession(): Promise<string> {
-  if (cachedCookie && Date.now() < cookieExpiry) return cachedCookie;
-
+async function refreshPbxSession(): Promise<string> {
   const email = (process.env["VOSLOGIC_EMAIL"] ?? "").trim().replace(/^["']|["']$/g, "");
   const password = (process.env["VOSLOGIC_PASSWORD"] ?? "").trim().replace(/^["']|["']$/g, "");
   if (!email || !password) throw new Error("VOSLOGIC_EMAIL / VOSLOGIC_PASSWORD not set");
@@ -68,6 +67,14 @@ async function getPbxSession(): Promise<string> {
   cachedCookie = cookie;
   cookieExpiry = Date.now() + 6 * 60 * 60 * 1000;
   return cookie;
+}
+
+async function getPbxSession(): Promise<string> {
+  if (cachedCookie && Date.now() < cookieExpiry) return cachedCookie;
+  sessionRefresh ??= refreshPbxSession().finally(() => {
+    sessionRefresh = null;
+  });
+  return sessionRefresh;
 }
 
 export async function fetchPbxJson<T>(path: string): Promise<T> {

@@ -78,6 +78,27 @@ test("Quo provider operations with established boundaries stay out of HTTP route
   await assert.rejects(access(path.join(sourceRoot, "routes/quoSync.ts")));
 });
 
+test("migrated dashboard routes delegate provider transport and raw parsing to source adapters", async () => {
+  const [quo, sheets, readymode, vos] = await Promise.all([
+    source("routes/quo.ts"),
+    source("routes/sheets.ts"),
+    source("routes/readymode.ts"),
+    source("routes/vos.ts"),
+  ]);
+
+  assert.match(quo, /integrations\/quo\/client\.js/);
+  assert.doesNotMatch(quo, /api\.openphone\.com|QUO_API_KEY|fetchQuoJson|fetchAllQuoPages|nextPageToken|pageToken|\bfetch\s*\(/);
+
+  assert.match(sheets, /integrations\/googleSheets\/(?:client|mapper)\.js/);
+  assert.doesNotMatch(sheets, /sheets\.googleapis\.com|oauth2\.googleapis\.com|GOOGLE_(?:SA|SERVICE_ACCOUNT)|\bfetch\s*\(/);
+
+  assert.match(readymode, /integrations\/readymode\/(?:client|csvParser|htmlProbe|importer)\.js/);
+  assert.doesNotMatch(readymode, /icydeals\.readymode\.com|READYMODE_(?:USERNAME|PASSWORD|CSV_URL)|login_new|node:fs|node:path|\bfetch\s*\(/);
+
+  assert.match(vos, /integrations\/pbx\/(?:client|mapper)\.js/);
+  assert.doesNotMatch(vos, /phonesystem\.voslogic\.com|VOSLOGIC_(?:EMAIL|PASSWORD)|\/api\/auth\/login|\bfetch\s*\(/);
+});
+
 test("onboarding analytics keeps HTTP concerns out of its application module", async () => {
   const [route, analytics] = await Promise.all([
     source("routes/obAnalytics.ts"),

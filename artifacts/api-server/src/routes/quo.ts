@@ -10,9 +10,7 @@ import {
   USER_EMAIL_OVERRIDES,
   USER_ID_OVERRIDES,
   canonicalAgentName,
-  type QuoCall,
   type QuoPhoneCallRow,
-  type QuoPhoneNumber as QuoSyncPhoneNumber,
 } from "../integrations/quo/sync.js";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { logger } from "../lib/logger.js";
@@ -49,7 +47,13 @@ import {
   LIVE_STATUS_MAX_STALE_MS,
   type LiveStatusSource,
 } from "../lib/liveStatus.js";
-import { fetchQuoJson } from "../integrations/quo/client.js";
+import {
+  fetchQuoConversationCalls,
+  fetchQuoLiveDirectory,
+  fetchQuoPhoneNumbers,
+  fetchQuoRecentConversations,
+  type QuoApiUser,
+} from "../integrations/quo/client.js";
 import {
   classifyDashboardLine,
   dashboardAgentTeam,
@@ -95,8 +99,7 @@ const effectiveCallStatus = effectivePhoneCallStatus;
 
 router.get("/quo/lines", async (req, res) => {
   try {
-    const result = await fetchQuoJson<{ data: QuoPhoneNumber[] }>("/phone-numbers");
-    const classified = (result.data ?? [])
+    const classified = (await fetchQuoPhoneNumbers())
       .map((p) => ({ ...p, team: classifyDashboardLine(p.name) }))
       .filter((p) => p.team !== null);
     res.json({ data: classified });
@@ -108,8 +111,7 @@ router.get("/quo/lines", async (req, res) => {
 
 router.get("/quo/all-lines", async (req, res) => {
   try {
-    const result = await fetchQuoJson<{ data: QuoPhoneNumber[] }>("/phone-numbers");
-    const lines = (result.data ?? [])
+    const lines = (await fetchQuoPhoneNumbers())
       .filter((p) => !p.name.toLowerCase().includes("tax"))
       .map((p) => ({ ...p, team: classifyDashboardLine(p.name) }));
     res.json({ data: lines });
@@ -795,30 +797,12 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
     const now = new Date().toISOString();
 
     // Build userId → agentName map AND collect line IDs in one call
-    type OPUser = { id: string; firstName: string; lastName: string; email?: string };
     // Paginate /users and /phone-numbers fully — defaults return only first page,
     // which previously caused some agents (e.g. Levi/Ahmed Ayman) and shared lines
     // to be missing from the livePoll resolution.
-    async function fetchAllPages<T>(basePath: string): Promise<T[]> {
-      const out: T[] = [];
-      let pageToken: string | null = null;
-      let page = 0;
-      do {
-        const sep = basePath.includes("?") ? "&" : "?";
-        const url: string = `${basePath}${sep}maxResults=50${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`;
-        const res = await fetchQuoJson<{ data: T[]; nextPageToken?: string | null }>(url, signal);
-        out.push(...(res.data ?? []));
-        pageToken = res.nextPageToken ?? null;
-        page++;
-      } while (pageToken && page < 20);
-      return out;
-    }
-    const [usersAll, linesAll] = await Promise.all([
-      fetchAllPages<OPUser>("/users"),
-      fetchAllPages<QuoSyncPhoneNumber>("/phone-numbers"),
-    ]);
+    const { users: usersAll, lines: linesAll } = await fetchQuoLiveDirectory(signal);
     const userMap = new Map<string, string>();
-    function addToUserMap(u: OPUser) {
+    function addToUserMap(u: QuoApiUser) {
       if (userMap.has(u.id)) return;
       const emailKey = u.email?.toLowerCase().trim() ?? "";
       const override = USER_ID_OVERRIDES[u.id] ?? (emailKey && USER_EMAIL_OVERRIDES[emailKey]);
@@ -831,9 +815,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
     const lineMap = new Map(linesAll.map((line) => [line.id, line]));
 
     // Conversations updated in last 5 minutes = potentially active calls
-    const convRes = await fetchQuoJson<{
-      data: { id: string; phoneNumberId: string; participants: string[] }[];
-    }>(`/conversations?updatedAfter=${encodeURIComponent(fiveMinAgo)}&updatedBefore=${encodeURIComponent(now)}&maxResults=100`, signal);
+    const conversations = await fetchQuoRecentConversations(fiveMinAgo, now, signal);
 
     const newLive = new Set<string>();
     const newParticipants = new Map<string, string>();
@@ -842,7 +824,7 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
     const terminalCallIds = new Set<string>();
 
     // For each recently-active conversation, check for in-progress calls
-    const tasks = (convRes.data ?? [])
+    const tasks = conversations
       .map((conversation) => ({
         conversation,
         participant: conversation.participants?.find((value) => /^\+[1-9]\d{1,14}$/.test(value)),
@@ -851,21 +833,15 @@ export async function runLivePoll(signal?: AbortSignal): Promise<{ active: strin
         lineIds.has(entry.conversation.phoneNumberId) && Boolean(entry.participant),
       )
       .map(({ conversation: c, participant }) => async () => {
-        type LiveCall = QuoCall & {
-          users?: { id?: string; firstName?: string; lastName?: string; email?: string }[];
-          // OpenPhone occasionally returns an array of user ids that handled the call.
-          userIds?: string[];
-        };
-        const callsRes = await fetchQuoJson<{ data: LiveCall[] }>(
-          `/calls?phoneNumberId=${encodeURIComponent(c.phoneNumberId)}` +
-          `&participants=${encodeURIComponent(participant)}` +
-          `&createdAfter=${encodeURIComponent(recentCallFloor)}` +
-          `&createdBefore=${encodeURIComponent(now)}` +
-          `&maxResults=5`,
+        const calls = await fetchQuoConversationCalls(
+          c.phoneNumberId,
+          participant,
+          recentCallFloor,
+          now,
           signal,
         );
 
-        for (const call of callsRes.data ?? []) {
+        for (const call of calls) {
           // Persist terminal calls before publishing the refreshed live state.
           // The shared helper preserves the historical synchronizer's KPI
           // interpretation and the provider call ID remains the idempotency key.
