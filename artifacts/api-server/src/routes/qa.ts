@@ -9,16 +9,14 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 import { anthropicErrorStatus, createAnthropicToolMessage, toolInput, usageFields } from "../lib/anthropic.js";
 import { AI_UNTRUSTED_DATA_SYSTEM_POLICY, wrapUntrustedAiData } from "../lib/aiPrivacy.js";
 import { AiRateLimitError, withDatabaseLease, withDurableAiLimit } from "../lib/aiRateLimit.js";
-import { getQuoCallArtifacts, isSafeQuoCallId, type QuoCallArtifacts } from "../lib/quoCall.js";
+import { getQuoCallArtifacts, type QuoCallArtifacts } from "../lib/quoCall.js";
 import {
   qaEvaluationToolInputSchema,
-  parseQaDateBasis,
   shouldReuseStoredReview,
   stableEligibleCalls,
   validateQaResultWithReason,
 } from "../lib/qaPolicy.js";
 import { setPrivateDownloadHeaders } from "../lib/sensitiveWorkflowPolicy.js";
-import { validateIntegrationDateRange } from "../lib/externalIntegrationPolicy.js";
 import type { AuthPayload } from "../middleware/authCore.js";
 import {
   isAdministrator,
@@ -43,6 +41,15 @@ import {
   reserveQaAgentRun,
   type QaReservationDecision,
 } from "../lib/aiRequestReservations.js";
+import {
+  parseQaDateBasisQuery,
+  parseQaDepartment,
+  parseQaEvaluationRequest,
+  parseQaListLimit,
+  parseQaRequestDateRange,
+  parseQaTaskResolution,
+  type QaDepartment as Department,
+} from "../modules/qa/qa.schemas.js";
 
 const router: IRouter = Router();
 
@@ -51,7 +58,7 @@ const QA_REVIEW_INTERVAL_DAYS = QA_ROLLING_INTERVAL_DAYS;
 const QA_MIN_CALL_SECONDS = Math.max(30, Number(process.env["QA_MIN_CALL_SECONDS"] ?? 90) || 90);
 
 // ── Departments ─────────────────────────────────────────────────────────────
-export type Department = "Retention" | "CS" | "NSF";
+export type { QaDepartment as Department } from "../modules/qa/qa.schemas.js";
 const DEPARTMENTS: Department[] = ["Retention", "CS", "NSF"];
 
 function lineTeamToDepartment(lineTeam: string): Department | null {
@@ -525,10 +532,9 @@ type QaDepartmentScope =
   | { ok: false; status: 400 | 403; error: string };
 
 function deptFilterArr(req: { query: Record<string, unknown>; user?: AuthPayload }): QaDepartmentScope {
-  const d = String(req.query["department"] ?? "").trim().toLowerCase();
-  const map: Record<string, Department> = { retention: "Retention", cs: "CS", nsf: "NSF" };
-  const requested = !d || d === "all" ? null : map[d];
-  if (d && d !== "all" && !requested) return { ok: false, status: 400, error: "Invalid department." };
+  const parsed = parseQaDepartment(req.query["department"]);
+  if (!parsed.ok) return { ok: false, status: 400, error: parsed.error };
+  const { requested } = parsed;
 
   if (req.user && isCanonicalUser(req.user)) {
     if (isAdministrator(req.user)) return { ok: true, departments: requested ? [requested] : null };
@@ -586,13 +592,6 @@ async function qaAgentScope(user: AuthPayload): Promise<QaAgentScope> {
   };
 }
 
-function qaRequestDateRange(query: Record<string, unknown>): { ok: true; from: Date; to: Date } | { ok: false; error: string } {
-  const rawFrom = query["from"] ? String(query["from"]) : new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
-  const rawTo = query["to"] ? String(query["to"]) : new Date().toISOString();
-  const range = validateIntegrationDateRange(rawFrom, rawTo);
-  return range.ok ? { ok: true, from: range.fromDate, to: range.toDate } : range;
-}
-
 function qaReviewDateColumn(dateBasis: "evaluated" | "call") {
   return dateBasis === "evaluated" ? qaReviewsTable.evaluatedAt : qaReviewsTable.callDate;
 }
@@ -606,13 +605,9 @@ const TAX_REGEX = String.raw`\ytax(es)?\y`;
 router.post("/qa/evaluate", requireAuth, requireRole("admin"), async (req, res) => {
   let reservationId: number | null = null;
   try {
-    const callId = typeof req.body?.callId === "string" ? req.body.callId.trim() : "";
-    const force = req.body?.force === true;
-    if (!isSafeQuoCallId(callId)) return res.status(400).json({ error: "A valid QUO callId is required" });
-    const rawIdempotencyKey = req.get("idempotency-key")?.trim();
-    if (rawIdempotencyKey && !/^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/.test(rawIdempotencyKey)) {
-      return res.status(400).json({ error: "Idempotency-Key is invalid" });
-    }
+    const parsed = parseQaEvaluationRequest(req.body, req.get("idempotency-key"));
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+    const { callId, force, rawIdempotencyKey } = parsed.value;
 
     const [existing] = await db.select().from(qaReviewsTable).where(eq(qaReviewsTable.id, callId)).limit(1);
     if (shouldReuseStoredReview(existing, force)) return res.json(existing);
@@ -802,14 +797,15 @@ router.post("/qa/assign-weekly", requireAuth, requireRole("admin"), async (req, 
 
 router.get("/qa/stats", requireAuth, async (req, res) => {
   try {
-    const range = qaRequestDateRange(req.query);
+    const range = parseQaRequestDateRange(req.query);
     if (!range.ok) return res.status(400).json({ error: range.error });
     const { from, to } = range;
     const departmentScope = deptFilterArr(req);
     if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
     const depts = departmentScope.departments;
-    const dateBasis = parseQaDateBasis(req.query["dateBasis"]);
-    if (!dateBasis) return res.status(400).json({ error: "dateBasis must be evaluated or call" });
+    const parsedDateBasis = parseQaDateBasisQuery(req.query["dateBasis"]);
+    if (!parsedDateBasis.ok) return res.status(400).json({ error: parsedDateBasis.error });
+    const { dateBasis } = parsedDateBasis;
     const dateColumn = qaReviewDateColumn(dateBasis);
 
     const filters = [gte(dateColumn, from), lte(dateColumn, to)];
@@ -899,14 +895,15 @@ router.get("/qa/stats", requireAuth, async (req, res) => {
 // GET /api/qa/download — Excel export of QA reviews (with a Mentions Tax flag).
 router.get("/qa/download", requireAuth, async (req, res) => {
   try {
-    const range = qaRequestDateRange(req.query);
+    const range = parseQaRequestDateRange(req.query);
     if (!range.ok) return res.status(400).json({ error: range.error });
     const { from, to } = range;
     const departmentScope = deptFilterArr(req);
     if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
     const depts = departmentScope.departments;
-    const dateBasis = parseQaDateBasis(req.query["dateBasis"]);
-    if (!dateBasis) return res.status(400).json({ error: "dateBasis must be evaluated or call" });
+    const parsedDateBasis = parseQaDateBasisQuery(req.query["dateBasis"]);
+    if (!parsedDateBasis.ok) return res.status(400).json({ error: parsedDateBasis.error });
+    const { dateBasis } = parsedDateBasis;
     const dateColumn = qaReviewDateColumn(dateBasis);
 
     const filters = [gte(dateColumn, from), lte(dateColumn, to)];
@@ -1011,16 +1008,17 @@ router.get("/qa/download", requireAuth, async (req, res) => {
 
 router.get("/qa/reviews", requireAuth, async (req, res) => {
   try {
-    const range = qaRequestDateRange(req.query);
+    const range = parseQaRequestDateRange(req.query);
     if (!range.ok) return res.status(400).json({ error: range.error });
     const { from, to } = range;
     const agent = (req.query["agent"] as string) || "";
-    const limit = Math.min(parseInt((req.query["limit"] as string) ?? "100", 10) || 100, 500);
+    const limit = parseQaListLimit(req.query["limit"]);
     const departmentScope = deptFilterArr(req);
     if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
     const depts = departmentScope.departments;
-    const dateBasis = parseQaDateBasis(req.query["dateBasis"]);
-    if (!dateBasis) return res.status(400).json({ error: "dateBasis must be evaluated or call" });
+    const parsedDateBasis = parseQaDateBasisQuery(req.query["dateBasis"]);
+    if (!parsedDateBasis.ok) return res.status(400).json({ error: parsedDateBasis.error });
+    const { dateBasis } = parsedDateBasis;
     const dateColumn = qaReviewDateColumn(dateBasis);
 
     const filters = [gte(dateColumn, from), lte(dateColumn, to)];
@@ -1068,7 +1066,7 @@ router.get("/qa/reviews/:id", requireAuth, async (req, res) => {
 router.get("/qa/tasks", requireAuth, async (req, res) => {
   try {
     const status = (req.query["status"] as string) || "open";
-    const limit = Math.min(parseInt((req.query["limit"] as string) ?? "100", 10) || 100, 500);
+    const limit = parseQaListLimit(req.query["limit"]);
     const departmentScope = deptFilterArr(req);
     if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
     const depts = departmentScope.departments;
@@ -1098,14 +1096,7 @@ router.post("/qa/tasks/:id/resolve", requireAuth, requireRole("admin"), async (r
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const resolvedBy = req.user!.username;
-    const notes = String(req.body?.notes ?? "").trim() || null;
-    const comments = String(req.body?.comments ?? "").trim() || null;
-    const coachingComplete = Boolean(req.body?.coachingComplete);
-    const managerScoreRaw = req.body?.managerScore;
-    const managerScore =
-      managerScoreRaw === undefined || managerScoreRaw === null || managerScoreRaw === ""
-        ? null
-        : Math.max(0, Math.min(100, Math.round(Number(managerScoreRaw))));
+    const { notes, comments, coachingComplete, managerScore } = parseQaTaskResolution(req.body);
 
     // Fetch existing to compute variance + final
     const [existing] = await db
@@ -1143,14 +1134,15 @@ router.post("/qa/tasks/:id/resolve", requireAuth, requireRole("admin"), async (r
 // Per-agent leaderboard (for Agent Dashboard view)
 router.get("/qa/agents", requireAuth, async (req, res) => {
   try {
-    const range = qaRequestDateRange(req.query);
+    const range = parseQaRequestDateRange(req.query);
     if (!range.ok) return res.status(400).json({ error: range.error });
     const { from, to } = range;
     const departmentScope = deptFilterArr(req);
     if (!departmentScope.ok) return res.status(departmentScope.status).json({ error: departmentScope.error });
     const depts = departmentScope.departments;
-    const dateBasis = parseQaDateBasis(req.query["dateBasis"]);
-    if (!dateBasis) return res.status(400).json({ error: "dateBasis must be evaluated or call" });
+    const parsedDateBasis = parseQaDateBasisQuery(req.query["dateBasis"]);
+    if (!parsedDateBasis.ok) return res.status(400).json({ error: parsedDateBasis.error });
+    const { dateBasis } = parsedDateBasis;
     const dateColumn = qaReviewDateColumn(dateBasis);
 
     const filters = [gte(dateColumn, from), lte(dateColumn, to)];

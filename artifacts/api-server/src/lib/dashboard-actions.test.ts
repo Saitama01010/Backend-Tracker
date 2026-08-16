@@ -73,7 +73,7 @@ test("QA routes consistently select evaluatedAt or callDate", async () => {
   for (const route of ["stats", "download", "reviews", "agents"]) {
     const start = source.indexOf(`router.get("/qa/${route}"`);
     assert.ok(start > 0, route);
-    assert.match(source.slice(start, start + 2_500), /parseQaDateBasis\(req\.query\["dateBasis"\]\)/, route);
+    assert.match(source.slice(start, start + 2_500), /parseQaDateBasisQuery\(req\.query\["dateBasis"\]\)/, route);
   }
 });
 
