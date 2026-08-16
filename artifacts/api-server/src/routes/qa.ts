@@ -1,8 +1,8 @@
 import { Router, type IRouter, type Response } from "express";
 import type Anthropic from "@anthropic-ai/sdk";
 import ExcelJS from "exceljs";
-import { db, phoneCallsTable, qaReviewsTable, managerQaTasksTable, teamAgentsTable, qaBiweeklyRunsTable } from "@workspace/db";
-import { and, desc, eq, gt, gte, lte, sql, inArray, type SQL } from "drizzle-orm";
+import { db, qaReviewsTable, managerQaTasksTable } from "@workspace/db";
+import { and, desc, eq, gte, lte, sql, inArray, type SQL } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { canonicalAgentName } from "../integrations/quo/sync.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
@@ -50,6 +50,7 @@ import {
   parseQaTaskResolution,
   type QaDepartment as Department,
 } from "../modules/qa/qa.schemas.js";
+import { qaRepository, type QaReviewRecord } from "../modules/qa/qa.repository.js";
 
 const router: IRouter = Router();
 
@@ -184,8 +185,8 @@ async function evaluateCall(callId: string, opts?: {
   source?: "auto_biweekly" | "manual_call_id";
   userId?: number;
   artifacts?: QuoCallArtifacts;
-}): Promise<typeof qaReviewsTable.$inferSelect | null> {
-  const [call] = await db.select().from(phoneCallsTable).where(eq(phoneCallsTable.id, callId)).limit(1);
+}): Promise<QaReviewRecord | null> {
+  const call = await qaRepository.getCall(callId);
   if (!call) return null;
   if (call.status !== "completed") return null;
   if ((opts?.source ?? "auto_biweekly") === "auto_biweekly" && (call.durationSeconds ?? 0) < QA_MIN_CALL_SECONDS) return null;
@@ -205,8 +206,7 @@ async function evaluateCall(callId: string, opts?: {
   if (!td) return null;
 
   if ((opts?.source ?? "auto_biweekly") === "auto_biweekly") {
-    const [existingReview] = await db.select({ id: qaReviewsTable.id })
-      .from(qaReviewsTable).where(eq(qaReviewsTable.id, callId)).limit(1);
+    const existingReview = await qaRepository.getReview(callId);
     if (existingReview) return null;
   }
 
@@ -300,34 +300,13 @@ async function evaluateCall(callId: string, opts?: {
     managerReviewRequired,
     model: QA_MODEL,
     source: opts?.source ?? "auto_biweekly",
-  } satisfies typeof qaReviewsTable.$inferInsert;
+  };
 
-  await db.insert(qaReviewsTable).values(reviewRow).onConflictDoUpdate({
-    target: qaReviewsTable.id,
-    set: {
-      department: reviewRow.department,
-      score: reviewRow.score,
-      softSkillsScore: reviewRow.softSkillsScore,
-      protocolScore: reviewRow.protocolScore,
-      pass: reviewRow.pass,
-      criticalFail: reviewRow.criticalFail,
-      strengths: reviewRow.strengths,
-      missedItems: reviewRow.missedItems,
-      criticalIssues: reviewRow.criticalIssues,
-      categoryScores: reviewRow.categoryScores,
-      reason: reviewRow.reason,
-      managerReviewRequired: reviewRow.managerReviewRequired,
-      model: reviewRow.model,
-      source: reviewRow.source,
-      evaluatedAt: new Date(),
-    },
-  });
-
-  if (managerReviewRequired) {
+  const managerTask = managerReviewRequired ? (() => {
     const taskReason =
       parsed.reason
       ?? (criticalFail ? "Critical fail" : protocolScore < 70 ? "Protocol compliance < 70" : "Score below 80");
-    await db.insert(managerQaTasksTable).values({
+    return {
       id: callId,
       agentName,
       department: detectedDept,
@@ -337,11 +316,10 @@ async function evaluateCall(callId: string, opts?: {
       criticalFail,
       source: opts?.source ?? "auto_biweekly",
       status: "open",
-    }).onConflictDoNothing();
-  }
+    };
+  })() : null;
 
-  const [saved] = await db.select().from(qaReviewsTable).where(eq(qaReviewsTable.id, callId)).limit(1);
-  return saved ?? null;
+  return qaRepository.saveEvaluation(reviewRow, managerTask);
 }
 
 // ── Background processor (all 3 departments) ────────────────────────────────
@@ -370,25 +348,12 @@ export async function runBiweeklyQa(
 ): Promise<QaBiweeklyResult> {
   return withDatabaseLease("qa_auto_biweekly", async () => {
     signal?.throwIfAborted();
-    const [run] = await db.insert(qaBiweeklyRunsTable).values({ trigger }).returning({ id: qaBiweeklyRunsTable.id });
+    const run = await qaRepository.createBiweeklyRun(trigger);
     const result: QaBiweeklyResult = { runId: run?.id ?? 0, evaluated: [], skipped: [], errors: [] };
     try {
       const cutoff = new Date(Date.now() - QA_REVIEW_INTERVAL_DAYS * 24 * 60 * 60 * 1000);
-      const [roster, recentReviews, candidates, reviewed] = await Promise.all([
-        db.select().from(teamAgentsTable).where(and(
-          eq(teamAgentsTable.active, true),
-          inArray(teamAgentsTable.team, ["retention", "cs", "nsf"]),
-        )),
-        db.select({ agentName: qaReviewsTable.agentName }).from(qaReviewsTable)
-          .where(gt(qaReviewsTable.evaluatedAt, cutoff)),
-        db.select().from(phoneCallsTable).where(and(
-          gte(phoneCallsTable.createdAt, cutoff),
-          eq(phoneCallsTable.status, "completed"),
-          gte(phoneCallsTable.durationSeconds, QA_MIN_CALL_SECONDS),
-          inArray(phoneCallsTable.lineTeam, ["retention", "cs", "nsf"]),
-        )),
-        db.select({ id: qaReviewsTable.id }).from(qaReviewsTable).where(gte(qaReviewsTable.callDate, cutoff)),
-      ]);
+      const { roster, recentReviews, candidates, reviewed } = await qaRepository
+        .loadBiweeklyInputs(cutoff, QA_MIN_CALL_SECONDS);
 
       const recentlyReviewed = new Set(recentReviews.map((row) => agentKey(row.agentName)));
       const reviewedCalls = new Set(reviewed.map((row) => row.id));
@@ -464,21 +429,12 @@ export async function runBiweeklyQa(
       }
 
       if (run) {
-        await db.update(qaBiweeklyRunsTable).set({
-          status: "completed",
-          result: { ...result },
-          finishedAt: new Date(),
-        })
-          .where(eq(qaBiweeklyRunsTable.id, run.id));
+        await qaRepository.completeBiweeklyRun(run.id, result);
       }
       return result;
     } catch (error) {
       if (run) {
-        await db.update(qaBiweeklyRunsTable).set({
-          status: "failed",
-          result: { ...result },
-          finishedAt: new Date(),
-        }).where(eq(qaBiweeklyRunsTable.id, run.id)).catch(() => undefined);
+        await qaRepository.failBiweeklyRun(run.id, result).catch(() => undefined);
       }
       throw error;
     }
@@ -501,26 +457,15 @@ export async function runWeeklyAssignment(): Promise<{ created: number; agents: 
   const lookback = startOfBusinessDay(addCalendarDays(formatCalendarDate(weekStart), -7));
 
   // Eligible reviews: from the prior week through now (so Monday-morning runs see last week's calls).
-  const reviews = await db
-    .select()
-    .from(qaReviewsTable)
-    .where(gte(qaReviewsTable.callDate, lookback));
+  const reviews = await qaRepository.listReviewsSince(lookback);
 
   const agents = [...new Set(reviews.map((review) => review.agentName))];
   const existingTasks = agents.length > 0
-    ? await db.select({
-        id: managerQaTasksTable.id,
-        agentName: managerQaTasksTable.agentName,
-        source: managerQaTasksTable.source,
-        createdAt: managerQaTasksTable.createdAt,
-      }).from(managerQaTasksTable).where(inArray(managerQaTasksTable.agentName, agents))
+    ? await qaRepository.listManagerTasksForAgents(agents)
     : [];
   const plan = planWeeklyQaAssignments(reviews, existingTasks, weekStart);
   const inserted = plan.picks.length > 0
-    ? await db.insert(managerQaTasksTable)
-        .values(plan.picks)
-        .onConflictDoNothing()
-        .returning({ id: managerQaTasksTable.id })
+    ? await qaRepository.insertManagerTasks(plan.picks)
     : [];
 
   return { created: inserted.length, agents: plan.agents };
@@ -609,11 +554,11 @@ router.post("/qa/evaluate", requireAuth, requireRole("admin"), async (req, res) 
     if (!parsed.ok) return res.status(400).json({ error: parsed.error });
     const { callId, force, rawIdempotencyKey } = parsed.value;
 
-    const [existing] = await db.select().from(qaReviewsTable).where(eq(qaReviewsTable.id, callId)).limit(1);
+    const existing = await qaRepository.getReview(callId);
     if (shouldReuseStoredReview(existing, force)) return res.json(existing);
 
-    const [[call], artifacts] = await Promise.all([
-      db.select().from(phoneCallsTable).where(eq(phoneCallsTable.id, callId)).limit(1),
+    const [call, artifacts] = await Promise.all([
+      qaRepository.getCall(callId),
       getQuoCallArtifacts(callId),
     ]);
     if (!call && artifacts.status === "not_found") return res.status(404).json({ error: "Call not found" });
@@ -637,7 +582,7 @@ router.post("/qa/evaluate", requireAuth, requireRole("admin"), async (req, res) 
       requestedByUserId: req.user!.userId,
     });
     if (reservation.kind === "completed") {
-      const [completedReview] = await db.select().from(qaReviewsTable).where(eq(qaReviewsTable.id, callId)).limit(1);
+      const completedReview = await qaRepository.getReview(callId);
       return completedReview
         ? res.json(completedReview)
         : res.status(409).json({ error: "QA was already completed for this agent" });
@@ -734,10 +679,7 @@ async function runBiweeklyResponse(res: Response, userId: number) {
       if (err.reason !== "lease") {
         return res.status(429).json({ error: "QA run limit reached" });
       }
-      const [activeRun] = await db.select().from(qaBiweeklyRunsTable)
-        .where(eq(qaBiweeklyRunsTable.status, "running"))
-        .orderBy(desc(qaBiweeklyRunsTable.startedAt))
-        .limit(1);
+      const activeRun = await qaRepository.getActiveBiweeklyRun();
       return res.status(409).json({
         error: "A biweekly QA run is already active",
         activeRun: activeRun ?? null,
@@ -758,9 +700,7 @@ router.post("/qa/process", requireAuth, requireRole("admin"), async (req, res) =
 });
 
 router.get("/qa/runs/latest", requireAuth, requireRole("admin"), async (_req, res) => {
-  const [run] = await db.select().from(qaBiweeklyRunsTable)
-    .orderBy(desc(qaBiweeklyRunsTable.startedAt))
-    .limit(1);
+  const run = await qaRepository.getLatestBiweeklyRun();
   return res.json({ run: run ?? null });
 });
 

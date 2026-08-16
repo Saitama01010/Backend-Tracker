@@ -26,6 +26,7 @@ const libDir = path.dirname(fileURLToPath(import.meta.url));
 const apiDir = path.resolve(libDir, "..");
 const repoRoot = path.resolve(apiDir, "../../..");
 const routeSource = (name: string) => readFile(path.join(apiDir, "routes", name), "utf8");
+const moduleSource = (relative: string) => readFile(path.join(apiDir, "modules", relative), "utf8");
 const dashboardSource = () => readFile(path.join(repoRoot, "artifacts/agent-dashboard/src/App.tsx"), "utf8");
 const samiaUiSource = () => readFile(path.join(repoRoot, "artifacts/agent-dashboard/src/features/samia/SamiaChat.tsx"), "utf8");
 
@@ -98,6 +99,7 @@ test("QA frontend checks non-200 responses, displays results, and immediately in
 
 test("QA evaluation uses forced strict Anthropic tool output and validates before persistence", async () => {
   const source = await routeSource("qa.ts");
+  const repository = await moduleSource("qa/qa.repository.ts");
   const schema = qaEvaluationToolInputSchema("CS");
   assert.equal(schema.additionalProperties, false);
   assert.ok(schema.required.includes("managerReviewRequired"));
@@ -107,7 +109,8 @@ test("QA evaluation uses forced strict Anthropic tool output and validates befor
   assert.match(source, /createAnthropicToolMessage/);
   assert.match(source, /name: "record_qa_evaluation"/);
   assert.match(source, /toolInput\(completion, "record_qa_evaluation"\)/);
-  assert.ok(source.indexOf("validateQaResultWithReason") < source.indexOf("db.insert(qaReviewsTable)"));
+  assert.ok(source.indexOf("validateQaResultWithReason") < source.indexOf("qaRepository.saveEvaluation"));
+  assert.match(repository, /db\.insert\(qaReviewsTable\)[\s\S]*onConflictDoUpdate/);
 });
 
 test("invalid strict QA output is rejected and sanitized without transcript logging", async () => {
