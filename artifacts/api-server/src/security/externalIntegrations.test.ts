@@ -133,6 +133,8 @@ test("Sheets, date ranges, probes, and pagination are wired through integration 
     readymodeClient,
     readymodeProbe,
     vos,
+    pbxDiagnosticsService,
+    pbxProviderService,
     pbxClient,
   ] = await Promise.all([
     readFile(new URL("quo.ts", base), "utf8"),
@@ -148,6 +150,8 @@ test("Sheets, date ranges, probes, and pagination are wired through integration 
     readFile(new URL("../integrations/readymode/client.ts", base), "utf8"),
     readFile(new URL("../integrations/readymode/htmlProbe.ts", base), "utf8"),
     readFile(new URL("vos.ts", base), "utf8"),
+    readFile(new URL("../modules/pbx/pbx.diagnostics.service.ts", base), "utf8"),
+    readFile(new URL("../modules/pbx/pbx.provider.service.ts", base), "utf8"),
     readFile(new URL("../integrations/pbx/client.ts", base), "utf8"),
   ]);
 
@@ -191,9 +195,15 @@ test("Sheets, date ranges, probes, and pagination are wired through integration 
   assert.match(readymodeProbe, /READYMODE_USERNAME/);
   assert.doesNotMatch(readymode, /preview:\s*result\.body/);
   assert.doesNotMatch(readymodeProbe, /cookies:\s*cachedCookies/);
-  assert.match(vos, /fetchPbxJson/);
-  assert.match(vos, /fetchQuoDirectoryPhoneNumbers/);
-  assert.doesNotMatch(vos, /VOSLOGIC_EMAIL|VOSLOGIC_PASSWORD|QUO_API_KEY|api\.openphone\.com|\/api\/auth\/login|\bfetch\(/);
+  assert.doesNotMatch(vos, /fetchPbxJson|fetchQuoDirectoryPhoneNumbers|approvedVosDebugPath/);
+  assert.match(pbxDiagnosticsService, /approvedVosDebugPath/);
+  assert.match(pbxDiagnosticsService, /fetchPbxJson/);
+  assert.match(pbxProviderService, /fetchPbxJson/);
+  assert.match(pbxProviderService, /fetchQuoDirectoryPhoneNumbers/);
+  assert.doesNotMatch(
+    `${vos}\n${pbxDiagnosticsService}\n${pbxProviderService}`,
+    /VOSLOGIC_EMAIL|VOSLOGIC_PASSWORD|QUO_API_KEY|api\.openphone\.com|\/api\/auth\/login|\bfetch\(/,
+  );
   assert.match(pbxClient, /VOSLOGIC_EMAIL/);
   assert.match(pbxClient, /res\.status === 401/);
   assert.match(quoClient, /fetchQuoDirectoryPhoneNumbers/);
