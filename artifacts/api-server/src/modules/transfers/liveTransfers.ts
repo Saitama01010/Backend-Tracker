@@ -1,11 +1,4 @@
 import ExcelJS from "exceljs";
-import {
-  db,
-  phoneCallsTable,
-  liveTransferClassificationsTable,
-  liveTransferStateTable,
-} from "@workspace/db";
-import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { logger } from "../../lib/logger.js";
 import {
   anthropicErrorStatus,
@@ -27,6 +20,10 @@ import {
   type QuoDialogueLine as DialogueLine,
 } from "../../integrations/quo/transcripts.js";
 import { summarizeLiveTransferCounts } from "./liveTransferSummary.js";
+import {
+  liveTransferRepository,
+  type LiveTransferRepository,
+} from "./liveTransfers.repository.js";
 
 // ─── Scope ────────────────────────────────────────────────────────────────────
 // Inbound live transfers must land on the Retention MAIN line only —
@@ -82,11 +79,6 @@ function normalizeDept(raw: string): string {
   if (!base) return "Other";
   if (DEPT_CANON[base]) return DEPT_CANON[base]!;
   return base.replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-// A call is in scope only if it's on the Retention main line (669) 333-7644.
-function scopeFilter() {
-  return eq(phoneCallsTable.lineId, RETENTION_MAIN_LINE_ID);
 }
 
 // ─── Date range helpers (LA timezone, mirrors obReport) ───────────────────────
@@ -199,58 +191,22 @@ async function extract(transcript: string): Promise<ExtractAttempt> {
   }
 }
 
-// ─── State helpers ────────────────────────────────────────────────────────────
-async function readState() {
-  const rows = await db
-    .select()
-    .from(liveTransferStateTable)
-    .where(eq(liveTransferStateTable.id, "singleton"));
-  return rows[0] ?? null;
-}
-async function writeState(patch: {
-  isRunning?: boolean;
-  progressDone?: number;
-  progressTotal?: number;
-  lastRunAt?: Date | null;
-  lastError?: string | null;
-}) {
-  await db
-    .insert(liveTransferStateTable)
-    .values({ id: "singleton", ...patch, updatedAt: new Date() })
-    .onConflictDoUpdate({
-      target: liveTransferStateTable.id,
-      set: { ...patch, updatedAt: new Date() },
-    });
-}
-
 // ─── Classifier job ───────────────────────────────────────────────────────────
-export async function runLiveTransferRefresh(signal?: AbortSignal): Promise<void> {
+export async function runLiveTransferRefresh(
+  signal?: AbortSignal,
+  repository: LiveTransferRepository = liveTransferRepository,
+): Promise<void> {
   try {
     await withDatabaseLease("live_transfer_classifier", async () => {
       signal?.throwIfAborted();
-      await writeState({ isRunning: true, lastError: null, progressDone: 0, progressTotal: 0 });
+      await repository.writeState({ isRunning: true, lastError: null, progressDone: 0, progressTotal: 0 });
       logger.info("liveTransfers: classify started");
 
     // Incoming completed calls in scope, long enough to be a real conversation,
     // that have not been classified yet.
-    const pending = await db
-      .select({ id: phoneCallsTable.id })
-      .from(phoneCallsTable)
-      .leftJoin(
-        liveTransferClassificationsTable,
-        eq(liveTransferClassificationsTable.callId, phoneCallsTable.id),
-      )
-      .where(
-        and(
-          eq(phoneCallsTable.direction, "incoming"),
-          eq(phoneCallsTable.status, "completed"),
-          gte(phoneCallsTable.durationSeconds, MIN_SECONDS),
-          scopeFilter(),
-          sql`${liveTransferClassificationsTable.callId} IS NULL`,
-        ),
-      );
+    const pending = await repository.listPending(RETENTION_MAIN_LINE_ID, MIN_SECONDS);
 
-    await writeState({ progressTotal: pending.length, progressDone: 0 });
+    await repository.writeState({ progressTotal: pending.length, progressDone: 0 });
     logger.info({ pending: pending.length }, "liveTransfers: classifying new calls");
 
     let done = 0;
@@ -267,17 +223,14 @@ export async function runLiveTransferRefresh(signal?: AbortSignal): Promise<void
             // transient — leave unclassified so the next run retries.
             logger.warn({ callId: call.id }, "liveTransfers: transcript fetch failed, will retry");
           } else if (tx.kind === "notfound" || tx.dialogue.length === 0) {
-            await db
-              .insert(liveTransferClassificationsTable)
-              .values({
-                callId: call.id,
-                isLive: false,
-                company: null,
-                agent: null,
-                evidence: null,
-                txStatus: tx.kind === "notfound" ? "notfound" : tx.status,
-              })
-              .onConflictDoNothing();
+            await repository.insertClassification({
+              callId: call.id,
+              isLive: false,
+              company: null,
+              agent: null,
+              evidence: null,
+              txStatus: tx.kind === "notfound" ? "notfound" : tx.status,
+            });
           } else {
             const text = dialogueText(tx.dialogue);
             const flags = {
@@ -291,18 +244,15 @@ export async function runLiveTransferRefresh(signal?: AbortSignal): Promise<void
             // Cheap pre-filter (partner name OR internal transfer intent). The AI
             // decides the actual kind so the keyword match never alone sets isLive.
             if (!partnerHit && !intentHit) {
-              await db
-                .insert(liveTransferClassificationsTable)
-                .values({
-                  callId: call.id,
-                  isLive: false,
-                  kind: null,
-                  company: null,
-                  agent: null,
-                  evidence: null,
-                  txStatus: "completed",
-                })
-                .onConflictDoNothing();
+              await repository.insertClassification({
+                callId: call.id,
+                isLive: false,
+                kind: null,
+                company: null,
+                agent: null,
+                evidence: null,
+                txStatus: "completed",
+              });
             } else {
               const opening = tx.dialogue.slice(0, 26);
               const attempt = await extract(dialogueText(opening));
@@ -310,7 +260,7 @@ export async function runLiveTransferRefresh(signal?: AbortSignal): Promise<void
                 // AI failed — leave unclassified so the next run retries.
                 logger.warn({ callId: call.id }, "liveTransfers: AI extract failed, will retry");
               } else if (attempt.status === "permanent_error") {
-                await db.insert(liveTransferClassificationsTable).values({
+                await repository.insertClassification({
                   callId: call.id,
                   isLive: false,
                   kind: null,
@@ -318,21 +268,18 @@ export async function runLiveTransferRefresh(signal?: AbortSignal): Promise<void
                   agent: null,
                   evidence: null,
                   txStatus: "ai_error",
-                }).onConflictDoNothing();
+                });
               } else if (attempt.value.kind !== "partner" && attempt.value.kind !== "internal") {
                 const res = attempt.value;
-                await db
-                  .insert(liveTransferClassificationsTable)
-                  .values({
-                    callId: call.id,
-                    isLive: false,
-                    kind: null,
-                    company: null,
-                    agent: null,
-                    evidence: res.evidence?.trim() || null,
-                    txStatus: "completed",
-                  })
-                  .onConflictDoNothing();
+                await repository.insertClassification({
+                  callId: call.id,
+                  isLive: false,
+                  kind: null,
+                  company: null,
+                  agent: null,
+                  evidence: res.evidence?.trim() || null,
+                  txStatus: "completed",
+                });
               } else {
                 const res = attempt.value;
                 let company: string;
@@ -343,18 +290,15 @@ export async function runLiveTransferRefresh(signal?: AbortSignal): Promise<void
                   // Internal: the AI names the source department; canonicalize it.
                   company = normalizeDept(res.company ?? "");
                 }
-                await db
-                  .insert(liveTransferClassificationsTable)
-                  .values({
-                    callId: call.id,
-                    isLive: true,
-                    kind: res.kind,
-                    company: company || null,
-                    agent: res.agent?.trim() || null,
-                    evidence: res.evidence?.trim() || null,
-                    txStatus: "completed",
-                  })
-                  .onConflictDoNothing();
+                await repository.insertClassification({
+                  callId: call.id,
+                  isLive: true,
+                  kind: res.kind,
+                  company: company || null,
+                  agent: res.agent?.trim() || null,
+                  evidence: res.evidence?.trim() || null,
+                  txStatus: "completed",
+                });
               }
             }
           }
@@ -362,7 +306,9 @@ export async function runLiveTransferRefresh(signal?: AbortSignal): Promise<void
           logger.warn({ errorCode: sanitizedErrorMessage(err), callId: call.id }, "liveTransfers: processing error");
         }
         done++;
-        if (done % 10 === 0 || done === pending.length) await writeState({ progressDone: done });
+        if (done % 10 === 0 || done === pending.length) {
+          await repository.writeState({ progressDone: done });
+        }
       }
     }
 
@@ -370,7 +316,7 @@ export async function runLiveTransferRefresh(signal?: AbortSignal): Promise<void
       Array.from({ length: Math.min(CONCURRENCY, Math.max(1, pending.length)) }, worker),
     );
 
-    await writeState({
+    await repository.writeState({
       isRunning: false,
       lastRunAt: new Date(),
       progressDone: pending.length,
@@ -381,7 +327,7 @@ export async function runLiveTransferRefresh(signal?: AbortSignal): Promise<void
   } catch (err) {
     const errorCode = sanitizedErrorMessage(err);
     logger.error({ errorCode }, "liveTransfers: classify failed");
-    await writeState({ isRunning: false, lastError: errorCode });
+    await repository.writeState({ isRunning: false, lastError: errorCode });
     throw err;
   }
 }
@@ -401,35 +347,17 @@ interface LiveRow {
   createdAt: Date;
 }
 
-async function loadLiveRows(from?: string, to?: string): Promise<LiveRow[]> {
+async function loadLiveRows(
+  from?: string,
+  to?: string,
+  repository: LiveTransferRepository = liveTransferRepository,
+): Promise<LiveRow[]> {
   const { fromDate, toDate } = parseRange(from, to);
-  const rows = await db
-    .select({
-      id: phoneCallsTable.id,
-      participant: phoneCallsTable.participant,
-      lineName: phoneCallsTable.lineName,
-      agentName: phoneCallsTable.agentName,
-      durationSeconds: phoneCallsTable.durationSeconds,
-      createdAt: phoneCallsTable.createdAt,
-      kind: liveTransferClassificationsTable.kind,
-      company: liveTransferClassificationsTable.company,
-      agent: liveTransferClassificationsTable.agent,
-      evidence: liveTransferClassificationsTable.evidence,
-    })
-    .from(phoneCallsTable)
-    .innerJoin(
-      liveTransferClassificationsTable,
-      eq(liveTransferClassificationsTable.callId, phoneCallsTable.id),
-    )
-    .where(
-      and(
-        eq(liveTransferClassificationsTable.isLive, true),
-        scopeFilter(),
-        gte(phoneCallsTable.createdAt, fromDate),
-        lte(phoneCallsTable.createdAt, toDate),
-      ),
-    )
-    .orderBy(phoneCallsTable.createdAt);
+  const rows = await repository.loadRows({
+    lineId: RETENTION_MAIN_LINE_ID,
+    fromDate,
+    toDate,
+  });
 
   return rows.map((c) => ({
     dateLa: new Date(c.createdAt).toLocaleString("en-US", { timeZone: TZ }),
@@ -446,41 +374,24 @@ async function loadLiveRows(from?: string, to?: string): Promise<LiveRow[]> {
   }));
 }
 
-export async function getLiveTransferStatus(from?: string, to?: string) {
-  const { fromDate, toDate } = parseRange(from, to);
-  const inRange = and(
-    gte(phoneCallsTable.createdAt, fromDate),
-    lte(phoneCallsTable.createdAt, toDate),
-  );
-
-  const [{ totalIncoming }] = await db
-    .select({ totalIncoming: sql<number>`cast(count(*) as int)` })
-    .from(phoneCallsTable)
-    .where(
-      and(
-        eq(phoneCallsTable.direction, "incoming"),
-        eq(phoneCallsTable.status, "completed"),
-        gte(phoneCallsTable.durationSeconds, MIN_SECONDS),
-        scopeFilter(),
-        inRange,
-      ),
-    );
-
-  const byKindCompany = await db
-    .select({
-      kind: liveTransferClassificationsTable.kind,
-      company: liveTransferClassificationsTable.company,
-      cnt: sql<number>`cast(count(*) as int)`,
-    })
-    .from(liveTransferClassificationsTable)
-    .innerJoin(phoneCallsTable, eq(phoneCallsTable.id, liveTransferClassificationsTable.callId))
-    .where(and(eq(liveTransferClassificationsTable.isLive, true), scopeFilter(), inRange))
-    .groupBy(liveTransferClassificationsTable.kind, liveTransferClassificationsTable.company);
-
-  const summary = summarizeLiveTransferCounts(byKindCompany);
-  const [state, activeJob] = await Promise.all([
-    readState(),
+export async function getLiveTransferStatus(
+  from?: string,
+  to?: string,
+  repository: LiveTransferRepository = liveTransferRepository,
+  findActiveJob: () => Promise<unknown> = () =>
     postgresBackgroundJobStore.findActive("live_transfer_refresh"),
+) {
+  const { fromDate, toDate } = parseRange(from, to);
+  const status = await repository.loadStatus({
+    lineId: RETENTION_MAIN_LINE_ID,
+    minimumSeconds: MIN_SECONDS,
+    fromDate,
+    toDate,
+  });
+  const summary = summarizeLiveTransferCounts(status.byKindCompany);
+  const [state, activeJob] = await Promise.all([
+    repository.readState(),
+    findActiveJob(),
   ]);
 
   return {
@@ -488,7 +399,7 @@ export async function getLiveTransferStatus(from?: string, to?: string) {
     lastRunAt: state?.lastRunAt ?? null,
     progressDone: state?.progressDone ?? 0,
     progressTotal: state?.progressTotal ?? 0,
-    totalIncoming: Number(totalIncoming) || 0,
+    totalIncoming: status.totalIncoming,
     ...summary,
   };
 }
@@ -531,8 +442,12 @@ export async function requestLiveTransferRefresh(userId: number): Promise<LiveTr
   }
 }
 
-export async function buildLiveTransferWorkbook(from?: string, to?: string): Promise<ExcelJS.Workbook> {
-  return buildWorkbook(await loadLiveRows(from, to));
+export async function buildLiveTransferWorkbook(
+  from?: string,
+  to?: string,
+  repository: LiveTransferRepository = liveTransferRepository,
+): Promise<ExcelJS.Workbook> {
+  return buildWorkbook(await loadLiveRows(from, to, repository));
 }
 
 // ─── Workbook ─────────────────────────────────────────────────────────────────

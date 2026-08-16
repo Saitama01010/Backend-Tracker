@@ -236,10 +236,11 @@ test("onboarding reporting delegates PostgreSQL and provider work through accept
   assert.match(backgroundHandlers, /modules\/onboarding\/report\.js/);
 });
 
-test("live-transfer reporting keeps HTTP concerns out of its application module", async () => {
-  const [route, service, backgroundHandlers] = await Promise.all([
+test("live-transfer reporting delegates PostgreSQL work through its repository boundary", async () => {
+  const [route, service, repository, backgroundHandlers] = await Promise.all([
     source("routes/liveTransfers.ts"),
     source("modules/transfers/liveTransfers.ts"),
+    source("modules/transfers/liveTransfers.repository.ts"),
     source("lib/backgroundJobHandlers.ts"),
   ]);
   for (const operation of [
@@ -253,6 +254,13 @@ test("live-transfer reporting keeps HTTP concerns out of its application module"
   assert.doesNotMatch(route, /\bfetch\s*\(/);
   assert.doesNotMatch(service, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
   assert.doesNotMatch(service, /router\.(?:get|post|put|patch|delete)\(/);
+  assert.doesNotMatch(
+    service,
+    /@workspace\/db|drizzle-orm|\bdb\.|phoneCallsTable|liveTransferClassificationsTable|liveTransferStateTable/,
+  );
+  assert.match(service, /liveTransfers\.repository\.js/);
+  assert.match(repository, /@workspace\/db/);
+  assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(|integrations\//);
   assert.match(backgroundHandlers, /modules\/transfers\/liveTransfers\.js/);
 });
 
