@@ -1,4 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+process.env["PHASE2_PROVIDER_COUNTS_FILE"] ??= path.join(tmpdir(), `backend-tracker-phase2-provider-counts-${process.pid}.json`);
 
 export default defineConfig({
   testDir: "./tests/full-stack",

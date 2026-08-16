@@ -301,7 +301,10 @@ test("server routes contain no process-local scheduler or post-response job laun
 });
 
 test("Quo live state stays lightweight while provider refresh remains request-driven and coalesced", async () => {
-  const quo = await readFile(new URL("../routes/quo.ts", import.meta.url), "utf8");
+  const [quo, quoClient] = await Promise.all([
+    readFile(new URL("../routes/quo.ts", import.meta.url), "utf8"),
+    readFile(new URL("../integrations/quo/client.ts", import.meta.url), "utf8"),
+  ]);
   const liveHandler = quo.slice(
     quo.indexOf("export async function optimizedQuoLiveHandler"),
     quo.indexOf('router.get("/quo/live", optimizedQuoLiveHandler)'),
@@ -313,13 +316,14 @@ test("Quo live state stays lightweight while provider refresh remains request-dr
 
   assert.match(quo, /LIVE_POLL_TTL_MS = 45_000/);
   assert.match(quo, /LIVE_POLL_LEASE_MS = 105_000/);
-  assert.match(quo, /QUO_MIN_REQUEST_INTERVAL_MS = 400/);
-  assert.match(quo, /QUO_MAX_RATE_LIMIT_RETRIES = 4/);
-  assert.match(quo, /res\.status === 429/);
-  assert.match(quo, /Date\.parse\(retryAfter\)/);
+  assert.match(quoClient, /QUO_MIN_REQUEST_INTERVAL_MS = 400/);
+  assert.match(quoClient, /QUO_MAX_RATE_LIMIT_RETRIES = 4/);
+  assert.match(quoClient, /response\.status === 429/);
+  assert.match(quoClient, /Date\.parse\(retryAfter\)/);
   assert.match(quo, /const limit = 2/);
-  assert.match(quo, /&participants=\$\{encodeURIComponent\(participant\)\}/);
-  assert.doesNotMatch(quo, /participants\[\]/);
+  assert.match(quo, /fetchQuoConversationCalls\(/);
+  assert.match(quoClient, /&participants=\$\{encodeURIComponent\(participant\)\}/);
+  assert.doesNotMatch(`${quo}\n${quoClient}`, /participants\[\]/);
   assert.match(quo, /recentCallFloor = new Date\(Date\.now\(\) - 4 \* 60 \* 60 \* 1000\)/);
   assert.match(quo, /buildQuoPhoneCallRow\(call, line, participant, userMap\)/);
   assert.match(quo, /upsertQuoPhoneCallRows\(completedRows, signal\)/);
@@ -331,7 +335,7 @@ test("Quo live state stays lightweight while provider refresh remains request-dr
   assert.doesNotMatch(liveHandler, /requestDrivenLivePoll\(\)/);
   assert.match(refreshRoute, /await requestDrivenLivePoll\(\)/);
   assert.doesNotMatch(refreshRoute, /scheduledJobKey\("integration_live_refresh"/);
-  assert.doesNotMatch(quo, /quoFetch<[^;]+>\([^;]+\)\.catch\(\(\) => \(\{ data: \[\]/s);
+  assert.doesNotMatch(quo, /fetchQuoJson<[^;]+>\([^;]+\)\.catch\(\(\) => \(\{ data: \[\]/s);
 });
 
 test("same-day Quo writes preserve the historical call classification", async () => {

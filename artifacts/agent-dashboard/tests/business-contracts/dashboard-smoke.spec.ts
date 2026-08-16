@@ -146,6 +146,14 @@ test("every accessible dashboard page renders populated fixture data, filters, r
   page.on("response", (response) => {
     if (response.url().includes("/api/") && response.status() >= 400) failedApi.push(`${response.status()} ${response.request().method()} ${new URL(response.url()).pathname}`);
   });
+  // The fixture verifies repository behavior, not Google Fonts availability.
+  // Keep its console-error gate deterministic and use the app's local fallback
+  // fonts instead of contacting the third-party stylesheet during the test.
+  await page.route("https://fonts.googleapis.com/**", (route) => route.fulfill({
+    status: 200,
+    contentType: "text/css",
+    body: "",
+  }));
   await installApiFixtures(page, failedApi);
   await login(page);
 
