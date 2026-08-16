@@ -1,15 +1,9 @@
 import { Router } from "express";
-import { db, phoneCallsTable, pbxMissedCallsTable } from "@workspace/db";
-import { and, eq, gte, inArray } from "drizzle-orm";
 import type { Logger } from "pino";
-import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import {
   approvedVosDebugPath,
 } from "../lib/externalIntegrationPolicy.js";
-import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
-import { manualJobKey } from "../lib/durableBackgroundJobs.js";
-import { OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 import {
   fetchPbxJson,
   type VosAgent,
@@ -39,6 +33,10 @@ import {
 } from "../modules/pbx/pbx.no-callback.service.js";
 import { nsfReadymodeService } from "../modules/nsf/nsf.readymode.service.js";
 import { pbxProviderService } from "../modules/pbx/pbx.provider.service.js";
+import {
+  pbxRefreshRepository,
+  type PbxRefreshMissedInsert,
+} from "../modules/pbx/pbx.refresh.repository.js";
 import {
   normalizePhone,
 } from "../modules/pbx/pbx.phone.js";
@@ -73,10 +71,6 @@ export {
 export { hydratePbxState as hydrateVosState } from "../modules/pbx/pbx.state.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-// Only these Quo/OpenPhone line names are team-shared lines.
-// Personal agent lines (e.g. "Rick Miller RT OB", "Jenny NSF") are excluded.
-const TEAM_QUO_LINES = [...OPERATIONAL_CONFIG.trackedTeamLines];
 
 // ─── Call history — background-refreshed cache ───────────────────────────────
 
@@ -296,7 +290,7 @@ export async function refreshCallHistory(
       agentToRingGroups,
       internalNumbers,
       persistentLineRingGroups: persistentLineRgMap,
-      blocklist: await getBlockedNumbers(),
+      blocklist: await pbxRefreshRepository.loadBlockedNumbers(),
     });
     options.signal?.throwIfAborted();
 
@@ -323,29 +317,8 @@ export async function refreshCallHistory(
     // Quo DB outbound calls — use a 36-hour window to cover any timezone offset between
     // the server (UTC) and the business's local time, ensuring no callbacks are missed.
     const window36h = new Date(Date.now() - 36 * 60 * 60 * 1000);
-    const [quoOutbound, quoInboundAnswered, persistedPbxMissed] = await Promise.all([
-      db
-        .select({ id: phoneCallsTable.id, participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
-        .from(phoneCallsTable)
-        .where(and(eq(phoneCallsTable.direction, "outgoing"), gte(phoneCallsTable.createdAt, window36h))),
-      // Inbound answered Quo calls: customer called us on OpenPhone and was handled.
-      db
-        .select({ id: phoneCallsTable.id, participant: phoneCallsTable.participant, createdAt: phoneCallsTable.createdAt })
-        .from(phoneCallsTable)
-        .where(and(eq(phoneCallsTable.direction, "incoming"), eq(phoneCallsTable.status, "completed"), gte(phoneCallsTable.createdAt, window36h))),
-      db
-        .select({
-          id: pbxMissedCallsTable.id,
-          fromNumber: pbxMissedCallsTable.fromNumber,
-          toNumber: pbxMissedCallsTable.toNumber,
-          createdAt: pbxMissedCallsTable.createdAt,
-          ringGroupId: pbxMissedCallsTable.ringGroupId,
-          ringGroupName: pbxMissedCallsTable.ringGroupName,
-          team: pbxMissedCallsTable.team,
-        })
-        .from(pbxMissedCallsTable)
-        .where(gte(pbxMissedCallsTable.createdAt, window36h)),
-    ]);
+    const { quoOutbound, quoInboundAnswered, persistedPbxMissed } =
+      await pbxRefreshRepository.loadCallbackRows(window36h);
 
     for (const row of quoOutbound) {
       addCallback(callbackTimes, row.participant, new Date(row.createdAt), row.id, "quo-outbound");
@@ -354,7 +327,7 @@ export async function refreshCallHistory(
       addCallback(callbackTimes, row.participant, new Date(row.createdAt), row.id, "quo-inbound");
     }
 
-    const blocklist = await getBlockedNumbers();
+    const blocklist = await pbxRefreshRepository.loadBlockedNumbers();
 
     // Determine which PBX missed calls had no callback after the missed call time.
     // Use both the current scan and persisted PBX missed rows so the page does not
@@ -370,27 +343,7 @@ export async function refreshCallHistory(
     );
 
     // Quo (OpenPhone) missed calls — reuse the same callbackTimes map already built above
-    const quoMissed = await db
-      .select({
-        id: phoneCallsTable.id,
-        participant: phoneCallsTable.participant,
-        lineId: phoneCallsTable.lineId,
-        lineTeam: phoneCallsTable.lineTeam,
-        lineName: phoneCallsTable.lineName,
-        status: phoneCallsTable.status,
-        durationSeconds: phoneCallsTable.durationSeconds,
-        ringDurationSeconds: phoneCallsTable.ringDurationSeconds,
-        createdAt: phoneCallsTable.createdAt,
-      })
-      .from(phoneCallsTable)
-      .where(
-        and(
-          eq(phoneCallsTable.direction, "incoming"),
-          inArray(phoneCallsTable.status, ["no-answer", "voicemail", "missed", "voicemail-brief"]),
-          gte(phoneCallsTable.createdAt, window36h),
-          inArray(phoneCallsTable.lineName, TEAM_QUO_LINES)
-        )
-      );
+    const quoMissed = await pbxRefreshRepository.loadQuoMissed(window36h);
 
     missedNoCB.push(...buildQuoMissedNoCallbackItems(
       quoMissed,
@@ -409,7 +362,7 @@ export async function refreshCallHistory(
     }
     // Merge new missed records into cumulative map, deduplicating by call ID.
     let newCount = 0;
-    const toUpsert: typeof pbxMissedCallsTable.$inferInsert[] = [];
+    const toUpsert: PbxRefreshMissedInsert[] = [];
     for (const rec of scanResult.missedRecords) {
       // Always queue for DB upsert — onConflictDoNothing handles dedup.
       toUpsert.push({
@@ -439,9 +392,7 @@ export async function refreshCallHistory(
     // Persist PBX missed calls so historical dates show correct PBX counts.
     if (toUpsert.length > 0) {
       options.signal?.throwIfAborted();
-      await db.insert(pbxMissedCallsTable)
-        .values(toUpsert)
-        .onConflictDoNothing();
+      await pbxRefreshRepository.upsertMissed(toUpsert);
     }
 
     // Merge NSF Readymode queue items (manual entries from Samia).
@@ -483,7 +434,7 @@ export async function refreshCallHistory(
         agentToRingGroups,
         internalNumbers,
         persistentLineRingGroups: persistentLineRgMap,
-        blocklist: await getBlockedNumbers(),
+        blocklist: await pbxRefreshRepository.loadBlockedNumbers(),
         maxPages: 100,
       });
       if (deep.missedRecords.length > 0) {
@@ -496,7 +447,7 @@ export async function refreshCallHistory(
           team: teamFromRingGroupName(rec.ringGroupName),
           createdAt: new Date(rec.createdAt),
         }));
-        await db.insert(pbxMissedCallsTable).values(rows).onConflictDoNothing();
+        await pbxRefreshRepository.upsertMissed(rows);
       }
       log?.info({ scanned: deep.missedRecords.length }, "vos: durable PBX backfill complete");
     }
@@ -512,13 +463,7 @@ export async function refreshCallHistory(
 
 router.post("/vos/refresh", requireRole("admin"), async (req, res) => {
   try {
-    await postgresBackgroundJobStore.enqueue({
-      jobType: "integration_live_refresh",
-      idempotencyKey: manualJobKey("integration_live_refresh", req.user!.userId, new Date(), 5_000),
-      requestedByUserId: req.user!.userId,
-      priority: 100,
-      maxAttempts: 4,
-    });
+    await pbxRefreshRepository.enqueueManualRefresh(req.user!.userId, new Date());
     res.json({ ok: true });
   } catch (error) {
     req.log.error(error, "PBX refresh enqueue failed");
