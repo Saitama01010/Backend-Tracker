@@ -42,9 +42,18 @@ It disables trace/video/screenshots and writes only normalized hashes, boolean c
 
 ### 4. Direct versus inventory-only endpoint coverage
 
-The generated `phase-1-endpoint-coverage-matrix.md` inventories all 99 declared Express endpoints. At generation time, 52 have direct Phase 1 behavior/HTTP protection, 40 are explicitly inventory-only beyond centralized authorization, and all 7 Samia endpoints are excluded from business-behavior hardening while retaining direct authorization protection.
+The generated `phase-1-endpoint-coverage-matrix.md` inventories all 99 declared Express endpoints. The acceptance review found 37 inventory-only endpoints in the requested critical categories:
 
-All number-producing endpoints are called against the real Express application, all four XLSX routes are downloaded and validated as workbooks at the HTTP boundary, all five authentication routes have direct integration/browser protection, all three import routes have direct authorization-boundary protection without performing a live write, and all user/roster access-control routes have direct integration plus authorization protection. Inventory-only rows state that they do not have response-body regression coverage; they are not represented as direct business coverage.
+- 10 attendance/break endpoints enforcing permission, date, team, or agent scope.
+- 3 Google-backed endpoints: the legacy CSV proxy and both violation-verification methods.
+- 12 background-job, refresh, or QA-processing endpoints affecting visible dashboard freshness.
+- 6 ReadyMode and NSF ReadyMode queue endpoints.
+- 3 QUO refresh/sync endpoints.
+- 3 PBX refresh/diagnostic endpoints.
+
+None of these 37 had an existing direct real-Express response assertion strong enough to justify reclassification on its own. Each received a focused HTTP test in `dashboard-full-stack.spec.ts`: 35 private endpoints assert the stable unauthenticated `401` envelope, and the 2 public cron endpoints assert the sanitized `503` response when `CRON_SECRET` is not configured. Their matrix rows are now classified as direct HTTP authorization or secret-boundary integration coverage. Existing provider, scheduler, database, calculation, and authorization tests remain cited alongside that new route-level protection.
+
+No inventory-only authentication/session, export, or standalone number-producing dashboard endpoint was found. The only remaining inventory-only rows are the three blocked-number administration routes, which are outside the requested critical categories. Therefore no critical endpoint remains inventory-only without a technical justification. The matrix now reports 89 endpoints with direct Phase 1 behavior/HTTP protection, 3 inventory-only endpoints, and 7 deliberate Samia business-behavior exclusions.
 
 ### 5. Performance metrics enforced by CI
 
