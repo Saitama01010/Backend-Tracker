@@ -7,6 +7,10 @@ export type PbxHourlyQuery = {
   mode: PbxMissedMode;
 };
 
+export type PbxDailyQuery = {
+  mode: PbxMissedMode;
+};
+
 export function parsePbxHourlyQuery(
   query: Record<string, unknown>,
   now = new Date(),
@@ -23,4 +27,8 @@ export function parsePbxHourlyQuery(
       mode: query["mode"] === "numbers" ? "numbers" : "times",
     },
   };
+}
+
+export function parsePbxDailyQuery(query: Record<string, unknown>): PbxDailyQuery {
+  return { mode: query["mode"] === "numbers" ? "numbers" : "times" };
 }

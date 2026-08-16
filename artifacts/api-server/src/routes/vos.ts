@@ -33,7 +33,7 @@ import type {
   RetentionPbxCallHistoryStat,
   RetentionPbxRingGroupMissed,
 } from "../modules/retention/retention.pbx.types.js";
-import { parsePbxHourlyQuery } from "../modules/pbx/pbx.schemas.js";
+import { parsePbxDailyQuery, parsePbxHourlyQuery } from "../modules/pbx/pbx.schemas.js";
 import { pbxMissedReportingService } from "../modules/pbx/pbx.missed.service.js";
 
 const router = Router();
@@ -1189,136 +1189,12 @@ router.get("/vos/missed-hourly", async (req, res) => {
 
 router.get("/vos/missed-daily", async (req, res) => {
   try {
-    const window14d = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
-    const mode = req.query["mode"] === "numbers" ? "numbers" : "times";
-
-    // Quo: daily missed counts — shared team lines only, excluding internal callers
-    const teamLinesInList = sql.join(TEAM_QUO_LINES.map((l) => sql`${l}`), sql`, `);
-    const internalExclude = cachedInternalNumbers.length > 0
-      ? sql`AND participant NOT IN (${sql.join(cachedInternalNumbers.map(n => sql`${n}`), sql`, `)})`
-      : sql``;
-    const quoCountExpr = mode === "numbers" ? sql`COUNT(DISTINCT participant)::int` : sql`COUNT(*)::int`;
-    const rows = await db.execute(sql`
-      SELECT
-        (created_at AT TIME ZONE 'America/Los_Angeles')::date AS day,
-        line_team,
-        ${quoCountExpr} AS cnt
-      FROM phone_calls
-      WHERE direction = 'incoming'
-        AND status IN ('no-answer', 'voicemail', 'missed', 'voicemail-brief')
-        AND line_name IN (${teamLinesInList})
-        AND created_at >= ${window14d}
-        AND participant ~ '^[^a-zA-Z]+$'
-        AND EXTRACT(hour FROM (created_at AT TIME ZONE 'America/Los_Angeles')) >= 8
-        AND EXTRACT(hour FROM (created_at AT TIME ZONE 'America/Los_Angeles')) < 20
-        ${internalExclude}
-      GROUP BY day, line_team
-      ORDER BY day DESC, line_team
-    `);
-
-    const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-
-    // PBX: query persisted missed calls grouped by LA date + team
-    const pbxCountExpr = mode === "numbers" ? sql`COUNT(DISTINCT from_number)::int` : sql`COUNT(*)::int`;
-    const pbxRows = await db.execute(sql`
-      SELECT
-        (created_at AT TIME ZONE 'America/Los_Angeles')::date AS day,
-        team,
-        ${pbxCountExpr} AS cnt
-      FROM pbx_missed_calls
-      WHERE created_at >= ${window14d}
-        AND team IN ('retention', 'cs', 'nsf')
-        AND EXTRACT(hour FROM (created_at AT TIME ZONE 'America/Los_Angeles')) >= 8
-        AND EXTRACT(hour FROM (created_at AT TIME ZONE 'America/Los_Angeles')) < 20
-      GROUP BY day, team
-      ORDER BY day DESC, team
-    `);
-
-    // PBX today supplement: use live in-memory cache only in "times" mode
-    // (in "numbers" mode the DB query above already covers today with DISTINCT)
-    const pbxTodayByTeam: Record<string, number> = {};
-    if (mode === "times") {
-      for (const [rgId, count] of Object.entries(ringGroupMissedCache)) {
-        const name = ringGroupNameCache.get(Number(rgId)) ?? "";
-        const team = teamFromRingGroupName(name);
-        if (team !== "other") pbxTodayByTeam[team] = (pbxTodayByTeam[team] ?? 0) + count;
-      }
-    }
-
-    // Ghost counts (Quo missed calls that rang ≤2 seconds)
-    const ghostRows = await db.execute(sql`
-      SELECT
-        (created_at AT TIME ZONE 'America/Los_Angeles')::date AS day,
-        line_team,
-        COUNT(*)::int AS cnt
-      FROM phone_calls
-      WHERE direction = 'incoming'
-        AND status IN ('no-answer', 'voicemail-brief', 'voicemail', 'missed')
-        AND (
-          (ring_duration_seconds IS NOT NULL AND ring_duration_seconds <= 2)
-          OR (ring_duration_seconds IS NULL AND duration_seconds = 0 AND status = 'no-answer')
-          OR (ring_duration_seconds IS NULL AND duration_seconds <= 4 AND status = 'voicemail-brief')
-        )
-        AND line_name IN (${teamLinesInList})
-        AND created_at >= ${window14d}
-        AND participant ~ '^[^a-zA-Z]+$'
-        AND EXTRACT(hour FROM (created_at AT TIME ZONE 'America/Los_Angeles')) >= 8
-        AND EXTRACT(hour FROM (created_at AT TIME ZONE 'America/Los_Angeles')) < 20
-        ${internalExclude}
-      GROUP BY day, line_team
-      ORDER BY day DESC, line_team
-    `);
-
-    // Merge Quo rows into a map keyed by date
-    type TeamDay = { retention: { quo: number; ghost: number; pbx: number }; cs: { quo: number; ghost: number; pbx: number }; nsf: { quo: number; ghost: number; pbx: number } };
-    const dayMap = new Map<string, TeamDay>();
-
-    const getDay = (d: string): TeamDay => {
-      if (!dayMap.has(d)) dayMap.set(d, {
-        retention: { quo: 0, ghost: 0, pbx: 0 },
-        cs: { quo: 0, ghost: 0, pbx: 0 },
-        nsf: { quo: 0, ghost: 0, pbx: 0 },
-      });
-      return dayMap.get(d)!;
-    };
-
-    for (const r of rows.rows as { day: unknown; line_team: string; cnt: number }[]) {
-      const dateStr = r.day instanceof Date ? r.day.toISOString().split("T")[0] : String(r.day);
-      const d = getDay(dateStr);
-      const team = r.line_team as "retention" | "cs" | "nsf";
-      if (team === "retention" || team === "cs" || team === "nsf") d[team].quo += r.cnt;
-    }
-
-    // Merge ghost counts
-    for (const r of ghostRows.rows as { day: unknown; line_team: string; cnt: number }[]) {
-      const dateStr = r.day instanceof Date ? r.day.toISOString().split("T")[0] : String(r.day);
-      const d = getDay(dateStr);
-      const team = r.line_team as "retention" | "cs" | "nsf";
-      if (team === "retention" || team === "cs" || team === "nsf") d[team].ghost += r.cnt;
-    }
-
-    // Merge PBX rows from DB
-    for (const r of pbxRows.rows as { day: unknown; team: string; cnt: number }[]) {
-      const dateStr = r.day instanceof Date ? r.day.toISOString().split("T")[0] : String(r.day);
-      const d = getDay(dateStr);
-      const team = r.team as "retention" | "cs" | "nsf";
-      if (team === "retention" || team === "cs" || team === "nsf") d[team].pbx += r.cnt;
-    }
-
-    // For today in times mode, use the max of DB count and live cache (live is more current)
-    if (mode === "times" && Object.keys(pbxTodayByTeam).length > 0) {
-      const d = getDay(todayStr);
-      for (const team of ["retention", "cs", "nsf"] as const) {
-        const live = pbxTodayByTeam[team] ?? 0;
-        if (live > d[team].pbx) d[team].pbx = live;
-      }
-    }
-
-    const days = Array.from(dayMap.entries())
-      .sort((a, b) => b[0].localeCompare(a[0]))
-      .map(([date, t]) => ({ date, ...t }));
-
-    res.json({ days });
+    res.json(await pbxMissedReportingService.getDaily({
+      query: parsePbxDailyQuery(req.query),
+      internalNumbers: cachedInternalNumbers,
+      liveRingGroupMissed: ringGroupMissedCache,
+      ringGroupNames: ringGroupNameCache,
+    }));
   } catch (err) {
     req.log.error(err, "vos missed-daily error");
     res.status(500).json({ error: "PBX daily report is temporarily unavailable." });
