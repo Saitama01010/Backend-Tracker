@@ -202,10 +202,11 @@ test("onboarding analytics delegates PostgreSQL work through its repository boun
   assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(|integrations\//);
 });
 
-test("onboarding reporting keeps HTTP concerns out of its application module", async () => {
-  const [route, report, backgroundHandlers] = await Promise.all([
+test("onboarding reporting delegates PostgreSQL work through its repository boundary", async () => {
+  const [route, report, repository, backgroundHandlers] = await Promise.all([
     source("routes/obReport.ts"),
     source("modules/onboarding/report.ts"),
+    source("modules/onboarding/onboarding.report.repository.ts"),
     source("lib/backgroundJobHandlers.ts"),
   ]);
   for (const operation of [
@@ -219,6 +220,13 @@ test("onboarding reporting keeps HTTP concerns out of its application module", a
   assert.doesNotMatch(route, /@workspace\/db|drizzle-orm|ExcelJS|@anthropic-ai/);
   assert.doesNotMatch(report, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
   assert.doesNotMatch(report, /router\.(?:get|post|put|patch|delete)\(/);
+  assert.doesNotMatch(
+    report,
+    /@workspace\/db|drizzle-orm|\bdb\.|phoneCallsTable|onboardingClassificationsTable|onboardingReportStateTable/,
+  );
+  assert.match(report, /onboarding\.report\.repository\.js/);
+  assert.match(repository, /@workspace\/db/);
+  assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(|integrations\//);
   assert.match(backgroundHandlers, /modules\/onboarding\/report\.js/);
 });
 

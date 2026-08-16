@@ -1,6 +1,4 @@
 import ExcelJS from "exceljs";
-import { db, phoneCallsTable, onboardingClassificationsTable, onboardingReportStateTable } from "@workspace/db";
-import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { runSync } from "../../integrations/quo/sync.js";
 import { logger } from "../../lib/logger.js";
 import {
@@ -22,6 +20,13 @@ import {
   fetchQuoTranscript as fetchTranscript,
   type QuoDialogueLine as DialogueLine,
 } from "../../integrations/quo/transcripts.js";
+import {
+  onboardingReportRepository,
+  type OnboardingClassificationImportRow,
+  type OnboardingReportRepository,
+} from "./onboarding.report.repository.js";
+
+export type { OnboardingClassificationImportRow } from "./onboarding.report.repository.js";
 
 // ─── Onboarding line constants ────────────────────────────────────────────────
 const LINE_ID = OPERATIONAL_CONFIG.lineIds.onboarding;
@@ -158,34 +163,15 @@ async function classify(
   }
 }
 
-// ─── State helpers ────────────────────────────────────────────────────────────
-async function readState() {
-  const rows = await db.select().from(onboardingReportStateTable).where(eq(onboardingReportStateTable.id, "singleton"));
-  return rows[0] ?? null;
-}
-
-async function writeState(patch: {
-  isRunning?: boolean;
-  progressDone?: number;
-  progressTotal?: number;
-  lastRunAt?: Date | null;
-  lastError?: string | null;
-}) {
-  await db
-    .insert(onboardingReportStateTable)
-    .values({ id: "singleton", ...patch, updatedAt: new Date() })
-    .onConflictDoUpdate({
-      target: onboardingReportStateTable.id,
-      set: { ...patch, updatedAt: new Date() },
-    });
-}
-
 // ─── Main refresh job ─────────────────────────────────────────────────────────
-export async function runOnboardingReportRefresh(signal?: AbortSignal): Promise<void> {
+export async function runOnboardingReportRefresh(
+  signal?: AbortSignal,
+  repository: OnboardingReportRepository = onboardingReportRepository,
+): Promise<void> {
   try {
     await withDatabaseLease("outbound_call_classifier", async () => {
       signal?.throwIfAborted();
-      await writeState({ isRunning: true, lastError: null, progressDone: 0, progressTotal: 0 });
+      await repository.writeState({ isRunning: true, lastError: null, progressDone: 0, progressTotal: 0 });
       logger.info("obReport: refresh started");
 
     // 1) Pull the newest calls (extend the range up to today). The background
@@ -204,23 +190,9 @@ export async function runOnboardingReportRefresh(signal?: AbortSignal): Promise<
     }
 
     // 2) Find completed calls on the onboarding line that aren't classified yet.
-    const pending = await db
-      .select({
-        id: phoneCallsTable.id,
-        agentName: phoneCallsTable.agentName,
-        direction: phoneCallsTable.direction,
-      })
-      .from(phoneCallsTable)
-      .leftJoin(onboardingClassificationsTable, eq(onboardingClassificationsTable.callId, phoneCallsTable.id))
-      .where(
-        and(
-          eq(phoneCallsTable.lineId, LINE_ID),
-          eq(phoneCallsTable.status, "completed"),
-          sql`${onboardingClassificationsTable.callId} IS NULL`,
-        ),
-      );
+    const pending = await repository.listPending(LINE_ID);
 
-    await writeState({ progressTotal: pending.length, progressDone: 0 });
+    await repository.writeState({ progressTotal: pending.length, progressDone: 0 });
     logger.info({ pending: pending.length }, "obReport: classifying new calls");
 
     let done = 0;
@@ -238,9 +210,7 @@ export async function runOnboardingReportRefresh(signal?: AbortSignal): Promise<
             // unclassified means the next refresh will retry it.
             logger.warn({ callId: call.id }, "obReport: transcript fetch failed, will retry next refresh");
           } else if (tx.kind === "notfound" || tx.dialogue.length === 0) {
-            await db
-              .insert(onboardingClassificationsTable)
-              .values({
+            await repository.insertClassification({
                 callId: call.id,
                 callType: "no_transcript",
                 customerName: null,
@@ -248,8 +218,7 @@ export async function runOnboardingReportRefresh(signal?: AbortSignal): Promise<
                 mentionsTax: null,
                 txStatus: tx.kind === "notfound" ? "notfound" : tx.status,
                 notes: "",
-              })
-              .onConflictDoNothing();
+              });
           } else {
             const transcript = buildTranscript(tx.dialogue);
             const mentionsTax = TAX_RE.test(transcript);
@@ -259,7 +228,7 @@ export async function runOnboardingReportRefresh(signal?: AbortSignal): Promise<
               // permanently storing a wrong "error" classification.
               logger.warn({ callId: call.id }, "obReport: classify failed, will retry next refresh");
             } else if (attempt.status === "permanent_error") {
-              await db.insert(onboardingClassificationsTable).values({
+              await repository.insertClassification({
                 callId: call.id,
                 callType: "error",
                 customerName: null,
@@ -267,12 +236,10 @@ export async function runOnboardingReportRefresh(signal?: AbortSignal): Promise<
                 mentionsTax,
                 txStatus: "ai_error",
                 notes: "Permanent Claude or schema error; review required",
-              }).onConflictDoNothing();
+              });
             } else {
               const res = attempt.value;
-              await db
-                .insert(onboardingClassificationsTable)
-                .values({
+              await repository.insertClassification({
                   callId: call.id,
                   callType: res.callType,
                   customerName: res.customerName ?? null,
@@ -280,8 +247,7 @@ export async function runOnboardingReportRefresh(signal?: AbortSignal): Promise<
                   mentionsTax,
                   txStatus: "completed",
                   notes: res.notes ?? "",
-                })
-                .onConflictDoNothing();
+                });
             }
           }
         } catch (err) {
@@ -289,20 +255,20 @@ export async function runOnboardingReportRefresh(signal?: AbortSignal): Promise<
         }
         done++;
         if (done % 10 === 0 || done === pending.length) {
-          await writeState({ progressDone: done });
+          await repository.writeState({ progressDone: done });
         }
       }
     }
 
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(1, pending.length)) }, worker));
 
-    await writeState({ isRunning: false, lastRunAt: new Date(), progressDone: pending.length, lastError: null });
+    await repository.writeState({ isRunning: false, lastRunAt: new Date(), progressDone: pending.length, lastError: null });
     logger.info({ classified: pending.length }, "obReport: refresh done");
     });
   } catch (err) {
     const errorCode = sanitizedErrorMessage(err);
     logger.error({ errorCode }, "obReport: refresh failed");
-    await writeState({ isRunning: false, lastError: errorCode });
+    await repository.writeState({ isRunning: false, lastError: errorCode });
     throw err;
   }
 }
@@ -331,32 +297,13 @@ interface ReportRow {
   callId: string;
 }
 
-async function loadReportRows(from?: string, to?: string): Promise<ReportRow[]> {
+async function loadReportRows(
+  from?: string,
+  to?: string,
+  repository: OnboardingReportRepository = onboardingReportRepository,
+): Promise<ReportRow[]> {
   const { fromDate, toDate } = parseRange(from, to);
-  const rows = await db
-    .select({
-      id: phoneCallsTable.id,
-      participant: phoneCallsTable.participant,
-      agentName: phoneCallsTable.agentName,
-      direction: phoneCallsTable.direction,
-      status: phoneCallsTable.status,
-      durationSeconds: phoneCallsTable.durationSeconds,
-      createdAt: phoneCallsTable.createdAt,
-      callType: onboardingClassificationsTable.callType,
-      customerName: onboardingClassificationsTable.customerName,
-      closerAgent: onboardingClassificationsTable.closerAgent,
-      mentionsTax: onboardingClassificationsTable.mentionsTax,
-    })
-    .from(phoneCallsTable)
-    .leftJoin(onboardingClassificationsTable, eq(onboardingClassificationsTable.callId, phoneCallsTable.id))
-    .where(
-      and(
-        eq(phoneCallsTable.lineId, LINE_ID),
-        gte(phoneCallsTable.createdAt, fromDate),
-        lte(phoneCallsTable.createdAt, toDate),
-      ),
-    )
-    .orderBy(phoneCallsTable.createdAt);
+  const rows = await repository.loadReportRows({ lineId: LINE_ID, fromDate, toDate });
 
   return rows.map((c) => ({
     dateLa: new Date(c.createdAt).toLocaleString("en-US", { timeZone: "America/Los_Angeles" }),
@@ -629,39 +576,23 @@ export async function requestOnboardingReportRefresh(
   }
 }
 
-export async function getOnboardingReportStatus(from?: string, to?: string) {
+export async function getOnboardingReportStatus(
+  from?: string,
+  to?: string,
+  repository: OnboardingReportRepository = onboardingReportRepository,
+) {
   const [state, activeJob] = await Promise.all([
-    readState(),
+    repository.readState(),
     postgresBackgroundJobStore.findActive("onboarding_report_refresh"),
   ]);
   const { fromDate, toDate } = parseRange(from, to);
-  const rangeWhere = and(
-    eq(phoneCallsTable.lineId, LINE_ID),
-    gte(phoneCallsTable.createdAt, fromDate),
-    lte(phoneCallsTable.createdAt, toDate),
-  );
-  const counts = await db
-    .select({ callType: onboardingClassificationsTable.callType, n: sql<number>`count(*)::int` })
-    .from(onboardingClassificationsTable)
-    .innerJoin(phoneCallsTable, eq(phoneCallsTable.id, onboardingClassificationsTable.callId))
-    .where(rangeWhere)
-    .groupBy(onboardingClassificationsTable.callType);
-  const tax = await db
-    .select({ mentionsTax: onboardingClassificationsTable.mentionsTax, n: sql<number>`count(*)::int` })
-    .from(onboardingClassificationsTable)
-    .innerJoin(phoneCallsTable, eq(phoneCallsTable.id, onboardingClassificationsTable.callId))
-    .where(rangeWhere)
-    .groupBy(onboardingClassificationsTable.mentionsTax);
-  const totalCallsRow = await db
-    .select({ n: sql<number>`count(*)::int` })
-    .from(phoneCallsTable)
-    .where(rangeWhere);
+  const counts = await repository.loadCounts({ lineId: LINE_ID, fromDate, toDate });
 
   const typeCounts: Record<string, number> = {};
-  for (const count of counts) typeCounts[count.callType] = count.n;
+  for (const count of counts.typeCounts) typeCounts[count.callType] = count.n;
   let taxYes = 0;
   let taxNo = 0;
-  for (const item of tax) {
+  for (const item of counts.taxCounts) {
     if (item.mentionsTax === true) taxYes = item.n;
     else if (item.mentionsTax === false) taxNo = item.n;
   }
@@ -672,7 +603,7 @@ export async function getOnboardingReportStatus(from?: string, to?: string) {
     progressTotal: state?.progressTotal ?? 0,
     lastRunAt: state?.lastRunAt ?? null,
     lastError: state?.lastError ?? null,
-    totalCalls: totalCallsRow[0]?.n ?? 0,
+    totalCalls: counts.totalCalls,
     classified: Object.values(typeCounts).reduce((sum, count) => sum + count, 0),
     typeCounts,
     taxYes,
@@ -680,32 +611,18 @@ export async function getOnboardingReportStatus(from?: string, to?: string) {
   };
 }
 
-export async function buildOnboardingReportWorkbook(from?: string, to?: string): Promise<ExcelJS.Workbook> {
-  return buildWorkbook(await loadReportRows(from, to));
-}
-
-export interface OnboardingClassificationImportRow {
-  callId: string;
-  callType: string;
-  customerName?: string | null;
-  closerAgent?: string | null;
-  mentionsTax?: boolean | null;
-  txStatus?: string | null;
-  notes?: string | null;
+export async function buildOnboardingReportWorkbook(
+  from?: string,
+  to?: string,
+  repository: OnboardingReportRepository = onboardingReportRepository,
+): Promise<ExcelJS.Workbook> {
+  return buildWorkbook(await loadReportRows(from, to, repository));
 }
 
 export async function importOnboardingClassifications(
   values: readonly OnboardingClassificationImportRow[],
+  repository: OnboardingReportRepository = onboardingReportRepository,
 ): Promise<{ received: number; total: number }> {
-  const chunkSize = 500;
-  for (let index = 0; index < values.length; index += chunkSize) {
-    await db
-      .insert(onboardingClassificationsTable)
-      .values(values.slice(index, index + chunkSize))
-      .onConflictDoNothing();
-  }
-  const total = await db
-    .select({ n: sql<number>`count(*)::int` })
-    .from(onboardingClassificationsTable);
-  return { received: values.length, total: total[0]?.n ?? 0 };
+  const total = await repository.importClassifications(values);
+  return { received: values.length, total };
 }
