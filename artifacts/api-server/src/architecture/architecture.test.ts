@@ -65,12 +65,12 @@ test("middleware and application startup have one canonical owner", async () => 
 });
 
 test("Quo provider operations with established boundaries stay out of HTTP routes", async () => {
-  const [onboardingProvider, liveTransfers, backgroundHandlers] = await Promise.all([
+  const [onboardingProvider, liveTransferProvider, backgroundHandlers] = await Promise.all([
     source("modules/onboarding/onboarding.report.provider.ts"),
-    source("modules/transfers/liveTransfers.ts"),
+    source("modules/transfers/liveTransfers.provider.ts"),
     source("lib/backgroundJobHandlers.ts"),
   ]);
-  for (const applicationSource of [onboardingProvider, liveTransfers]) {
+  for (const applicationSource of [onboardingProvider, liveTransferProvider]) {
     assert.match(applicationSource, /integrations\/quo\/transcripts\.js/);
     assert.doesNotMatch(applicationSource, /call-transcripts/);
   }
@@ -236,11 +236,12 @@ test("onboarding reporting delegates PostgreSQL and provider work through accept
   assert.match(backgroundHandlers, /modules\/onboarding\/report\.js/);
 });
 
-test("live-transfer reporting delegates PostgreSQL work through its repository boundary", async () => {
-  const [route, service, repository, backgroundHandlers] = await Promise.all([
+test("live-transfer reporting delegates PostgreSQL and provider work through accepted boundaries", async () => {
+  const [route, service, repository, provider, backgroundHandlers] = await Promise.all([
     source("routes/liveTransfers.ts"),
     source("modules/transfers/liveTransfers.ts"),
     source("modules/transfers/liveTransfers.repository.ts"),
+    source("modules/transfers/liveTransfers.provider.ts"),
     source("lib/backgroundJobHandlers.ts"),
   ]);
   for (const operation of [
@@ -259,8 +260,13 @@ test("live-transfer reporting delegates PostgreSQL work through its repository b
     /@workspace\/db|drizzle-orm|\bdb\.|phoneCallsTable|liveTransferClassificationsTable|liveTransferStateTable/,
   );
   assert.match(service, /liveTransfers\.repository\.js/);
+  assert.match(service, /liveTransfers\.provider\.js/);
+  assert.doesNotMatch(service, /integrations\/quo|createAnthropicToolMessage|AI_UNTRUSTED_DATA_SYSTEM_POLICY/);
   assert.match(repository, /@workspace\/db/);
   assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(|integrations\//);
+  assert.match(provider, /integrations\/quo\/transcripts\.js/);
+  assert.match(provider, /createAnthropicToolMessage/);
+  assert.doesNotMatch(provider, /@workspace\/db|drizzle-orm|from ["']express["']/);
   assert.match(backgroundHandlers, /modules\/transfers\/liveTransfers\.js/);
 });
 

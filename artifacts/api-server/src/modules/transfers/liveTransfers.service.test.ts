@@ -4,6 +4,10 @@ import {
   buildLiveTransferWorkbook,
   getLiveTransferStatus,
 } from "./liveTransfers.js";
+import {
+  QuoAnthropicLiveTransferProvider,
+  validateLiveTransferClassification,
+} from "./liveTransfers.provider.js";
 import type {
   LiveTransferClassificationWrite,
   LiveTransferRangeQuery,
@@ -37,6 +41,35 @@ class FakeRepository implements LiveTransferRepository {
     };
   }
 }
+
+test("Live Transfer provider preserves QUO transcript text normalization", () => {
+  const provider = new QuoAnthropicLiveTransferProvider();
+  assert.equal(provider.buildTranscript([
+    { identifier: "agent", content: " Agent opening " },
+    { identifier: "customer", content: " Customer reply " },
+    { identifier: "customer", content: "   " },
+  ]), "Agent opening\nCustomer reply");
+});
+
+test("Live Transfer provider preserves strict classification validation and normalization", () => {
+  assert.deepEqual(validateLiveTransferClassification({
+    kind: "partner",
+    company: " Aspire ",
+    agent: " Partner Agent ",
+    evidence: " warm transfer ",
+  }), {
+    kind: "partner",
+    company: "Aspire",
+    agent: "Partner Agent",
+    evidence: "warm transfer",
+  });
+  assert.equal(validateLiveTransferClassification({
+    kind: "invented",
+    company: "Aspire",
+    agent: "Agent",
+    evidence: "invalid",
+  }), null);
+});
 
 test("Live Transfer status composes repository counts without changing response semantics", async () => {
   const repository = new FakeRepository();
