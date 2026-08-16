@@ -70,11 +70,12 @@ test("legitimate reads, downloads, attendance writes, and administration retain 
 
 test("violation actor attribution, strict inputs, import failures, and private downloads are wired in production", async () => {
   const routes = new URL("../routes/", import.meta.url);
-  const [attendance, attendanceService, attendanceImport, violations, obReport, obAnalytics, liveTransfers, qa, qaAuthorization, qaRepository] = await Promise.all([
+  const [attendance, attendanceService, attendanceImport, violations, violationsService, obReport, obAnalytics, liveTransfers, qa, qaAuthorization, qaRepository] = await Promise.all([
     readFile(new URL("attendance.ts", routes), "utf8"),
     readFile(new URL("../modules/attendance/attendance.service.ts", routes), "utf8"),
     readFile(new URL("../integrations/googleSheets/attendanceImport.ts", routes), "utf8"),
     readFile(new URL("violations.ts", routes), "utf8"),
+    readFile(new URL("../modules/violations/violations.service.ts", routes), "utf8"),
     readFile(new URL("obReport.ts", routes), "utf8"),
     readFile(new URL("obAnalytics.ts", routes), "utf8"),
     readFile(new URL("liveTransfers.ts", routes), "utf8"),
@@ -84,8 +85,9 @@ test("violation actor attribution, strict inputs, import failures, and private d
   ]);
 
   assert.doesNotMatch(violations, /verifiedBy\s*=\s*["']admin["']/);
-  assert.match(violations, /verifiedBy:\s*req\.user!\.username/);
-  assert.match(violations, /parseViolationVerificationPayload/);
+  assert.doesNotMatch(violationsService, /verifiedBy\s*=\s*["']admin["']/);
+  assert.match(violationsService, /verifiedBy:\s*input\.actor\.username/);
+  assert.match(violationsService, /parseViolationVerificationPayload/);
   assert.match(attendance, /validateWorkflowCalendarDate/);
   assert.match(attendanceImport, /response\.ok/);
   assert.match(attendanceService, /canAccessAttendanceMember/);

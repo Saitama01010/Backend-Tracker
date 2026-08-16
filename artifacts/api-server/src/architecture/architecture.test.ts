@@ -270,6 +270,28 @@ test("live-transfer reporting delegates PostgreSQL and provider work through acc
   assert.match(backgroundHandlers, /modules\/transfers\/liveTransfers\.js/);
 });
 
+test("Violations routes delegate authorization, calculations, and PostgreSQL work through accepted boundaries", async () => {
+  const [route, service, calculations, repository] = await Promise.all([
+    source("routes/violations.ts"),
+    source("modules/violations/violations.service.ts"),
+    source("modules/violations/violations.calculations.ts"),
+    source("modules/violations/violations.repository.ts"),
+  ]);
+  for (const operation of ["getDashboard", "verify", "removeVerification", "listVerified"]) {
+    assert.match(route, new RegExp(`violationsService\\.${operation}`));
+  }
+  assert.doesNotMatch(route, /@workspace\/db|drizzle-orm|\bdb\.|phoneCallsTable|violationVerificationsTable|pbxMissedCallsTable/);
+  assert.doesNotMatch(route, /attendanceShiftStart|vosCallSpansCache|vosCallTimestampsCache/);
+  assert.doesNotMatch(service, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  assert.doesNotMatch(service, /@workspace\/db|drizzle-orm|\bdb\.|phoneCallsTable|violationVerificationsTable/);
+  assert.match(service, /violations\.repository\.js/);
+  assert.match(service, /violations\.calculations\.js/);
+  assert.match(service, /canAccessViolationIdentity/);
+  assert.doesNotMatch(calculations, /from ["']express["']|@workspace\/db["']|drizzle-orm|\bdb\./);
+  assert.match(repository, /@workspace\/db/);
+  assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(|integrations\//);
+});
+
 test("Attendance routes delegate application, source, and PostgreSQL work through accepted boundaries", async () => {
   const [route, service, callsService, recordService, pbxSource, repository, importIntegration] = await Promise.all([
     source("routes/attendance.ts"),
