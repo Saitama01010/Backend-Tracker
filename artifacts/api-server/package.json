@@ -22,6 +22,8 @@
     "test:load": "tsx --test src/performance/readEndpointLoad.integration.test.ts",
     "test:data-correctness": "tsx --test src/dataCorrectness/dataCorrectness.test.ts src/dataCorrectness/attendanceMigration.integration.test.ts src/dataCorrectness/attendanceNote.integration.test.ts",
     "test:smoke": "tsx --test src/baseline/smoke.test.ts",
+    "test:business-contracts": "tsx --test src/businessContracts/externalSources.test.ts src/businessContracts/businessInvariants.test.ts src/businessContracts/goldenResponses.test.ts src/businessContracts/exportParity.test.ts src/businessContracts/inventoryCoverage.test.ts src/baseline/regression.test.ts src/security/authorization.test.ts src/security/authorizationScope.test.ts",
+    "test:business-contracts:performance": "tsx --test src/businessContracts/performanceBaseline.integration.test.ts && tsx --test src/businessContracts/deterministicPerformanceGates.integration.test.ts",
     "baseline:serve": "tsx src/baseline/server.ts",
     "setup-admin": "node ./scripts/setup-admin.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"

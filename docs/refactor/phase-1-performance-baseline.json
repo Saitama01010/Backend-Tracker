@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 3,
+  "fixedDataset": "sanitized Phase 1 external fixtures plus 80000 temporary database rows for deterministic gates; legacy capture retains 20000 rows",
+  "iterations": { "cold": 3, "warm": 10, "deterministicGates": 21, "baselineCaptures": 3 },
+  "maximumRegressionPercent": 10,
+  "regressionGate": {
+    "metric": "median of paired QUO mapping duration divided by fixed JSON calibration duration",
+    "baselineNormalizedMedianRatio": 1.156,
+    "maximumRegressionPercent": 10
+  },
+  "deterministicGates": {
+    "quoMapping": { "normalizedP50Ratio": 1.151 },
+    "pbxParsing": { "normalizedP50Ratio": 1.171 },
+    "readyModeParsing": { "normalizedP50Ratio": 1.107 },
+    "googleSheetsParsing": { "normalizedP50Ratio": 1.1 },
+    "exportGeneration": { "normalizedP50Ratio": 1.116 },
+    "databaseDuration": {
+      "normalizedP50Ratio": 1.145,
+      "platformNormalizedP50Ratios": {
+        "win32": 1.145,
+        "linux": 1.503
+      }
+    },
+    "aggregateApiDuration": { "normalizedP50Ratio": 1.096 },
+    "fixedFixtureApiBatchDataReady": { "normalizedP50Ratio": 1.141 }
+  },
+  "databaseQueryCount": 1,
+  "responsePayloadBytes": {
+    "/api/quo/stats": 1974,
+    "/api/sheet": 767,
+    "/api/vos/stats": 1489,
+    "/api/readymode/stats": 345,
+    "/api/attendance": 431,
+    "/api/violations": 734
+  },
+  "syntheticLargePayloadBytes": 3427751
+}

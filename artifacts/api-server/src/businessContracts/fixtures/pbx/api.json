@@ -1,0 +1,17 @@
+{
+  "agents": [
+    { "id": 1101, "agentName": "Agent Alpha", "status": "Available", "extension": "1101" },
+    { "id": 1102, "agentName": "agent alpha - ALPHA", "status": "Busy", "extension": "1102" },
+    { "id": 1201, "agentName": "Agent Beta (Temp)", "status": "Offline" }
+  ],
+  "ringGroups": [
+    { "id": 41, "name": "Retention Main", "agentIds": [1101, 1102] },
+    { "id": 42, "name": "NSF Queue", "agentIds": [1201] },
+    { "id": 43, "name": "Customer Service", "agentIds": [] }
+  ],
+  "calls": [
+    { "id": 7001, "fromNumber": "+15550003001", "toNumber": "+15550001001", "agentId": 1101, "ringGroupId": 41, "answered": true, "createdAt": "2026-01-15T18:00:00.000Z" },
+    { "id": 7002, "fromNumber": "+15550003002", "toNumber": "+15550001002", "agentId": null, "ringGroupId": 42, "answered": false, "createdAt": "2026-01-15T19:00:00.000Z" }
+  ],
+  "empty": { "agents": [], "ringGroups": [], "calls": [] }
+}

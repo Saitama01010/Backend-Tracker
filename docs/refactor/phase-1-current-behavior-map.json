@@ -1,0 +1,253 @@
+{
+  "schemaVersion": 1,
+  "baseline": {
+    "repository": "Saitama01010/Backend-Tracker",
+    "gitSha": "542201004c51a5af8c457e0015a71b733c9a2e04",
+    "capturedOn": "2026-08-16",
+    "businessTimeZone": "America/Los_Angeles",
+    "staffTimeZone": "Africa/Cairo"
+  },
+  "dashboardPages": [
+    {
+      "id": "login",
+      "label": "Login",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:LoginGate",
+      "access": "public login; authenticated identity refresh; cookie-backed refresh and logout",
+      "endpoints": ["POST /auth/login", "POST /auth/password-upgrade", "POST /auth/refresh", "POST /auth/logout", "GET /auth/me"],
+      "dateRestriction": "none",
+      "exports": []
+    },
+    {
+      "id": "backend-stats",
+      "label": "Backend Statistics",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:BackendStatsPanel",
+      "access": "backend-stats tab grant; admin unless explicitly granted by current authorization model",
+      "endpoints": ["GET /team-agents", "GET /sheet"],
+      "dateRestriction": "client All time, Today, or source-derived month filter in America/Los_Angeles",
+      "exports": ["client CSV: backend_submissions_<LA-date>.csv"]
+    },
+    {
+      "id": "retention",
+      "label": "Retention",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:RetentionPanel",
+      "access": "view_metrics plus Retention tab/team/agent/subtab scope",
+      "endpoints": ["GET /team-agents", "GET /sheet", "GET /quo/stats", "GET /quo/calls", "GET /quo/live", "GET /quo/live/refresh", "GET /vos/stats", "GET /vos/live", "GET /readymode/stats"],
+      "dateRestriction": "Today, This month, All time, or custom LA calendar range; lockToToday enforced server-side",
+      "exports": ["client CSV: files_<LA-date>.csv", "client CSV: submissions_<LA-date>.csv"]
+    },
+    {
+      "id": "cs",
+      "label": "Internal CS",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:CSPanel",
+      "access": "view_metrics plus CS tab/team/agent/subtab scope",
+      "endpoints": ["GET /team-agents", "GET /sheet", "GET /quo/stats", "GET /quo/calls", "GET /quo/live", "GET /quo/live/refresh", "GET /vos/stats", "GET /vos/live", "GET /readymode/stats"],
+      "dateRestriction": "Today, This month, All time, or custom LA calendar range; lockToToday enforced server-side",
+      "exports": ["client CSV: files_<LA-date>.csv", "client CSV: submissions_<LA-date>.csv"]
+    },
+    {
+      "id": "nsf",
+      "label": "NSF",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:TeamPanel(mode=nsf)",
+      "access": "view_metrics plus NSF tab/team/agent/subtab scope",
+      "endpoints": ["GET /team-agents", "GET /sheet", "GET /quo/stats", "GET /quo/calls", "GET /quo/live", "GET /quo/live/refresh", "GET /vos/stats", "GET /vos/live", "GET /readymode/stats"],
+      "dateRestriction": "Today, This month, All time, or custom LA calendar range; lockToToday enforced server-side",
+      "exports": ["client CSV: files_<LA-date>.csv", "client CSV: submissions_<LA-date>.csv"]
+    },
+    {
+      "id": "rmk",
+      "label": "Ready-Mode Killers",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:ReadyModeKillersPanel",
+      "access": "view_metrics plus RMK tab/agent/subtab scope",
+      "endpoints": ["GET /team-agents", "GET /sheet", "GET /quo/stats", "GET /quo/live", "GET /quo/live/refresh", "GET /vos/stats", "GET /vos/live", "GET /readymode/stats"],
+      "dateRestriction": "Today, This month, All time, or custom LA calendar range; lockToToday enforced server-side",
+      "exports": ["client CSV: files_<LA-date>.csv", "client CSV: submissions_<LA-date>.csv"]
+    },
+    {
+      "id": "missed-no-cb",
+      "label": "Missed / No Callback",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:MissedNoCBPanel",
+      "access": "view_metrics plus missed-no-cb tab; hourly/daily tables additionally require view_missed_tables; NSF queue requires full NSF access",
+      "endpoints": ["GET /vos/missed-no-callback", "GET /vos/missed-daily", "GET /vos/missed-hourly", "GET /vos/missed-breakdown", "GET /nsf/readymode-queue", "POST /nsf/readymode-queue/done-by-number", "POST /vos/refresh"],
+      "dateRestriction": "Today and selected LA day; historical series mode-dependent",
+      "exports": []
+    },
+    {
+      "id": "callback-review",
+      "label": "Callback Review",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:CallbackReviewPanel",
+      "access": "view_metrics plus callback-review tab",
+      "endpoints": ["GET /vos/callback-review"],
+      "dateRestriction": "Today, current Monday-Sunday week, month, or custom LA dates; lockToToday enforced server-side",
+      "exports": []
+    },
+    {
+      "id": "violations",
+      "label": "Violations",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:ViolationsPanel",
+      "access": "view_metrics plus violations tab; only admin can remove a verification",
+      "endpoints": ["GET /violations", "GET /violations/verified", "POST /violations/verify", "DELETE /violations/verify"],
+      "dateRestriction": "LA from/to range; lockToToday enforced server-side",
+      "exports": ["client CSV: availability gaps", "client CSV: unauthorized cancels"]
+    },
+    {
+      "id": "qa",
+      "label": "Retention QA",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:QAPanel",
+      "access": "view_metrics plus QA tab; process/latest-run/task resolution are admin",
+      "endpoints": ["GET /qa/stats", "GET /qa/reviews", "GET /qa/reviews/:id", "GET /qa/tasks", "GET /qa/runs/latest", "POST /qa/process", "POST /qa/tasks/:id/resolve", "GET /qa/download"],
+      "dateRestriction": "UI is locked to current LA day and evaluated date basis; server supports evaluated/call basis where declared",
+      "exports": ["GET /qa/download"]
+    },
+    {
+      "id": "onboarding",
+      "label": "Onboarding",
+      "owner": "artifacts/agent-dashboard/src/OnboardingPanel.tsx",
+      "access": "explicit privileged global Onboarding tab grant; refresh is admin; canonical non-admin live-transfer dataset is denied",
+      "endpoints": ["GET /ob-report/status", "POST /ob-report/refresh", "GET /ob-report/download", "GET /ob-analytics", "GET /ob-analytics/download", "GET /live-transfers/status", "POST /live-transfers/refresh", "GET /live-transfers/download"],
+      "dateRestriction": "all time, month, day, or ordered custom LA date range; lockToToday enforced server-side",
+      "exports": ["GET /ob-report/download", "GET /ob-analytics/download", "GET /live-transfers/download"]
+    },
+    {
+      "id": "phones-quo-lines",
+      "label": "Phones / Quo Lines",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:QuoLinesPanel",
+      "access": "admin only",
+      "endpoints": ["GET /quo/all-lines", "GET /quo/line-stats", "GET /quo/live", "GET /quo/live/refresh"],
+      "dateRestriction": "custom range plus optional day filter, interpreted with current Quo/LA semantics",
+      "exports": []
+    },
+    {
+      "id": "phones-pbx",
+      "label": "Phones / PBX",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:VoSPanel",
+      "access": "admin only",
+      "endpoints": ["GET /vos/stats", "GET /vos/live", "POST /vos/refresh"],
+      "dateRestriction": "provider/current-day dashboard behavior",
+      "exports": []
+    },
+    {
+      "id": "phones-readymode",
+      "label": "Phones / ReadyMode",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:ReadyModePanel",
+      "access": "admin only",
+      "endpoints": ["GET /readymode/stats", "GET /readymode/probe", "POST /readymode/session/reset"],
+      "dateRestriction": "from/to calendar range for stats; probe/reset have none",
+      "exports": []
+    },
+    {
+      "id": "attendance",
+      "label": "Attendance",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:AttendancePanel",
+      "access": "view_attendance; edit_attendance for records/auto-mark; manage_members for roster/import",
+      "endpoints": ["GET /attendance", "PUT /attendance/record", "POST /attendance/members", "PATCH /attendance/members/:id", "POST /attendance/import", "POST /attendance/auto-mark"],
+      "dateRestriction": "selected UTC month columns representing canonical LA attendance dates; team/agent scope and lockToToday enforced server-side",
+      "exports": []
+    },
+    {
+      "id": "admin-users",
+      "label": "Manage Users",
+      "owner": "artifacts/agent-dashboard/src/components/CanonicalUserManagementPanel.tsx",
+      "access": "admin only",
+      "endpoints": ["GET /users", "POST /users", "PATCH /users/:id", "DELETE /users/:id", "GET /team-agents"],
+      "dateRestriction": "none",
+      "exports": []
+    },
+    {
+      "id": "admin-agents",
+      "label": "Agent Roster",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:AgentRosterPanel",
+      "access": "admin mutations; metrics/attendance users can read scoped roster",
+      "endpoints": ["GET /team-agents", "POST /team-agents", "PATCH /team-agents/:id", "DELETE /team-agents/:id"],
+      "dateRestriction": "none",
+      "exports": []
+    },
+    {
+      "id": "admin-blocked-numbers",
+      "label": "Blocked Numbers",
+      "owner": "artifacts/agent-dashboard/src/App.tsx:BlockedNumbersPanel",
+      "access": "admin read; established admin/edit write behavior",
+      "endpoints": ["GET /blocked-numbers", "POST /blocked-numbers", "DELETE /blocked-numbers/:number"],
+      "dateRestriction": "none",
+      "exports": []
+    },
+    {
+      "id": "samia",
+      "label": "Samia",
+      "owner": "artifacts/agent-dashboard/src/features/samia/SamiaChat.tsx",
+      "access": "admin only; mutation capability registry applies additional permission and audit gates",
+      "endpoints": ["GET /samia/users", "GET /samia/history", "GET /samia/history/:userId", "POST /samia/chat"],
+      "dateRestriction": "history grouping only; action-specific dates use canonical LA rules",
+      "exports": []
+    }
+  ],
+  "routeGroups": [
+    { "owner": "health.ts", "endpoints": ["GET /healthz", "HEAD /healthz"], "tables": [], "externalSources": [], "caches": [] },
+    { "owner": "auth.ts", "endpoints": ["POST /auth/login", "POST /auth/password-upgrade", "POST /auth/refresh", "POST /auth/logout", "GET /auth/me"], "tables": ["portal_users", "auth_sessions", "team_agents", "portal_user_team_grants", "portal_user_tab_grants"], "externalSources": [], "caches": ["no-store responses"] },
+    { "owner": "quo.ts + integrations/quo/sync.ts", "endpoints": ["GET /quo/lines", "GET /quo/all-lines", "GET /quo/line-stats", "GET /quo/stats", "POST /quo/sync", "GET /quo/sync-state", "GET /quo/live", "GET /quo/live/refresh", "GET /quo/calls"], "tables": ["phone_calls", "phone_sync_state", "blocked_numbers", "team_agents", "durable_runtime_state"], "externalSources": ["QUO/OpenPhone REST API"], "caches": ["15s admin stats response cache, max 50", "45s live poll snapshot/lease", "blocked-number cache"] },
+    { "owner": "quoWebhook.ts", "endpoints": ["POST /quo/webhook", "POST /openphone/webhook"], "tables": ["webhook_inbox", "phone_calls", "durable_runtime_state"], "externalSources": ["signed QUO/OpenPhone webhook", "QUO line/user directories"], "caches": ["5m line directory", "5m user directory", "live webhook map mirrored durably"] },
+    { "owner": "vos.ts", "endpoints": ["POST /vos/refresh", "GET /vos/stats", "GET /vos/missed-no-callback", "GET /vos/missed-hourly", "GET /vos/missed-daily", "GET /vos/missed-breakdown", "GET /vos/callback-review", "GET /vos/live", "GET /vos/debug/calls", "GET /vos/debug/proxy"], "tables": ["phone_calls", "pbx_missed_calls", "nsf_readymode_queue", "team_agents", "durable_runtime_state"], "externalSources": ["VoS/PBX authenticated JSON API", "QUO phone-number directory"], "caches": ["provider login cookie", "2m call-history refresh threshold", "30s fast missed-call refresh", "durable PBX snapshot", "line-to-ring-group map", "call span/timestamp maps"] },
+    { "owner": "readymode.ts", "endpoints": ["GET /readymode/stats", "GET /readymode/probe", "POST /readymode/upload", "POST /readymode/session/reset"], "tables": ["readymode_uploads", "team_agents"], "externalSources": ["attached Agent_report CSV", "configured ReadyMode Google CSV", "approved ReadyMode HTML probe"], "caches": ["provider login cookie", "60s source cache, max 50", "5m stale fallback", "coalesced refresh"] },
+    { "owner": "sheets.ts", "endpoints": ["GET /sheet"], "tables": ["team_agents"], "externalSources": ["Google Sheets v4 API with service account"], "caches": ["OAuth token until 60s before expiry", "gid/title map", "60s parsed source cache", "5m stale fallback", "coalesced title/source refresh"] },
+    { "owner": "csvProxy.ts", "endpoints": ["GET /csv-proxy"], "tables": [], "externalSources": ["allowlisted legacy Google CSV URL"], "caches": ["explicit no-cache/no-store"] },
+    { "owner": "attendance.ts", "endpoints": ["GET /attendance", "POST /attendance/members", "PATCH /attendance/members/:id", "PUT /attendance/record", "POST /attendance/import", "GET /attendance/call-logs", "POST /attendance/set", "POST /attendance/auto-mark", "GET /attendance/agent-contacts"], "tables": ["attendance_members", "attendance_records", "phone_calls", "team_agents"], "externalSources": ["configured attendance CSV", "PBX durable/in-memory call history"], "caches": ["shared PBX call-history/span cache"] },
+    { "owner": "breaks.ts", "endpoints": ["POST /breaks/start", "POST /breaks/end", "POST /breaks/log", "DELETE /breaks/:id", "GET /breaks"], "tables": ["agent_breaks", "team_agents"], "externalSources": [], "caches": [] },
+    { "owner": "violations.ts", "endpoints": ["GET /violations", "POST /violations/verify", "DELETE /violations/verify", "GET /violations/verified"], "tables": ["attendance_members", "agent_breaks", "phone_calls", "pbx_missed_calls", "violation_verifications", "team_agents"], "externalSources": [], "caches": ["shared PBX call span/timestamp maps"] },
+    { "owner": "nsfReadymode.ts", "endpoints": ["POST /nsf/readymode-queue", "GET /nsf/readymode-queue", "POST /nsf/readymode-queue/:id/done", "POST /nsf/readymode-queue/done-by-number"], "tables": ["nsf_readymode_queue", "phone_calls"], "externalSources": [], "caches": [] },
+    { "owner": "obReport.ts + modules/onboarding/report.ts", "endpoints": ["POST /ob-report/refresh", "GET /ob-report/status", "GET /ob-report/download", "POST /ob-report/import"], "tables": ["phone_calls", "onboarding_classifications", "onboarding_report_state", "background_jobs"], "externalSources": ["QUO transcripts through shared transcript client", "controlled import payload"], "caches": ["durable report progress/state"] },
+    { "owner": "obAnalytics.ts + modules/onboarding/analytics.ts", "endpoints": ["GET /ob-analytics", "GET /ob-analytics/download"], "tables": ["phone_calls", "onboarding_classifications"], "externalSources": [], "caches": [] },
+    { "owner": "liveTransfers.ts + modules/transfers/liveTransfers.ts", "endpoints": ["GET /live-transfers/status", "POST /live-transfers/refresh", "GET /live-transfers/download"], "tables": ["phone_calls", "live_transfer_classifications", "live_transfer_state", "background_jobs"], "externalSources": ["QUO transcripts through shared transcript client"], "caches": ["durable classifier progress/state"] },
+    { "owner": "qa.ts", "endpoints": ["POST /qa/evaluate", "POST /qa/biweekly-run", "GET /qa/biweekly-run", "POST /qa/process", "GET /qa/runs/latest", "POST /qa/assign-weekly", "GET /qa/stats", "GET /qa/download", "GET /qa/reviews", "GET /qa/reviews/:id", "GET /qa/tasks", "POST /qa/tasks/:id/resolve", "GET /qa/agents"], "tables": ["phone_calls", "qa_reviews", "manager_qa_tasks", "qa_biweekly_runs", "team_agents", "ai_request_usage", "ai_request_reservations", "background_jobs"], "externalSources": ["QUO transcripts", "Anthropic strict tool output"], "caches": ["durable AI usage/reservations and job leases"] },
+    { "owner": "samia.ts", "endpoints": ["GET /samia/history", "GET /samia/users", "GET /samia/history/:userId", "GET /samia/number-lookup", "GET /samia/call-analysis", "GET /samia/diagnostics", "POST /samia/chat"], "tables": ["samia_messages", "portal_users", "phone_calls", "pbx_missed_calls", "ai_request_usage", "ai_request_reservations", "action_audit"], "externalSources": ["Anthropic", "QUO transcript API for explicit call IDs"], "caches": ["durable AI rate limits, idempotency, and generation locks"] },
+    { "owner": "users.ts", "endpoints": ["GET /users", "POST /users", "PATCH /users/:id", "DELETE /users/:id"], "tables": ["portal_users", "auth_sessions", "portal_user_team_grants", "portal_user_tab_grants", "team_agents"], "externalSources": [], "caches": ["session revocation through durable store"] },
+    { "owner": "teamAgents.ts", "endpoints": ["GET /team-agents", "POST /team-agents", "PATCH /team-agents/:id", "DELETE /team-agents/:id"], "tables": ["team_agents", "portal_users"], "externalSources": [], "caches": ["client React Query roster cache invalidated on mutation"] },
+    { "owner": "blockedNumbers.ts", "endpoints": ["GET /blocked-numbers", "POST /blocked-numbers", "DELETE /blocked-numbers/:number"], "tables": ["blocked_numbers"], "externalSources": [], "caches": ["5m database read cache, explicitly invalidated on writes"] },
+    { "owner": "backgroundJobs.ts", "endpoints": ["GET /jobs/cron", "GET /jobs", "GET /jobs/scheduler-health", "GET /jobs/:id"], "tables": ["background_jobs", "durable_runtime_state"], "externalSources": [], "caches": ["45-day scheduler health state"] }
+  ],
+  "rolesAndCapabilities": {
+    "roles": ["admin", "edit", "view"],
+    "permissions": ["view_metrics", "view_attendance", "edit_attendance", "manage_members", "view_missed_tables"],
+    "scopeFields": ["teamAccess", "allowedTabs", "allowedAgents", "allowedSubTabs", "lockToToday", "hideBackendStats"],
+    "canonicalAccess": ["accessRole", "primaryTeam", "selfAgentId", "selfAgentTeam", "fullTeamAccess", "tabGrants"],
+    "defaultRule": "unmapped private routes default to admin",
+    "dateRule": "lockToToday compares requested values with the America/Los_Angeles business day"
+  },
+  "externalInputs": [
+    { "id": "quo", "formats": ["paginated JSON", "signed webhook JSON"], "fixture": "artifacts/api-server/src/businessContracts/fixtures/quo/api-pages.json" },
+    { "id": "pbx", "formats": ["cookie-backed web login at POST /api/auth/login", "authenticated JSON from /api/dashboard, /api/agents, /api/ring-groups, and /api/calls", "sanitized HTML evidence fixture that is not parsed by the production PBX path"], "fixture": "artifacts/api-server/src/businessContracts/fixtures/pbx" },
+    { "id": "readymode", "formats": ["CSV daily reports used by statistics", "uploaded CSV used by statistics", "separate retained HTML table parser/probe not used by statistics"], "fixture": "artifacts/api-server/src/businessContracts/fixtures/readymode" },
+    { "id": "google-sheet-1", "formats": ["Sheets v4 values JSON for IDP Handled, Retained, Fixed"], "fixture": "artifacts/api-server/src/businessContracts/fixtures/sheets/google-sheet-1.json" },
+    { "id": "google-sheet-2", "formats": ["Sheets v4 values JSON", "aliases: idpCancelRetained, IDP Cancel Retained, idp-cancel-retained, IDP-Cancel-Retained, IDP Handled Retained"], "fixture": "artifacts/api-server/src/businessContracts/fixtures/sheets/google-sheet-2.json" }
+  ],
+  "backgroundJobs": [
+    { "type": "quo_live_refresh", "scheduleKey": "UTC minute", "intendedCadence": "1 minute", "handler": "runLivePoll plus PBX refresh" },
+    { "type": "quo_sync", "scheduleKey": "UTC 15-minute window", "intendedCadence": "15 minutes", "handler": "incremental QUO sync" },
+    { "type": "qa_biweekly", "scheduleKey": "UTC day at 09:00", "intendedCadence": "daily eligibility check", "handler": "existing 14-day QA selection" },
+    { "type": "vos_backfill", "scheduleKey": "UTC day at 09:00", "intendedCadence": "daily", "handler": "PBX history backfill" },
+    { "type": "qa_weekly_assignment", "scheduleKey": "Monday UTC day at 09:00", "intendedCadence": "weekly", "handler": "manager QA assignment" },
+    { "type": "onboarding_report", "scheduleKey": "request idempotency key", "intendedCadence": "on demand", "handler": "onboarding transcript classification" },
+    { "type": "live_transfer_refresh", "scheduleKey": "request idempotency key", "intendedCadence": "on demand", "handler": "live-transfer classification" }
+  ],
+  "importWorkflows": [
+    { "id": "quo-sync", "entrypoints": ["POST /quo/sync", "signed webhooks", "background job"], "writes": ["phone_calls", "phone_sync_state", "webhook_inbox"] },
+    { "id": "pbx-refresh", "entrypoints": ["POST /vos/refresh", "background job"], "writes": ["pbx_missed_calls", "durable_runtime_state"] },
+    { "id": "readymode-upload", "entrypoints": ["POST /readymode/upload"], "writes": ["readymode_uploads"], "accepted": "CSV JSON body with filename and explicit date" },
+    { "id": "attendance-import", "entrypoints": ["POST /attendance/import"], "writes": ["attendance_members", "attendance_records"], "accepted": "configured attendance CSV" },
+    { "id": "onboarding-classification-import", "entrypoints": ["POST /ob-report/import"], "writes": ["onboarding_classifications"], "authentication": "OB_IMPORT_SECRET" }
+  ],
+  "exports": [
+    { "id": "onboarding-report", "entrypoint": "GET /ob-report/download", "format": "XLSX" },
+    { "id": "onboarding-analytics", "entrypoint": "GET /ob-analytics/download", "format": "XLSX" },
+    { "id": "live-transfers", "entrypoint": "GET /live-transfers/download", "format": "XLSX" },
+    { "id": "qa", "entrypoint": "GET /qa/download", "format": "XLSX" },
+    { "id": "files", "entrypoint": "Retention/CS/NSF/RMK By Files", "format": "client CSV" },
+    { "id": "submissions", "entrypoint": "Retention/CS/NSF/RMK By Files", "format": "client CSV" },
+    { "id": "backend-statistics", "entrypoint": "Backend Statistics", "format": "client CSV" },
+    { "id": "violation-details", "entrypoint": "Violations", "format": "client CSV" }
+  ],
+  "knownInconsistencies": [
+    "The mission calls PBX an HTML scraper, but current vos.ts establishes a cookie-backed session and consumes authenticated JSON endpoints; the HTML fixture is retained as sanitized evidence and no new HTML ingestion rule is introduced.",
+    "readymode.ts retains a separate HTML table parser and probe client, while production statistics are currently composed from attached/configured/uploaded CSV sources.",
+    "Google Sheet 2 is named idpCancelRetained, IDP Cancel Retained, idp-cancel-retained, IDP-Cancel-Retained, and IDP Handled Retained across current contexts; every valid routed row is forced to Retained even if note text says cancelled.",
+    "IDP-Handled is a separate displayed status and also contributes to the established retention-rate numerator, but not to pure retained daily/monthly tiles."
+  ]
+}

@@ -10,9 +10,15 @@
     "test:security": "tsx --test src/lib/api.test.ts src/lib/sheetData.test.ts src/lib/agentRosterIdentity.test.ts src/lib/authContext.test.ts src/lib/authSession.test.ts src/lib/canonicalUserManagement.test.ts src/lib/loginFlow.test.ts src/lib/portalUserEmail.test.ts",
     "test:performance": "tsx --test src/components/TablePager.test.ts src/lib/queryPolicy.test.ts src/performance/frontendPerformance.test.ts",
     "test:data-correctness": "tsx --test src/lib/businessDate.test.ts",
+    "test:business-contracts": "tsx --test src/businessContracts/goldenResponses.test.ts src/lib/businessDate.test.ts src/lib/authContext.test.ts src/lib/canonicalUserManagement.test.ts src/lib/sheetData.test.ts",
+    "test:business-contracts:browser": "playwright test --config playwright.config.ts",
+    "test:business-contracts:full-stack": "playwright test --config playwright.full-stack.config.ts",
+    "test:business-contracts:browser-performance": "playwright test --config playwright.full-stack-performance.config.ts",
+    "test:staging-readonly": "playwright test --config playwright.staging-readonly.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@hookform/resolvers": "^3.10.0",
     "@radix-ui/react-accordion": "^1.2.4",
     "@radix-ui/react-alert-dialog": "^1.1.7",

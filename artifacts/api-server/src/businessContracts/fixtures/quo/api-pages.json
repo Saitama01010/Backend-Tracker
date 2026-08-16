@@ -1,0 +1,79 @@
+{
+  "phoneNumbers": [
+    { "id": "line-retention", "name": "Retention - Agent Alpha", "number": "+15550001001" },
+    { "id": "line-nsf", "name": "NSF - Agent Beta", "number": "+15550001002" }
+  ],
+  "users": [
+    { "id": "user-alpha", "displayName": "Agent Alpha" },
+    { "id": "user-beta", "displayName": "Agent Beta" }
+  ],
+  "pages": [
+    {
+      "data": [
+        {
+          "id": "quo-call-001",
+          "phoneNumberId": "line-retention",
+          "direction": "outgoing",
+          "status": "completed",
+          "duration": 95,
+          "createdAt": "2026-01-15T18:00:00.000Z",
+          "answeredAt": "2026-01-15T18:00:05.000Z",
+          "completedAt": "2026-01-15T18:01:35.000Z",
+          "userId": "user-alpha",
+          "participants": ["+15550002001"]
+        },
+        {
+          "id": "quo-call-002",
+          "phoneNumberId": "line-nsf",
+          "direction": "incoming",
+          "status": "no-answer",
+          "duration": 0,
+          "createdAt": "2026-01-15T19:00:00.000Z",
+          "completedAt": "2026-01-15T19:00:25.000Z",
+          "participants": ["+15550002002"]
+        }
+      ],
+      "nextPageToken": "sanitized-page-2"
+    },
+    {
+      "data": [
+        {
+          "id": "quo-call-001",
+          "phoneNumberId": "line-retention",
+          "direction": "outgoing",
+          "status": "completed",
+          "duration": 95,
+          "createdAt": "2026-01-15T18:00:00.000Z",
+          "answeredAt": "2026-01-15T18:00:05.000Z",
+          "completedAt": "2026-01-15T18:01:35.000Z",
+          "userId": "user-alpha",
+          "participants": ["+15550002001"]
+        },
+        {
+          "id": "quo-call-003",
+          "phoneNumberId": "line-retention",
+          "direction": "outgoing",
+          "status": "completed",
+          "duration": 12,
+          "createdAt": "2026-01-16T18:00:00.000Z",
+          "userId": "user-alpha",
+          "participants": []
+        },
+        {
+          "id": "quo-call-004",
+          "phoneNumberId": "line-nsf",
+          "direction": "incoming",
+          "status": "completed",
+          "duration": 61,
+          "createdAt": "2026-02-01T01:30:00.000Z",
+          "answeredAt": "2026-02-01T01:30:04.000Z",
+          "completedAt": "2026-02-01T01:31:05.000Z",
+          "answeredBy": "user-beta",
+          "participants": ["+15550002003"]
+        }
+      ],
+      "nextPageToken": "sanitized-empty-page"
+    },
+    { "data": [], "nextPageToken": null }
+  ]
+}

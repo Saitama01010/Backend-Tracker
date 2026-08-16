@@ -1,0 +1,13 @@
+{
+  "idpHandledRetained": {
+    "values": [
+      ["Sanitized IDP Handled Retained"],
+      ["Timestamp", "Agent Name", "File ID", "Notes"],
+      ["1/15/2026 09:00:00", "Agent Alpha", "FILE-100", "retain"],
+      ["1/15/2026 09:00:00", "Agent Alpha", "FILE-100", "duplicate-looking row remains separate"],
+      ["1/16/2026 23:59:59", "Agent Beta", "FILE-101", "cancelled text does not change this tab's retained classification"],
+      ["malformed", "Agent Gamma", "FILE-102", "malformed date is skipped by the current loader"],
+      ["", "", "", ""]
+    ]
+  }
+}

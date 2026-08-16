@@ -1,0 +1,28 @@
+{
+  "idpHandled": {
+    "values": [
+      ["Sanitized IDP Handled"],
+      ["Timestamp", "Agent Name", "File ID", "Notes"],
+      ["1/15/2026 10:00:00", "Agent Alpha", "FILE-001", "handled"],
+      ["1/15/2026 10:00:00", "Agent Alpha", "FILE-001", "handled"],
+      ["1/16/2026 23:59:59", "Agent Beta", "FILE-002", ""],
+      ["", "", "", ""]
+    ]
+  },
+  "retained": {
+    "values": [
+      ["Timestamp", "Agent Name", "File ID", "Cancel request update", "Notes"],
+      ["1/15/2026 00:00:00", "Agent Alpha", "FILE-010", "Retained", ""],
+      ["1/16/2026 23:59:59", "Agent Beta", "FILE-011", "Cancelled", "ultimately retained"],
+      ["malformed", "Agent Gamma", "FILE-012", "Retained", ""]
+    ]
+  },
+  "fixed": {
+    "values": [
+      ["Timestamp", "Agent Name", "File ID", "File Status"],
+      ["1/15/2026 12:00:00", "Agent Alpha", "FILE-020", "Fixed"],
+      ["1/16/2026 12:00:00", "Agent Beta", "FILE-021", "IDP"],
+      ["", "", "", ""]
+    ]
+  }
+}
