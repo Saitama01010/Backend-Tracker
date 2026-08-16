@@ -4,7 +4,9 @@ import path from "node:path";
 import test from "node:test";
 import { buildQuoPhoneCallRow, type QuoCall, type QuoPhoneNumber } from "../integrations/quo/sync.js";
 import { detectHeaderRow, parseGoogleSheetsValues } from "../integrations/googleSheets/mapper.js";
-import { parseAgentTable, parseReadymodeRows } from "../routes/readymode.js";
+import { parseReadymodeRows } from "../integrations/readymode/csvParser.js";
+import { prepareReadyModeUpload } from "../integrations/readymode/importer.js";
+import { parseAgentTable } from "../routes/readymode.js";
 import { teamFromRingGroupName } from "../routes/vos.js";
 
 const fixtures = path.join(import.meta.dirname, "fixtures");
@@ -62,6 +64,11 @@ test("ReadyMode CSV fixtures pin accepted rows, duplicate interpretation, empty 
   const duplicate = parseReadymodeRows(await text("readymode", "duplicate.csv"), quietLog, "fixture");
   assert.equal(duplicate.length, 2, "current parsing does not invent file-level deduplication");
   assert.deepEqual(duplicate[0], duplicate[1]);
+  assert.equal(
+    prepareReadyModeUpload(duplicate, "fixture-user").length,
+    1,
+    "the existing upload boundary keeps only the last same-agent same-day row",
+  );
   assert.deepEqual(parseReadymodeRows(await text("readymode", "invalid-header.csv"), quietLog, "fixture"), []);
   assert.deepEqual(parseReadymodeRows(await text("readymode", "empty.csv"), quietLog, "fixture"), []);
 });

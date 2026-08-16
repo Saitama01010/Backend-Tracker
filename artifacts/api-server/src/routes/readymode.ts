@@ -1,8 +1,10 @@
 import { Router } from "express";
 import { performance } from "node:perf_hooks";
 import { db, readymodeUploadsTable } from "@workspace/db";
-import { and, gte, lte, sql } from "drizzle-orm";
+import { and, gte, lte } from "drizzle-orm";
 import type { Logger } from "pino";
+import { parseReadymodeRows, type ReadyModeDayRow } from "../integrations/readymode/csvParser.js";
+import { persistReadyModeUpload, prepareReadyModeUpload } from "../integrations/readymode/importer.js";
 import { logger as rootLogger } from "../lib/logger";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { canAccessDateRange, isAdministrator } from "../middleware/authorizationCore.js";
@@ -16,8 +18,6 @@ import { googleCsvUrl, OPERATIONAL_CONFIG } from "../lib/operationalConfig.js";
 const router = Router();
 router.use("/readymode", requireAuth);
 
-// One parsed ReadyMode report row, keyed per (agent, day).
-type DayRow = { name: string; iso: string; dialed: number; talkSecs: number };
 const RM_BASE = "https://icydeals.readymode.com";
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -267,125 +267,8 @@ const REPORT_PROBE_PATHS = [
 //  Ready:Avg wait, Ready:Avg wrap, Ready:Talk Time).
 const READYMODE_CSV_URL = googleCsvUrl(OPERATIONAL_CONFIG.readyModeSheet);
 
-const MONTHS: Record<string, number> = {
-  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
-  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
-};
-
-function parseCsv(text: string): string[][] {
-  // Handles quoted fields with embedded commas/newlines.
-  const rows: string[][] = [];
-  let cur: string[] = [];
-  let field = "";
-  let inQ = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (inQ) {
-      if (c === '"') {
-        if (text[i + 1] === '"') { field += '"'; i++; }
-        else inQ = false;
-      } else field += c;
-    } else {
-      if (c === '"') inQ = true;
-      else if (c === ",") { cur.push(field); field = ""; }
-      else if (c === "\n" || c === "\r") {
-        if (c === "\r" && text[i + 1] === "\n") i++;
-        cur.push(field); field = "";
-        rows.push(cur); cur = [];
-      } else field += c;
-    }
-  }
-  if (field.length > 0 || cur.length > 0) { cur.push(field); rows.push(cur); }
-  return rows.filter(r => r.length > 1 || (r.length === 1 && r[0]!.trim()));
-}
-
-function parseDurationToSecs(s: string): number {
-  if (!s || s === "-") return 0;
-  let total = 0;
-  const h = s.match(/(\d+)\s*hours?/i);
-  const m = s.match(/(\d+)\s*min\./i);
-  const sec = s.match(/([\d.]+)\s*s\./i);
-  if (h?.[1]) total += parseInt(h[1], 10) * 3600;
-  if (m?.[1]) total += parseInt(m[1], 10) * 60;
-  if (sec?.[1]) total += parseFloat(sec[1]);
-  return Math.round(total);
-}
-
-function parseIntSafe(s: string | undefined): number {
-  if (!s || s === "-") return 0;
-  const n = parseInt(s.replace(/[^0-9-]/g, ""), 10);
-  return Number.isFinite(n) ? n : 0;
-}
-
-/**
- * Parse a "Day/date" cell like "May 14" → ISO "YYYY-MM-DD" using the current
- * year (sheet doesn't carry a year). Returns null for non-date rows like
- * "Monday", "Sunday", "-" so callers can skip those (weekday labels and
- * agent-totals rows must not be double-counted on top of per-day rows).
- */
-function dayToIso(day: string, yearHint?: number): string | null {
-  const trimmed = day.trim();
-  if (!trimmed || trimmed === "-") return null;
-  const m = trimmed.match(/^([A-Za-z]+)\s+(\d{1,2})$/);
-  if (!m) return null;
-  const mon = MONTHS[m[1]!.slice(0, 3).toLowerCase()];
-  if (!mon) return null;
-  const d = parseInt(m[2]!, 10);
-  if (!d) return null;
-  const yr = yearHint ?? new Date().getFullYear();
-  return `${yr}-${String(mon).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-}
-
-/**
- * Parse a ReadyMode daily-report CSV into per-(agent, day) rows. Returns an
- * empty array when required columns ("Name" + "Logged calls") are missing so
- * callers can skip a bad source gracefully. Shared by /readymode/stats and the
- * /readymode/upload endpoint.
- */
-export function parseReadymodeRows(
-  text: string,
-  log: Logger,
-  source: string,
-  fallbackIso?: string,
-): DayRow[] {
-  const parsed = parseCsv(text);
-  if (parsed.length < 2) return [];
-  const header = parsed[0]!.map((h) => h.trim().toLowerCase());
-  const idx = {
-    day:   header.findIndex((h) => h.includes("day") || h.includes("date")),
-    name:  header.findIndex((h) => h === "name" || h.includes("agent")),
-    calls: header.findIndex((h) => h.includes("logged call") || h === "calls"),
-    talk:  header.findIndex((h) => h.includes("talk time")),
-  };
-  if (idx.name < 0 || idx.calls < 0) {
-    log.warn({ source, header }, "readymode source missing required columns");
-    return [];
-  }
-  const out: DayRow[] = [];
-  for (const r of parsed.slice(1)) {
-    const name = (r[idx.name] ?? "").trim();
-    if (!name) continue;
-    // Skip non-agent aggregate rows. The grand-total "Summary" row carries the
-    // sum of all agents' calls and must never be stored as an agent.
-    if (/^(summary|total)$/i.test(name)) continue;
-    const dayRaw = idx.day >= 0 ? (r[idx.day] ?? "") : "";
-    // Daily reports label the day column with a weekday name ("Thursday") or
-    // "-" instead of a calendar date. When the cell isn't a parseable date,
-    // fall back to the caller-supplied ISO date (the day the report covers).
-    const iso = dayToIso(dayRaw) ?? fallbackIso ?? null;
-    if (!iso) continue;
-    out.push({
-      name,
-      iso,
-      dialed: parseIntSafe(r[idx.calls]),
-      talkSecs: idx.talk >= 0 ? parseDurationToSecs(r[idx.talk] ?? "") : 0,
-    });
-  }
-  return out;
-}
-
 type ReadyModeSourceSnapshot = {
-  sources: { source: string; rows: DayRow[] }[];
+  sources: { source: string; rows: ReadyModeDayRow[] }[];
   fetchedAt: Date;
   providerMs: number;
   databaseMs: number;
@@ -413,7 +296,7 @@ async function refreshReadyModeSources(
   toIso: string | undefined,
   log: Logger,
 ): Promise<ReadyModeSourceSnapshot> {
-  const sources: { source: string; rows: DayRow[] }[] = [];
+  const sources: { source: string; rows: ReadyModeDayRow[] }[] = [];
   let parseMs = 0;
   let refreshError = false;
   const ingest = (text: string, source: string) => {
@@ -622,7 +505,7 @@ router.get("/readymode/stats", async (req, res) => {
     // Merge sources, deduping on (name, day). Later sources win — Google
     // Sheet is ingested second so any day the operator updates there
     // overrides the historical CSV for that same (agent, day).
-    const byKey = new Map<string, DayRow>();
+    const byKey = new Map<string, ReadyModeDayRow>();
     for (const { rows } of sources) {
       for (const r of rows) {
         byKey.set(`${r.name.trim().toLowerCase().replace(/\s+/g, " ")}|${r.iso}`, r);
@@ -753,40 +636,9 @@ router.post("/readymode/upload", requireAuth, requireRole("admin", "edit"), asyn
       });
     }
 
-    // Canonicalize the agent name (trim + collapse internal whitespace) so the
-    // stored value is stable across uploads. The DB unique key is
-    // (agent_name, stat_date); ReadyMode exports a consistent name per agent,
-    // so this guarantees same-day re-uploads upsert the same row rather than
-    // inserting a near-duplicate.
-    const canonName = (s: string) => s.trim().replace(/\s+/g, " ");
-    // Dedupe within the file on (canonical agent, day), keeping the last
-    // occurrence so a file with both per-day and total rows doesn't double-insert.
-    const byKey = new Map<string, DayRow>();
-    for (const r of rows) {
-      const name = canonName(r.name);
-      byKey.set(`${name.toLowerCase()}|${r.iso}`, { ...r, name });
-    }
     const uploadedBy = req.user?.username ?? "unknown";
-    const values = [...byKey.values()].map((r) => ({
-      agentName: r.name,
-      statDate: r.iso,
-      dialed: r.dialed,
-      talkSecs: r.talkSecs,
-      uploadedBy,
-    }));
-
-    await db
-      .insert(readymodeUploadsTable)
-      .values(values)
-      .onConflictDoUpdate({
-        target: [readymodeUploadsTable.agentName, readymodeUploadsTable.statDate],
-        set: {
-          dialed: sql`excluded.dialed`,
-          talkSecs: sql`excluded.talk_secs`,
-          uploadedBy: sql`excluded.uploaded_by`,
-          uploadedAt: sql`now()`,
-        },
-      });
+    const values = prepareReadyModeUpload(rows, uploadedBy);
+    await persistReadyModeUpload(values);
 
     // A successful upload is authoritative and must be visible on the next
     // stats read rather than waiting for the bounded source-cache TTL.

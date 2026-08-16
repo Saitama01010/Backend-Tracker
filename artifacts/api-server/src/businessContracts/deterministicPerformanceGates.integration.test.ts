@@ -9,7 +9,7 @@ import pg from "pg";
 import { buildOnboardingAnalyticsWorkbook } from "../modules/onboarding/analytics.js";
 import { buildQuoPhoneCallRow, type QuoCall, type QuoPhoneNumber } from "../integrations/quo/sync.js";
 import { parseGoogleSheetsValues } from "../integrations/googleSheets/mapper.js";
-import { parseReadymodeRows } from "../routes/readymode.js";
+import { parseReadymodeRows } from "../integrations/readymode/csvParser.js";
 import { teamFromRingGroupName } from "../routes/vos.js";
 
 const { Client } = pg;
