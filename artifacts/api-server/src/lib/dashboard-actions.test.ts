@@ -255,9 +255,11 @@ test("intermediate tool calls are hidden and opening Samia makes no Anthropic re
 
 test("dashboard attendance dates and API descriptions use the canonical LA timezone", async () => {
   const attendance = await routeSource("attendance.ts");
+  const attendanceService = await readFile(path.join(libDir, "../modules/attendance/attendance.service.ts"), "utf8");
   const samia = await routeSource("samia.ts");
   const ui = await dashboardSource();
-  assert.match(attendance, /ATTENDANCE_TIMEZONE/);
+  assert.match(attendance, /attendanceService\.getDashboard/);
+  assert.match(attendanceService, /ATTENDANCE_TIMEZONE/);
   assert.match(ui, /const todayStr = ltLaToday\(\)/);
   assert.match(ui, /const tomorrowStr = addBusinessCalendarDays\(todayStr, 1\)/);
   const prompt = samia.slice(samia.indexOf("## Attendance actions"), samia.indexOf("## Phone contact lookup"));

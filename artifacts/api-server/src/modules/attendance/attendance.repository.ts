@@ -33,12 +33,12 @@ export interface AttendanceImportMember {
 }
 
 export const attendanceRepository = {
-  listMembers(input: { includeInactive: boolean; order: "department" | "name" }) {
+  async listMembers(input: { includeInactive: boolean; order: "department" | "name" }) {
     const query = db.select().from(attendanceMembersTable)
       .where(input.includeInactive ? undefined : eq(attendanceMembersTable.active, true));
-    return input.order === "department"
+    return await (input.order === "department"
       ? query.orderBy(attendanceMembersTable.department, attendanceMembersTable.name)
-      : query.orderBy(attendanceMembersTable.name);
+      : query.orderBy(attendanceMembersTable.name));
   },
 
   async findMemberById(id: number) {
@@ -58,18 +58,18 @@ export const attendanceRepository = {
     return member;
   },
 
-  listRecordsInRange(memberIds: readonly number[], from: string, to: string) {
-    if (memberIds.length === 0) return Promise.resolve([]);
-    return db.select(attendanceRecordSelection).from(attendanceRecordsTable).where(and(
+  async listRecordsInRange(memberIds: readonly number[], from: string, to: string) {
+    if (memberIds.length === 0) return [];
+    return await db.select(attendanceRecordSelection).from(attendanceRecordsTable).where(and(
       inArray(attendanceRecordsTable.memberId, [...memberIds]),
       gte(attendanceRecordDate, from),
       lte(attendanceRecordDate, to),
     ));
   },
 
-  listRecordsForDate(memberIds: readonly number[], date: string) {
-    if (memberIds.length === 0) return Promise.resolve([]);
-    return db.select(attendanceRecordSelection).from(attendanceRecordsTable).where(and(
+  async listRecordsForDate(memberIds: readonly number[], date: string) {
+    if (memberIds.length === 0) return [];
+    return await db.select(attendanceRecordSelection).from(attendanceRecordsTable).where(and(
       inArray(attendanceRecordsTable.memberId, [...memberIds]),
       eq(attendanceRecordDate, date),
     ));

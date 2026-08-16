@@ -3,39 +3,23 @@ import { getCallHistoryCache, hydrateVosState } from "./vos";
 import { requireAuth, requirePermission } from "../middleware/auth.js";
 import {
   ATTENDANCE_MEMBER_ALIASES,
-  ATTENDANCE_TIMEZONE,
   addAttendanceCalendarDays,
   attendanceDate,
   attendanceStartOfDay,
 } from "../lib/attendancePolicy.js";
 import {
-  activeAttendanceMembers,
-  resolveActiveAttendanceMember,
-  resolveActiveAttendanceMemberFromList,
-  setAttendanceRecord,
-  setAttendanceRecords,
-} from "../lib/attendanceService.js";
-import {
-  buildAttendanceImportPlan,
   buildQuoFirstCallMap,
 } from "../lib/databasePerformance.js";
 import {
-  attendanceDepartmentForUser,
-  canAccessAgent,
-  canAccessAttendanceDepartment,
   canAccessDateRange,
-  hasPermission,
   isAdministrator,
   isCanonicalUser,
   normalizeAgentIdentity,
 } from "../middleware/authorizationCore.js";
-import type { AuthPayload } from "../middleware/authCore.js";
 import {
   authorizationAgent,
   canAccessLiveAgent,
-  canAccessMetricAgent,
   loadAuthorizationAgentDirectory,
-  type AuthorizationAgentDirectory,
 } from "../lib/authorizationScope.js";
 import {
   validateOptionalWorkflowRange,
@@ -48,8 +32,14 @@ import {
 } from "../modules/attendance/attendance.repository.js";
 import {
   AttendanceImportSourceError,
-  loadAttendanceImportCandidates,
-} from "../integrations/googleSheets/attendanceImport.js";
+  AttendanceServiceError,
+  attendanceService,
+} from "../modules/attendance/attendance.service.js";
+import type {
+  AttendanceBatchRecordInput,
+  AttendanceMemberPatch,
+} from "../modules/attendance/attendance.types.js";
+import { canAccessAttendanceMember } from "../modules/attendance/attendance.authorization.js";
 
 export { parseAttendanceImportDate } from "../integrations/googleSheets/attendanceImport.js";
 
@@ -74,18 +64,6 @@ function todayLA(): string {
   return attendanceDate();
 }
 
-function canAccessAttendanceMember(
-  user: AuthPayload,
-  member: { name: string; department: string },
-  directory: AuthorizationAgentDirectory,
-): boolean {
-  if (!canAccessAttendanceDepartment(user, member.department)) return false;
-  const aliases = ATTENDANCE_MEMBER_ALIASES[member.name] ?? [];
-  if (!isCanonicalUser(user)) return canAccessAgent(user, member.name, aliases);
-  return [member.name, ...aliases]
-    .some((name) => canAccessMetricAgent(user, name, directory));
-}
-
 router.get("/attendance", async (req, res) => {
   try {
     const to = (req.query["to"] as string) || attendanceDate();
@@ -96,22 +74,12 @@ router.get("/attendance", async (req, res) => {
       return;
     }
     const includeInactive = req.query["includeInactive"] === "true";
-    if (!canAccessDateRange(req.user!, [from, to]) || (includeInactive && !hasPermission(req.user!, "manage_members"))) {
-      res.status(403).json({ error: "Forbidden" });
+    res.json(await attendanceService.getDashboard({ actor: req.user!, from, to, includeInactive }));
+  } catch (err) {
+    if (err instanceof AttendanceServiceError) {
+      res.status(err.status).json(err.payload);
       return;
     }
-
-    const allMembers = await attendanceRepository.listMembers({ includeInactive, order: "department" });
-
-    const directory = await loadAuthorizationAgentDirectory();
-    const members = allMembers.filter((member) => canAccessAttendanceMember(req.user!, member, directory));
-    const records =
-      members.length > 0
-        ? await attendanceRepository.listRecordsInRange(members.map((member) => member.id), from, to)
-        : [];
-
-    res.json({ members, records, timezone: ATTENDANCE_TIMEZONE });
-  } catch (err) {
     req.log.error(err, "attendance GET error");
     res.status(500).json({ error: "Unable to load attendance." });
   }
@@ -124,19 +92,16 @@ router.post("/attendance/members", requireAuth, requirePermission("manage_member
       res.status(400).json({ error: "name required" });
       return;
     }
-    const directory = await loadAuthorizationAgentDirectory();
-    if (!canAccessAttendanceMember(req.user!, { name: name.trim(), department: department?.trim() ?? "" }, directory)) {
-      res.status(403).json({ error: "Forbidden" });
-      return;
-    }
-    const member = await attendanceRepository.createMember({
-      name: name.trim(),
-      shift: shift?.trim() ?? "",
-      shiftHours: shiftHours?.trim() ?? "8",
-      department: department?.trim() ?? "",
+    const member = await attendanceService.createMember({
+      actor: req.user!,
+      member: { name, shift, shiftHours, department },
     });
     res.json(member);
   } catch (err) {
+    if (err instanceof AttendanceServiceError) {
+      res.status(err.status).json(err.payload);
+      return;
+    }
     req.log.error(err, "attendance POST member error");
     res.status(500).json({ error: "Unable to create attendance member." });
   }
@@ -149,29 +114,17 @@ router.patch("/attendance/members/:id", requireAuth, requirePermission("manage_m
       res.status(400).json({ error: "Invalid attendance member id." });
       return;
     }
-    const body = req.body as Partial<{ name: string; shift: string; shiftHours: string; department: string; active: boolean }>;
-    const existing = await attendanceRepository.findMemberById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Attendance member not found" });
-      return;
-    }
-    const finalDepartment = body.department?.trim() ?? existing.department;
-    const finalName = body.name?.trim() ?? existing.name;
-    const directory = await loadAuthorizationAgentDirectory();
-    if (!canAccessAttendanceMember(req.user!, existing, directory)
-      || !canAccessAttendanceMember(req.user!, { name: finalName, department: finalDepartment }, directory)) {
-      res.status(403).json({ error: "Forbidden" });
-      return;
-    }
-    const upd: Partial<{ name: string; shift: string; shiftHours: string; department: string; active: boolean }> = {};
-    if (body.name !== undefined) upd.name = body.name.trim();
-    if (body.shift !== undefined) upd.shift = body.shift.trim();
-    if (body.shiftHours !== undefined) upd.shiftHours = body.shiftHours.trim();
-    if (body.department !== undefined) upd.department = body.department.trim();
-    if (body.active !== undefined) upd.active = body.active;
-    const member = await attendanceRepository.updateMember(id, upd);
+    const member = await attendanceService.updateMember({
+      actor: req.user!,
+      id,
+      patch: req.body as AttendanceMemberPatch,
+    });
     res.json(member);
   } catch (err) {
+    if (err instanceof AttendanceServiceError) {
+      res.status(err.status).json(err.payload);
+      return;
+    }
     req.log.error(err, "attendance PATCH member error");
     res.status(500).json({ error: "Unable to update attendance member." });
   }
@@ -186,29 +139,15 @@ router.put("/attendance/record", requireAuth, requirePermission("edit_attendance
       res.status(400).json({ error: "memberId and date required" });
       return;
     }
-    if (!canAccessDateRange(req.user!, [date])) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-    const resolved = await resolveActiveAttendanceMember(memberId);
-    if (resolved.kind === "missing") return res.status(404).json({ error: "Attendance member not found" });
-    if (resolved.kind === "ambiguous") return res.status(409).json({ error: "Attendance member is ambiguous" });
-    const directory = await loadAuthorizationAgentDirectory();
-    if (!canAccessAttendanceMember(req.user!, resolved.member, directory)) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-    const result = await setAttendanceRecord({
-      memberId,
-      date,
-      status,
-      note,
-      coaching: coaching ?? false,
-      overwrite: true,
-    });
-    if (result.kind === "member_missing") return res.status(404).json({ error: "Attendance member not found" });
-    if (result.kind === "member_ambiguous") return res.status(409).json({ error: "Attendance member is ambiguous" });
-    if (result.kind === "conflict") return res.status(409).json({ error: "Conflicting attendance record" });
-    return res.json(result.record);
+    return res.json(await attendanceService.updateRecord({
+      actor: req.user!,
+      record: { memberId, date, status, note, coaching },
+    }));
   } catch (err) {
+    if (err instanceof AttendanceServiceError) {
+      res.status(err.status).json(err.payload);
+      return;
+    }
     req.log.error(err, "attendance PUT record error");
     const invalid = (err as Error).message.includes("invalid");
     return res.status(invalid ? 400 : 500).json({ error: invalid ? "Invalid attendance record." : "Unable to update attendance." });
@@ -217,20 +156,12 @@ router.put("/attendance/record", requireAuth, requirePermission("edit_attendance
 
 router.post("/attendance/import", requireAuth, requirePermission("manage_members"), async (req, res) => {
   try {
-    if (
-      (isCanonicalUser(req.user!) && !isAdministrator(req.user!))
-      || attendanceDepartmentForUser(req.user!)
-      || req.user!.allowedAgents?.length
-    ) {
-      res.status(403).json({ error: "Forbidden", reason: "The attendance import spans multiple departments." });
+    res.json(await attendanceService.importAttendance(req.user!));
+  } catch (err) {
+    if (err instanceof AttendanceServiceError) {
+      res.status(err.status).json(err.payload);
       return;
     }
-    const importPlan = buildAttendanceImportPlan(await loadAttendanceImportCandidates());
-    const totalRecords = importPlan.totalRecords;
-    const totalMembers = await attendanceRepository.persistImport(importPlan.members);
-
-    res.json({ success: true, totalMembers, totalRecords });
-  } catch (err) {
     req.log.error(err, "attendance import error");
     const upstreamFailure = err instanceof AttendanceImportSourceError;
     res.status(upstreamFailure ? 502 : 500).json({
@@ -396,7 +327,7 @@ router.get("/attendance/call-logs", async (req, res) => {
 router.post("/attendance/set", requireAuth, requirePermission("edit_attendance"), async (req, res) => {
   try {
     const { records, force = false, confirmed = false } = req.body as {
-      records: { date: string; memberId?: number; memberName?: string; status: string; note?: string; coaching?: boolean }[];
+      records: AttendanceBatchRecordInput[];
       force?: boolean;
       confirmed?: boolean;
     };
@@ -410,51 +341,12 @@ router.post("/attendance/set", requireAuth, requirePermission("edit_attendance")
     if (records.some((record) => !validateWorkflowCalendarDate(record.date))) {
       return res.status(400).json({ error: "Invalid attendance date." });
     }
-    if (!canAccessDateRange(req.user!, records.map((record) => record.date))) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-
-    const [members, directory] = await Promise.all([
-      activeAttendanceMembers(),
-      loadAuthorizationAgentDirectory(),
-    ]);
-    for (const record of records) {
-      const resolved = resolveActiveAttendanceMemberFromList(members, record.memberId, record.memberName);
-      if (resolved.kind === "ambiguous") return res.status(409).json({ error: "Attendance member is ambiguous" });
-      if (resolved.kind === "unique" && !canAccessAttendanceMember(req.user!, resolved.member, directory)) {
-        return res.status(403).json({ error: "Forbidden" });
-      }
-    }
-
-    const writeResults = await setAttendanceRecords(records.map((record) => ({
-      memberId: record.memberId,
-      memberName: record.memberName,
-      date: record.date,
-      status: record.status,
-      note: record.note,
-      coaching: record.coaching,
-      overwrite: force,
-    })), members);
-    type SetResult = { memberName: string; date: string; status: string; action: string };
-    const results: SetResult[] = [];
-
-    for (let index = 0; index < records.length; index++) {
-      const rec = records[index]!;
-      const result = writeResults[index]!;
-      const requestedName = rec.memberName ?? `member #${rec.memberId ?? "unknown"}`;
-      if (result.kind === "member_missing") {
-        results.push({ memberName: requestedName, date: rec.date, status: rec.status, action: "skipped: member not found" });
-      } else if (result.kind === "member_ambiguous") {
-        return res.status(409).json({ error: "Attendance member is ambiguous" });
-      } else if (result.kind === "conflict") {
-        results.push({ memberName: result.member.name, date: rec.date, status: rec.status, action: `skipped: already ${result.existing.status} (use force=true to overwrite)` });
-      } else {
-        results.push({ memberName: result.member.name, date: rec.date, status: rec.status, action: result.action });
-      }
-    }
-
-    return res.json({ success: true, results, timezone: ATTENDANCE_TIMEZONE });
+    return res.json(await attendanceService.setRecords({
+      actor: req.user!,
+      batch: { records, force },
+    }));
   } catch (err) {
+    if (err instanceof AttendanceServiceError) return res.status(err.status).json(err.payload);
     req.log.error(err, "attendance set error");
     const invalid = (err as Error).message.includes("invalid");
     return res.status(invalid ? 400 : 500).json({ error: invalid ? "Invalid attendance record." : "Unable to set attendance." });

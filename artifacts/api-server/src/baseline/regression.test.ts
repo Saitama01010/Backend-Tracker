@@ -273,11 +273,12 @@ test("important endpoint declarations remain present in the production routers",
 });
 
 test("production source continues to construct the pinned KPI and response fields", async () => {
-  const [quo, readyModeRoute, readyMode, attendance, violations, onboarding, samia, dashboard] = await Promise.all([
+  const [quo, readyModeRoute, readyMode, attendance, attendanceService, violations, onboarding, samia, dashboard] = await Promise.all([
     readFile(new URL("../routes/quo.ts", import.meta.url), "utf8"),
     readFile(new URL("../routes/readymode.ts", import.meta.url), "utf8"),
     readFile(new URL("../modules/retention/retention.readymode.service.ts", import.meta.url), "utf8"),
     readFile(new URL("../routes/attendance.ts", import.meta.url), "utf8"),
+    readFile(new URL("../modules/attendance/attendance.service.ts", import.meta.url), "utf8"),
     readFile(new URL("../routes/violations.ts", import.meta.url), "utf8"),
     readFile(new URL("../modules/onboarding/analytics.ts", import.meta.url), "utf8"),
     readFile(new URL("../routes/samia.ts", import.meta.url), "utf8"),
@@ -295,7 +296,8 @@ test("production source continues to construct the pinned KPI and response field
   assert.match(readyMode, /connected: value\.dialed/);
   assert.match(readyMode, /dialed: agents\.reduce/);
   assert.match(readyMode, /connected: agents\.reduce/);
-  assert.match(attendance, /res\.json\(\{ members, records, timezone: ATTENDANCE_TIMEZONE \}\)/);
+  assert.match(attendance, /attendanceService\.getDashboard/);
+  assert.match(attendanceService, /return \{ members, records, timezone: ATTENDANCE_TIMEZONE \}/);
   assert.match(violations, /lateLogin, availabilityGaps, missedWhileAvail, verifiedKeys/);
   assert.match(onboarding, /kpis:/);
   assert.match(onboarding, /agents: agentList/);

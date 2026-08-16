@@ -237,9 +237,10 @@ test("live-transfer reporting keeps HTTP concerns out of its application module"
   assert.match(backgroundHandlers, /modules\/transfers\/liveTransfers\.js/);
 });
 
-test("Attendance route delegates PostgreSQL access to its focused repository", async () => {
-  const [route, repository, importIntegration] = await Promise.all([
+test("Attendance core routes delegate application and PostgreSQL work through accepted boundaries", async () => {
+  const [route, service, repository, importIntegration] = await Promise.all([
     source("routes/attendance.ts"),
+    source("modules/attendance/attendance.service.ts"),
     source("modules/attendance/attendance.repository.ts"),
     source("integrations/googleSheets/attendanceImport.ts"),
   ]);
@@ -249,7 +250,14 @@ test("Attendance route delegates PostgreSQL access to its focused repository", a
   assert.match(repository, /@workspace\/db/);
   assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
   assert.doesNotMatch(repository, /integrations\//);
-  assert.match(route, /loadAttendanceImportCandidates/);
+  for (const operation of ["getDashboard", "createMember", "updateMember", "updateRecord", "importAttendance", "setRecords"]) {
+    assert.match(route, new RegExp(`attendanceService\\.${operation}`));
+  }
+  assert.match(service, /attendance\.repository\.js/);
+  assert.match(service, /integrations\/googleSheets\/attendanceImport\.js/);
+  assert.doesNotMatch(service, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  assert.doesNotMatch(service, /@workspace\/db|drizzle-orm/);
+  assert.doesNotMatch(route, /loadAttendanceImportCandidates/);
   assert.doesNotMatch(route, /googleCsvUrl|attendanceImportSources|parseCsv|\bfetch\s*\(/i);
   assert.doesNotMatch(importIntegration, /from ["']express["']|@workspace\/db|drizzle-orm/);
 });
