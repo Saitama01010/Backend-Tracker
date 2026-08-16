@@ -158,6 +158,7 @@ test("QA writes cannot be confirmed by injected transcript text or an unconfirme
 test("AI routes preserve authentication and fixed internal requests ignore Host headers", async () => {
   const samia = await source("routes/samia.ts");
   const qa = await source("routes/qa.ts");
+  const qaJobs = await source("modules/qa/qa.jobs.service.ts");
   const live = await source("routes/liveTransfers.ts");
   const liveService = await source("modules/transfers/liveTransfers.ts");
   const onboarding = await source("routes/obReport.ts");
@@ -172,7 +173,7 @@ test("AI routes preserve authentication and fixed internal requests ignore Host 
   assert.match(live, /router\.post\("\/live-transfers\/refresh", requireAuth, requireRole\("admin"\)/);
   assert.match(onboarding, /router\.post\("\/ob-report\/refresh", requireAuth, requireRole\("admin"\)/);
   assert.match(onboarding, /router\.post\("\/ob-report\/import"[\s\S]*OB_IMPORT_SECRET/);
-  assert.match(qa, /feature: "qa_admin_run"/);
+  assert.match(qaJobs, /feature: "qa_admin_run"/);
   assert.match(liveService, /feature: "live_transfer_refresh"/);
   assert.match(onboardingService, /feature: "onboarding_report_refresh"/);
 });

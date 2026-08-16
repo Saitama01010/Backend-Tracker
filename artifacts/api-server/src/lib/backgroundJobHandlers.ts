@@ -5,7 +5,7 @@ import { runScheduledQuoSync, runSync } from "../integrations/quo/sync.js";
 import { refreshCallHistory } from "../routes/vos.js";
 import { runOnboardingReportRefresh } from "../modules/onboarding/report.js";
 import { runLiveTransferRefresh } from "../modules/transfers/liveTransfers.js";
-import { runBiweeklyQa, runWeeklyAssignment } from "../routes/qa.js";
+import { runBiweeklyQa, runWeeklyAssignment } from "../modules/qa/qa.jobs.service.js";
 import { withDatabaseLease } from "./aiRateLimit.js";
 import { cleanupExpiredAiReservations } from "./aiReservationCleanup.js";
 

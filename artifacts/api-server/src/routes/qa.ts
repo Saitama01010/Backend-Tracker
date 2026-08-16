@@ -4,11 +4,10 @@ import { db, qaReviewsTable, managerQaTasksTable } from "@workspace/db";
 import { and, desc, eq, gte, lte, sql, inArray, type SQL } from "drizzle-orm";
 import { canonicalAgentName } from "../integrations/quo/sync.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { AiRateLimitError, withDatabaseLease, withDurableAiLimit } from "../lib/aiRateLimit.js";
-import { getQuoCallArtifacts, type QuoCallArtifacts } from "../lib/quoCall.js";
+import { AiRateLimitError, withDurableAiLimit } from "../lib/aiRateLimit.js";
+import { getQuoCallArtifacts } from "../lib/quoCall.js";
 import {
   shouldReuseStoredReview,
-  stableEligibleCalls,
 } from "../lib/qaPolicy.js";
 import { setPrivateDownloadHeaders } from "../lib/sensitiveWorkflowPolicy.js";
 import type { AuthPayload } from "../middleware/authCore.js";
@@ -19,11 +18,7 @@ import {
   normalizeAgentIdentity,
 } from "../middleware/authorizationCore.js";
 import { canAccessMetricAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
-import { planWeeklyQaAssignments } from "../lib/databasePerformance.js";
-import { postgresBackgroundJobStore } from "../lib/backgroundJobStore.js";
-import { manualJobKey, runNextBackgroundJob, scheduledJobKey } from "../lib/durableBackgroundJobs.js";
 import { validCronAuthorization } from "../lib/cronAuth.js";
-import { addCalendarDays, calendarDateParts, formatCalendarDate, startOfBusinessDay } from "../lib/businessTime.js";
 import {
   completeAiReservation,
   failAiReservation,
@@ -31,7 +26,6 @@ import {
   hashAiRequest,
   normalizeQaAgentKey,
   reserveQaAgentRun,
-  type QaReservationDecision,
 } from "../lib/aiRequestReservations.js";
 import {
   parseQaDateBasisQuery,
@@ -44,164 +38,22 @@ import {
 } from "../modules/qa/qa.schemas.js";
 import { qaRepository } from "../modules/qa/qa.repository.js";
 import {
-  anthropicErrorStatus,
   evaluateCall,
-  QA_MIN_CALL_SECONDS,
   QA_REVIEW_INTERVAL_DAYS,
 } from "../modules/qa/qa.evaluation.service.js";
+import {
+  enqueueScheduledBiweeklyQa,
+  getLatestQaRun,
+  runAdminBiweeklyQa,
+  runWeeklyAssignment,
+} from "../modules/qa/qa.jobs.service.js";
 
 const router: IRouter = Router();
 
 export type { QaDepartment as Department } from "../modules/qa/qa.schemas.js";
-// ── Background processor (all 3 departments) ────────────────────────────────
-export interface QaBiweeklyResult {
-  runId: number;
-  evaluated: Array<{ agent: string; callId: string }>;
-  skipped: Array<{ agent: string; reason: string }>;
-  errors: Array<{ agent: string; reason: string }>;
-}
-
 function agentKey(value: string | null | undefined): string {
   return normalizeQaAgentKey(canonicalAgentName(value) ?? value ?? "");
 }
-
-function qaReservationReason(decision: Exclude<QaReservationDecision, { kind: "reserved" }>): string {
-  if (decision.kind === "completed" || decision.kind === "cooldown") {
-    return `QA already completed within the rolling ${QA_REVIEW_INTERVAL_DAYS}-day window`;
-  }
-  if (decision.kind === "in_progress") return "QA is already reserved for this agent";
-  return "QA idempotency key conflicts with another request";
-}
-
-export async function runBiweeklyQa(
-  trigger: "cron" | "admin",
-  signal?: AbortSignal,
-): Promise<QaBiweeklyResult> {
-  return withDatabaseLease("qa_auto_biweekly", async () => {
-    signal?.throwIfAborted();
-    const run = await qaRepository.createBiweeklyRun(trigger);
-    const result: QaBiweeklyResult = { runId: run?.id ?? 0, evaluated: [], skipped: [], errors: [] };
-    try {
-      const cutoff = new Date(Date.now() - QA_REVIEW_INTERVAL_DAYS * 24 * 60 * 60 * 1000);
-      const { roster, recentReviews, candidates, reviewed } = await qaRepository
-        .loadBiweeklyInputs(cutoff, QA_MIN_CALL_SECONDS);
-
-      const recentlyReviewed = new Set(recentReviews.map((row) => agentKey(row.agentName)));
-      const reviewedCalls = new Set(reviewed.map((row) => row.id));
-      const sortedCandidates = stableEligibleCalls(candidates, reviewedCalls, QA_MIN_CALL_SECONDS);
-
-      for (const rosterAgent of [...roster].sort((a, b) => a.name.localeCompare(b.name))) {
-        signal?.throwIfAborted();
-        const key = agentKey(rosterAgent.name);
-        if (recentlyReviewed.has(key)) {
-          result.skipped.push({ agent: rosterAgent.name, reason: `QA review already exists within ${QA_REVIEW_INTERVAL_DAYS} days` });
-          continue;
-        }
-
-        const agentCandidates = sortedCandidates.filter((call) => agentKey(call.agentName) === key);
-        if (agentCandidates.length === 0) {
-          result.skipped.push({ agent: rosterAgent.name, reason: `no unreviewed completed call of at least ${QA_MIN_CALL_SECONDS} seconds` });
-          continue;
-        }
-
-        let selected: (typeof agentCandidates)[number] | null = null;
-        let artifacts: QuoCallArtifacts | null = null;
-        for (const candidate of agentCandidates) {
-          signal?.throwIfAborted();
-          const candidateArtifacts = await getQuoCallArtifacts(candidate.id);
-          if (candidateArtifacts.status === "ready") {
-            selected = candidate;
-            artifacts = candidateArtifacts;
-            break;
-          }
-        }
-        if (!selected || !artifacts) {
-          result.skipped.push({ agent: rosterAgent.name, reason: "no eligible call has a real QUO transcript" });
-          continue;
-        }
-
-        const reservation = await reserveQaAgentRun({
-          agentKey: key,
-          agentName: rosterAgent.name,
-          callId: selected.id,
-          idempotencyKey: hashAiIdempotencyKey(`qa-call:${selected.id}`),
-          requestHash: hashAiRequest({ callId: selected.id }),
-          source: "auto_biweekly",
-          requestedByUserId: null,
-        });
-        if (reservation.kind !== "reserved") {
-          result.skipped.push({ agent: rosterAgent.name, reason: qaReservationReason(reservation) });
-          continue;
-        }
-
-        try {
-          const review = await evaluateCall(selected.id, {
-            source: "auto_biweekly",
-            userId: 0,
-            artifacts,
-          });
-          if (review) {
-            await completeAiReservation(
-              reservation.id,
-              200,
-              { callId: selected.id },
-              QA_REVIEW_INTERVAL_DAYS * 24 * 60 * 60,
-            );
-            result.evaluated.push({ agent: rosterAgent.name, callId: selected.id });
-            recentlyReviewed.add(key);
-          } else {
-            await failAiReservation(reservation.id, "QA_RESULT_INVALID");
-            result.skipped.push({ agent: rosterAgent.name, reason: "Claude result failed server-side validation" });
-          }
-        } catch (error) {
-          await failAiReservation(reservation.id, "QA_EVALUATION_FAILED").catch(() => undefined);
-          result.errors.push({ agent: rosterAgent.name, reason: `evaluation failed (${anthropicErrorStatus(error) ?? "internal"})` });
-        }
-      }
-
-      if (run) {
-        await qaRepository.completeBiweeklyRun(run.id, result);
-      }
-      return result;
-    } catch (error) {
-      if (run) {
-        await qaRepository.failBiweeklyRun(run.id, result).catch(() => undefined);
-      }
-      throw error;
-    }
-  });
-}
-
-// ── Weekly auto-assignment: 1 lowest + 1 random per agent ───────────────────
-// Runs every Monday. Idempotent per week.
-// Compute Monday 00:00 of the current LA week (in UTC) for stable weekly window.
-function currentLAWeekStart(): Date {
-  const today = formatCalendarDate(new Date());
-  const { year, month, day } = calendarDateParts(today);
-  const dow = new Date(Date.UTC(year, month - 1, day)).getUTCDay(); // 0=Sun..6=Sat
-  const daysSinceMon = (dow + 6) % 7;
-  return startOfBusinessDay(addCalendarDays(today, -daysSinceMon));
-}
-
-export async function runWeeklyAssignment(): Promise<{ created: number; agents: number }> {
-  const weekStart = currentLAWeekStart();
-  const lookback = startOfBusinessDay(addCalendarDays(formatCalendarDate(weekStart), -7));
-
-  // Eligible reviews: from the prior week through now (so Monday-morning runs see last week's calls).
-  const reviews = await qaRepository.listReviewsSince(lookback);
-
-  const agents = [...new Set(reviews.map((review) => review.agentName))];
-  const existingTasks = agents.length > 0
-    ? await qaRepository.listManagerTasksForAgents(agents)
-    : [];
-  const plan = planWeeklyQaAssignments(reviews, existingTasks, weekStart);
-  const inserted = plan.picks.length > 0
-    ? await qaRepository.insertManagerTasks(plan.picks)
-    : [];
-
-  return { created: inserted.length, agents: plan.agents };
-}
-
 // ── Helpers ─────────────────────────────────────────────────────────────────
 type QaDepartmentScope =
   | { ok: true; departments: Department[] | null }
@@ -373,51 +225,20 @@ router.post("/qa/evaluate", requireAuth, requireRole("admin"), async (req, res) 
 });
 
 async function runBiweeklyResponse(res: Response, userId: number) {
-  try {
-    const result = await withDurableAiLimit(
-      { feature: "qa_admin_run", userId, perMinute: 1, perDay: 10 },
-      async () => {
-        const enqueued = await postgresBackgroundJobStore.enqueue({
-          jobType: "qa_biweekly",
-          idempotencyKey: manualJobKey("qa_biweekly", userId),
-          requestedByUserId: userId,
-          priority: 100,
-          maxAttempts: 3,
-        });
-        const workerId = `manual:qa:${userId}:${Date.now()}`;
-        const run = await runNextBackgroundJob(postgresBackgroundJobStore, {
-          qa_biweekly: async (_job, { signal }) => {
-            signal.throwIfAborted();
-            return { ...(await runBiweeklyQa("admin", signal)) };
-          },
-        }, {
-          workerId,
-          jobId: enqueued.job.id,
-          leaseMs: 6 * 60_000,
-          timeoutMs: 4 * 60_000,
-          retryAfterMs: 60_000,
-        });
-        const stored = await postgresBackgroundJobStore.get(enqueued.job.id);
-        if (stored?.status === "completed" && stored.result) return stored.result;
-        if (run.outcome === "idle" || stored?.status === "running") throw new AiRateLimitError("lease", 60);
-        throw new Error(stored?.lastErrorCode ?? "qa_job_failed");
-      },
-    );
-    return res.json(result);
-  } catch (err) {
-    if (err instanceof AiRateLimitError) {
-      res.setHeader("Retry-After", String(err.retryAfter));
-      if (err.reason !== "lease") {
-        return res.status(429).json({ error: "QA run limit reached" });
-      }
-      const activeRun = await qaRepository.getActiveBiweeklyRun();
-      return res.status(409).json({
-        error: "A biweekly QA run is already active",
-        activeRun: activeRun ?? null,
-      });
-    }
-    return res.status(500).json({ error: "Biweekly QA run failed" });
+  const outcome = await runAdminBiweeklyQa(userId);
+  if (outcome.kind === "completed") return res.json(outcome.result);
+  if (outcome.kind === "rate_limited") {
+    res.setHeader("Retry-After", String(outcome.retryAfter));
+    return res.status(429).json({ error: "QA run limit reached" });
   }
+  if (outcome.kind === "active") {
+    res.setHeader("Retry-After", String(outcome.retryAfter));
+    return res.status(409).json({
+      error: "A biweekly QA run is already active",
+      activeRun: outcome.activeRun ?? null,
+    });
+  }
+  return res.status(500).json({ error: "Biweekly QA run failed" });
 }
 
 router.post("/qa/biweekly-run", requireAuth, requireRole("admin"), async (req, res) => {
@@ -431,7 +252,7 @@ router.post("/qa/process", requireAuth, requireRole("admin"), async (req, res) =
 });
 
 router.get("/qa/runs/latest", requireAuth, requireRole("admin"), async (_req, res) => {
-  const run = await qaRepository.getLatestBiweeklyRun();
+  const run = await getLatestQaRun();
   return res.json({ run: run ?? null });
 });
 
@@ -442,14 +263,7 @@ router.get("/qa/biweekly-run", async (req, res) => {
     return res.status(401).json({ error: "Unauthorized" });
   }
   try {
-    const day = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-    const enqueued = await postgresBackgroundJobStore.enqueue({
-      jobType: "qa_biweekly",
-      idempotencyKey: scheduledJobKey("qa_biweekly", day),
-      priority: 30,
-      maxAttempts: 3,
-    });
-    return res.json({ ok: true, queued: enqueued.created, jobId: enqueued.job.id });
+    return res.json(await enqueueScheduledBiweeklyQa());
   } catch (error) {
     req.log.error(error, "QA cron enqueue failed");
     return res.status(503).json({ error: "QA run could not be queued" });

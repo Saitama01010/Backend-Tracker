@@ -79,7 +79,7 @@ test("QA routes consistently select evaluatedAt or callDate", async () => {
 });
 
 test("QA run response includes the run ID and all three result collections", async () => {
-  const source = await routeSource("qa.ts");
+  const source = await moduleSource("qa/qa.jobs.service.ts");
   assert.match(source, /interface QaBiweeklyResult[\s\S]*runId: number;[\s\S]*evaluated:[\s\S]*skipped:[\s\S]*errors:/);
   assert.match(source, /result: QaBiweeklyResult = \{ runId: run\?\.id \?\? 0, evaluated: \[\], skipped: \[\], errors: \[\] \}/);
 });
