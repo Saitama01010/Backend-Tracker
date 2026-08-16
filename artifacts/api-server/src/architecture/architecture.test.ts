@@ -65,14 +65,14 @@ test("middleware and application startup have one canonical owner", async () => 
 });
 
 test("Quo provider operations with established boundaries stay out of HTTP routes", async () => {
-  const [onboarding, liveTransfers, backgroundHandlers] = await Promise.all([
-    source("modules/onboarding/report.ts"),
+  const [onboardingProvider, liveTransfers, backgroundHandlers] = await Promise.all([
+    source("modules/onboarding/onboarding.report.provider.ts"),
     source("modules/transfers/liveTransfers.ts"),
     source("lib/backgroundJobHandlers.ts"),
   ]);
-  for (const route of [onboarding, liveTransfers]) {
-    assert.match(route, /integrations\/quo\/transcripts\.js/);
-    assert.doesNotMatch(route, /call-transcripts/);
+  for (const applicationSource of [onboardingProvider, liveTransfers]) {
+    assert.match(applicationSource, /integrations\/quo\/transcripts\.js/);
+    assert.doesNotMatch(applicationSource, /call-transcripts/);
   }
   assert.match(backgroundHandlers, /integrations\/quo\/sync\.js/);
   await assert.rejects(access(path.join(sourceRoot, "routes/quoSync.ts")));
@@ -202,11 +202,12 @@ test("onboarding analytics delegates PostgreSQL work through its repository boun
   assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(|integrations\//);
 });
 
-test("onboarding reporting delegates PostgreSQL work through its repository boundary", async () => {
-  const [route, report, repository, backgroundHandlers] = await Promise.all([
+test("onboarding reporting delegates PostgreSQL and provider work through accepted boundaries", async () => {
+  const [route, report, repository, provider, backgroundHandlers] = await Promise.all([
     source("routes/obReport.ts"),
     source("modules/onboarding/report.ts"),
     source("modules/onboarding/onboarding.report.repository.ts"),
+    source("modules/onboarding/onboarding.report.provider.ts"),
     source("lib/backgroundJobHandlers.ts"),
   ]);
   for (const operation of [
@@ -222,11 +223,16 @@ test("onboarding reporting delegates PostgreSQL work through its repository boun
   assert.doesNotMatch(report, /router\.(?:get|post|put|patch|delete)\(/);
   assert.doesNotMatch(
     report,
-    /@workspace\/db|drizzle-orm|\bdb\.|phoneCallsTable|onboardingClassificationsTable|onboardingReportStateTable/,
+    /@workspace\/db|drizzle-orm|\bdb\.|phoneCallsTable|onboardingClassificationsTable|onboardingReportStateTable|integrations\/quo|createAnthropicToolMessage/,
   );
   assert.match(report, /onboarding\.report\.repository\.js/);
+  assert.match(report, /onboarding\.report\.provider\.js/);
   assert.match(repository, /@workspace\/db/);
   assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(|integrations\//);
+  assert.match(provider, /integrations\/quo\/sync\.js/);
+  assert.match(provider, /integrations\/quo\/transcripts\.js/);
+  assert.match(provider, /createAnthropicToolMessage/);
+  assert.doesNotMatch(provider, /from ["']express["']|@workspace\/db|drizzle-orm/);
   assert.match(backgroundHandlers, /modules\/onboarding\/report\.js/);
 });
 

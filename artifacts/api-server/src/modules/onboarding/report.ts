@@ -1,38 +1,26 @@
 import ExcelJS from "exceljs";
-import { runSync } from "../../integrations/quo/sync.js";
 import { logger } from "../../lib/logger.js";
-import {
-  anthropicErrorStatus,
-  anthropicRequestId,
-  createAnthropicToolMessage,
-  isPermanentAnthropicError,
-  sanitizedErrorMessage,
-  toolInput,
-  usageFields,
-} from "../../lib/anthropic.js";
-import { AI_UNTRUSTED_DATA_SYSTEM_POLICY, wrapUntrustedAiData } from "../../lib/aiPrivacy.js";
+import { sanitizedErrorMessage } from "../../lib/anthropic.js";
 import { AiRateLimitError, withDatabaseLease, withDurableAiLimit } from "../../lib/aiRateLimit.js";
 import { postgresBackgroundJobStore } from "../../lib/backgroundJobStore.js";
 import { manualJobKey } from "../../lib/durableBackgroundJobs.js";
 import { OPERATIONAL_CONFIG } from "../../lib/operationalConfig.js";
 import { businessDayWindow } from "../../lib/businessTime.js";
 import {
-  fetchQuoTranscript as fetchTranscript,
-  type QuoDialogueLine as DialogueLine,
-} from "../../integrations/quo/transcripts.js";
-import {
   onboardingReportRepository,
   type OnboardingClassificationImportRow,
   type OnboardingReportRepository,
 } from "./onboarding.report.repository.js";
+import {
+  onboardingReportProvider,
+  type OnboardingReportProvider,
+} from "./onboarding.report.provider.js";
 
 export type { OnboardingClassificationImportRow } from "./onboarding.report.repository.js";
 
 // ─── Onboarding line constants ────────────────────────────────────────────────
 const LINE_ID = OPERATIONAL_CONFIG.lineIds.onboarding;
-const LINE_NUMBER = OPERATIONAL_CONFIG.lineIds.onboardingNumber;
 const LINE_LABEL = OPERATIONAL_CONFIG.lineIds.onboardingLabel;
-const MODEL = OPERATIONAL_CONFIG.aiModels.onboarding;
 const CONCURRENCY = Math.max(1, Math.min(4, Number(process.env["OB_CONC"] ?? 2) || 2));
 const TAX_RE = /\btaxes?\b/i;
 
@@ -56,117 +44,11 @@ function parseRange(from?: string, to?: string): { fromDate: Date; toDate: Date 
   return { fromDate, toDate };
 }
 
-// ─── Claude classification ────────────────────────────────────────────────────
-function buildTranscript(dialogue: DialogueLine[]): string {
-  const lines: string[] = [];
-  for (const d of dialogue) {
-    const who = d.identifier === LINE_NUMBER ? "AGENT" : "CUSTOMER";
-    const c = (d.content ?? "").trim();
-    if (c) lines.push(`${who}: ${c}`);
-  }
-  let text = lines.join("\n");
-  if (text.length > 14000) text = text.slice(0, 11000) + "\n...\n" + text.slice(-3000);
-  return text;
-}
-
-const SYS_PROMPT = `You analyze transcripts from a debt-relief company's ONBOARDING phone line (Better Lending).
-${AI_UNTRUSTED_DATA_SYSTEM_POLICY}
-On this line, a closer/sales rep usually warm-transfers a customer who just signed up, and the ONBOARDING agent enrolls them (collects file/case number, sets up the payment schedule, confirms the program, welcomes them).
-Return the result only through the provided classification tool with these fields:
-{
-  "customerName": string | null,   // the CUSTOMER's full name as stated on the call (not the agent). null if unknown.
-  "closerAgent": string | null,    // name of the SALES CLOSER who closed the deal and warm-transferred the customer, IF mentioned (e.g. "transferred from John", "I have X for you", a rep who hands off then leaves). NOT the onboarding agent. null if none.
-  "callType": "onboarded" | "connection" | "other",
-  "notes": string                  // <= 12 words, why you chose callType
-}
-callType rubric:
-- "onboarded": the customer was actually enrolled/onboarded — file or case number taken, payment/draft schedule set up, program confirmed, welcome to the program.
-- "connection": someone called to get connected / inquire / was transferred but was NOT onboarded — just a connection, a question, not ready, declined, wrong dept, callback only, no enrollment completed.
-- "other": internal/test/unclear/no real conversation.`;
-
-const CLASSIFICATION_TOOL = {
-  name: "record_onboarding_classification",
-  description: "Record the validated onboarding-call classification.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      customerName: { anyOf: [{ type: "string", maxLength: 120 }, { type: "null" }] },
-      closerAgent: { anyOf: [{ type: "string", maxLength: 120 }, { type: "null" }] },
-      callType: { type: "string", enum: ["onboarded", "connection", "other"] },
-      notes: { type: "string", maxLength: 180 },
-    },
-    required: ["customerName", "closerAgent", "callType", "notes"],
-    additionalProperties: false,
-  },
-};
-
-interface ClassifyResult {
-  customerName: string | null;
-  closerAgent: string | null;
-  callType: string;
-  notes: string;
-}
-type ClassifyAttempt =
-  | { status: "ok"; value: ClassifyResult }
-  | { status: "temporary_error" }
-  | { status: "permanent_error" };
-
-function validateClassifyResult(value: unknown): ClassifyResult | null {
-  if (!value || typeof value !== "object") return null;
-  const raw = value as Record<string, unknown>;
-  const nullableString = (item: unknown, maximum: number) =>
-    item === null || (typeof item === "string" && item.length <= maximum);
-  if (!nullableString(raw["customerName"], 120) || !nullableString(raw["closerAgent"], 120)) return null;
-  if (!(["onboarded", "connection", "other"] as unknown[]).includes(raw["callType"])) return null;
-  if (typeof raw["notes"] !== "string" || raw["notes"].length > 180) return null;
-  return {
-    customerName: typeof raw["customerName"] === "string" ? raw["customerName"].trim() || null : null,
-    closerAgent: typeof raw["closerAgent"] === "string" ? raw["closerAgent"].trim() || null : null,
-    callType: raw["callType"] as string,
-    notes: raw["notes"].trim(),
-  };
-}
-
-async function classify(
-  _agentName: string | null,
-  direction: string,
-  transcript: string,
-): Promise<ClassifyAttempt> {
-  try {
-    const response = await createAnthropicToolMessage({
-      model: MODEL,
-      system: SYS_PROMPT,
-      prompt: `Onboarding agent identity: [AUTHORIZED_EMPLOYEE]\nDirection: ${direction}\n\n${wrapUntrustedAiData("quo_onboarding_transcript", transcript, 14_000)}`,
-      tool: CLASSIFICATION_TOOL,
-      maxTokens: 256,
-    });
-    logger.info({
-      feature: "outbound_call_classification",
-      model: response.model,
-      requestId: response._request_id,
-      success: true,
-      ...usageFields(response.usage),
-    }, "anthropic request complete");
-    const value = validateClassifyResult(toolInput(response, CLASSIFICATION_TOOL.name));
-    return value ? { status: "ok", value } : { status: "permanent_error" };
-  } catch (err) {
-    logger.warn({
-      feature: "outbound_call_classification",
-      model: MODEL,
-      errorName: err instanceof Error ? err.name : "UnknownError",
-      errorMessage: sanitizedErrorMessage(err),
-      anthropicStatus: anthropicErrorStatus(err),
-      anthropicRequestId: anthropicRequestId(err),
-      success: false,
-    }, "anthropic request failed");
-    return { status: isPermanentAnthropicError(err) ? "permanent_error" : "temporary_error" };
-  }
-}
-
 // ─── Main refresh job ─────────────────────────────────────────────────────────
 export async function runOnboardingReportRefresh(
   signal?: AbortSignal,
   repository: OnboardingReportRepository = onboardingReportRepository,
+  provider: OnboardingReportProvider = onboardingReportProvider,
 ): Promise<void> {
   try {
     await withDatabaseLease("outbound_call_classifier", async () => {
@@ -184,7 +66,7 @@ export async function runOnboardingReportRefresh(
     const syncHours = Number(process.env["OB_SYNC_HOURS"] ?? 6);
     const syncFrom = new Date(Date.now() - syncHours * 60 * 60 * 1000);
     try {
-      await runSync(syncFrom, new Date(), { onlyLineId: LINE_ID, signal });
+      await provider.syncRecent(syncFrom, new Date(), LINE_ID, signal);
     } catch (err) {
       logger.warn({ errorCode: sanitizedErrorMessage(err) }, "obReport: recent sync failed, continuing with existing data");
     }
@@ -204,25 +86,25 @@ export async function runOnboardingReportRefresh(
         const i = idx++;
         const call = pending[i]!;
         try {
-          const tx = await fetchTranscript(call.id);
+          const tx = await provider.fetchTranscript(call.id);
           if (tx.kind === "error") {
             // Transient fetch failure: do NOT persist a row. Leaving the call
             // unclassified means the next refresh will retry it.
             logger.warn({ callId: call.id }, "obReport: transcript fetch failed, will retry next refresh");
           } else if (tx.kind === "notfound" || tx.dialogue.length === 0) {
             await repository.insertClassification({
-                callId: call.id,
-                callType: "no_transcript",
-                customerName: null,
-                closerAgent: null,
-                mentionsTax: null,
-                txStatus: tx.kind === "notfound" ? "notfound" : tx.status,
-                notes: "",
-              });
+              callId: call.id,
+              callType: "no_transcript",
+              customerName: null,
+              closerAgent: null,
+              mentionsTax: null,
+              txStatus: tx.kind === "notfound" ? "notfound" : tx.status,
+              notes: "",
+            });
           } else {
-            const transcript = buildTranscript(tx.dialogue);
+            const transcript = provider.buildTranscript(tx.dialogue);
             const mentionsTax = TAX_RE.test(transcript);
-            const attempt = await classify(call.agentName, call.direction, transcript);
+            const attempt = await provider.classify(call.agentName, call.direction, transcript);
             if (attempt.status === "temporary_error") {
               // LLM failed/timed out: skip so the next refresh retries instead of
               // permanently storing a wrong "error" classification.
@@ -240,14 +122,14 @@ export async function runOnboardingReportRefresh(
             } else {
               const res = attempt.value;
               await repository.insertClassification({
-                  callId: call.id,
-                  callType: res.callType,
-                  customerName: res.customerName ?? null,
-                  closerAgent: res.closerAgent ?? null,
-                  mentionsTax,
-                  txStatus: "completed",
-                  notes: res.notes ?? "",
-                });
+                callId: call.id,
+                callType: res.callType,
+                customerName: res.customerName ?? null,
+                closerAgent: res.closerAgent ?? null,
+                mentionsTax,
+                txStatus: "completed",
+                notes: res.notes ?? "",
+              });
             }
           }
         } catch (err) {
