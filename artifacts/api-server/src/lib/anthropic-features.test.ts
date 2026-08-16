@@ -445,10 +445,11 @@ test("force can skip response reuse but cannot bypass the per-agent reservation"
   assert.equal(shouldReuseStoredReview({ id: "call" }, false), true);
   assert.equal(shouldReuseStoredReview({ id: "call" }, true), false);
   const source = await readFile(path.join(routesDir, "qa.ts"), "utf8");
+  const service = await readFile(path.resolve(routesDir, "../modules/qa/qa.manual.service.ts"), "utf8");
   assert.match(source, /router\.post\("\/qa\/evaluate", requireAuth, requireRole\("admin"\)/);
-  assert.match(source, /reserveQaAgentRun\(/);
-  assert.match(source, /reservation\.kind === "cooldown"/);
-  assert.match(source, /evaluateCall\(callId/);
+  assert.match(service, /reserveQaAgentRun\(/);
+  assert.match(service, /reservation\.kind === "cooldown"/);
+  assert.match(service, /evaluateCall\(input\.callId/);
 });
 
 test("AI reservation schema is additive and protects Samia and QA concurrency", async () => {

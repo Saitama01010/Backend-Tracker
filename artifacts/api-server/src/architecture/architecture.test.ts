@@ -276,6 +276,67 @@ test("Attendance routes delegate application, source, and PostgreSQL work throug
   assert.doesNotMatch(importIntegration, /from ["']express["']|@workspace\/db|drizzle-orm/);
 });
 
+test("QA routes delegate validation, authorization, application, persistence, and integration work", async () => {
+  const [
+    route,
+    authorization,
+    evaluationService,
+    manualService,
+    jobsService,
+    reportingService,
+    exportService,
+    repository,
+    backgroundHandlers,
+  ] = await Promise.all([
+    source("routes/qa.ts"),
+    source("modules/qa/qa.authorization.ts"),
+    source("modules/qa/qa.evaluation.service.ts"),
+    source("modules/qa/qa.manual.service.ts"),
+    source("modules/qa/qa.jobs.service.ts"),
+    source("modules/qa/qa.reporting.service.ts"),
+    source("modules/qa/qa.export.service.ts"),
+    source("modules/qa/qa.repository.ts"),
+    source("lib/backgroundJobHandlers.ts"),
+  ]);
+
+  for (const operation of [
+    "qaManualEvaluationService",
+    "runAdminBiweeklyQa",
+    "runWeeklyAssignment",
+    "enqueueScheduledBiweeklyQa",
+    "qaReportingService",
+    "qaExportService",
+  ]) {
+    assert.match(route, new RegExp(`\\b${operation}\\b`));
+  }
+  assert.match(route, /qa\.schemas\.js/);
+  assert.match(route, /qa\.authorization\.js/);
+  assert.doesNotMatch(
+    route,
+    /@workspace\/db|drizzle-orm|ExcelJS|@anthropic-ai|integrations\/quo|lib\/quoCall|reserveQaAgentRun|createAnthropicToolMessage|getQuoCallArtifacts|\bdb\./,
+  );
+
+  assert.match(repository, /@workspace\/db/);
+  assert.doesNotMatch(repository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(|integrations\//);
+  for (const service of [authorization, evaluationService, manualService, jobsService, reportingService, exportService]) {
+    assert.doesNotMatch(service, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  }
+  for (const service of [evaluationService, manualService, jobsService, reportingService, exportService]) {
+    assert.doesNotMatch(service, /@workspace\/db|drizzle-orm/);
+  }
+  assert.match(evaluationService, /qa\.repository\.js/);
+  assert.match(evaluationService, /getQuoCallArtifacts/);
+  assert.match(manualService, /qa\.repository\.js/);
+  assert.match(manualService, /qa\.evaluation\.service\.js/);
+  assert.match(manualService, /getQuoCallArtifacts/);
+  assert.match(jobsService, /qa\.repository\.js/);
+  assert.match(jobsService, /qa\.evaluation\.service\.js/);
+  assert.match(jobsService, /getQuoCallArtifacts/);
+  assert.match(reportingService, /qa\.repository\.js/);
+  assert.match(exportService, /qa\.repository\.js/);
+  assert.match(backgroundHandlers, /modules\/qa\/qa\.jobs\.service\.js/);
+});
+
 test("the production API relative-import graph remains acyclic", async () => {
   const files = await productionTypeScriptFiles(sourceRoot);
   const known = new Set(files);

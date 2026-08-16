@@ -1,22 +1,8 @@
 import { Router, type IRouter, type Response } from "express";
-import { canonicalAgentName } from "../integrations/quo/sync.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { AiRateLimitError, withDurableAiLimit } from "../lib/aiRateLimit.js";
-import { getQuoCallArtifacts } from "../lib/quoCall.js";
-import {
-  shouldReuseStoredReview,
-} from "../lib/qaPolicy.js";
 import { setPrivateDownloadHeaders } from "../lib/sensitiveWorkflowPolicy.js";
 import type { AuthPayload } from "../middleware/authCore.js";
 import { validCronAuthorization } from "../lib/cronAuth.js";
-import {
-  completeAiReservation,
-  failAiReservation,
-  hashAiIdempotencyKey,
-  hashAiRequest,
-  normalizeQaAgentKey,
-  reserveQaAgentRun,
-} from "../lib/aiRequestReservations.js";
 import {
   parseQaDateBasisQuery,
   parseQaDepartment,
@@ -26,11 +12,6 @@ import {
   parseQaTaskResolution,
   type QaDepartment as Department,
 } from "../modules/qa/qa.schemas.js";
-import { qaRepository } from "../modules/qa/qa.repository.js";
-import {
-  evaluateCall,
-  QA_REVIEW_INTERVAL_DAYS,
-} from "../modules/qa/qa.evaluation.service.js";
 import {
   enqueueScheduledBiweeklyQa,
   getLatestQaRun,
@@ -47,13 +28,11 @@ import {
   qaReportingService,
 } from "../modules/qa/qa.reporting.service.js";
 import { qaExportService } from "../modules/qa/qa.export.service.js";
+import { qaManualEvaluationService } from "../modules/qa/qa.manual.service.js";
 
 const router: IRouter = Router();
 
 export type { QaDepartment as Department } from "../modules/qa/qa.schemas.js";
-function agentKey(value: string | null | undefined): string {
-  return normalizeQaAgentKey(canonicalAgentName(value) ?? value ?? "");
-}
 // ── Helpers ─────────────────────────────────────────────────────────────────
 type QaDepartmentRouteScope =
   | { ok: true; departments: Department[] | null }
@@ -72,97 +51,16 @@ async function qaAgentScope(user: AuthPayload): Promise<QaAgentScope> {
 // ── Routes ──────────────────────────────────────────────────────────────────
 
 router.post("/qa/evaluate", requireAuth, requireRole("admin"), async (req, res) => {
-  let reservationId: number | null = null;
-  try {
-    const parsed = parseQaEvaluationRequest(req.body, req.get("idempotency-key"));
-    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
-    const { callId, force, rawIdempotencyKey } = parsed.value;
-
-    const existing = await qaRepository.getReview(callId);
-    if (shouldReuseStoredReview(existing, force)) return res.json(existing);
-
-    const [call, artifacts] = await Promise.all([
-      qaRepository.getCall(callId),
-      getQuoCallArtifacts(callId),
-    ]);
-    if (!call && artifacts.status === "not_found") return res.status(404).json({ error: "Call not found" });
-    if (!call) return res.status(404).json({ error: "Call metadata was not found in the synchronized QUO calls table" });
-    if (artifacts.status !== "ready") {
-      return res.status(409).json({ error: "QUO transcript is unavailable or still processing" });
-    }
-
-    const agentName = canonicalAgentName(call.agentName);
-    const key = agentKey(agentName);
-    if (!agentName || !key || key === "unknown") {
-      return res.status(422).json({ error: "Call has no authoritative QA agent identity" });
-    }
-    const reservation = await reserveQaAgentRun({
-      agentKey: key,
-      agentName,
-      callId,
-      idempotencyKey: hashAiIdempotencyKey(rawIdempotencyKey || `qa-call:${callId}`),
-      requestHash: hashAiRequest({ callId }),
-      source: "manual_call_id",
-      requestedByUserId: req.user!.userId,
-    });
-    if (reservation.kind === "completed") {
-      const completedReview = await qaRepository.getReview(callId);
-      return completedReview
-        ? res.json(completedReview)
-        : res.status(409).json({ error: "QA was already completed for this agent" });
-    }
-    if (reservation.kind === "in_progress") {
-      res.setHeader("Retry-After", String(reservation.retryAfter));
-      return res.status(409).json({ error: "QA is already processing for this agent" });
-    }
-    if (reservation.kind === "cooldown") {
-      res.setHeader("Retry-After", String(Math.max(1, Math.ceil((reservation.eligibleAt.getTime() - Date.now()) / 1_000))));
-      return res.status(409).json({
-        error: `QA is limited to one completed or reserved run per agent in any rolling ${QA_REVIEW_INTERVAL_DAYS}-day period`,
-        eligibleAt: reservation.eligibleAt.toISOString(),
-      });
-    }
-    if (reservation.kind === "conflict") {
-      return res.status(409).json({ error: "Idempotency-Key was already used for a different QA request" });
-    }
-    reservationId = reservation.id;
-
-    const review = await withDurableAiLimit({
-      feature: "qa_manual",
-      userId: req.user!.userId,
-      perMinute: 3,
-      perDay: 20,
-    }, () => evaluateCall(callId, {
-      source: "manual_call_id",
-      userId: req.user!.userId,
-      artifacts,
-    }));
-    if (!review) {
-      await failAiReservation(reservationId, "QA_RESULT_INVALID");
-      reservationId = null;
-      return res.status(422).json({ error: "Call is not QA-eligible or Claude returned an invalid evaluation" });
-    }
-    await completeAiReservation(
-      reservationId,
-      200,
-      { callId },
-      QA_REVIEW_INTERVAL_DAYS * 24 * 60 * 60,
-    );
-    reservationId = null;
-    return res.json(review);
-  } catch (err) {
-    if (reservationId !== null) {
-      await failAiReservation(reservationId, "QA_EVALUATION_FAILED").catch(() => undefined);
-    }
-    if (err instanceof AiRateLimitError) {
-      res.setHeader("Retry-After", String(err.retryAfter));
-      return res.status(429).json({ error: "Manual QA evaluation limit reached" });
-    }
-    if ((err as Error)?.message?.includes("ANTHROPIC_API_KEY")) {
-      return res.status(500).json({ error: "QA is missing server-side Anthropic configuration" });
-    }
-    return res.status(502).json({ error: "QA evaluation failed" });
+  const parsed = parseQaEvaluationRequest(req.body, req.get("idempotency-key"));
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const outcome = await qaManualEvaluationService.evaluate({
+    ...parsed.value,
+    userId: req.user!.userId,
+  });
+  if (outcome.retryAfter !== undefined) {
+    res.setHeader("Retry-After", String(outcome.retryAfter));
   }
+  return res.status(outcome.status).json(outcome.body);
 });
 
 async function runBiweeklyResponse(res: Response, userId: number) {
