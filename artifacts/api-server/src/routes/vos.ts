@@ -5,7 +5,6 @@ import type { Logger } from "pino";
 import { getBlockedNumbers } from "../lib/blockedNumbers.js";
 import { getActiveReadymodeItems } from "./nsfReadymode.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { canAccessLiveAgent, canAccessMetricAgent, loadAuthorizationAgentDirectory } from "../lib/authorizationScope.js";
 import {
   approvedVosDebugPath,
   parseBoundedInteger,
@@ -29,6 +28,11 @@ import {
 } from "../integrations/pbx/client.js";
 import { teamFromRingGroupName } from "../integrations/pbx/mapper.js";
 import { fetchQuoDirectoryPhoneNumbers } from "../integrations/quo/client.js";
+import { retentionPbxService } from "../modules/retention/retention.pbx.service.js";
+import type {
+  RetentionPbxCallHistoryStat,
+  RetentionPbxRingGroupMissed,
+} from "../modules/retention/retention.pbx.types.js";
 
 const router = Router();
 router.use("/vos", requireAuth);
@@ -44,20 +48,8 @@ router.use("/vos", requireAuth);
 export const vosCallSpansCache = new Map<string, Array<{ start: number; end: number }>>();
 export const vosCallTimestampsCache = new Map<string, Array<{ at: string; source: "pbx"; id: string }>>();
 
-export interface VosCallHistoryStat {
-  agentName: string;
-  calls: number;
-  inbound: number;
-  outbound: number;
-  answered: number;
-  missed: number;
-  voicemail: number;
-  durationSeconds: number;
-  lastCallAt: string | null;
-  firstCallAt: string | null;
-}
-
-export type VosRingGroupMissed = Record<number, number>;
+export type VosCallHistoryStat = RetentionPbxCallHistoryStat;
+export type VosRingGroupMissed = RetentionPbxRingGroupMissed;
 
 export interface MissedNoCallbackItem {
   id: string | number;
@@ -1003,86 +995,16 @@ router.post("/vos/refresh", requireRole("admin"), async (req, res) => {
 router.get("/vos/stats", async (req, res) => {
   try {
     await hydrateVosState();
-    const cacheAgeMs = callHistoryFetchedAt ? Date.now() - callHistoryFetchedAt : Infinity;
-    if (!callHistoryCache.length || cacheAgeMs > 2 * 60 * 1000) {
-      const minute = new Date().toISOString().slice(0, 16).replace(/[-T:]/g, "");
-      await postgresBackgroundJobStore.enqueue({
-        jobType: "integration_live_refresh",
-        idempotencyKey: scheduledJobKey("integration_live_refresh", minute),
-        priority: 100,
-        maxAttempts: 4,
-      }).catch((error) => req.log.warn(error, "PBX refresh enqueue failed"));
-    }
-
-    const [agents, ringGroups, dashboard] = await Promise.all([
-      fetchPbxJson<VosAgent[]>("/api/agents"),
-      fetchPbxJson<VosRingGroup[]>("/api/ring-groups"),
-      fetchPbxJson<VosDashboard>("/api/dashboard"),
-    ]);
-
-    const callHistory: VosCallHistoryStat[] =
-      callHistoryCache.length > 0
-        ? callHistoryCache
-        : (dashboard.callsByAgent ?? []).map((a) => ({
-            agentName: a.agentName,
-            calls: a.calls,
-            inbound: a.inbound,
-            outbound: a.outbound,
-            answered: a.calls,
-            missed: 0,
-            voicemail: 0,
-            durationSeconds: Math.round((a.avgDuration ?? 0) * a.calls),
-            lastCallAt: null,
-            firstCallAt: null,
-          }));
-
-    if (isAdministrator(req.user!)) {
-      res.json({ dashboard, agents, ringGroups, callHistory, callHistoryFetchedAt, ringGroupMissed: ringGroupMissedCache });
-      return;
-    }
-
-    const directory = await loadAuthorizationAgentDirectory();
-    const scopedAgents = agents.filter((agent) => canAccessMetricAgent(req.user!, agent.name, directory));
-    const allowedIds = new Set(scopedAgents.map((agent) => agent.id));
-    const scopedHistory = callHistory.filter((agent) => canAccessMetricAgent(req.user!, agent.agentName, directory));
-    const scopedCallsByAgent = (dashboard.callsByAgent ?? [])
-      .filter((agent) => canAccessMetricAgent(req.user!, agent.agentName, directory));
-    const scopedLiveCalls = (dashboard.liveCalls ?? [])
-      .filter((call) => !!call.agentName && canAccessMetricAgent(req.user!, call.agentName, directory));
-    const scopedStatuses = (dashboard.agentStatuses ?? [])
-      .filter((agent) => canAccessMetricAgent(req.user!, agent.name, directory));
-    const scopedRingGroups = ringGroups
-      .map((group) => ({ ...group, agentIds: group.agentIds.filter((id) => allowedIds.has(id)) }))
-      .filter((group) => group.agentIds.length > 0);
-    const allowedRingGroupIds = new Set(scopedRingGroups.map((group) => group.id));
-    const scopedRingGroupMissed = Object.fromEntries(
-      Object.entries(ringGroupMissedCache).filter(([id]) => allowedRingGroupIds.has(Number(id))),
-    );
-    const totalCalls = scopedHistory.reduce((sum, agent) => sum + agent.calls, 0);
-    const totalDuration = scopedHistory.reduce((sum, agent) => sum + agent.durationSeconds, 0);
-    const scopedDashboard: VosDashboard = {
-      ...dashboard,
-      activeCalls: scopedLiveCalls.length,
-      totalAgents: scopedAgents.length,
-      onlineAgents: scopedStatuses.filter((agent) => agent.status !== "offline").length,
-      availableAgents: scopedStatuses.filter((agent) => agent.status === "available").length,
-      totalCallsToday: totalCalls,
-      avgDurationToday: totalCalls > 0 ? Math.round(totalDuration / totalCalls) : 0,
-      totalInboundToday: scopedHistory.reduce((sum, agent) => sum + agent.inbound, 0),
-      totalOutboundToday: scopedHistory.reduce((sum, agent) => sum + agent.outbound, 0),
-      missedCallsToday: scopedHistory.reduce((sum, agent) => sum + agent.missed, 0),
-      callsByAgent: scopedCallsByAgent,
-      liveCalls: scopedLiveCalls,
-      agentStatuses: scopedStatuses,
-    };
-    res.json({
-      dashboard: scopedDashboard,
-      agents: scopedAgents,
-      ringGroups: scopedRingGroups,
-      callHistory: scopedHistory,
-      callHistoryFetchedAt,
-      ringGroupMissed: scopedRingGroupMissed,
+    const payload = await retentionPbxService.getStats({
+      actor: req.user!,
+      cache: {
+        callHistory: callHistoryCache,
+        fetchedAt: callHistoryFetchedAt,
+        ringGroupMissed: ringGroupMissedCache,
+      },
+      log: req.log,
     });
+    res.json(payload);
   } catch (err) {
     req.log.error(err, "vos stats error");
     res.status(500).json({ error: "PBX statistics are temporarily unavailable." });
@@ -1887,17 +1809,7 @@ router.get("/vos/callback-review", async (req, res) => {
 
 router.get("/vos/live", async (req, res) => {
   try {
-    const dashboard = await fetchPbxJson<VosDashboard>("/api/dashboard");
-    if (isAdministrator(req.user!)) {
-      res.json({ liveCalls: dashboard.liveCalls ?? [], agentStatuses: dashboard.agentStatuses ?? [] });
-      return;
-    }
-    const directory = await loadAuthorizationAgentDirectory();
-    const liveCalls = (dashboard.liveCalls ?? [])
-      .filter((call) => !!call.agentName && canAccessLiveAgent(req.user!, call.agentName, directory));
-    const agentStatuses = (dashboard.agentStatuses ?? [])
-      .filter((agent) => canAccessLiveAgent(req.user!, agent.name, directory));
-    res.json({ liveCalls, agentStatuses });
+    res.json(await retentionPbxService.getLive(req.user!));
   } catch (err) {
     req.log.error(err, "vos live error");
     res.status(500).json({ error: "PBX live calls are temporarily unavailable." });

@@ -92,6 +92,8 @@ test("migrated dashboard routes delegate provider transport and raw parsing to s
     readymode,
     retentionReadyModeService,
     vos,
+    retentionPbxService,
+    retentionPbxRepository,
   ] = await Promise.all([
     source("routes/quo.ts"),
     source("modules/retention/retention.quo.service.ts"),
@@ -105,6 +107,8 @@ test("migrated dashboard routes delegate provider transport and raw parsing to s
     source("routes/readymode.ts"),
     source("modules/retention/retention.readymode.service.ts"),
     source("routes/vos.ts"),
+    source("modules/retention/retention.pbx.service.ts"),
+    source("modules/retention/retention.pbx.repository.ts"),
   ]);
 
   assert.match(quo, /integrations\/quo\/client\.js/);
@@ -162,6 +166,23 @@ test("migrated dashboard routes delegate provider transport and raw parsing to s
 
   assert.match(vos, /integrations\/pbx\/(?:client|mapper)\.js/);
   assert.doesNotMatch(vos, /phonesystem\.voslogic\.com|VOSLOGIC_(?:EMAIL|PASSWORD)|\/api\/auth\/login|\bfetch\s*\(/);
+  const statsHandler = vos.slice(
+    vos.indexOf('router.get("/vos/stats"'),
+    vos.indexOf('router.get("/vos/missed-no-callback"'),
+  );
+  const liveHandler = vos.slice(
+    vos.indexOf('router.get("/vos/live"'),
+    vos.indexOf('router.get("/vos/debug/calls"'),
+  );
+  assert.match(statsHandler, /retentionPbxService\.getStats/);
+  assert.match(liveHandler, /retentionPbxService\.getLive/);
+  assert.doesNotMatch(`${statsHandler}\n${liveHandler}`, /fetchPbxJson|canAccess(?:Metric|Live)Agent|loadAuthorizationAgentDirectory/);
+  assert.match(retentionPbxService, /retention\.pbx\.repository\.js/);
+  assert.match(retentionPbxService, /integrations\/pbx\/client\.js/);
+  assert.doesNotMatch(retentionPbxService, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
+  assert.doesNotMatch(retentionPbxService, /@workspace\/db|drizzle-orm/);
+  assert.match(retentionPbxRepository, /backgroundJobStore/);
+  assert.doesNotMatch(retentionPbxRepository, /from ["']express["']|:\s*(?:Request|Response)\b|\bRouter\(/);
 });
 
 test("onboarding analytics keeps HTTP concerns out of its application module", async () => {
