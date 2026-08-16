@@ -20,86 +20,21 @@ import { businessDayWindow, formatCalendarDate } from "../lib/businessTime.js";
 import type { AuthPayload } from "../middleware/authCore.js";
 import { scopeMissedItemsForUser } from "../lib/missedCallScope.js";
 import { canAccessFullTeam, isAdministrator, type MetricTeam } from "../middleware/authorizationCore.js";
+import {
+  fetchPbxJson,
+  type VosAgent,
+  type VosCallRaw,
+  type VosDashboard,
+  type VosRingGroup,
+} from "../integrations/pbx/client.js";
+import { teamFromRingGroupName } from "../integrations/pbx/mapper.js";
 
 const router = Router();
 router.use("/vos", requireAuth);
 
-const VOS_BASE = "https://phonesystem.voslogic.com";
-
 // ─── Session ─────────────────────────────────────────────────────────────────
 
-let cachedCookie = "";
-let cookieExpiry = 0;
-
-async function getSession(): Promise<string> {
-  if (cachedCookie && Date.now() < cookieExpiry) return cachedCookie;
-  const email = (process.env["VOSLOGIC_EMAIL"] ?? "").trim().replace(/^["']|["']$/g, "");
-  const password = (process.env["VOSLOGIC_PASSWORD"] ?? "").trim().replace(/^["']|["']$/g, "");
-  if (!email || !password) throw new Error("VOSLOGIC_EMAIL / VOSLOGIC_PASSWORD not set");
-  const res = await fetch(`${VOS_BASE}/api/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Accept": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!res.ok) throw new Error(`VoSLogic login failed: ${res.status}`);
-  const cookie = (res.headers.getSetCookie?.() ?? []).map((c) => c.split(";")[0]).join("; ");
-  if (!cookie) throw new Error("VoSLogic login returned no cookie");
-  cachedCookie = cookie;
-  cookieExpiry = Date.now() + 6 * 60 * 60 * 1000;
-  return cookie;
-}
-
-async function vosFetch<T>(path: string): Promise<T> {
-  const cookie = await getSession();
-  const res = await fetch(`${VOS_BASE}${path}`, {
-    headers: { "Accept": "application/json", "Cookie": cookie },
-  });
-  if (res.status === 401) {
-    cachedCookie = "";
-    cookieExpiry = 0;
-    const cookie2 = await getSession();
-    const res2 = await fetch(`${VOS_BASE}${path}`, { headers: { "Accept": "application/json", "Cookie": cookie2 } });
-    if (!res2.ok) throw new Error(`VoSLogic API error ${res2.status}`);
-    return res2.json() as Promise<T>;
-  }
-  if (!res.ok) throw new Error(`VoSLogic API error ${res.status}`);
-  return res.json() as Promise<T>;
-}
-
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-interface VosDashboard {
-  activeCalls: number;
-  totalAgents: number;
-  onlineAgents: number;
-  availableAgents: number;
-  totalCallsToday: number;
-  avgDurationToday: number;
-  totalInboundToday: number;
-  totalOutboundToday: number;
-  missedCallsToday: number;
-  callsByAgent: { agentName: string; calls: number; inbound: number; outbound: number; avgDuration: number }[];
-  liveCalls: { id: number; direction: string; callerNumber: string; calledNumber: string; phoneLabel: string; ringGroupName: string | null; agentName: string | null; duration: number; startedAt: string }[];
-  agentStatuses: { id: number; name: string; extension: string; status: string; callsToday: number }[];
-}
-
-interface VosAgent { id: number; name: string; extension: string; email: string; role: string; status: string; ringGroupIds: number[] }
-interface VosRingGroup { id: number; name: string; agentIds: number[] }
-
-interface VosCallRaw {
-  id: number;
-  direction: string;
-  status: string;
-  duration: number | null;
-  agentId: number | null;
-  agentName: string | null;
-  fromNumber?: string;
-  toNumber?: string;
-  createdAt: string;
-  // VoSLogic may include ring group info directly on call records
-  ringGroupId?: number | null;
-  ringGroupName?: string | null;
-}
 
 /**
  * Per-agent completed-call spans from the most recent VoSLogic refresh.
@@ -314,14 +249,6 @@ async function fetchQuoLineNumbers(): Promise<Set<string>> {
 // Personal agent lines (e.g. "Rick Miller RT OB", "Jenny NSF") are excluded.
 const TEAM_QUO_LINES = [...OPERATIONAL_CONFIG.trackedTeamLines];
 
-export function teamFromRingGroupName(name: string): "retention" | "nsf" | "cs" | "other" {
-  const n = name.toLowerCase();
-  if (n.includes("retention")) return "retention";
-  if (n.includes("back") || n.includes("nsf")) return "nsf";
-  if (n.includes("customer") || n.includes("support") || n === "cs" || n.includes("cs team")) return "cs";
-  return "other";
-}
-
 // ─── Per-agent status breakdown ───────────────────────────────────────────────
 
 async function fetchAgentCallsForDate(
@@ -355,7 +282,7 @@ async function fetchAgentCallsForDate(
   let page = 1;
 
   while (page <= 20) {
-    const data = await vosFetch<{ calls: VosCallRaw[] }>(
+    const data = await fetchPbxJson<{ calls: VosCallRaw[] }>(
       `/api/calls?agentId=${agentId}&limit=100&page=${page}`
     );
     if (!data.calls?.length) break;
@@ -464,7 +391,7 @@ async function scanRingGroupCalls(
   const pendingMissed: VosCallRaw[] = [];
 
   for (let page = 1; page <= pagesToScan; page++) {
-    const data = await vosFetch<{ calls: VosCallRaw[] }>(
+    const data = await fetchPbxJson<{ calls: VosCallRaw[] }>(
       `/api/calls?limit=100&page=${page}`
     );
     if (!data.calls?.length) break;
@@ -639,9 +566,9 @@ export async function refreshCallHistory(
     const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
 
     const [dashboard, agentList, ringGroups] = await Promise.all([
-      vosFetch<VosDashboard>("/api/dashboard"),
-      vosFetch<VosAgent[]>("/api/agents"),
-      vosFetch<VosRingGroup[]>("/api/ring-groups"),
+      fetchPbxJson<VosDashboard>("/api/dashboard"),
+      fetchPbxJson<VosAgent[]>("/api/agents"),
+      fetchPbxJson<VosRingGroup[]>("/api/ring-groups"),
     ]);
     options.signal?.throwIfAborted();
 
@@ -793,7 +720,7 @@ export async function refreshCallHistory(
       if (rgId == null) continue;
       probeTasks.push((async () => {
         try {
-          const data = await vosFetch<{ calls: VosCallRaw[] }>(
+          const data = await fetchPbxJson<{ calls: VosCallRaw[] }>(
             `/api/calls?agentId=${agentId}&limit=100&page=1`
           );
           for (const call of data.calls ?? []) {
@@ -1100,9 +1027,9 @@ router.get("/vos/stats", async (req, res) => {
     }
 
     const [agents, ringGroups, dashboard] = await Promise.all([
-      vosFetch<VosAgent[]>("/api/agents"),
-      vosFetch<VosRingGroup[]>("/api/ring-groups"),
-      vosFetch<VosDashboard>("/api/dashboard"),
+      fetchPbxJson<VosAgent[]>("/api/agents"),
+      fetchPbxJson<VosRingGroup[]>("/api/ring-groups"),
+      fetchPbxJson<VosDashboard>("/api/dashboard"),
     ]);
 
     const callHistory: VosCallHistoryStat[] =
@@ -1972,7 +1899,7 @@ router.get("/vos/callback-review", async (req, res) => {
 
 router.get("/vos/live", async (req, res) => {
   try {
-    const dashboard = await vosFetch<VosDashboard>("/api/dashboard");
+    const dashboard = await fetchPbxJson<VosDashboard>("/api/dashboard");
     if (isAdministrator(req.user!)) {
       res.json({ liveCalls: dashboard.liveCalls ?? [], agentStatuses: dashboard.agentStatuses ?? [] });
       return;
@@ -1992,7 +1919,7 @@ router.get("/vos/live", async (req, res) => {
 router.get("/vos/debug/calls", requireRole("admin"), async (req, res) => {
   try {
     const qs = new URLSearchParams(req.query as Record<string, string>).toString();
-    const data = await vosFetch<{ calls: VosCallRaw[]; total: number }>(
+    const data = await fetchPbxJson<{ calls: VosCallRaw[]; total: number }>(
       `/api/calls${qs ? `?${qs}` : ""}`
     );
     res.json({ total: data.total, calls: data.calls });
@@ -2009,7 +1936,7 @@ router.get("/vos/debug/proxy", requireRole("admin"), async (req, res) => {
       res.status(400).json({ error: "PBX diagnostic path is not approved." });
       return;
     }
-    const data = await vosFetch<unknown>(path);
+    const data = await fetchPbxJson<unknown>(path);
     res.json(data);
   } catch (err) {
     req.log.error(err, "vos debug proxy error");

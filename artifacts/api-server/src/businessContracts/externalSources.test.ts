@@ -7,7 +7,7 @@ import { detectHeaderRow, parseGoogleSheetsValues } from "../integrations/google
 import { parseReadymodeRows } from "../integrations/readymode/csvParser.js";
 import { parseAgentTable } from "../integrations/readymode/htmlParser.js";
 import { prepareReadyModeUpload } from "../integrations/readymode/importer.js";
-import { teamFromRingGroupName } from "../routes/vos.js";
+import { teamFromRingGroupName } from "../integrations/pbx/mapper.js";
 
 const fixtures = path.join(import.meta.dirname, "fixtures");
 
@@ -106,8 +106,8 @@ test("PBX fixtures preserve the current ring-group and display-name inputs witho
   const html = await text("pbx", "report.html");
   assert.match(html, /Agent Beta \(Temp\)/);
   assert.match(html, /<td>3<\/td><\/tr>/, "the last PBX row intentionally omits its optional cell");
-  const vosSource = await readFile(new URL("../routes/vos.ts", import.meta.url), "utf8");
-  assert.match(vosSource, /async function vosFetch<T>/);
-  assert.match(vosSource, /return res\.json\(\) as Promise<T>/);
-  assert.doesNotMatch(vosSource, /parseAgentTable|<table|matchAll\(\/<tr/);
+  const pbxClient = await readFile(new URL("../integrations/pbx/client.ts", import.meta.url), "utf8");
+  assert.match(pbxClient, /async function getPbxSession/);
+  assert.match(pbxClient, /return res\.json\(\) as Promise<T>/);
+  assert.doesNotMatch(pbxClient, /parseAgentTable|<table|matchAll\(\/<tr/);
 });

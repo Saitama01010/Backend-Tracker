@@ -119,13 +119,15 @@ test("Google Sheets upstream payloads distinguish empty data from malformed resp
 
 test("Sheets, date ranges, probes, and pagination are wired through integration security policy", async () => {
   const base = new URL("../routes/", import.meta.url);
-  const [quo, quoSync, sheets, sheetsClient, readymode, readymodeProbe] = await Promise.all([
+  const [quo, quoSync, sheets, sheetsClient, readymode, readymodeProbe, vos, pbxClient] = await Promise.all([
     readFile(new URL("quo.ts", base), "utf8"),
     readFile(new URL("../integrations/quo/sync.ts", base), "utf8"),
     readFile(new URL("sheets.ts", base), "utf8"),
     readFile(new URL("../integrations/googleSheets/client.ts", base), "utf8"),
     readFile(new URL("readymode.ts", base), "utf8"),
     readFile(new URL("../integrations/readymode/htmlProbe.ts", base), "utf8"),
+    readFile(new URL("vos.ts", base), "utf8"),
+    readFile(new URL("../integrations/pbx/client.ts", base), "utf8"),
   ]);
 
   assert.match(quo, /validateIntegrationDateRange/);
@@ -148,5 +150,9 @@ test("Sheets, date ranges, probes, and pagination are wired through integration 
   assert.match(readymodeProbe, /READYMODE_USERNAME/);
   assert.doesNotMatch(readymode, /preview:\s*result\.body/);
   assert.doesNotMatch(readymodeProbe, /cookies:\s*cachedCookies/);
+  assert.match(vos, /fetchPbxJson/);
+  assert.doesNotMatch(vos, /VOSLOGIC_EMAIL|VOSLOGIC_PASSWORD|\/api\/auth\/login/);
+  assert.match(pbxClient, /VOSLOGIC_EMAIL/);
+  assert.match(pbxClient, /res\.status === 401/);
   assert.doesNotMatch(quoSync, /logger\.(?:info|warn|error)\([^\n]*participant/);
 });

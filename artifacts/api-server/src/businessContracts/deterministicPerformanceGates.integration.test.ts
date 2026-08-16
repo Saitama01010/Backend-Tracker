@@ -10,7 +10,7 @@ import { buildOnboardingAnalyticsWorkbook } from "../modules/onboarding/analytic
 import { buildQuoPhoneCallRow, type QuoCall, type QuoPhoneNumber } from "../integrations/quo/sync.js";
 import { parseGoogleSheetsValues } from "../integrations/googleSheets/mapper.js";
 import { parseReadymodeRows } from "../integrations/readymode/csvParser.js";
-import { teamFromRingGroupName } from "../routes/vos.js";
+import { teamFromRingGroupName } from "../integrations/pbx/mapper.js";
 
 const { Client } = pg;
 const repoRoot = path.resolve(import.meta.dirname, "../../../..");

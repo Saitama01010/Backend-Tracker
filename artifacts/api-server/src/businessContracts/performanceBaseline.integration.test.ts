@@ -9,7 +9,7 @@ import { buildQuoPhoneCallRow, type QuoCall, type QuoPhoneNumber } from "../inte
 import { parseGoogleSheetsValues } from "../integrations/googleSheets/mapper.js";
 import { parseReadymodeRows } from "../integrations/readymode/csvParser.js";
 import { parseAgentTable } from "../integrations/readymode/htmlParser.js";
-import { teamFromRingGroupName } from "../routes/vos.js";
+import { teamFromRingGroupName } from "../integrations/pbx/mapper.js";
 
 const { Client } = pg;
 const repoRoot = path.resolve(import.meta.dirname, "../../../..");
