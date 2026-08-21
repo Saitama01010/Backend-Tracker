@@ -26,6 +26,7 @@ const libDir = path.dirname(fileURLToPath(import.meta.url));
 const apiDir = path.resolve(libDir, "..");
 const repoRoot = path.resolve(apiDir, "../../..");
 const routeSource = (name: string) => readFile(path.join(apiDir, "routes", name), "utf8");
+const moduleSource = (relative: string) => readFile(path.join(apiDir, "modules", relative), "utf8");
 const dashboardSource = () => readFile(path.join(repoRoot, "artifacts/agent-dashboard/src/App.tsx"), "utf8");
 const samiaUiSource = () => readFile(path.join(repoRoot, "artifacts/agent-dashboard/src/features/samia/SamiaChat.tsx"), "utf8");
 
@@ -69,16 +70,17 @@ test("QA dateBasis defaults to evaluated and explicitly supports call date", () 
 
 test("QA routes consistently select evaluatedAt or callDate", async () => {
   const source = await routeSource("qa.ts");
-  assert.match(source, /dateBasis === "evaluated" \? qaReviewsTable\.evaluatedAt : qaReviewsTable\.callDate/);
+  const repository = await moduleSource("qa/qa.repository.ts");
+  assert.match(repository, /dateBasis === "evaluated" \? qaReviewsTable\.evaluatedAt : qaReviewsTable\.callDate/);
   for (const route of ["stats", "download", "reviews", "agents"]) {
     const start = source.indexOf(`router.get("/qa/${route}"`);
     assert.ok(start > 0, route);
-    assert.match(source.slice(start, start + 2_500), /parseQaDateBasis\(req\.query\["dateBasis"\]\)/, route);
+    assert.match(source.slice(start, start + 2_500), /parseQaDateBasisQuery\(req\.query\["dateBasis"\]\)/, route);
   }
 });
 
 test("QA run response includes the run ID and all three result collections", async () => {
-  const source = await routeSource("qa.ts");
+  const source = await moduleSource("qa/qa.jobs.service.ts");
   assert.match(source, /interface QaBiweeklyResult[\s\S]*runId: number;[\s\S]*evaluated:[\s\S]*skipped:[\s\S]*errors:/);
   assert.match(source, /result: QaBiweeklyResult = \{ runId: run\?\.id \?\? 0, evaluated: \[\], skipped: \[\], errors: \[\] \}/);
 });
@@ -97,7 +99,8 @@ test("QA frontend checks non-200 responses, displays results, and immediately in
 });
 
 test("QA evaluation uses forced strict Anthropic tool output and validates before persistence", async () => {
-  const source = await routeSource("qa.ts");
+  const source = await moduleSource("qa/qa.evaluation.service.ts");
+  const repository = await moduleSource("qa/qa.repository.ts");
   const schema = qaEvaluationToolInputSchema("CS");
   assert.equal(schema.additionalProperties, false);
   assert.ok(schema.required.includes("managerReviewRequired"));
@@ -107,18 +110,19 @@ test("QA evaluation uses forced strict Anthropic tool output and validates befor
   assert.match(source, /createAnthropicToolMessage/);
   assert.match(source, /name: "record_qa_evaluation"/);
   assert.match(source, /toolInput\(completion, "record_qa_evaluation"\)/);
-  assert.ok(source.indexOf("validateQaResultWithReason") < source.indexOf("db.insert(qaReviewsTable)"));
+  assert.ok(source.indexOf("validateQaResultWithReason") < source.indexOf("qaRepository.saveEvaluation"));
+  assert.match(repository, /db\.insert\(qaReviewsTable\)[\s\S]*onConflictDoUpdate/);
 });
 
 test("invalid strict QA output is rejected and sanitized without transcript logging", async () => {
   assert.equal(validateQaResult({ ...validCsEvaluation, categoryScores: { raw: 100 } }, "CS"), null);
-  const source = await routeSource("qa.ts");
+  const source = await moduleSource("qa/qa.evaluation.service.ts");
   assert.match(source, /validationReason:/);
   assert.doesNotMatch(source.slice(source.indexOf("validationReason:"), source.indexOf("return null", source.indexOf("validationReason:"))), /transcript/);
 });
 
 test("manager queue reports open all-time and created-in-range totals separately", async () => {
-  const api = await routeSource("qa.ts");
+  const api = await moduleSource("qa/qa.reporting.service.ts");
   const ui = await dashboardSource();
   assert.match(api, /openManagerQueue/);
   assert.match(api, /managerTasksCreatedInRange/);
@@ -175,9 +179,11 @@ test("attendance conflict policy requires confirmation even when replacement lan
 
 test("attendance writes are read back before success and return mutation metadata", async () => {
   const service = await readFile(path.join(libDir, "attendanceService.ts"), "utf8");
+  const repository = await readFile(path.join(libDir, "../modules/attendance/attendance.repository.ts"), "utf8");
   const samia = await routeSource("samia.ts");
-  assert.ok(service.indexOf("const persisted = await getAttendanceRecord") > service.indexOf("onConflictDoUpdate"));
-  assert.match(service, /Attendance persistence verification failed/);
+  assert.ok(service.indexOf("const persisted = await getAttendanceRecord") > service.indexOf("attendanceRepository.upsertRecord"));
+  assert.match(repository, /onConflictDoUpdate/);
+  assert.match(repository, /Attendance persistence verification failed/);
   assert.match(samia, /resource: "attendance"/);
   assert.match(samia, /memberId: write\.member\.id/);
   assert.match(samia, /invalidateQueryKeys/);
@@ -255,9 +261,11 @@ test("intermediate tool calls are hidden and opening Samia makes no Anthropic re
 
 test("dashboard attendance dates and API descriptions use the canonical LA timezone", async () => {
   const attendance = await routeSource("attendance.ts");
+  const attendanceService = await readFile(path.join(libDir, "../modules/attendance/attendance.service.ts"), "utf8");
   const samia = await routeSource("samia.ts");
   const ui = await dashboardSource();
-  assert.match(attendance, /ATTENDANCE_TIMEZONE/);
+  assert.match(attendance, /attendanceService\.getDashboard/);
+  assert.match(attendanceService, /ATTENDANCE_TIMEZONE/);
   assert.match(ui, /const todayStr = ltLaToday\(\)/);
   assert.match(ui, /const tomorrowStr = addBusinessCalendarDays\(todayStr, 1\)/);
   const prompt = samia.slice(samia.indexOf("## Attendance actions"), samia.indexOf("## Phone contact lookup"));

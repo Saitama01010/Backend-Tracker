@@ -1,5 +1,11 @@
-import { attendanceMembersTable, attendanceRecordsTable, db } from "@workspace/db";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import {
+  attendanceRepository,
+  attendanceRecordDate,
+  attendanceRecordSelection,
+  type AttendanceMember,
+  type AttendanceRecordView,
+  type AttendanceRecordWrite,
+} from "../modules/attendance/attendance.repository.js";
 import {
   attendanceNoteForWrite,
   canonicalAttendanceStatus,
@@ -23,42 +29,22 @@ export type AttendanceWriteResult =
   | {
       kind: "saved";
       action: "created" | "updated" | "unchanged";
-      member: typeof attendanceMembersTable.$inferSelect;
+      member: AttendanceMember;
       previous: AttendanceRecordView | null;
       record: AttendanceRecordView;
     }
   | {
       kind: "conflict";
-      member: typeof attendanceMembersTable.$inferSelect;
+      member: AttendanceMember;
       existing: AttendanceRecordView;
       requestedStatus: AttendanceStatus;
     }
   | { kind: "member_ambiguous"; match: Extract<AttendanceMemberMatch, { kind: "ambiguous" }> }
   | { kind: "member_missing" };
 
-type AttendanceMember = typeof attendanceMembersTable.$inferSelect;
+export type { AttendanceRecordView };
 
-export interface AttendanceRecordView {
-  id: number;
-  memberId: number;
-  date: string;
-  status: string;
-  note: string | null;
-  coaching: boolean;
-  updatedAt: Date;
-}
-
-export const attendanceRecordDate = sql<string>`coalesce(${attendanceRecordsTable.dateValue}::text, ${attendanceRecordsTable.date})`;
-
-export const attendanceRecordSelection = {
-  id: attendanceRecordsTable.id,
-  memberId: attendanceRecordsTable.memberId,
-  date: attendanceRecordDate,
-  status: attendanceRecordsTable.status,
-  note: attendanceRecordsTable.note,
-  coaching: attendanceRecordsTable.coaching,
-  updatedAt: attendanceRecordsTable.updatedAt,
-};
+export { attendanceRecordDate, attendanceRecordSelection };
 
 export type AttendanceBatchWriteResult =
   | {
@@ -80,9 +66,7 @@ export function isAttendanceDate(value: string): boolean {
 }
 
 export async function activeAttendanceMembers() {
-  return db.select().from(attendanceMembersTable)
-    .where(eq(attendanceMembersTable.active, true))
-    .orderBy(attendanceMembersTable.name);
+  return attendanceRepository.listMembers({ includeInactive: false, order: "name" });
 }
 
 export function resolveActiveAttendanceMemberFromList(
@@ -109,7 +93,7 @@ export async function resolveActiveAttendanceMember(
   memberId?: number,
   memberName?: string,
 ): Promise<
-  | { kind: "unique"; member: typeof attendanceMembersTable.$inferSelect }
+  | { kind: "unique"; member: AttendanceMember }
   | { kind: "ambiguous"; match: Extract<AttendanceMemberMatch, { kind: "ambiguous" }> }
   | { kind: "missing" }
 > {
@@ -118,11 +102,7 @@ export async function resolveActiveAttendanceMember(
 }
 
 export async function getAttendanceRecord(memberId: number, date: string) {
-  const [record] = await db.select(attendanceRecordSelection).from(attendanceRecordsTable).where(and(
-    eq(attendanceRecordsTable.memberId, memberId),
-    eq(attendanceRecordDate, date),
-  )).limit(1);
-  return record ?? null;
+  return attendanceRepository.getRecord(memberId, date);
 }
 
 export async function setAttendanceRecord(input: AttendanceWriteInput): Promise<AttendanceWriteResult> {
@@ -146,22 +126,13 @@ export async function setAttendanceRecord(input: AttendanceWriteInput): Promise<
   }
 
   const note = attendanceNoteForWrite(input.note, previous?.note ?? null);
-  await db.insert(attendanceRecordsTable).values({
+  await attendanceRepository.upsertRecord({
     memberId: member.id,
     date: input.date,
     dateValue: input.date,
     status,
     note,
     coaching: input.coaching ?? previous?.coaching ?? false,
-  }).onConflictDoUpdate({
-    target: [attendanceRecordsTable.memberId, attendanceRecordsTable.date],
-    set: {
-      dateValue: input.date,
-      status,
-      note,
-      coaching: input.coaching ?? previous?.coaching ?? false,
-      updatedAt: new Date(),
-    },
   });
 
   const persisted = await getAttendanceRecord(member.id, input.date);
@@ -207,25 +178,16 @@ export async function setAttendanceRecords(
   const memberIds = [...new Set(uniqueMatches.map((item) => item.match.member.id))];
   const dates = [...new Set(uniqueMatches.map((item) => item.input.date))];
 
-  return db.transaction(async (tx) => {
-    const existingRows = await tx.select(attendanceRecordSelection).from(attendanceRecordsTable).where(and(
-      inArray(attendanceRecordsTable.memberId, memberIds),
-      inArray(attendanceRecordDate, dates),
-    ));
+  return attendanceRepository.withBatchWriteTransaction({ memberIds, dates }, async ({
+    existingRows,
+    persistAndVerify,
+  }) => {
     type State = { status: string; note: string | null; coaching: boolean };
     const states = new Map<string, State>(existingRows.map((row) => [
       `${row.memberId}:${row.date}`,
       { status: row.status, note: row.note, coaching: row.coaching },
     ]));
-    const writes = new Map<string, {
-      memberId: number;
-      date: string;
-      dateValue: string;
-      status: string;
-      note: string | null;
-      coaching: boolean;
-      updatedAt: Date;
-    }>();
+    const writes = new Map<string, AttendanceRecordWrite>();
     const results: AttendanceBatchWriteResult[] = [];
     const updatedAt = new Date();
 
@@ -276,33 +238,7 @@ export async function setAttendanceRecords(
       });
     }
 
-    if (writes.size > 0) {
-      await tx.insert(attendanceRecordsTable).values([...writes.values()]).onConflictDoUpdate({
-        target: [attendanceRecordsTable.memberId, attendanceRecordsTable.date],
-        set: {
-          dateValue: sql`excluded.attendance_date`,
-          status: sql`excluded.status`,
-          note: sql`excluded.note`,
-          coaching: sql`excluded.coaching`,
-          updatedAt: sql`excluded.updated_at`,
-        },
-      });
-
-      const verifiedRows = await tx.select(attendanceRecordSelection).from(attendanceRecordsTable).where(and(
-        inArray(attendanceRecordsTable.memberId, memberIds),
-        inArray(attendanceRecordDate, dates),
-      ));
-      const verified = new Map(verifiedRows.map((row) => [`${row.memberId}:${row.date}`, row]));
-      for (const [key, expected] of writes) {
-        const actual = verified.get(key);
-        if (!actual
-          || actual.status !== expected.status
-          || actual.note !== expected.note
-          || actual.coaching !== expected.coaching) {
-          throw new Error("Attendance persistence verification failed");
-        }
-      }
-    }
+    await persistAndVerify(writes);
 
     return results;
   });
@@ -328,9 +264,7 @@ export async function setAttendanceNote(input: {
   // Historical deployments accepted free-text statuses. Notes must remain
   // editable even when a legacy status cannot be canonicalized yet; updating
   // only the note preserves that original value byte-for-byte.
-  await db.update(attendanceRecordsTable)
-    .set({ note: input.note, updatedAt: new Date() })
-    .where(eq(attendanceRecordsTable.id, previous.id));
+  await attendanceRepository.updateRecordNote(previous.id, input.note);
   const persisted = await getAttendanceRecord(resolved.member.id, input.date);
   if (!persisted || persisted.note !== input.note || persisted.status !== previous.status) {
     throw new Error("Attendance note persistence verification failed");

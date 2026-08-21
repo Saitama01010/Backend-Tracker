@@ -277,11 +277,13 @@ test("legacy password metadata is additive and existing rows begin unverified wh
 });
 
 test("admin-created and reset passwords record current policy metadata without returning hashes", async () => {
-  const usersSource = await readFile(new URL("../routes/users.ts", import.meta.url), "utf8");
+  const usersSource = await readFile(new URL("../modules/users/users.service.ts", import.meta.url), "utf8");
+  const usersRepository = await readFile(new URL("../modules/users/users.repository.ts", import.meta.url), "utf8");
   const startupSource = await readFile(new URL("../app/startupDatabase.ts", import.meta.url), "utf8");
   assert.match(usersSource, /passwordPolicyVersion:\s*CURRENT_PASSWORD_POLICY_VERSION/);
   assert.match(usersSource, /passwordChangedAt:\s*new Date\(\)/);
-  assert.match(usersSource, /passwordHash: _passwordHash, emailNormalized: _emailNormalized/);
+  assert.match(usersSource, /passwordHash: _passwordHash,[\s\S]*?emailNormalized: _emailNormalized/);
+  assert.match(usersRepository, /revokeUserSessions\(input\.id, tx\)/);
   assert.match(startupSource, /passwordPolicyVersion:\s*CURRENT_PASSWORD_POLICY_VERSION/);
   assert.match(startupSource, /passwordChangedAt:\s*new Date\(\)/);
 });

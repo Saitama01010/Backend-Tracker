@@ -148,6 +148,10 @@ test("agent-contact route wires independent controls before contact aggregation"
     new URL("../routes/authorizationPolicy.ts", import.meta.url),
     "utf8",
   );
+  const service = await readFile(
+    new URL("../modules/attendance/attendance.calls.service.ts", import.meta.url),
+    "utf8",
+  );
   assert.match(attendance, /router\.use\("\/attendance", requireAuth\)/);
   assert.match(
     policy,
@@ -157,13 +161,14 @@ test("agent-contact route wires independent controls before contact aggregation"
   const route = attendance.slice(
     attendance.indexOf('router.get("/attendance/agent-contacts"'),
   );
-  const dateScope = route.indexOf("canAccessDateRange(req.user!");
-  const requestAgentScope = route.indexOf(
+  assert.match(route, /attendanceCallsService\.getAgentContacts/);
+  const dateScope = service.indexOf("canAccessDateRange(input.actor");
+  const requestAgentScope = service.indexOf(
     "matchingAgents.some((agent) => canAccessLiveAgent",
   );
-  const databaseQuery = route.indexOf("const matchingRows = await db");
-  const rowScope = route.indexOf("const rows = matchingRows.filter");
-  const aggregation = route.indexOf("const contactMap = new Map");
+  const databaseQuery = service.indexOf("const matchingRows = await this.dependencies.repository");
+  const rowScope = service.indexOf("const rows = matchingRows.filter");
+  const aggregation = service.indexOf("const contactMap = new Map");
   assert.ok(dateScope >= 0);
   assert.ok(requestAgentScope > dateScope);
   assert.ok(databaseQuery > requestAgentScope);

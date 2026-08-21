@@ -445,10 +445,11 @@ test("force can skip response reuse but cannot bypass the per-agent reservation"
   assert.equal(shouldReuseStoredReview({ id: "call" }, false), true);
   assert.equal(shouldReuseStoredReview({ id: "call" }, true), false);
   const source = await readFile(path.join(routesDir, "qa.ts"), "utf8");
+  const service = await readFile(path.resolve(routesDir, "../modules/qa/qa.manual.service.ts"), "utf8");
   assert.match(source, /router\.post\("\/qa\/evaluate", requireAuth, requireRole\("admin"\)/);
-  assert.match(source, /reserveQaAgentRun\(/);
-  assert.match(source, /reservation\.kind === "cooldown"/);
-  assert.match(source, /evaluateCall\(callId/);
+  assert.match(service, /reserveQaAgentRun\(/);
+  assert.match(service, /reservation\.kind === "cooldown"/);
+  assert.match(service, /evaluateCall\(input\.callId/);
 });
 
 test("AI reservation schema is additive and protects Samia and QA concurrency", async () => {
@@ -463,13 +464,13 @@ test("AI reservation schema is additive and protects Samia and QA concurrency", 
 });
 
 test("Live Transfer classification uses strict Anthropic tools and has no startup job", async () => {
-  const source = await readFile(path.resolve(routesDir, "../modules/transfers/liveTransfers.ts"), "utf8");
+  const providerSource = await readFile(path.resolve(routesDir, "../modules/transfers/liveTransfers.provider.ts"), "utf8");
   const configSource = await readFile(path.resolve(routesDir, "../lib/operationalConfig.ts"), "utf8");
   const indexSource = await readFile(path.join(routesDir, "index.ts"), "utf8");
-  assert.match(source, /OPERATIONAL_CONFIG\.aiModels\.liveTransfers/);
+  assert.match(providerSource, /OPERATIONAL_CONFIG\.aiModels\.liveTransfers/);
   assert.match(configSource, /ANTHROPIC_LT_MODEL/);
-  assert.match(source, /createAnthropicToolMessage/);
-  assert.match(source, /record_live_transfer_classification/);
+  assert.match(providerSource, /createAnthropicToolMessage/);
+  assert.match(providerSource, /record_live_transfer_classification/);
   assert.equal(indexSource.includes("startLiveTransfersBackground"), false);
 });
 

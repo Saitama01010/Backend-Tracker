@@ -119,55 +119,91 @@ test("Google Sheets upstream payloads distinguish empty data from malformed resp
 
 test("Sheets, date ranges, probes, and pagination are wired through integration security policy", async () => {
   const base = new URL("../routes/", import.meta.url);
-  const [quo, quoSync, quoClient, sheets, sheetsClient, readymode, readymodeClient, readymodeProbe, vos, pbxClient] = await Promise.all([
+  const [
+    quo,
+    quoCallsService,
+    quoLiveService,
+    quoSync,
+    quoClient,
+    sheets,
+    retentionService,
+    sheetsClient,
+    readymode,
+    readyModeService,
+    readymodeClient,
+    readymodeProbe,
+    vos,
+    pbxDiagnosticsService,
+    pbxProviderService,
+    pbxClient,
+  ] = await Promise.all([
     readFile(new URL("quo.ts", base), "utf8"),
+    readFile(new URL("../modules/retention/retention.quo.calls.service.ts", base), "utf8"),
+    readFile(new URL("../modules/retention/retention.quo.live.service.ts", base), "utf8"),
     readFile(new URL("../integrations/quo/sync.ts", base), "utf8"),
     readFile(new URL("../integrations/quo/client.ts", base), "utf8"),
     readFile(new URL("sheets.ts", base), "utf8"),
+    readFile(new URL("../modules/retention/retention.service.ts", base), "utf8"),
     readFile(new URL("../integrations/googleSheets/client.ts", base), "utf8"),
     readFile(new URL("readymode.ts", base), "utf8"),
+    readFile(new URL("../modules/retention/retention.readymode.service.ts", base), "utf8"),
     readFile(new URL("../integrations/readymode/client.ts", base), "utf8"),
     readFile(new URL("../integrations/readymode/htmlProbe.ts", base), "utf8"),
     readFile(new URL("vos.ts", base), "utf8"),
+    readFile(new URL("../modules/pbx/pbx.diagnostics.service.ts", base), "utf8"),
+    readFile(new URL("../modules/pbx/pbx.provider.service.ts", base), "utf8"),
     readFile(new URL("../integrations/pbx/client.ts", base), "utf8"),
   ]);
 
   assert.match(quo, /validateIntegrationDateRange/);
-  assert.match(quo, /paginateAuthorizedBatches/);
+  assert.match(quoCallsService, /paginateAuthorizedBatches/);
   assert.match(quo, /fetchQuoPhoneNumbers/);
-  assert.match(quo, /fetchQuoLiveDirectory/);
-  assert.match(quo, /fetchQuoRecentConversations/);
-  assert.match(quo, /fetchQuoConversationCalls/);
-  assert.doesNotMatch(quo, /fetchQuoJson|fetchAllQuoPages|QUO_API_KEY|api\.openphone\.com|nextPageToken|pageToken|\bfetch\(/);
+  assert.match(quoLiveService, /fetchQuoLiveDirectory/);
+  assert.match(quoLiveService, /fetchQuoRecentConversations/);
+  assert.match(quoLiveService, /fetchQuoConversationCalls/);
+  assert.doesNotMatch(
+    `${quo}\n${quoCallsService}\n${quoLiveService}`,
+    /fetchQuoJson|fetchAllQuoPages|QUO_API_KEY|api\.openphone\.com|nextPageToken|pageToken|\bfetch\(/,
+  );
   assert.match(quoClient, /QUO_API_KEY/);
   assert.match(quoClient, /response\.status === 429/);
   assert.match(quoClient, /fetchAllQuoPages/);
   assert.match(quoClient, /nextPageToken/);
-  assert.match(sheets, /isApprovedSheetSource/);
-  assert.match(sheets, /const sheetRefreshes = new Map/);
+  assert.match(retentionService, /isApprovedSheetSource/);
+  assert.match(retentionService, /sheetRefreshes = new Map/);
   assert.match(sheetsClient, /const titleRefreshes = new Map/);
   assert.match(sheetsClient, /AbortSignal\.timeout\(15_000\)/);
-  assert.match(sheets, /mapGoogleSheetValues/);
-  assert.match(sheets, /format === "rows-v1"/);
-  assert.match(sheets, /scopeSheetData[\s\S]*?JSON\.stringify\(responsePayload\)/);
-  assert.match(sheets, /SHEET_MAX_STALE_MS = 5 \* 60_000/);
+  assert.match(retentionService, /mapGoogleSheetValues/);
+  assert.match(retentionService, /format: "rows-v1"/);
+  assert.match(retentionService, /scopeSheetData/);
+  assert.match(sheets, /JSON\.stringify\(result\.payload\)/);
+  assert.match(retentionService, /SHEET_MAX_STALE_MS = 5 \* 60_000/);
   assert.match(readymode, /approvedReadyModeProbePath/);
-  assert.match(readymode, /const readyModeSourceCache = new Map/);
-  assert.match(readymode, /const readyModeSourceRefreshes = new Map/);
-  assert.match(readymode, /fetchConfiguredReadyModeCsv/);
-  assert.match(readymode, /loadAttachedReadyModeCsv/);
-  assert.doesNotMatch(readymode, /READYMODE_CSV_URL|googleCsvUrl|node:fs|node:path|fs\.readdir|fs\.readFile|path\.resolve|\bfetch\(/);
+  assert.match(readyModeService, /sourceCache = new Map/);
+  assert.match(readyModeService, /sourceRefreshes = new Map/);
+  assert.match(readyModeService, /fetchConfiguredReadyModeCsv/);
+  assert.match(readyModeService, /loadAttachedReadyModeCsv/);
+  assert.doesNotMatch(
+    `${readymode}\n${readyModeService}`,
+    /READYMODE_CSV_URL|googleCsvUrl|node:fs|node:path|fs\.readdir|fs\.readFile|path\.resolve|\bfetch\(/,
+  );
   assert.match(readymodeClient, /AbortSignal\.timeout\(15_000\)/);
   assert.match(readymodeClient, /Agent_report/);
-  assert.match(readymode, /loadReadyModeSources[\s\S]*?loadAuthorizationAgentDirectory/);
-  assert.match(readymode, /readyModeSourceCache\.clear\(\)/);
+  assert.match(readyModeService, /loadSources[\s\S]*?loadAuthorizationAgentDirectory/);
+  assert.match(readyModeService, /sourceCache\.clear\(\)/);
   assert.match(readymode, /probeReadyModePath/);
   assert.match(readymodeProbe, /READYMODE_USERNAME/);
   assert.doesNotMatch(readymode, /preview:\s*result\.body/);
   assert.doesNotMatch(readymodeProbe, /cookies:\s*cachedCookies/);
-  assert.match(vos, /fetchPbxJson/);
-  assert.match(vos, /fetchQuoDirectoryPhoneNumbers/);
-  assert.doesNotMatch(vos, /VOSLOGIC_EMAIL|VOSLOGIC_PASSWORD|QUO_API_KEY|api\.openphone\.com|\/api\/auth\/login|\bfetch\(/);
+  assert.doesNotMatch(vos, /fetchPbxJson|fetchQuoDirectoryPhoneNumbers|approvedVosDebugPath/);
+  assert.match(pbxDiagnosticsService, /approvedVosDebugPath/);
+  assert.match(pbxDiagnosticsService, /fetchPbxJson/);
+  assert.match(pbxProviderService, /fetchPbxJson/);
+  assert.match(pbxProviderService, /fetchQuoDirectoryPhoneNumbers/);
+  assert.doesNotMatch(
+    `${vos}\n${pbxDiagnosticsService}\n${pbxProviderService}`,
+    /VOSLOGIC_EMAIL|VOSLOGIC_PASSWORD|QUO_API_KEY|api\.openphone\.com|\/api\/auth\/login|\bfetch\(/,
+  );
   assert.match(pbxClient, /VOSLOGIC_EMAIL/);
   assert.match(pbxClient, /res\.status === 401/);
   assert.match(quoClient, /fetchQuoDirectoryPhoneNumbers/);

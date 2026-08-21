@@ -28,10 +28,11 @@ test("Portal user email migration is normalized, unique, guarded, and does not c
 });
 
 test("Portal user API validates and normalizes email while keeping the internal identity column private", async () => {
-  const source = await readFile(new URL("../routes/users.ts", import.meta.url), "utf8");
-  assert.match(source, /isValidAgentEmail/);
-  assert.match(source, /normalizeAgentEmail/);
-  assert.match(source, /Email is already assigned to another user/);
-  assert.match(source, /emailNormalized: _emailNormalized/);
-  assert.match(source, /Object\.prototype\.hasOwnProperty\.call\(body, "email"\)/);
+  const route = await readFile(new URL("../routes/users.ts", import.meta.url), "utf8");
+  const service = await readFile(new URL("../modules/users/users.service.ts", import.meta.url), "utf8");
+  assert.match(service, /isValidAgentEmail/);
+  assert.match(service, /normalizeAgentEmail/);
+  assert.match(route, /Email is already assigned to another user/);
+  assert.match(service, /emailNormalized: _emailNormalized/);
+  assert.match(service, /Object\.prototype\.hasOwnProperty\.call\(body, "email"\)/);
 });
