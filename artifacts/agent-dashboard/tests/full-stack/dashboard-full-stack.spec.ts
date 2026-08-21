@@ -97,6 +97,7 @@ test("sensitive Phase 1 endpoint inventory has direct HTTP authorization and cro
 });
 
 test("real frontend, Express API, session, authorization, PostgreSQL, sources, filters, refresh, tables, and exports work together", async ({ page, request }) => {
+  await page.clock.setFixedTime(new Date("2026-08-16T18:00:00.000Z"));
   const unexpectedApiFailures: string[] = [];
   const pageErrors: string[] = [];
   const apiRequests: string[] = [];
